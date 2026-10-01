@@ -21,6 +21,11 @@
 !/operator_runner.py
 !/operator_process.py
 !/local_diagnostics.py
+!/operator_ui_service.py
+!/operator_gui.py
+!/gui_launch.py
+!/gui_menu.cmd
+!/GUI_GUIDE.md
 !/run.bat
 !/test.bat
 !/operator_menu.cmd
@@ -48,6 +53,7 @@ secrets*
 /runtime/
 /releases/
 /vendor/
+/gui_vendor/
 /data/
 /demo_output/
 /github_source/

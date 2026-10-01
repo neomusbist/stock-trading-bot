@@ -20,7 +20,7 @@ from operator_process import process_identity,busy
 TERMINAL={'FILLED','CANCELED','REJECTED'}
 MENUS={'1':'현재 상태 / 최근 판단','2':'150초 안전 시운전','3':'계속 감시 및 거래 시작',
        '4':'감시 및 거래 중단 STOP',
-       '6':'3,000원 LIVE 준비 / 전환','7':'봇 포지션 청산 후 중단 STOP_FLAT',
+       '6':'자본 / 설정','7':'봇 포지션 청산 후 중단 STOP_FLAT',
        '8':'비상정지 KILL','9':'최근 결과 / 상세 로그','0':'프로그램 메뉴 종료'}
 REASONS={'AUTO_CAP_ZERO':'승인한도 0원','HARD_LOCK':'자동매매 금지 종목','MANUAL_HOLD':'자동매매 금지 종목',
  'MODE_ARMED_NO_NEW_ENTRY':'조회 대기 상태','PATTERN_OR_GATE_NOT_READY':'패턴 또는 조건 미완성',

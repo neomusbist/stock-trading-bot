@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 ROOT_FILES={'main.py','candidate_builder.py','control.py','supervisor.py','operator_console.py','operator_service.py',
+    'operator_ui_service.py','operator_gui.py','gui_launch.py','gui_menu.cmd','GUI_GUIDE.md',
     'operator_runner.py','operator_process.py','local_diagnostics.py','run.bat','test.bat','operator_menu.cmd',
     '.gitignore','.gitattributes','.env.example','config.example.json','automation.example.json','requirements.txt',
     'README.md','REPOSITORY_GUIDE.md','SECURITY.md','THIRD_PARTY_NOTICES.md','SOURCE_MANIFEST.json'}

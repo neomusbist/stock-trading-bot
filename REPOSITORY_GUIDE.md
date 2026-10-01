@@ -1,3 +1,22 @@
+# 기존 GitHub Desktop 저장소에 GUI 변경 반영
+
+이 문서의 첫 절은 기존 `stock-trading-bot` 저장소 갱신용입니다. 새 저장소/복제폴더를 만들거나 기존 저장소에서 git init을 반복하지 않습니다. 안전 소스는 설치본의 `github_source`이며 실계좌 설치본 전체를 복사하지 않습니다.
+
+GitHub Desktop의 Repository → Show in Explorer로 선택된 저장소 폴더를 확인하세요. Documents의 기존 저장소와 설치본의 github_source가 별도 폴더라면, 안전 소스를 기존 저장소에 반영한 뒤에야 Changes에 표시됩니다. .git은 보존하며 검토된 소스/예제만 반영합니다. GUI 캡처, runtime, releases, vendor, 실제 .env/config/automation/계좌자료는 포함하지 않습니다.
+
+1. GitHub Desktop에서 기존 `stock-trading-bot`을 선택합니다. 이번 준비 결과의 예상 변경파일 수와 Changes 목록을 비교합니다.
+2. 실제 .env, config.json, automation.json, runtime, releases, GUI 캡처/바이너리가 없는지 확인합니다. 안전 예시는 .env.example/config.example.json/automation.example.json입니다.
+3. Summary: `Add PySide6 GUI and simplified operator UI`를 입력합니다. Description에는 GUI 기본 화면·콘솔 fallback·안전한 새 설치 기본값·오프라인 검사 결과를 적을 수 있습니다.
+4. 준비 결과에 안내된 기존 branch에서 Commit을 누릅니다. 사용자가 직접 commit합니다.
+5. 마지막 파일목록 확인 후 Push origin을 누릅니다. 이번 준비 작업은 push하지 않습니다.
+6. GitHub 웹에서 Private 표시, GUI 관련 파일과 README 반영, 실제 계좌자료 부재를 확인합니다. 오프라인 준비 작업은 서버의 Private 설정을 새로 확인한 결과가 아닙니다.
+
+SOURCE_MANIFEST.json은 자신을 제외한 소스 파일 해시 목록입니다. GitHub용 총 파일 수에는 manifest도 포함합니다. 로컬 검사보고서/캡처는 안전 소스 밖에 보관합니다. default-deny .gitignore와 repo_guard는 계속 적용합니다.
+
+---
+
+아래는 최초 저장소 생성이 필요한 경우의 기존 절차입니다. 기존 Desktop 저장소 갱신에서는 반복하지 않습니다.
+
 # Windows 최초 Private 업로드
 
 실계좌 설치 폴더 전체를 업로드하지 않습니다. 준비된 github_source만 사용합니다. 이 절차는 사용자 직접 실행용이며 이번 작업에서 GitHub 저장소 생성이나 push를 수행하지 않습니다.

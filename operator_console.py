@@ -6,6 +6,7 @@ ROOT=Path(__file__).resolve().parent
 sys.path.insert(0,str(ROOT/'vendor'))
 from operator_service import OperatorService,MENUS,read_json
 from core.util import ProcessLock
+from operator_ui_service import UserOperations,PUBLIC_MENUS,presentation
 
 def money(value): return '미확인' if value is None else f'{value:,.0f}원'
 def yes(text,reader=input): return reader(text+'\n진행하려면 yes, 취소하려면 Enter: ').strip().lower()=='yes'
@@ -33,10 +34,10 @@ def show_status(s,writer=print,details=True):
     writer('광전자 017900: HARD_LOCK / 자동매매 금지')
     if not s['hard_ok']: writer('!! 잠금 정의 오류 — 시운전/LIVE 차단 !!')
     writer(f"마지막 판단: {s['last_decision']}\n현재 오류: {s['current_error']}")
-    writer('감시는 별도 프로세스입니다. 메뉴 창을 닫아도 감시가 남을 수 있습니다. 중단은 4번/바탕화면 정상중단을 사용하세요.')
+    writer('감시는 별도 프로세스입니다. 메뉴 창을 닫아도 감시가 남을 수 있습니다. 중지는 자동매매 중지 메뉴/바탕화면 정상중단을 사용하세요.')
     if not details: return
     writer('현대바이오랜드 052260: BREAKEVEN_EXIT / 5,834원 기준, 기존 조건에 따른 매도만')
-    writer(f"나인테크 과거 시험매도 기록: {s['test_release']} / 시험 전용 기능 종료 (일반 종목 영구제외 아님)")
+    writer(f"종료된 시험매도 과거 기록: {s['test_release']} / 시험 전용 기능 종료 (일반 종목 영구제외 아님)")
     summary=s.get('candidate_summary',{})
     if summary:
         writer('후보 집계 기준시각: '+str(summary.get('timestamp'))+' / 감시 주기: '+str(summary.get('cycle_started')))
@@ -66,6 +67,7 @@ def show_result(r,writer=print):
     if r.get('note'): writer('- '+r['note'])
 
 def handle(service,choice,reader=input,writer=print):
+    # 과거 CLI 호출/회귀검사의 번호 계약만 보존. 실제 사용자 메뉴는 user_handle을 사용.
     service.select(choice)
     if choice=='1':
         show_status(service.public_status(),writer)
@@ -132,26 +134,80 @@ def handle(service,choice,reader=input,writer=print):
         writer('화면을 종료합니다.'); return False
     return True
 
+def show_user_status(s,writer=print):
+    operation,market,safety=presentation(s)
+    writer('\n========== 주식자동매매 ==========')
+    writer('운영상태: '+operation+' / 시장: '+market+' / 안전: '+safety)
+    writer('감시: '+s['process']['state']+' / 실제매매: '+('조건부 ON' if s['trading_on'] else 'OFF'))
+    writer(f"승인한도: {money(s['cap'])} / 주문가능현금: {money(s['cash'])} / 가용자본: {money(s['available'])}")
+    writer('현금 조회시각: '+str(s['cash_time'] or '미확인')+' / '+s['account']+' / '+s['websocket'])
+    writer(f"봇 보유 {s['position_count']}종목 / 미체결 {s['pending']}건 / 불명확 {s['uncertain']}건")
+    writer('삼성전자·광전자: HARD_LOCK / 자동매매 금지')
+    writer('마지막 판단: '+s['last_decision']); writer('현재 오류: '+s['current_error'])
+    if s.get('start_block'): writer('시작 안내: '+s['start_block'])
+    writer('창 종료와 감시 중지는 별개입니다. 중지 메뉴 또는 바탕화면 정상중단을 사용하세요.')
+
+def user_handle(s,choice,reader=input,writer=print):
+    if choice not in PUBLIC_MENUS: raise ValueError('0~9 중 표시된 번호만 선택하세요. 설정은 바꾸지 않았습니다.')
+    if choice=='1':
+        show_user_status(s.snapshot(),writer)
+        sub=reader('고급 진단: [1] 상세 상태 [2] 로컬 진단 [3] 최초 150초 안전 시운전 [4] 0원 조회 대기 전환 / Enter 돌아가기: ').strip()
+        if sub=='1': show_status(s.public_status(),writer)
+        elif sub=='2': writer(str(s.local_diagnostic()))
+        elif sub=='3': show_result(s.pilot(writer),writer)
+        elif sub=='4' and yes('0원·실주문 비활성일 때 조회 대기로 전환합니다. 기존 승인을 자동 해제하지 않습니다.',reader): show_result(s.arm_safe(True),writer)
+    elif choice=='2':
+        st=s.snapshot(); real=st['live_mode'] and st['live_approved']
+        if not real or yes(f"승인한도 {money(st['cap'])} 내 실제 주문이 가능해집니다. 시작하시겠습니까?",reader): show_result(s.start_user(confirmed=bool(real)),writer)
+    elif choice=='3': show_result(s.stop('STOP'),writer)
+    elif choice=='4':
+        st=s.snapshot(); writer('현재 승인한도: '+money(st['cap'])+' / 주문가능현금: '+money(st['cash']))
+        sub=reader('[1] 한도 변경 [2] 실제매매 준비 검사 [3] 실제매매 명시 승인 [4] 고급 설정 보기 [5] 실제 비용 입력 / Enter 돌아가기: ').strip()
+        if sub=='1':
+            amount=reader('새 승인한도 (원 단위 정수, 0은 거래자본 없음): ').strip()
+            if yes('승인한도를 '+money(st['cap'])+' → '+amount+'원으로 변경합니다. 실제매매는 꺼지며 별도 승인이 필요합니다.',reader): show_result(s.change_cap(amount,True,expected_cap=st['cap']),writer)
+        elif sub=='2': show_result(s.prepare_capital(writer),writer)
+        elif sub=='3':
+            amount=reader('현재 승인한도를 원 단위 숫자로 입력: ').strip()
+            phrase=reader('실제 주문이 가능해집니다. 승인하려면 실제매매승인 을 정확히 입력: ').strip()
+            show_result(s.authorize_capital(amount,phrase),writer)
+        elif sub=='4': writer(str(st['advanced']))
+        elif sub=='5':
+            values=[reader(label+' (% 숫자): ') for label in ('실제 매수 수수료','실제 매도 수수료','실제 매도 세금')]
+            if yes('증권사에서 실제 확인한 비용입니까? '+', '.join(values),reader): show_result(s.confirm_costs(*values,True),writer)
+    elif choice=='5':
+        show_result(read_json(s.root/'runtime/operator_last_result.json'),writer)
+        st=s.snapshot()
+        for line in st['decisions']: writer(line)
+        writer('거래기록: '+str(st['orders'])); writer('청산기록: '+str(st['trades'])); writer('과거 오류: '+st['error'])
+    elif choice in {'6','9'}:
+        command='STOP_FLAT' if choice=='6' else 'KILL'
+        if yes('봇 청산 후 중지를 요청합니다. 보호종목 잠금은 유지됩니다.' if choice=='6' else '신규 주문을 차단하고 비상정지 상태로 전환합니다. 기존 KILL 의미를 유지합니다.',reader): show_result(s.stop(command),writer)
+    elif choice=='0':
+        return handle(s,'0',reader,writer)
+    return True
+
 def main(reader=input,writer=print,service=None,argv=None):
     p=argparse.ArgumentParser(); p.add_argument('--self-check',action='store_true')
     p.add_argument('--emergency',choices=['STOP','STOP_FLAT','KILL']); args=p.parse_args(argv)
-    s=service or OperatorService()
+    s=service or UserOperations()
     if args.self_check: show_status(s.public_status(),writer); return 0
     if args.emergency:
         show_result(s.stop(args.emergency),writer)
-        writer('잠시 뒤 메인 화면 [1]에서 실제 보유/미체결 상태를 확인하세요. 나인테크 미체결은 HTS 확인이 필요할 수 있습니다.')
+        writer('잠시 뒤 메인 화면 [1]에서 실제 보유/미체결 상태를 확인하세요. 미체결/불명확 주문은 HTS 확인이 필요할 수 있습니다.')
         if sys.stdin.isatty(): reader('창을 닫으려면 Enter: ')
         return 0
     with ProcessLock(s.root/'runtime/operator_ui.lock'):
+        ui=s if isinstance(s,UserOperations) else UserOperations(s.root,s.clock,gateway=s.gateway,sleep=s.sleep,monotonic=s.monotonic)
         while True:
             try:
-                try: show_status(s.public_status(),writer,details=False)
+                try: show_user_status(ui.snapshot(),writer)
                 except Exception as error:
                     writer('현재 상태를 읽을 수 없습니다. 시운전/LIVE를 시작하지 않습니다. 중단 요청 또는 종료만 선택하세요. '+str(error))
-                for number,label in MENUS.items(): writer(f'[{number}] {label}')
+                for number,label in PUBLIC_MENUS.items(): writer(f'[{number}] {label}')
                 choice=reader('\n번호를 입력하고 Enter를 누르세요: ').strip()
                 if choice=='': continue
-                if not handle(s,choice,reader,writer): return 0
+                if not user_handle(ui,choice,reader,writer): return 0
             except EOFError:
                 if s.running(): show_result(s.stop('STOP'),writer)
                 return 0
