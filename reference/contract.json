@@ -1,0 +1,434 @@
+{
+  "ka00198": {
+    "request": {
+      "body": [
+        {
+          "element": "qry_tp",
+          "required": "Y"
+        }
+      ]
+    },
+    "response": {
+      "body": [
+        {
+          "element": "item_inq_rank",
+          "required": "N"
+        },
+        {
+          "element": "stk_nm",
+          "required": "N"
+        },
+        {
+          "element": "bigd_rank",
+          "required": "N"
+        },
+        {
+          "element": "rank_chg",
+          "required": "N"
+        },
+        {
+          "element": "rank_chg_sign",
+          "required": "N"
+        },
+        {
+          "element": "past_curr_prc",
+          "required": "N"
+        },
+        {
+          "element": "base_comp_sign",
+          "required": "N"
+        },
+        {
+          "element": "base_comp_chgr",
+          "required": "N"
+        },
+        {
+          "element": "prev_base_sign",
+          "required": "N"
+        },
+        {
+          "element": "prev_base_chgr",
+          "required": "N"
+        },
+        {
+          "element": "dt",
+          "required": "N"
+        },
+        {
+          "element": "tm",
+          "required": "N"
+        },
+        {
+          "element": "stk_cd",
+          "required": "N"
+        }
+      ]
+    }
+  },
+  "ka10027": {
+    "request": {
+      "body": [
+        {
+          "element": "mrkt_tp",
+          "required": "Y"
+        },
+        {
+          "element": "sort_tp",
+          "required": "Y"
+        },
+        {
+          "element": "trde_qty_cnd",
+          "required": "Y"
+        },
+        {
+          "element": "stk_cnd",
+          "required": "Y"
+        },
+        {
+          "element": "crd_cnd",
+          "required": "Y"
+        },
+        {
+          "element": "updown_incls",
+          "required": "Y"
+        },
+        {
+          "element": "pric_cnd",
+          "required": "Y"
+        },
+        {
+          "element": "trde_prica_cnd",
+          "required": "Y"
+        },
+        {
+          "element": "stex_tp",
+          "required": "Y"
+        }
+      ]
+    },
+    "response": {
+      "body": [
+        {
+          "element": "pred_pre_flu_rt_upper",
+          "required": "N"
+        },
+        {
+          "element": "stk_cls",
+          "required": "N"
+        },
+        {
+          "element": "stk_cd",
+          "required": "N"
+        },
+        {
+          "element": "stk_nm",
+          "required": "N"
+        },
+        {
+          "element": "cur_prc",
+          "required": "N"
+        },
+        {
+          "element": "pred_pre_sig",
+          "required": "N"
+        },
+        {
+          "element": "pred_pre",
+          "required": "N"
+        },
+        {
+          "element": "flu_rt",
+          "required": "N"
+        },
+        {
+          "element": "sel_req",
+          "required": "N"
+        },
+        {
+          "element": "buy_req",
+          "required": "N"
+        },
+        {
+          "element": "now_trde_qty",
+          "required": "N"
+        },
+        {
+          "element": "cntr_str",
+          "required": "N"
+        },
+        {
+          "element": "cnt",
+          "required": "N"
+        }
+      ]
+    }
+  },
+  "ka10029": {
+    "request": {
+      "body": [
+        {
+          "element": "mrkt_tp",
+          "required": "Y"
+        },
+        {
+          "element": "sort_tp",
+          "required": "Y"
+        },
+        {
+          "element": "trde_qty_cnd",
+          "required": "Y"
+        },
+        {
+          "element": "stk_cnd",
+          "required": "Y"
+        },
+        {
+          "element": "crd_cnd",
+          "required": "Y"
+        },
+        {
+          "element": "pric_cnd",
+          "required": "Y"
+        },
+        {
+          "element": "stex_tp",
+          "required": "Y"
+        }
+      ]
+    },
+    "response": {
+      "body": [
+        {
+          "element": "exp_cntr_flu_rt_upper",
+          "required": "N"
+        },
+        {
+          "element": "stk_cd",
+          "required": "N"
+        },
+        {
+          "element": "stk_nm",
+          "required": "N"
+        },
+        {
+          "element": "exp_cntr_pric",
+          "required": "N"
+        },
+        {
+          "element": "base_pric",
+          "required": "N"
+        },
+        {
+          "element": "pred_pre_sig",
+          "required": "N"
+        },
+        {
+          "element": "pred_pre",
+          "required": "N"
+        },
+        {
+          "element": "flu_rt",
+          "required": "N"
+        },
+        {
+          "element": "exp_cntr_qty",
+          "required": "N"
+        },
+        {
+          "element": "sel_req",
+          "required": "N"
+        },
+        {
+          "element": "sel_bid",
+          "required": "N"
+        },
+        {
+          "element": "buy_bid",
+          "required": "N"
+        },
+        {
+          "element": "buy_req",
+          "required": "N"
+        }
+      ]
+    }
+  },
+  "ka10031": {
+    "request": {
+      "body": [
+        {
+          "element": "mrkt_tp",
+          "required": "Y"
+        },
+        {
+          "element": "qry_tp",
+          "required": "Y"
+        },
+        {
+          "element": "rank_strt",
+          "required": "Y"
+        },
+        {
+          "element": "rank_end",
+          "required": "Y"
+        },
+        {
+          "element": "stex_tp",
+          "required": "Y"
+        }
+      ]
+    },
+    "response": {
+      "body": [
+        {
+          "element": "pred_trde_qty_upper",
+          "required": "N"
+        },
+        {
+          "element": "stk_cd",
+          "required": "N"
+        },
+        {
+          "element": "stk_nm",
+          "required": "N"
+        },
+        {
+          "element": "cur_prc",
+          "required": "N"
+        },
+        {
+          "element": "pred_pre_sig",
+          "required": "N"
+        },
+        {
+          "element": "pred_pre",
+          "required": "N"
+        },
+        {
+          "element": "trde_qty",
+          "required": "N"
+        }
+      ]
+    }
+  },
+  "ka10032": {
+    "request": {
+      "body": [
+        {
+          "element": "mrkt_tp",
+          "required": "Y"
+        },
+        {
+          "element": "mang_stk_incls",
+          "required": "Y"
+        },
+        {
+          "element": "stex_tp",
+          "required": "Y"
+        }
+      ]
+    },
+    "response": {
+      "body": [
+        {
+          "element": "trde_prica_upper",
+          "required": "N"
+        },
+        {
+          "element": "stk_cd",
+          "required": "N"
+        },
+        {
+          "element": "now_rank",
+          "required": "N"
+        },
+        {
+          "element": "pred_rank",
+          "required": "N"
+        },
+        {
+          "element": "stk_nm",
+          "required": "N"
+        },
+        {
+          "element": "cur_prc",
+          "required": "N"
+        },
+        {
+          "element": "pred_pre_sig",
+          "required": "N"
+        },
+        {
+          "element": "pred_pre",
+          "required": "N"
+        },
+        {
+          "element": "flu_rt",
+          "required": "N"
+        },
+        {
+          "element": "sel_bid",
+          "required": "N"
+        },
+        {
+          "element": "buy_bid",
+          "required": "N"
+        },
+        {
+          "element": "now_trde_qty",
+          "required": "N"
+        },
+        {
+          "element": "pred_trde_qty",
+          "required": "N"
+        },
+        {
+          "element": "trde_prica",
+          "required": "N"
+        }
+      ]
+    }
+  },
+  "kt10000": {
+    "request": {
+      "body": [
+        {
+          "element": "dmst_stex_tp",
+          "required": "Y"
+        },
+        {
+          "element": "stk_cd",
+          "required": "Y"
+        },
+        {
+          "element": "ord_qty",
+          "required": "Y"
+        },
+        {
+          "element": "ord_uv",
+          "required": "N"
+        },
+        {
+          "element": "trde_tp",
+          "required": "Y"
+        },
+        {
+          "element": "cond_uv",
+          "required": "N"
+        }
+      ]
+    },
+    "response": {
+      "body": [
+        {
+          "element": "ord_no",
+          "required": "N"
+        },
+        {
+          "element": "dmst_stex_tp",
+          "required": "N"
+        }
+      ]
+    }
+  }
+}

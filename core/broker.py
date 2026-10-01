@@ -1,0 +1,185 @@
+"""Kiwoom 공식 REST 명세 기반. 주문 전송 실패는 자동 재전송하지 않는다."""
+import hashlib
+import json
+import os
+import time
+import threading
+from datetime import datetime, timedelta
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
+from core.settings import KST, now
+from core.util import number, code
+
+class Rejected(RuntimeError):
+    def __init__(self,message,api=None,response=None):
+        super().__init__(message); self.api=api; self.response=response
+
+class AmbiguousOrder(RuntimeError):
+    pass
+
+class Rest:
+    def __init__(self, cfg, opener=urlopen,auth_session=None):
+        self.cfg=cfg
+        self.base='https://mockapi.kiwoom.com' if cfg.broker_environment=='mock' else 'https://api.kiwoom.com'
+        self.key=os.getenv('KIWOOM_APP_KEY','')
+        self.secret=os.getenv('KIWOOM_APP_SECRET','')
+        if not self.key or not self.secret:
+            raise ValueError('KIWOOM_APP_KEY / KIWOOM_APP_SECRET 환경변수 필요. 인증정보는 로그에 기록하지 않습니다.')
+        self.identity=hashlib.sha256((self.base+self.key).encode()).hexdigest()
+        self.opener=opener
+        if auth_session is not None and auth_session['identity']!=self.identity:
+            raise ValueError('인증 세션 계좌/서버 불일치')
+        self.auth_session=auth_session if auth_session is not None else {'identity':self.identity,'token':'',
+            'expires':now(),'lock':threading.RLock(),'rate_lock':threading.Lock(),'next_call':0.}
+        self.last_call=0
+        self.auth_lock=self.auth_session['lock']
+
+    @property
+    def token(self): return self.auth_session['token']
+    @token.setter
+    def token(self,value): self.auth_session['token']=value
+    @property
+    def expires(self): return self.auth_session['expires']
+    @expires.setter
+    def expires(self,value): self.auth_session['expires']=value
+
+    def get_token(self):
+        with self.auth_lock:
+            if not self.token or now()+timedelta(minutes=5)>=self.expires:
+                body,_=self._http('/oauth2/token',{'grant_type':'client_credentials','appkey':self.key,'secretkey':self.secret},{})
+                if not body.get('token'):
+                    raise Rejected('인증 응답에 토큰 없음',api='au10001',response=body)
+                self.token=body['token']
+                self.expires=datetime.strptime(body['expires_dt'],'%Y%m%d%H%M%S').replace(tzinfo=KST)
+            return self.token
+
+    def _http(self,path,body,headers):
+        # 같은 앱키를 쓰는 조회 스레드는 토큰과 전송 간격을 공유한다.
+        with self.auth_session['rate_lock']:
+            scheduled=max(time.monotonic(),self.auth_session['next_call'])
+            self.auth_session['next_call']=scheduled+0.3
+        time.sleep(max(0,scheduled-time.monotonic()))
+        self.last_call=time.monotonic()
+        session_guard=getattr(self,'session_guard',None)
+        if session_guard is not None and not session_guard(): raise Rejected('OUT_OF_SUPPORTED_SESSION')
+        req=Request(self.base+path,data=json.dumps(body).encode(),headers={'Content-Type':'application/json;charset=UTF-8',**headers},method='POST')
+        api=headers.get('api-id')
+        if api in {'kt10000','kt10001','kt10003'}:
+            if not self.mutation_allowed(api,body): raise Rejected('dry-run: 주문 API 접근 차단')
+            guard=getattr(self,'order_guard',None)
+            if guard is not None: guard(api,body)  # 인증/대기 후 실제 전송 직전에도 시각·정책을 재검사한다.
+        with self.opener(req,timeout=8) as response:
+            data=json.load(response)
+            return data, {k.lower():v for k,v in response.headers.items()}
+
+    def mutation_allowed(self,api,body):
+        if self.cfg.live_mode is True: return True
+        if api!='kt10001' or body.get('stk_cd')!='267320' or body.get('ord_qty')!='1': return False
+        if getattr(self,'order_guard',None) is None: return False
+        permit=getattr(self,'test_release_authorizer',None)
+        return permit is not None and permit(api,body) is True
+
+    def call(self,api,path,body,cont='N',key='',mutation=False):
+        if mutation and not self.mutation_allowed(api,body):
+            raise Rejected('dry-run: 주문 API 접근 차단')
+        guard=getattr(self,'order_guard',None)
+        if mutation and guard is not None:
+            guard(api,body)
+        attempts=1 if mutation else 3
+        for attempt in range(attempts):
+            try:
+                headers={'authorization':'Bearer '+self.get_token(),'api-id':api,'cont-yn':cont,'next-key':key}
+                data,headers=self._http(path,body,headers)
+                if data.get('return_code') not in (0,'0'):
+                    if 'return_code' not in data and mutation:
+                        raise AmbiguousOrder('주문 응답 결과코드 없음')
+                    raise Rejected(f'{api}: 오류코드 {data.get("return_code", "MISSING")}',api=api,response=data)
+                return data,headers
+            except Rejected:
+                raise
+            except (HTTPError,URLError,TimeoutError,OSError,ValueError,KeyError) as e:
+                if mutation:
+                    raise AmbiguousOrder(f'{api}: 응답 불명확, 재전송 금지 ({type(e).__name__})') from None
+                if isinstance(e,HTTPError) and e.code==401:
+                    self.token=''
+                if attempt+1==attempts:
+                    raise RuntimeError(f'{api}: 조회 실패 ({type(e).__name__})') from None
+                time.sleep(1+attempt)
+
+    def query(self,api,body,path='/api/dostk/acnt'):
+        return self.call(api,path,body)[0]
+
+    def pages(self,api,body,array,path='/api/dostk/acnt',limit=None):
+        rows=[]; key=''; cont='N'; seen=set(); first=None
+        for _ in range(200):
+            data,h=self.call(api,path,body,cont,key)
+            first=first or data
+            if array not in data or not isinstance(data[array],list):
+                raise ValueError(f'{api}: {array} 필드 없음/형식 오류')
+            rows.extend(data[array])
+            if h.get('cont-yn')!='Y' or (limit and len(rows)>=limit):
+                return rows[:limit] if limit else rows, first
+            key=h.get('next-key','')
+            if not key or key in seen:
+                raise ValueError('연속조회 키 누락/반복')
+            seen.add(key); cont='Y'
+        raise ValueError('연속조회 최대 페이지 초과')
+
+    def snapshot(self):
+        holdings,summary=self.pages('kt00018',{'qry_tp':'2','dmst_stex_tp':'KRX'},'acnt_evlt_remn_indv_tot')
+        cash=self.query('kt00001',{'qry_tp':'2'})
+        orders,_=self.pages('ka10075',{'all_stk_tp':'0','trde_tp':'0','stk_cd':'','stex_tp':'1'},'oso')
+        balances={}
+        for h in holdings:
+            symbol=code(h['stk_cd'])
+            qty=int(number(h['rmnd_qty']))
+            if qty:
+                if symbol in balances:
+                    raise ValueError('동일 종목 복수 잔고: 현금/신용 혼재 확인 필요')
+                balances[symbol]={'qty':qty,'available':int(number(h['trde_able_qty'])),'avg':number(h['pur_pric'])}
+        return {'holdings':balances,'orders':orders,'cash':number(cash['100stk_ord_alow_amt'],signed=True),
+                'equity':number(summary['prsm_dpst_aset_amt'],signed=True)}
+
+    def fills(self):
+        return self.pages('ka10076',{'stk_cd':'','qry_tp':'0','sell_tp':'0','ord_no':'','stex_tp':'1'},'cntr')[0]
+
+    def stock_status(self,symbol):
+        from automation.market_status import assess_status
+        data=self.query('ka10100',{'stk_cd':code(symbol)},path='/api/dostk/stkinfo')
+        if data.get('code')!=symbol: raise ValueError('ka10100 종목 불일치')
+        result=assess_status(data); result['checked_at']=now().isoformat()
+        return result
+
+    def existing_book(self,symbol):
+        # 공식 ka10004의 최우선 매수호가/잔량/기준시간. 전체 호가를 추정하지 않는다.
+        from datetime import datetime
+        status=self.stock_status(symbol)
+        raw=self.query('ka10004',{'stk_cd':code(symbol)},path='/api/dostk/mrkcond')
+        received=now(); stamp=datetime.strptime(raw['bid_req_base_tm'],'%H%M%S').time()
+        quoted=datetime.combine(received.date(),stamp,tzinfo=received.tzinfo)
+        qty=number(raw['buy_fpr_req'],signed=True)
+        if qty<0 or not qty.is_integer(): raise ValueError('ka10004 유효한 정수 호가잔량 필요')
+        return {'time':quoted.isoformat(),'bid':number(raw['buy_fpr_bid']),'bid_qty':int(qty),
+                'regular':True,'status':status,'source':'ka10004',
+                'raw':{k:raw[k] for k in ('bid_req_base_tm','buy_fpr_bid','buy_fpr_req')}}
+
+    def submit(self,side,symbol,qty,limit=0):
+        if type(qty) is not int or qty<=0:
+            raise Rejected('양의 정수 주문수량 필요')
+        code(symbol)
+        if side not in ('BUY','SELL') or (side=='BUY' and limit<=0):
+            raise Rejected('매수는 가격 상한 지정가만 허용')
+        data,_=self.call('kt10000' if side=='BUY' else 'kt10001','/api/dostk/ordr',{
+            'dmst_stex_tp':'KRX','stk_cd':symbol,'ord_qty':str(qty),'ord_uv':str(int(limit)) if limit else '',
+            'trde_tp':'0' if limit else '3','cond_uv':''},mutation=True)
+        if not data.get('ord_no'):
+            raise AmbiguousOrder('주문번호 없는 접수 응답')
+        return str(data['ord_no'])
+
+    def cancel(self,symbol,order_id):
+        data,_=self.call('kt10003','/api/dostk/ordr',{'dmst_stex_tp':'KRX','orig_ord_no':order_id,
+            'stk_cd':symbol,'cncl_qty':'0'},mutation=True)
+        if not data.get('ord_no'):
+            raise AmbiguousOrder('취소 주문번호 누락')
+        return str(data['ord_no'])
+

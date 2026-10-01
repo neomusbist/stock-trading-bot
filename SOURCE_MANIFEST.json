@@ -1,0 +1,256 @@
+{
+  "files": [
+    {
+      "path": ".env.example",
+      "sha256": "991900461522f16d145d7abe6c2072502dbd090a0bcfda8c8a5b1d3e6ea3dd03"
+    },
+    {
+      "path": ".gitattributes",
+      "sha256": "e62876d7019694551a7a18a7fff473af730b36127ef2b59a95d7e9d478329c3d"
+    },
+    {
+      "path": ".gitignore",
+      "sha256": "504d2e0ad952169f15f304bbfbc3b01bdd7b598e9ce30a3852de71ed3dbf26ea"
+    },
+    {
+      "path": "README.md",
+      "sha256": "4ae42ef8ed83fb3b5a36a9226f008ec9001ae7d9644e9394e04b5d141688947b"
+    },
+    {
+      "path": "REPOSITORY_GUIDE.md",
+      "sha256": "f75cbe512b41ca1cee3b3516689e33afbd8d9dfb5bf59cb1463165dfd5134019"
+    },
+    {
+      "path": "SECURITY.md",
+      "sha256": "8f46f94946f89d26ae840a3c9516c65fff1583145d65e478586759b97f019fde"
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "sha256": "39f1d476f1b07aa9f0fa7969f389e452c76df273c525d42a7000a0da9febf3cd"
+    },
+    {
+      "path": "automation.example.json",
+      "sha256": "cbffd9c57935ca862aab6e494bd68d60e2db351bb592c4ac69f98d1423e9817b"
+    },
+    {
+      "path": "automation/__init__.py",
+      "sha256": "e3c5021f2530bd837f1e46a303c73af62b05bbab88b27f0e536cdec8254c8213"
+    },
+    {
+      "path": "automation/allocation.py",
+      "sha256": "31fce84c4b6dd266058618758704c7da0433e59234e9c23b99f0cb42df9ac989"
+    },
+    {
+      "path": "automation/candidate_audit.py",
+      "sha256": "e156c16f6ad3f4065751614067c0fdc88a0b1a083567daa55669d728c3edef73"
+    },
+    {
+      "path": "automation/capital.py",
+      "sha256": "85bad52d4d39c3d0273978d9c495971321a28b1ed1cfbd771b170702ae3dbad3"
+    },
+    {
+      "path": "automation/decisions.py",
+      "sha256": "f12409a309aaef754d696925394aa9d809597055f8ccafd2f3b711066ce7abea"
+    },
+    {
+      "path": "automation/engine.py",
+      "sha256": "41afec34820461e909c0fc544affad9158a63a0cab3e29fc2494de93720af21b"
+    },
+    {
+      "path": "automation/existing.py",
+      "sha256": "3f779523a10666eac6ce837e6f87d65e3ee7f656b4c4c47eb851fd94d7ed8272"
+    },
+    {
+      "path": "automation/market_status.py",
+      "sha256": "af93b90b14939955811da223396cfb30dcca137461418760b2d59db908170647"
+    },
+    {
+      "path": "automation/patterns.py",
+      "sha256": "4a16a8d4e8fe4c87a8fae29356e4132dd1b34d97bed3f733002eecc4edeca56c"
+    },
+    {
+      "path": "automation/performance.py",
+      "sha256": "12bbacb4cc10daf8ebd63b289317c69fdbf7440629c8d804bd9d446e9cce34d0"
+    },
+    {
+      "path": "automation/policy.py",
+      "sha256": "f5ec75e605b44084c8abd88b8655844b6844a7efcc9f19c9afa7b43ac602a81f"
+    },
+    {
+      "path": "automation/radar.py",
+      "sha256": "d83cdba4afe7de778065316cc457ca334dd60ba1cf60d7ce4ba9277a11df9fad"
+    },
+    {
+      "path": "automation/runner.py",
+      "sha256": "b1e3807e83748516978df5d3af5d0519edffdf09eefe18bf5757514b14cf2abf"
+    },
+    {
+      "path": "automation/session.py",
+      "sha256": "77ffa85c931f301547b919582e0e3c2afee389be627e2c7d2e24f6524d7e2575"
+    },
+    {
+      "path": "candidate_builder.py",
+      "sha256": "01705cc5edc7bcc795615f88fcd9381fdaf8e9a8073a23f4abae2273e3d53da9"
+    },
+    {
+      "path": "config.example.json",
+      "sha256": "d2c4d39ab6e4789d2f24a7a7fb55c70a9123cab2c685461c8b0fde4b3764fe15"
+    },
+    {
+      "path": "control.py",
+      "sha256": "69b9f13cb8a2ee8280fd2947d117ca01d1337cde56b9a5671dab988fea868c40"
+    },
+    {
+      "path": "core/__init__.py",
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "path": "core/broker.py",
+      "sha256": "cbd103a0608f1f15d32d701a090129be9bb5871ef94d880490096c757018e305"
+    },
+    {
+      "path": "core/engine.py",
+      "sha256": "2776e4806c0d274fb5fc6d4656f213754935faf51007ef9ccb4ad8b6ac54bc2e"
+    },
+    {
+      "path": "core/realtime.py",
+      "sha256": "93a032caa9c96e5045948b1da3cba164c716453bc9622e7094ff85df65fbbe7c"
+    },
+    {
+      "path": "core/report.py",
+      "sha256": "8b94c3b2477d105dc7781c382722bede56d4170c3b22155842fd06747ed5ac81"
+    },
+    {
+      "path": "core/settings.py",
+      "sha256": "575c3c08c7edc5528f1ece27caca9c019f165dda0ae590f610bdfd92705610c5"
+    },
+    {
+      "path": "core/strategy.py",
+      "sha256": "31523ef7b72eba83bfc156ab6a54dee07924cbe3120bfff1d9e889a89b8085ae"
+    },
+    {
+      "path": "core/util.py",
+      "sha256": "c3a55987d7ee730d81d9ebef07183941941f3cc05847bc24034d6c05d4f25a44"
+    },
+    {
+      "path": "local_diagnostics.py",
+      "sha256": "0c459880df56f3aed89e889e2bd06eadcd3ab64894b42e08e93166fe23e8c3f4"
+    },
+    {
+      "path": "main.py",
+      "sha256": "3920b59f7434536313e999ef236be7d74037fd3d468197f60cc20d74565af096"
+    },
+    {
+      "path": "operator_console.py",
+      "sha256": "e1e103a31ebe4a6304c817445cba0c56973f755b9e0eab446eccc15c49253d50"
+    },
+    {
+      "path": "operator_menu.cmd",
+      "sha256": "d39a40c15d71af66c1ad7bf4f424f1a7788d3ae74c3d5bf461ab072a61e2858b"
+    },
+    {
+      "path": "operator_process.py",
+      "sha256": "4e231491f7c13bcda1429289329befddaad101beb669583987628da1ab9d6f4f"
+    },
+    {
+      "path": "operator_runner.py",
+      "sha256": "78fbe7b4e3e54e2fbbded8d920e2e014a6e9a42c3cfdbe65053943774b2514d2"
+    },
+    {
+      "path": "operator_service.py",
+      "sha256": "e1da241a4d5fa6017375eb00e06211369ff9c4450859009d21760bdec7150b05"
+    },
+    {
+      "path": "reference/contract.json",
+      "sha256": "f21f44f4bb4f9fa2bfa95360fabac422a0ff083257aa00695e3648779bfa4577"
+    },
+    {
+      "path": "requirements.txt",
+      "sha256": "5828dbdb73dcb259cf3f8808eeb0abe6d1773aa34180544d9c479a156007faf6"
+    },
+    {
+      "path": "run.bat",
+      "sha256": "6538ec58c1929ac9708b9f7ee95ccaa9730a5148f86d78369993decdc862f51d"
+    },
+    {
+      "path": "supervisor.py",
+      "sha256": "7b40e3007cf641ad0551e83b574862dfea78f404a5b68cf2e833da4b1bb29e78"
+    },
+    {
+      "path": "test.bat",
+      "sha256": "927a291acc612a4e837f200021508ffb747124c5886b7d301a8b0cb13ab4516c"
+    },
+    {
+      "path": "tests/fixtures/README.md",
+      "sha256": "000b2cf336844eeb5e6cd2036e4b1e736ac5ccbcd0897b40dbc67dd2523ade6d"
+    },
+    {
+      "path": "tests/fixtures/original_052260_daily.csv",
+      "sha256": "3726f4358d5eef8e5e24d0dc6ebee99074a1c15800b8107280cba1f8b3495d0c"
+    },
+    {
+      "path": "tests/test_automation.py",
+      "sha256": "769e505ae1e600edeac0a9c0d784c412beae958086efc2c10d3b36a526be2c25"
+    },
+    {
+      "path": "tests/test_capital_retirement.py",
+      "sha256": "b1ebf69d35c2ce36d542c921aad2d182e41b4b3aa01bbc64ae709a2612d6da45"
+    },
+    {
+      "path": "tests/test_continuous.py",
+      "sha256": "b32ac4ac1295df79ccdcc082682f5d749585c9aad258d1298f87f51ecc27c8fa"
+    },
+    {
+      "path": "tests/test_continuous_io.py",
+      "sha256": "db42e2e75ace9b2c0d637b860166815350443f3608a70db13346901ac0fdd964"
+    },
+    {
+      "path": "tests/test_live_diagnostics.py",
+      "sha256": "b0f1d2395b61ce4fde279e9755dc1c69e555b7b57ef11bdd199c2307c18673a3"
+    },
+    {
+      "path": "tests/test_operator_interface.py",
+      "sha256": "63e7a3093b75e3a1f78c6ff2980e1ba42c3deededbb47f8d4a54f10f408f7dbc"
+    },
+    {
+      "path": "tests/test_pipeline.py",
+      "sha256": "2b8dfd0af0a276b3b02d58eae45f6b103738c174cb8986c762c4dfbeda242797"
+    },
+    {
+      "path": "tests/test_policy_update.py",
+      "sha256": "dfe826a2d56ec8f5c3b71d0adf8b69fbae3f6f400aedf5b3b28b81eafd7d5fff"
+    },
+    {
+      "path": "tests/test_preflight.py",
+      "sha256": "99566d59cad452b1a882c2e3c681fdf85cef60c6a77af70244cb4efde003f761"
+    },
+    {
+      "path": "tests/test_repository_ready.py",
+      "sha256": "fd5acfda1613263e7c72b94fe8f74bb57ecaece2c7dc18118f5d717f474c2be6"
+    },
+    {
+      "path": "tests/test_runner_loop.py",
+      "sha256": "aae994289cfdf02b39d08f46d51b5825453e4c0b1adc6527f3ac89a5727d3e59"
+    },
+    {
+      "path": "tests/test_v1.py",
+      "sha256": "242931b3f3b3f9c32264f6571c2ccfea198c4d26c03df6ac3181fdbeff5290f9"
+    },
+    {
+      "path": "tools/export_source.py",
+      "sha256": "1e1eab37a59c949078f47067caac588a8c3f99e0b7438645c5ddfacb520a8397"
+    },
+    {
+      "path": "tools/repo_guard.py",
+      "sha256": "b628eb186c9973f57ba2ada447a1080773a2944cb2038c9112b3e363ea096526"
+    },
+    {
+      "path": "tools/setup_local.py",
+      "sha256": "401a4e1e4d3a183b06ea1b4d6137d3bf86983392984d7b6420d1a5671c2e7240"
+    }
+  ],
+  "local_data_included": false,
+  "credentials_included": false,
+  "fixture": "synthetic",
+  "api_fixture": "field identifiers only"
+}
