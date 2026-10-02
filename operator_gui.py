@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent
 for folder in ('vendor','gui_vendor'):
@@ -12,14 +13,11 @@ from PySide6.QtGui import QFont,QFontDatabase
 from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QLabel,QPushButton,
     QVBoxLayout,QHBoxLayout,QGridLayout,QGroupBox,QSplitter,QTabWidget,QTableWidget,
     QTableWidgetItem,QHeaderView,QPlainTextEdit,QMessageBox,QDialog,QLineEdit,QFormLayout,QInputDialog,QProgressBar)
-from operator_ui_service import UserOperations, CANDIDATE_FIELDS, money, presentation, start_block, human_decision,result_text,candidate_display,candidate_wait_reason
+from operator_ui_service import (UserOperations, CANDIDATE_FIELDS, GATE_NAMES, money, presentation,
+    start_block, human_decision, result_text, candidate_display, candidate_wait_reason,
+    format_observation_age, human_blocker_reason, extract_important_events)
 from operator_service import decision_line, read_json
 from local_diagnostics import redact
-GATE_NAMES={'warmup':'관측 준비','acceleration':'가속','liquidity':'거래대금','spread':'호가 간격',
-    'structure':'일봉 구조','market_status':'종목상태','pattern':'Setup','breakout':'돌파','chase':'추격 거리',
-    'invalidation':'무효화 거리','risk_reward':'보상/위험','resistance':'상단 여유','economic':'비용/효율',
-    'policy':'운영 승인','session':'거래시간','connection_account':'계좌/통신','tick':'시세 신선도',
-    'repeat_slots':'재진입/보유한도','risk_quantity':'위험수량'}
 
 def configure_font(app):
     # offscreen 검사에서도 Windows 기본 한글 글꼴을 실제 로드한다.
@@ -120,6 +118,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle('주식자동매매 V1.1'); self.resize(1220,820); self.setMinimumSize(980,700)
         body=QWidget(); self.setCentralWidget(body); outer=QVBoxLayout(body); outer.setContentsMargins(20,16,20,16)
         header=QHBoxLayout(); title=QLabel('주식자동매매 V1.1'); title.setObjectName('title'); header.addWidget(title)
+        header.addSpacing(14)
+        self.mode_badge=QLabel('요청 모드: 확인 중'); self.mode_badge.setObjectName('modeBadge'); header.addWidget(self.mode_badge)
+        self.permission_badge=QLabel('주문 권한: 확인 중'); self.permission_badge.setObjectName('permissionBadge'); header.addWidget(self.permission_badge)
         header.addStretch(); self.clock=QLabel('저장된 상태 확인 중'); header.addWidget(self.clock); outer.addLayout(header)
         grid=QGridLayout(); self.cards={}
         for i,(key,label) in enumerate((('operation','운영상태'),('market','시장 / 운영시간'),('safety','안전상태'),('account','계좌 / 서버'),
@@ -136,7 +137,7 @@ class MainWindow(QMainWindow):
         for key,label,callback in (('start','자동매매 시작',self.start),('stop','신규매수 중지',lambda:self.send_stop('STOP')),
             ('flat','봇 보유 전량청산 후 중지',lambda:self.send_stop('STOP_FLAT')),('kill','긴급정지',lambda:self.send_stop('KILL')),
             ('diagnostic','상태 / 진단',self.diagnostic),('settings','설정 / 승인한도',self.settings),
-            ('records','거래기록',lambda:self.tabs.setCurrentIndex(1)),('logs','상세로그',lambda:self.tabs.setCurrentIndex(2))):
+            ('records','거래기록',lambda:self.tabs.setCurrentIndex(1)),('logs','상세로그',lambda:self.tabs.setCurrentIndex(3))):
             button=QPushButton(label); button.setMinimumHeight(43 if key in {'start','stop','flat','kill'} else 36); button.setObjectName(key)
             button.clicked.connect(callback); self.buttons[key]=button
             if key in {'start','stop','flat','kill'}: controls.addWidget(button)
@@ -147,24 +148,77 @@ class MainWindow(QMainWindow):
         self.protection=QLabel('보호정책 확인 중'); self.protection.setWordWrap(True); p.addWidget(self.protection); controls.addWidget(protect)
         controls.addStretch(); split.addWidget(left)
         right=QWidget(); content=QVBoxLayout(right); content.setContentsMargins(0,0,0,0)
+        self.tabs=QTabWidget(); content.addWidget(self.tabs,1)
+
+        # Tab 0: 트레이딩 칵핏
+        cockpit_widget=QWidget(); cockpit_layout=QVBoxLayout(cockpit_widget); cockpit_layout.setContentsMargins(0,4,0,0)
+        cockpit_split=QSplitter(Qt.Orientation.Vertical); cockpit_layout.addWidget(cockpit_split)
+
+        bot_box=QGroupBox('봇 운용 포지션'); bot_b_layout=QVBoxLayout(bot_box)
+        self.bot_board=table(['종목','보유수량 (Setup)','진입 평균가','현재가','초기 무효화','현재 보호선','대응 상태','청산 조건'])
+        self.bot_board.setToolTip('예상손실은 최초 체결가부터 현재 보호선까지 비용·설정 슬리피지를 포함한 추정액입니다. 급락 실제손실 상한은 아닙니다.')
+        bot_b_layout.addWidget(self.bot_board)
+        self.bot_empty_label=QLabel('현재 봇이 보유 중인 포지션이 없습니다. (신규 진입 탐색 대기)')
+        self.bot_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter); self.bot_empty_label.setStyleSheet('color:#64748b;font-size:13px;padding:12px;')
+        bot_b_layout.addWidget(self.bot_empty_label)
+        cockpit_split.addWidget(bot_box)
+
+        cand_box=QGroupBox('실시간 감시 후보 종목 (WATCH / SHADOW)'); cand_b_layout=QVBoxLayout(cand_box)
+        self.board=table(['종목','상태','현재가','관측 경과','주요 차단 / 대기 사유']); self.board.setMinimumHeight(160)
+        cand_b_layout.addWidget(self.board)
+        self.candidate_empty_label=QLabel('현재 감시 대상 후보 종목이 없습니다.')
+        self.candidate_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter); self.candidate_empty_label.setStyleSheet('color:#64748b;font-size:13px;padding:12px;')
+        cand_b_layout.addWidget(self.candidate_empty_label)
+        cockpit_split.addWidget(cand_box)
+
+        event_box=QGroupBox('최근 중요 이벤트 (체결 · 주문 · RiskGate 차단 · 상태 전이)'); event_b_layout=QVBoxLayout(event_box)
+        self.event_feed=table(['시각','구분','종목 / 대상','상세 내용']); self.event_feed.setMinimumHeight(140)
+        event_b_layout.addWidget(self.event_feed)
+        self.event_empty_label=QLabel('최근 기록된 중요 이벤트가 없습니다.')
+        self.event_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter); self.event_empty_label.setStyleSheet('color:#64748b;font-size:13px;padding:12px;')
+        event_b_layout.addWidget(self.event_empty_label)
+        cockpit_split.addWidget(event_box)
+        cockpit_split.setSizes([110,250,180])
+        self.tabs.addTab(cockpit_widget,'트레이딩 칵핏')
+
+        # Tab 1: 거래기록
+        self.trades=table(['시각','종목','방향','수량 / 체결','가격','이유','구분','상태','손익','전략버전'])
+        self.tabs.addTab(self.trades,'거래기록')
+
+        # Tab 2: 상세 진단 / 통계
+        diag_widget=QWidget(); diag_b_layout=QVBoxLayout(diag_widget); diag_b_layout.setContentsMargins(4,4,4,4)
+        pipe_box=QGroupBox('후보 선정 파이프라인 (Funnel)'); pipe_layout=QVBoxLayout(pipe_box)
+        self.funnel=QLabel('Raw → 현재자본 매수가능 → SHADOW → WATCH → Setup → RiskGate → 주문가능'); self.funnel.setWordWrap(True)
+        pipe_layout.addWidget(self.funnel)
+        self.wait_reason=QLabel('최신 집계 대기 중'); self.wait_reason.setWordWrap(True)
+        pipe_layout.addWidget(self.wait_reason)
+        diag_b_layout.addWidget(pipe_box)
+
         summary=QGroupBox('후보 통계 — 최신 저장된 판단'); summarylayout=QGridLayout(summary); self.stats={}
         for i,(key,label) in enumerate(CANDIDATE_FIELDS.items()):
             line=QLabel(label+'  -'); self.stats[key]=line; summarylayout.addWidget(line,i//2,i%2)
         self.summary_stamp=QLabel('최신 후보 집계가 없습니다.'); self.summary_stamp.setWordWrap(True); summarylayout.addWidget(self.summary_stamp,5,0,1,2)
-        self.funnel=QLabel('Raw → 현재자본 매수가능 → SHADOW → WATCH → Setup → RiskGate → 주문가능');self.funnel.setWordWrap(True);content.addWidget(self.funnel)
-        self.wait_reason=QLabel('최신 집계 대기 중');self.wait_reason.setWordWrap(True);content.addWidget(self.wait_reason)
-        self.statistics_toggle=QPushButton('탈락 통계 / 처리시간 자세히 보기');self.statistics_toggle.setCheckable(True)
-        self.statistics_toggle.toggled.connect(summary.setVisible);content.addWidget(self.statistics_toggle);content.addWidget(summary);summary.hide()
-        self.tabs=QTabWidget(); content.addWidget(self.tabs,1)
-        current=QWidget();current_layout=QVBoxLayout(current)
-        self.board=table(['종목','상태','가격','발견 소스 수','대기 조건 / 현재 사유','마지막 판단시각']);self.board.setMinimumHeight(240);current_layout.addWidget(self.board,3)
-        self.decisions=table(['시각','종목','판단 / 실제 사유']);current_layout.addWidget(self.decisions,1)
-        self.bot_board=table(['봇 종목','진입 / 현재','수량 / Setup','무효화 / 보호선','보호선 예상손실 / MFE / MAE','최고가','보유 / 청산 이유','다음 청산조건']);current_layout.addWidget(self.bot_board,1)
-        self.bot_board.setToolTip('예상손실은 최초 체결가부터 현재 보호선까지 비용·설정 슬리피지를 포함한 추정액입니다. 급락 실제손실 상한은 아닙니다. MFE/MAE는 1주당 가격 움직임입니다.')
-        self.tabs.addTab(current,'현재 후보 / 봇 보유')
-        self.trades=table(['시각','종목','방향','수량 / 체결','가격','이유','구분','상태','손익','전략버전']); self.tabs.addTab(self.trades,'거래기록')
-        self.logs=QPlainTextEdit(); self.logs.setReadOnly(True); self.tabs.addTab(self.logs,'시스템 로그')
-        self.errors=QPlainTextEdit(); self.errors.setReadOnly(True); self.tabs.addTab(self.errors,'오류 / HALT')
+        self.statistics_toggle=QPushButton('탈락 통계 / 처리시간 자세히 보기'); self.statistics_toggle.setCheckable(True)
+        self.statistics_toggle.toggled.connect(summary.setVisible)
+        diag_b_layout.addWidget(self.statistics_toggle); diag_b_layout.addWidget(summary); summary.hide()
+
+        dec_box=QGroupBox('개별 후보 탈락 / 판단 이력'); dec_l=QVBoxLayout(dec_box)
+        self.decisions=table(['시각','종목','판단 / 실제 사유']); dec_l.addWidget(self.decisions)
+        diag_b_layout.addWidget(dec_box,1)
+        self.tabs.addTab(diag_widget,'상세 진단 / 통계')
+
+        # Tab 3: 시스템 로그 / 오류
+        logs_widget=QWidget(); logs_b_layout=QVBoxLayout(logs_widget); logs_b_layout.setContentsMargins(4,4,4,4)
+        log_split=QSplitter(Qt.Orientation.Vertical)
+        log_gbox=QGroupBox('시스템 이벤트 로그 (JSONL)'); log_gl=QVBoxLayout(log_gbox)
+        self.logs=QPlainTextEdit(); self.logs.setReadOnly(True); log_gl.addWidget(self.logs)
+        log_split.addWidget(log_gbox)
+        err_gbox=QGroupBox('오류 / HALT 상태'); err_gl=QVBoxLayout(err_gbox)
+        self.errors=QPlainTextEdit(); self.errors.setReadOnly(True); err_gl.addWidget(self.errors)
+        log_split.addWidget(err_gbox)
+        log_split.setSizes([380,220]); logs_b_layout.addWidget(log_split)
+        self.tabs.addTab(logs_widget,'시스템 로그 / 오류')
+
         split.addWidget(right); split.setSizes([290,880])
         self.footer=QLabel('상태 갱신은 저장파일을 읽습니다. 창 종료와 자동매매 중지는 별개입니다.'); outer.addWidget(self.footer)
         self.setStyleSheet('QMainWindow {background:#f4f6fa;} QLabel#title {font-size:24px;font-weight:700;color:#162b48;} '
@@ -199,6 +253,28 @@ class MainWindow(QMainWindow):
     def apply_status(self,s):
         self.status=s; operation,market,safety=presentation(s)
         self.clock.setText(s['time'][:19].replace('T',' ')+' / '+s.get('build_id',s['strategy_version']))
+        mode=s.get('mode','STOP')
+        if mode=='LIVE':
+            m_text='[요청 모드] 실제매매 (LIVE)'
+            m_style='background:#fef3c7;color:#92400e;border:1px solid #fde68a;font-weight:700;padding:4px 10px;border-radius:4px;'
+        elif mode=='ARMED':
+            m_text='[요청 모드] 모의/관찰 (ARMED)'
+            m_style='background:#dbeafe;color:#1e40af;border:1px solid #bfdbfe;font-weight:700;padding:4px 10px;border-radius:4px;'
+        elif mode=='KILL':
+            m_text='[요청 모드] 긴급정지 (KILL)'
+            m_style='background:#fee2e2;color:#991b1b;border:1px solid #fecaca;font-weight:700;padding:4px 10px;border-radius:4px;'
+        else:
+            m_text='[요청 모드] 정지 (STOP)'
+            m_style='background:#f1f5f9;color:#475569;border:1px solid #cbd5e1;font-weight:700;padding:4px 10px;border-radius:4px;'
+        self.mode_badge.setText(m_text); self.mode_badge.setStyleSheet(m_style)
+        trading_on=bool(s.get('trading_on'))
+        if trading_on:
+            p_text='[주문 권한] 실제 주문 허용 (ON)'
+            p_style='background:#dcfce7;color:#166534;border:1px solid #86efac;font-weight:700;padding:4px 10px;border-radius:4px;'
+        else:
+            p_text='[주문 권한] 주문 전송 차단 (OFF)'
+            p_style='background:#f8fafc;color:#64748b;border:1px solid #cbd5e1;font-weight:700;padding:4px 10px;border-radius:4px;'
+        self.permission_badge.setText(p_text); self.permission_badge.setStyleSheet(p_style)
         self.cards['operation'].setText(operation); self.cards['market'].setText(market); self.cards['safety'].setText(safety)
         self.cards['safety'].setStyleSheet('color:#b43838;' if s.get('halt') else 'color:#8a620c;' if safety.startswith('주의') else 'color:#56657a;' if safety.startswith('로컬 상태') else 'color:#24684a;')
         self.cards['account'].setText(('현재 조회 정상' if s.get('account_fresh') else '최근 조회값만 있음' if s['cash'] is not None else '조회 미확인')+'\n'+s['websocket'].split(' — ')[0])
@@ -228,21 +304,49 @@ class MainWindow(QMainWindow):
             [('raw_candidates','Raw'),('affordable','매수가능'),('shadow','SHADOW'),('watch','WATCH'),('setup_candidates','Setup 형상'),('risk_reached','RiskGate'),('final_entry_eligible','주문가능')]))
         self.funnel.setToolTip('Raw는 5개 ranking의 일반주 합집합입니다. 원시 갱신 '+str(s.get('candidate_refresh_seconds',60))+'초 + 실제 API 처리시간. 탈락 gate는 중복 가능합니다.')
         self.wait_reason.setText(candidate_wait_reason(s))
+
+        bot_pos=s.get('bot_positions',[])
+        bot_rows=[]
+        for r in bot_pos:
+            name=str(r.get('name') or r.get('symbol') or '')
+            qty_setup=f"{r.get('quantity','?')}주 ({r.get('setup','')})" if r.get('setup') else f"{r.get('quantity','?')}주"
+            entry_p=money(r.get('entry'))
+            curr_p=money(r.get('current'))
+            inval_p=money(r.get('invalidation'))
+            prot_p=money(r.get('protection'))
+            hold_st=str(r.get('hold_reason') or '보유 중')
+            next_ex=str(r.get('next_exit') or '-')
+            bot_rows.append([name,qty_setup,entry_p,curr_p,inval_p,prot_p,hold_st,next_ex])
+        rows_to_table(self.bot_board,bot_rows)
+        self.bot_board.setVisible(bool(bot_pos))
+        self.bot_empty_label.setVisible(not bool(bot_pos))
+
         board=s.get('candidate_board',[])
         items=[]
+        try: snap_dt=datetime.fromisoformat(str(s.get('time','')))
+        except Exception: snap_dt=None
         for row in board:
-            gates=row.get('gates') or row.get('gate_results') or {}
-            failed=[GATE_NAMES.get(k,k) for k,v in gates.items() if (v.get('result') if isinstance(v,dict) else v)!='PASS']
             geometry=any(trial.get('candidate_generated',bool(trial.get('setup') and trial.get('gates'))) for trial in (row.get('setup_trials') or []))
             state=('SETUP 형상 / ' if geometry else '')+{'SHADOW':'관찰만 (SHADOW)','WATCH':'진입검토 (WATCH)','RESERVE':'감시대기 (RESERVE)'}.get(row['state'],row['state'])
-            if row.get('data_fresh') is False:state+=' / 틱 미확인'
-            items.append([str(row.get('name') or row['symbol'])+' '+row['symbol'],state,row.get('current_price'),row.get('source_count'),
-                row.get('data_note')+'; '+(', '.join(failed) or row.get('primary_reason_code') or '평가 대기') if row.get('data_fresh') is False else ', '.join(failed) or row.get('primary_reason_code') or '평가 대기',row.get('timestamp')])
-        rows_to_table(self.board,items);self.board.setVisible(bool(items))
-        self.decisions.setVisible(not bool(items))
-        rows_to_table(self.bot_board,[[r.get('name'),str(r.get('entry'))+' / '+str(r.get('current')),str(r.get('quantity'))+' / '+str(r.get('setup')),
-            str(r.get('invalidation'))+' / '+str(r.get('protection')),str(r.get('risk'))+' / '+str(r.get('MFE'))+' / '+str(r.get('MAE')),r.get('high'),r.get('hold_reason'),r.get('next_exit')] for r in s.get('bot_positions',[])])
-        self.bot_board.setVisible(bool(s.get('bot_positions')))
+            if row.get('data_fresh') is False: state+=' / 틱 미확인'
+            sym_name=str(row.get('name') or row['symbol'])+' '+row['symbol']
+            price_val=money(row.get('current_price'))
+            age_val=format_observation_age(row.get('timestamp'),clock=snap_dt,is_stale=(row.get('data_fresh') is False))
+            blocker_val=human_blocker_reason(row)
+            if row.get('data_fresh') is False and row.get('data_note'):
+                blocker_val=f"{row.get('data_note')}; {blocker_val}"
+            items.append([sym_name,state,price_val,age_val,blocker_val])
+        rows_to_table(self.board,items)
+        self.board.setVisible(bool(items))
+        self.candidate_empty_label.setVisible(not bool(items))
+
+        events=s.get('important_events')
+        if events is None:
+            events=extract_important_events(s.get('log_rows',[]))
+        rows_to_table(self.event_feed,list(reversed(events or [])))
+        self.event_feed.setVisible(bool(events))
+        self.event_empty_label.setVisible(not bool(events))
+
         decisions=s.get('decision_rows',[])
         rows_to_table(self.decisions,[[full_stamp(r),r.get('name') or r.get('symbol'),human_decision(r)+' ['+str(r.get('primary_reason_code') or r.get('reason_code') or '미확인')+']'] for r in reversed(decisions)])
         trades=[]

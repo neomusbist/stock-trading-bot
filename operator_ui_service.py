@@ -12,6 +12,11 @@ from local_diagnostics import redact
 PUBLIC_MENUS={'1':'상태 / 진단','2':'자동매매 시작','3':'자동매매 중지',
               '4':'설정 / 승인한도','5':'거래기록 / 로그','6':'봇 포지션 청산 후 중지',
               '9':'비상정지','0':'프로그램 종료'}
+GATE_NAMES={'warmup':'관측 준비','acceleration':'가속','liquidity':'거래대금','spread':'호가 간격',
+    'structure':'일봉 구조','market_status':'종목상태','pattern':'Setup','breakout':'돌파','chase':'추격 거리',
+    'invalidation':'무효화 거리','risk_reward':'보상/위험','resistance':'상단 여유','economic':'비용/효율',
+    'policy':'운영 승인','session':'거래시간','connection_account':'계좌/통신','tick':'시세 신선도',
+    'repeat_slots':'재진입/보유한도','risk_quantity':'위험수량'}
 CANDIDATE_FIELDS={'raw_candidates':'원시 후보','affordable':'1주 매수 가능',
     'unaffordable':'1주 매수 불가','affordability_unknown_or_observation':'자본확인 불가 / 관찰',
     'liquidity_fail':'유동성 탈락','spread_fail':'호가 간격 탈락','structure_fail':'구조 탈락',
@@ -31,6 +36,139 @@ UI_REASONS={'RISK_BUDGET_ZERO_QTY':'거래당 위험예산으로 1주 매수 불
 UI_REASONS.update({'EXTERNAL_BOOK_STALE':'기존 보유 매도 호가가 오래되어 전량 매도 가능 여부 미확인',
     'EXTERNAL_BOOK_UNKNOWN':'기존 보유 매도 호가 미확인','EXTERNAL_BOOK_NOT_FILLABLE':'기존 보유 전량 매도 가능한 호가 부족',
     'ACCOUNT_CAPITAL_UNAVAILABLE':'신선한 계좌 자본 조회 미확인','INVALIDATION_UNKNOWN_OR_INVALID':'구조적 무효화가격 미확인 또는 유효하지 않음'})
+UI_REASONS.update({
+    'AUTO_CAP_ZERO': '승인한도 0원 (관찰 전용)',
+    'ONE_SHARE_UNAFFORDABLE': '1주 매수 자본 부족',
+    'SHADOW_ONLY': '단일 소스 (SHADOW 관찰 데이터 축적 중)',
+    'RESISTANCE_CLEARANCE_INSUFFICIENT': '상단 저항 여유 부족',
+    'ACCELERATION_FAIL': '체결 가속 미달',
+    'SPREAD_FAIL': '호가 스프레드 과대',
+    'LIQUIDITY_FAIL': '거래대금 기준 미달',
+    'STRUCTURE_FAIL': '일봉 구조 기준 미달',
+    'STOP_DISTANCE_EXCEEDED': '무효화(손절) 거리 과대',
+    'RR_RATIO_INSUFFICIENT': '손익비(RR) 부족',
+    'WARMUP_INCOMPLETE': '완성봉 데이터 축적 중',
+    'OUTSIDE_WINDOW': '신규진입 가능시간 밖',
+    'EFFICIENCY_UNKNOWN_OR_LOW': '비용 대비 기대수익 낮음',
+    'NO_BUY_EFFICIENCY': '비용 대비 기대수익 낮음',
+    'SETUP_NOT_READY': 'Setup 미완성 (A/B/C 형상 대기)',
+    'MANUAL_HOLD': '수동 보유 관리 (HARD_LOCK)',
+    'SELL_SESSION_FLATTEN': '정규장 마감 청산 (15:10)',
+    'SELL_STOP_FLAT': '사용자 전량 청산 요청',
+    'SELL_EMERGENCY': '비상정지 청산',
+    'SELL_STALE_QUOTE': '시세 지연 / 호가 미확인 청산',
+    'SELL_PROFIT_PROTECTION_HIT': '보호선(트레일링) 이탈 청산',
+    'SELL_INVALIDATION_HIT': '초기 무효화선 이탈 청산',
+    'SELL_BREAKEVEN_EXIT': '본전 청산 조건 도달',
+    'SELL_EXPLICIT_TEST_RELEASE': '시험매도 승인 실행',
+    'EVALUATION_PENDING': '평가 대기'
+})
+
+def format_observation_age(timestamp_str, clock=None, is_stale=False):
+    """중립적인 경과 시간 표시. 데이터가 런타임에서 stale로 판정된 경우에만 지연 경고 표시."""
+    if not timestamp_str:
+        return '미확인' + (' (데이터 지연)' if is_stale else '')
+    try:
+        t = datetime.fromisoformat(str(timestamp_str))
+        now_dt = clock() if callable(clock) else clock if isinstance(clock, datetime) else datetime.now(t.tzinfo)
+        delta = max(0, int((now_dt - t).total_seconds()))
+        if delta < 60: text = f"{delta}초 전"
+        elif delta < 3600: text = f"{delta // 60}분 {delta % 60}초 전"
+        else: text = f"{delta // 3600}시간 전"
+    except Exception:
+        text = str(timestamp_str)[11:19] or '최근'
+    if is_stale:
+        text += ' (데이터 지연)'
+    return text
+
+def human_blocker_reason(row):
+    """후보 종목의 주요 차단/대기 사유를 사람이 읽기 쉬운 한국어로 반환."""
+    gates = row.get('gates') or row.get('gate_results') or {}
+    failed = [GATE_NAMES.get(k, k) for k, v in gates.items() if (v.get('result') if isinstance(v, dict) else v) != 'PASS']
+    reason = row.get('primary_reason_code') or row.get('reason_code')
+    reason_text = UI_REASONS.get(reason, reason)
+    if failed:
+        gate_summary = ', '.join(failed)
+        return gate_summary + (f" ({reason_text})" if reason_text and reason_text != gate_summary else '')
+    if reason_text:
+        return reason_text
+    return '평가 대기'
+
+def extract_important_events(log_rows, max_events=40):
+    """저장소에 실제 존재하는 이벤트 타입만 추출/포맷팅."""
+    events = []
+    for r in log_rows or []:
+        kind = r.get('event')
+        stamp = (r.get('timestamp') or r.get('time') or '')[11:19]
+        sym = r.get('symbol') or ''
+        name = r.get('name') or sym or '시스템'
+        item = None
+        if kind == 'ENTRY_EVAL':
+            setup = r.get('setup') or ''
+            decision = r.get('decision')
+            code = r.get('primary_reason_code') or r.get('reason') or ''
+            desc = UI_REASONS.get(code, code)
+            target = f"{name} ({sym})" if sym else name
+            if r.get('signal_detected') and decision == 'BUY':
+                item = (stamp, '진입 후보', target, f"Setup {setup} 조건 충족 → 매수 후보 승격")
+            elif r.get('signal_detected') and decision == 'NO_BUY':
+                item = (stamp, 'RiskGate 차단', target, f"Setup {setup} 포착 | {desc}으로 주문 제외")
+            elif decision == 'NO_BUY' and setup:
+                item = (stamp, 'Setup 미충족', target, f"Setup {setup} 시도 | {desc}")
+            elif decision == 'NO_BUY' or code:
+                item = (stamp, '진입 제외', target, f"{desc or '조건 미충족'}")
+        elif kind == 'EXIT_EVAL':
+            decision = r.get('decision')
+            code = r.get('primary_reason_code') or r.get('reason') or 'EXIT'
+            desc = UI_REASONS.get(code, code)
+            target = f"{name} ({sym})" if sym else name
+            if decision == 'SELL':
+                item = (stamp, '청산 판단', target, f"매도 실행 판단: {desc}")
+            elif decision == 'HOLD':
+                item = (stamp, '보유 유지', target, f"포지션 유지: {desc}")
+        elif kind == 'WATCH_TRANSITION':
+            to_st = r.get('to_state') or r.get('state') or 'WATCH'
+            item = (stamp, '후보 승격', f"{name} ({sym})" if sym else name, f"다중 소스 확인 → {to_st} 진입검토 대상으로 전환")
+        elif kind == 'SHADOW_TRANSITION':
+            to_st = r.get('to_state') or r.get('state') or 'SHADOW'
+            item = (stamp, '관찰 등록', f"{name} ({sym})" if sym else name, f"후보 발견 → {to_st} 관찰 데이터 축적 시작")
+        elif kind in ('BUY_ORDER', 'SELL_ORDER'):
+            side = '매수' if kind == 'BUY_ORDER' else '매도'
+            qty = r.get('qty', '?')
+            lim = money(r.get('limit') or r.get('price'))
+            item = (stamp, f'{side} 주문', f"{name} ({sym})" if sym else name, f"{qty}주 @ {lim} 전송")
+        elif kind == 'ORDER_ACCEPTED':
+            side = r.get('side', '')
+            qty = r.get('qty', '?')
+            item = (stamp, '주문 접수', f"{name} ({sym})" if sym else name, f"{side} {qty}주 증권사 접수 완료")
+        elif kind == 'ORDER_REJECTED':
+            reason = r.get('reason') or '증권사 거부'
+            item = (stamp, '주문 거절', f"{name} ({sym})" if sym else name, f"거절 사유: {reason}")
+        elif kind in ('FILL', 'EXISTING_POLICY_FILL'):
+            side = r.get('side', '체결')
+            qty = r.get('qty', '?')
+            prc = money(r.get('price'))
+            item = (stamp, '체결 완료', f"{name} ({sym})" if sym else name, f"{side} {qty}주 @ {prc}")
+        elif kind == 'STOP_RAISED':
+            old_s = money(r.get('old_stop'))
+            new_s = money(r.get('new_stop'))
+            item = (stamp, '보호선 상향', f"{name} ({sym})" if sym else name, f"트레일링 스탑 조정: {old_s} → {new_s}")
+        elif kind == 'ENTRY_HALTED':
+            reason = r.get('reason') or '안전 기준 초과'
+            item = (stamp, '안전 중단', '시스템', f"HALT 발동: {reason}")
+        elif kind == 'HALT_RECOVERED':
+            item = (stamp, 'HALT 복구', '시스템', '정상 감시 복구 완료')
+        elif kind == 'STOP_REQUESTED':
+            cmd = r.get('command') or 'STOP'
+            item = (stamp, '중지 요청', '시스템', f"{cmd} 명령 접수: 신규진입 차단")
+        elif kind == 'CONNECTED':
+            item = (stamp, '연결 수립', '시스템', '실시간 시세 및 브로커 연결 수립')
+        elif kind == 'DISCONNECTED':
+            item = (stamp, '연결 단절', '시스템', str(r.get('message', '연결 해제됨')))
+
+        if item:
+            events.append(item)
+    return events[-max_events:]
 
 def human_decision(row):
     reason=row.get('primary_reason_code') or row.get('reason_code')
@@ -185,6 +323,7 @@ class UserOperations(OperatorService):
         s['operation'],s['market_text'],s['safety_text']=presentation(s)
         s['start_block']=start_block(s)
         s['decisions']=[human_decision(r) for r in s['decision_rows']]
+        s['important_events']=extract_important_events(rows)
         return s
 
     def start_user(self,confirmed=False):
