@@ -19,11 +19,29 @@ class Feed:
         self.rest=rest; self.symbols=list(dict.fromkeys(symbols)); self.q=queue.Queue(maxsize=100000)
         self.stop=threading.Event(); self.overflow=threading.Event(); self.socket=None
         self.logged_in=False; self.subscription_lock=threading.RLock()
+        self.observation_symbols=frozenset(); self.priority_symbols=None; self.observation_sink=None
+        self.observation_q=queue.Queue(maxsize=8192);self.observation_drops=0
         self.thread=threading.Thread(target=self.run,name='Kiwoom-feed',daemon=True)
 
     def emit(self,event):
-        try: self.q.put_nowait((now(),event))
+        received=now()
+        if self.priority_symbols is not None and event.get('trnm')=='REAL':
+            priority=[]
+            for item in event.get('data',[]):
+                if item.get('type')=='0B' and item.get('item') in self.observation_symbols:
+                    try:
+                        tick=parse_tick(item,received)
+                        if self.observation_sink:self.observation_sink(tick,received)
+                        if item.get('item') not in self.priority_symbols:self.observation_q.put_nowait((received,tick))
+                    except (queue.Full,ValueError,KeyError):self.observation_drops+=1
+                if item.get('type')!='0B' or item.get('item') in self.priority_symbols:priority.append(item)
+            if not priority:return
+            event={**event,'data':priority}
+        try: self.q.put_nowait((received,event))
         except queue.Full: self.overflow.set()
+
+    def configure_observation(self,priority,symbols,sink):
+        self.priority_symbols=frozenset(priority);self.observation_symbols=frozenset(symbols);self.observation_sink=sink
 
     def update_symbols(self,symbols):
         with self.subscription_lock:

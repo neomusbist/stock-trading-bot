@@ -84,10 +84,14 @@ def safe_report(rows,engine):
 def check_connection(cfg):
     """인증/실시간 스키마만 30초 확인. Engine/주문 모듈을 실행하지 않는다."""
     from core.realtime import Feed,parse_tick
-    w=json.loads((ROOT/'watchlist.json').read_text(encoding='utf-8'))
-    symbols=[r['code'] for r in w['items']]
-    if not symbols: raise ValueError('연결 검사할 감시종목 없음')
     from automation.session import supported
+    if not supported(now()): raise ValueError('OUT_OF_SUPPORTED_SESSION')
+    path=ROOT/'watchlist.json'
+    w=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {'items':[]}
+    symbols=[r['code'] for r in w['items']]
+    # 매매 후보 0개는 정상 NO_TRADE. 연결 진단은 주문 없이 기준종목 체결만 확인한다.
+    diagnostic_only=not symbols
+    if diagnostic_only: symbols=['005930']
     rest=Rest(cfg); rest.session_guard=lambda:supported(now())
     feed=Feed(rest,symbols); counts={'REG':0,'REAL_0B':0,'valid_regular_ticks':0,'invalid_ticks':0,'ERROR':0}
     started=now(); deadline=time.monotonic()+30; feed.start()
@@ -109,6 +113,7 @@ def check_connection(cfg):
                     except (ValueError,KeyError,TypeError): counts['invalid_ticks']+=1
     finally: feed.close()
     result={'started':started.isoformat(),'finished':now().isoformat(),'orders_sent':0,'counts':counts,
+      'diagnostic_only':diagnostic_only,'diagnostic_symbols':symbols,
       'passed':counts['REG']>0 and counts['valid_regular_ticks']>0 and counts['invalid_ticks']==0}
     atomic_json(ROOT/'connection_check.json',result); print(json.dumps(result,ensure_ascii=False))
     if not result['passed']: raise RuntimeError('30초 실시간 연결 검사 미통과: 휴장/비거래시간 또는 접속 확인 필요')
@@ -235,7 +240,11 @@ def main():
     p.add_argument('--check-account',action='store_true',help='조회 전용 잔고/미체결/체결 필드 검사')
     p.add_argument('--paper-seconds',type=int,default=0,help='별도 paper-smoke 상태로 지정 초 동안 dry-run 감시 후 청산/종료')
     p.add_argument('--legacy-monitor',action='store_true',help='V1 원형의 합성/조회용 감시. 실제 주문 불가')
+    p.add_argument("--recover-pilot",action="store_true",help="설정을 보존하는 주문 금지 재자격 조회")
+    p.add_argument('--operational-pilot',action='store_true',help='정지한 운영 설정을 보존하며 내부 주문권한 0으로 재자격 검사')
     args=p.parse_args()
+    if args.recover_pilot and args.paper_seconds!=150: raise ValueError("재자격 검사는 150초 조회만 허용")
+    if args.operational_pilot and (not args.recover_pilot or args.paper_seconds!=150):raise ValueError('운영 재자격은 150초 조회 전용')
     if args.self_test:
         import unittest
         result=unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.discover(str(ROOT/'tests')))
@@ -261,7 +270,7 @@ def main():
             print(json.dumps(result,ensure_ascii=False)); return 0
     if (args.demo or args.offline) and cfg.live_mode:
         raise ValueError('오프라인/데모는 live_mode=false 설정만 허용')
-    if args.paper_seconds and (cfg.live_mode or not 1<=args.paper_seconds<=600):
+    if args.paper_seconds and ((cfg.live_mode and not args.operational_pilot) or not 1<=args.paper_seconds<=600):
         raise ValueError('paper-seconds는 dry-run에서 1~600초만 허용')
     if not args.demo and not args.offline: load_credentials(args.credentials)
     with ProcessLock(ROOT/'runtime/process.lock'):
@@ -270,7 +279,7 @@ def main():
         if args.check_account: check_account(cfg); return 0
         if not args.demo and not args.offline and not args.collect_only and not args.legacy_monitor:
             from automation.runner import run
-            result=run(cfg,ROOT,args.paper_seconds)
+            result=run(cfg,ROOT,args.paper_seconds,**({"recover_pilot":True} if args.recover_pilot else {}),**({'operational_pilot':True} if args.operational_pilot else {}))
             print(json.dumps(result,ensure_ascii=False)); return 0 if not args.paper_seconds or result['passed'] is not False else 1
         if args.legacy_monitor and cfg.live_mode: raise ValueError('원형 감시 경로의 실제 주문은 금지. 기본 자동운용 경로 사용')
         folder=ROOT/'runtime'/('live-'+cfg.broker_environment if cfg.live_mode else 'paper')

@@ -22,7 +22,7 @@ class Detector:
     def reset(self):
         self.buffers.clear(); self.minutes.clear(); self.completed.clear(); self.last.clear()
 
-    def ingest(self,t,received):
+    def ingest(self,t,received,preserve_observation=False):
         c=self.cfg
         if not t.regular or t.price<=0 or t.volume<=0 or t.cumulative<=0:
             return False
@@ -34,7 +34,7 @@ class Detector:
         old=self.last.get(t.symbol)
         if old and (t.time<old.time or t.cumulative<=old.cumulative):
             return False
-        if old and (t.time-old.time).total_seconds()>c.stale_seconds:
+        if old and (t.time-old.time).total_seconds()>c.stale_seconds and not preserve_observation:
             self.buffers.pop(t.symbol,None); self.minutes.pop(t.symbol,None); self.completed.pop(t.symbol,None)
         self.last[t.symbol]=t
         buf=self.buffers.setdefault(t.symbol,deque())

@@ -151,11 +151,12 @@ def user_handle(s,choice,reader=input,writer=print):
     if choice not in PUBLIC_MENUS: raise ValueError('0~9 중 표시된 번호만 선택하세요. 설정은 바꾸지 않았습니다.')
     if choice=='1':
         show_user_status(s.snapshot(),writer)
-        sub=reader('고급 진단: [1] 상세 상태 [2] 로컬 진단 [3] 최초 150초 안전 시운전 [4] 0원 조회 대기 전환 / Enter 돌아가기: ').strip()
+        sub=reader('고급 진단: [1] 상세 상태 [2] 로컬 진단 [3] 최초 150초 안전 시운전 [4] 0원 조회 대기 전환 [5] 운영 설정 유지 재자격 조회 / Enter 돌아가기: ').strip()
         if sub=='1': show_status(s.public_status(),writer)
         elif sub=='2': writer(str(s.local_diagnostic()))
         elif sub=='3': show_result(s.pilot(writer),writer)
         elif sub=='4' and yes('0원·실주문 비활성일 때 조회 대기로 전환합니다. 기존 승인을 자동 해제하지 않습니다.',reader): show_result(s.arm_safe(True),writer)
+        elif sub=='5' and yes('설정은 유지하고 주문 금지 150초 재자격 조회만 수행합니다. LIVE 승인은 하지 않습니다.',reader): show_result(s.recover_pilot(True,writer),writer)
     elif choice=='2':
         st=s.snapshot(); real=st['live_mode'] and st['live_approved']
         if not real or yes(f"승인한도 {money(st['cap'])} 내 실제 주문이 가능해집니다. 시작하시겠습니까?",reader): show_result(s.start_user(confirmed=bool(real)),writer)

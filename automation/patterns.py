@@ -13,6 +13,7 @@ class PatternDetector(Detector):
         super().__init__(replace(cfg,entry_start='09:00:00',entry_end='23:59:59'))
         self.a=auto; self.costs=costs; self.history={}; self.current={}; self.day_high={}; self.prior_high={}
         self.last_eval={}
+        self.continuous_observation=False
 
     def reset(self):
         super().reset(); self.history.clear(); self.current.clear(); self.day_high.clear(); self.prior_high.clear()
@@ -21,8 +22,8 @@ class PatternDetector(Detector):
     def ingest(self,t,received):
         if not supported(t.time) or not supported(received): return False
         old=self.last.get(t.symbol)
-        if not super().ingest(t,received): return False
-        if old and (t.time-old.time).total_seconds()>self.cfg.stale_seconds:
+        if not super().ingest(t,received,preserve_observation=self.continuous_observation): return False
+        if old and (t.time-old.time).total_seconds()>self.cfg.stale_seconds and not self.continuous_observation:
             self.history.pop(t.symbol,None); self.current.pop(t.symbol,None)
         self.prior_high[t.symbol]=self.day_high.get(t.symbol,t.price)
         self.day_high[t.symbol]=max(t.price,self.day_high.get(t.symbol,t.price))
@@ -53,6 +54,30 @@ class PatternDetector(Detector):
         return {'pattern':'B','breakout':peak,'support':low,'projection':peak+rise,
                 'pullback_volume_ratio':pull_volume/impulse_volume,'retrace':(peak-low)/rise}
 
+    def usable_bars(self,symbol):
+        valid=[]
+        for bar in reversed(list(self.history.get(symbol,[]))):
+            if bar['first_second']>self.cfg.stale_seconds:break
+            valid.append(bar)
+        return list(reversed(valid))
+
+    def forget(self,symbol):
+        for mapping in (self.buffers,self.minutes,self.completed,self.last,self.history,self.current,self.day_high,self.prior_high,self.last_eval):mapping.pop(symbol,None)
+
+    def candidates(self,t,bars):
+        setups=[self.pullback(bars),self.box(bars)]
+        prior=self.prior_high.get(t.symbol)
+        if prior and t.price>prior and len(bars)>=2:
+            support=min(b['low'] for b in bars[-2:])
+            setups.append({'pattern':'A','breakout':prior,'support':support,'projection':prior+2*(prior-support)})
+        return [s for s in setups if s]
+
+    def target(self,t,watch,setup,limit):
+        resistance=watch.get('resistance')
+        # A/C가 신선한 실제 체결로 넘은 저항만 목표의 상한에서 제외한다.
+        if setup['pattern'] in {'A','C'} and resistance is not None and t.price>resistance:resistance=None
+        return min(resistance,setup['projection']) if resistance is not None else setup['projection']
+
     def box(self,bars):
         if len(bars)<self.a.box_min_bars: return None
         seq=bars[-self.a.box_min_bars:]; top=max(b['high'] for b in seq); low=min(b['low'] for b in seq)
@@ -63,12 +88,10 @@ class PatternDetector(Detector):
         self.last_eval[t.symbol]={'time':t.time,'cumulative':t.cumulative,'gates':self.base_gates(t,watch),'trials':[]}
         if not supported(t.time): return None
         if watch.get('status') not in {'WATCH','ELIGIBLE','RESERVE'}: return None
-        bars=list(self.history.get(t.symbol,[]))
-        valid=[]
-        for b in reversed(bars):
-            if b['first_second']>self.cfg.stale_seconds: break
-            valid.append(b)
-        bars=list(reversed(valid))
+        bars=self.usable_bars(t.symbol)
+        candidates=self.candidates(t,bars)
+        # 형상 시도와 실제 신호를 구분한다. 가속 실패 때도 형상 시험을 기록한다.
+        self.last_eval[t.symbol]['trials']=[{'setup':s['pattern'],'gates':self.setup_gates(t,watch,s)} for s in candidates]
         if len(bars)<2: return None
         c=self.cfg; buf=list(self.buffers.get(t.symbol,[]))
         if not buf or (t.time-buf[0].time).total_seconds()<c.baseline_seconds+c.acceleration_seconds: return None
@@ -79,24 +102,18 @@ class PatternDetector(Detector):
         ratio=turnover/c.acceleration_seconds/baseline if baseline else 0
         if ratio<c.min_turnover_ratio or turnover<c.min_window_turnover or t.price/fast[0].price-1<c.min_price_gain: return None
         if (t.ask-t.bid)/t.price>c.max_spread: return None
-        candidates=[self.pullback(bars),self.box(bars)]  # 정상 눌림 B를 먼저 평가한다.
-        prior=self.prior_high.get(t.symbol)
-        if prior and t.price>prior:
-            support=min(b['low'] for b in bars[-2:])
-            candidates.append({'pattern':'A','breakout':prior,'support':support,'projection':prior+2*(prior-support)})
         for setup in candidates:
             if not setup: continue
+            if setup['pattern']=='B' and watch.get('resistance_room_pass') is False:continue
             trial=self.setup_gates(t,watch,setup)
             self.last_eval[t.symbol]['gates'].update(trial)
-            self.last_eval[t.symbol]['trials'].append({'setup':setup['pattern'],'gates':trial})
             breakout=setup['breakout']
             if t.price<=breakout or t.ask/breakout-1>c.max_chase: continue
             stop=floor_tick(setup['support']*(1-c.structural_buffer))
             # 호가 확인 뒤 매수1호가가 아닌 매도1호가에 상한 지정가. 비용 계산은 예상 슬리피지도 유지한다.
             limit=floor_tick(min(t.ask,breakout*(1+c.max_chase)))
             if limit<t.ask or not 0<stop<limit or not c.min_stop_fraction<=(limit-stop)/limit<=c.max_stop_fraction: continue
-            resistance=watch.get('resistance')
-            target=min(resistance,setup['projection']) if resistance is not None else setup['projection']
+            target=self.target(t,watch,setup,limit)
             if (target-limit)/(limit-stop)<c.min_reward_risk: continue
             horizon=getattr(self.a,'horizon_'+setup['pattern'].lower()+'_minutes')
             confidence=min(1.,0.4+0.1*len(watch.get('source_details',{})))
@@ -107,7 +124,7 @@ class PatternDetector(Detector):
                 'evaluation_gates':self.last_eval[t.symbol]['gates'],'setup_trials':self.last_eval[t.symbol]['trials'],
                 'target':target,'target_basis':'과거 저항으로 제한한 관측 패턴 폭 연장 가설; 고정 익절선 아님',
                 'turnover':turnover,'turnover_ratio':ratio,'gain':t.price/fast[0].price-1,
-                'efficiency':score,'source_details':watch.get('source_details',{}),'source_deltas':watch.get('source_deltas',{}),
+                'efficiency':score,'source_count':watch.get('source_count',len(watch.get('source_details',{}))),'source_details':watch.get('source_details',{}),'source_deltas':watch.get('source_deltas',{}),
                 'structure':{k:watch.get(k) for k in ('long_position','overhead_share_estimate','resistance','recent_support')},
                 'risk_per_share':score['risk_per_share'],'market_state':'3'}
         return None
@@ -120,7 +137,7 @@ class PatternDetector(Detector):
     def setup_gates(self,t,watch,setup):
         c=self.cfg; breakout=setup['breakout']; stop=floor_tick(setup['support']*(1-c.structural_buffer))
         limit=floor_tick(min(t.ask,breakout*(1+c.max_chase))); resistance=watch.get('resistance')
-        target=min(resistance,setup['projection']) if resistance is not None else setup['projection']
+        target=self.target(t,watch,setup,limit)
         distance=(limit-stop)/limit if limit>0 else None
         rr=(target-limit)/(limit-stop) if limit>stop else None
         horizon=getattr(self.a,'horizon_'+setup['pattern'].lower()+'_minutes')
@@ -135,7 +152,7 @@ class PatternDetector(Detector):
             'economic':gate(score['decision']=='TRADE',score=score,tick_size=tick_size(t.price),tick_cost_fraction=tick_size(t.price)/t.price)}
 
     def base_gates(self,t,watch):
-        c=self.cfg; buf=list(self.buffers.get(t.symbol,[])); bars=list(self.history.get(t.symbol,[]))
+        c=self.cfg; buf=list(self.buffers.get(t.symbol,[])); bars=self.usable_bars(t.symbol)
         elapsed=(t.time-buf[0].time).total_seconds() if buf else 0
         fast=[x for x in buf if 0<=(t.time-x.time).total_seconds()<c.acceleration_seconds]
         base=[x for x in buf if c.acceleration_seconds<=(t.time-x.time).total_seconds()<c.baseline_seconds+c.acceleration_seconds]

@@ -53,11 +53,20 @@ class ExistingExits:
         return not self.external_reason(symbol,qty,limit,signal,transmitting=symbol==TEST_RELEASE_SYMBOL)
 
     def evaluate_existing(self):
+        from automation.observation_settings import ObservationSettings
+        settings=getattr(self,'observation_settings',ObservationSettings())
+        if not hasattr(self,'external_eval_cache'):self.external_eval_cache={}
         for sym,h in list(self.s['automation']['existing'].items()):
             if sym==TEST_RELEASE_SYMBOL and not legacy_test_release_enabled(): continue
             if sym not in BREAKEVEN_EXITS and sym!=TEST_RELEASE_SYMBOL: continue
             if self.active_orders(sym): continue
             b=self.books.get(sym,{})
+            price=max(self.prices.get(sym,0),b.get('bid') or 0)
+            far=sym in BREAKEVEN_EXITS and 0<price<BREAKEVEN_EXITS[sym]*(1-settings.near_threshold_fraction)
+            signature=(self.policy.mode,self.policy.state.get('revision'),self.account_ok,self.connected,self.market,self.s['halt'],h['qty'],h['available'])
+            previous=self.external_eval_cache.get(sym)
+            if far and previous and previous[0]==signature and self.clock().timestamp()-previous[1]<settings.far_evaluation_seconds:continue
+            self.external_eval_cache[sym]=(signature,self.clock().timestamp())
             limit=ceil_tick(BREAKEVEN_EXITS[sym]) if sym in BREAKEVEN_EXITS else b.get('bid',0)
             sig={'ownership':'EXISTING_POLICY','policy':'BREAKEVEN_EXIT' if sym in BREAKEVEN_EXITS else 'TEST_CAPITAL_RELEASE',
                  'book':b,'name':self.names.get(sym),'entry_price':h.get('avg'),'starting_qty':h['qty']}

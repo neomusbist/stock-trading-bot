@@ -38,6 +38,19 @@
 !/tools/repo_guard.py
 !/tools/setup_local.py
 !/tools/export_source.py
+
+# Reviewed current sources and public documentation
+!/AUDIT_REPORT.md
+!/TEST_REPORT.md
+!/NEXT_SESSION_CHECK.md
+!/운영요약.md
+!/사용자_시운전_가이드.txt
+!/DEPLOYMENT_LAYOUT.md
+!/observation.example.json
+!/tools/session_audit.py
+!/tools/offline_benchmark.py
+!/tools/offline_regression.py
+
 # Explicit exclusions remain effective even with later allow rules.
 .env
 .env.*
@@ -73,3 +86,32 @@ secrets*
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Private data, build output and archival trees are never upload targets.
+observation.json
+account*.json
+automation_policy*.json
+operator_*approval*.json
+*.jsonl
+*.sqlite*
+*.db
+*.xlsx
+*.png
+*.zip
+*.7z
+*.bak
+*.whl
+*.pyd
+*.so
+*.pyo
+/.coverage
+**/.pytest_cache/
+**/.ruff_cache/
+/audit/
+/backup/
+/backups/
+/comparison/
+/historical/
+/private/
+/logs/
+/test_dependencies/

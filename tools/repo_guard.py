@@ -9,8 +9,8 @@ ROOT_FILES={'main.py','candidate_builder.py','control.py','supervisor.py','opera
     'operator_ui_service.py','operator_gui.py','gui_launch.py','gui_menu.cmd','GUI_GUIDE.md',
     'operator_runner.py','operator_process.py','local_diagnostics.py','run.bat','test.bat','operator_menu.cmd',
     '.gitignore','.gitattributes','.env.example','config.example.json','automation.example.json','requirements.txt',
-    'README.md','REPOSITORY_GUIDE.md','SECURITY.md','THIRD_PARTY_NOTICES.md','SOURCE_MANIFEST.json'}
-TOOLS={'repo_guard.py','setup_local.py','export_source.py'}
+    'README.md','AUDIT_REPORT.md','TEST_REPORT.md','NEXT_SESSION_CHECK.md','운영요약.md','사용자_시운전_가이드.txt','DEPLOYMENT_LAYOUT.md','observation.example.json','REPOSITORY_GUIDE.md','SECURITY.md','THIRD_PARTY_NOTICES.md','SOURCE_MANIFEST.json'}
+TOOLS={'repo_guard.py','setup_local.py','export_source.py','session_audit.py','offline_benchmark.py','offline_regression.py'}
 def allowed(name):
     p=Path(name); parts=p.parts
     if len(parts)==1: return name in ROOT_FILES

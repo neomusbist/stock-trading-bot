@@ -2,6 +2,7 @@
 import json
 import math
 STRATEGY_VERSION='V1.1-policy-20261001'
+BUILD_ID='V1.1-audit-20261002'
 
 def reason_code(reason,position):
     exact={'승인 자동매매 자본 0원':'AUTO_CAP_ZERO','기존 보유: 추가매수 금지':'EXTERNAL_HOLD_NO_BUY',
@@ -36,7 +37,7 @@ class DecisionLog:
         gates=gates or {}; key=(kind,symbol)
         reason=reason_code(reason,p)
         if kind=='ENTRY_EVAL' and hasattr(e,'candidate_audit'):
-            e.candidate_audit.observe(symbol,reason,gates,decision)
+            e.candidate_audit.observe(symbol,reason,gates,decision,{'timestamp':e.clock().isoformat(),'current_price':price,'setup_trials':sig.get('setup_trials',extra.get('setup_trials'))})
         state=('EXIT_PENDING' if p.get('exit_requested') else 'BOT_POSITION') if p else e.policy.mode
         if sig.get('ownership')=='EXISTING_POLICY': state='EXTERNAL_POLICY_PENDING' if e.active_orders(symbol) else 'EXTERNAL_POLICY_HOLD'
         signature=json.dumps([state,decision,reason,p.get('stop'),p.get('qty'),

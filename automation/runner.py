@@ -16,11 +16,12 @@ from candidate_builder import structure
 from automation.policy import Policy,load_automation,LEGACY_SYMBOL,BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL,legacy_test_release_enabled
 from automation.engine import AutonomousEngine
 from automation.patterns import PatternDetector
-from automation.radar import RadarWorker
+from automation.radar import RadarWorker,observation_structure
 from automation.allocation import comparison
 from automation.performance import report
 from automation.session import supported,assessment
 from automation.candidate_audit import CandidateAudit
+from automation.observation_settings import ObservationSettings,load_observation
 
 def error_record(error):
     record=exception_details(error)
@@ -37,8 +38,14 @@ class AccountWorker:
     def __init__(self,rest,interval):
         self.rest=rest; self.interval=interval; self.need_fills=False; self.q=queue.Queue(maxsize=2)
         self.stop=threading.Event(); self.request=threading.Event()
-        self.external_symbols=set()
+        self.external_symbols=set();self.external_prices={};self.last_book={};self.book_queries={}
+        self.observation_settings=ObservationSettings()
         self.thread=threading.Thread(target=self.run,name='account-reader',daemon=True)
+    def book_due(self,symbol,stamp=None):
+        price=self.external_prices.get(symbol);stamp=time.monotonic() if stamp is None else stamp
+        settings=self.observation_settings
+        far=symbol in BREAKEVEN_EXITS and price and price<BREAKEVEN_EXITS[symbol]*(1-settings.near_threshold_fraction)
+        return stamp-self.book_queries.get(symbol,float('-inf'))>=(settings.far_book_seconds if far else self.interval)
     def run(self):
         while not self.stop.is_set():
             started=time.monotonic(); query_started_at=now().isoformat()
@@ -48,10 +55,18 @@ class AccountWorker:
                 snapshot['query_started_at']=query_started_at
                 snapshot['books']={}
                 snapshot['book_errors']={}
+                book_started=time.perf_counter();book_calls=0
                 for sym in sorted(set(self.external_symbols)&set(snapshot['holdings'])):
-                    try: snapshot['books'][sym]=self.rest.existing_book(sym)
+                    due=self.book_due(sym)
+                    if not due:
+                        if sym in self.last_book:snapshot['books'][sym]=dict(self.last_book[sym])
+                        continue
+                    try:
+                        snapshot['books'][sym]=self.rest.existing_book(sym);self.last_book[sym]=dict(snapshot['books'][sym])
+                        self.book_queries[sym]=time.monotonic();book_calls+=1
                     except (Rejected,ValueError,KeyError,RuntimeError,OSError) as e:
                         snapshot['book_errors'][sym]=error_record(e)  # 오류 원문 보존; 누락 호가는 HOLD
+                snapshot['performance']={'account_ms':(time.monotonic()-started)*1000,'external_book_ms':(time.perf_counter()-book_started)*1000,'external_book_calls':book_calls}
                 result={'snapshot':snapshot,'fills':fills,'started':started,'error':None}
             except Exception as e: result={**error_record(e),'started':started}
             if self.q.full(): self.q.get_nowait()
@@ -93,6 +108,11 @@ def request_capital_refresh(engine,account,in_session):
         return True
     return False
 
+def qualify_raw(engine,rows,stamp):
+    engine.source_qualification_seen=True
+    engine.source_qualification={row['code']:{'source_count':row.get('source_count',0),'timestamp':stamp,
+        'economic_reason':row.get('affordability',{}).get('reason_code')} for row in rows}
+
 def process_message(engine,detector,message,received,symbols,lookup,radar,prices,account,radar_ok):
     tr=message.get('trnm')
     if tr in {'ERROR','DISCONNECTED'}:
@@ -121,6 +141,8 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
             engine.on_tick(t,finished[-1]['low'] if finished else None)
             watch=lookup.get(t.symbol)
             if not watch or not radar_ok or not engine.connected: continue
+            if watch.get('source_count',len(watch.get('source_details',{})) if 'source_details' in watch else engine.a.min_source_count)<max(2,engine.a.min_source_count):
+                engine.event('NO_TRADE',symbol=t.symbol,reason='SOURCE_COUNT_BUY_PERMISSION_DENIED');continue
             engine.names[t.symbol]=watch.get('name')
             engine.market_status[t.symbol]=watch.get('market_status',{'pass':None,'reason_code':'MARKET_STATUS_UNKNOWN'})
             sig=detector.signal(t,watch)
@@ -137,7 +159,7 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
                 engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','HISTORY_UNAVAILABLE',
                     detector.evaluation_gates(t,watch),signal=sig,price=t.price)
                 continue
-            fresh=structure(bars,sig['limit'],replace(engine.c,max_recent_range=.99),t.time.date())
+            fresh=structure(bars,sig['limit'],replace(engine.c,max_recent_range=.99,min_resistance_room=0 if sig['pattern'] in {'A','C'} else engine.c.min_resistance_room),t.time.date())
             if fresh.get('status')!='ELIGIBLE':
                 from automation.decisions import gate
                 engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','STRUCTURE_REJECTED',
@@ -169,16 +191,43 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
             account.need_fills=bool(engine.active_orders())
     return accepted
 
-def run(cfg,root,seconds=0):
+class ReadOnlyPilotPolicy:
+    def __init__(self,policy):
+        self.original=policy;self.path=policy.path;self.revision=policy.state['revision'];self.state=copy.deepcopy(policy.state)
+        self.state.update(mode='ARMED',live_authorized=False,releases={},test_capital_release={})
+    @property
+    def mode(self):return self.state['mode']
+    def locked(self,symbol):return self.original.locked(symbol)
+    def refresh(self):
+        state=self.original.refresh()
+        if state['revision']!=self.revision:self.state['mode']='STOP'
+        return self.state
+    def command(self,command):
+        if command not in {'STOP','KILL'}:raise ValueError('조회 실행에 권한을 부여할 수 없습니다.')
+        self.state['mode']='STOP'
+
+def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False):
     root=Path(root); auto=load_automation(root/'automation.json'); policy=Policy(root/'runtime/automation_policy.json')
+    if operational_pilot:
+        if not recover_pilot or seconds!=150 or policy.mode not in {'ARMED','STOP','LIVE'} or policy.state.get('releases') or policy.state.get('test_capital_release',{}).get('status') in {'APPROVED','SUBMITTING'}:
+            raise ValueError('운영 재자격은 기존 보호정책·150초 조회 실행만 허용')
+        policy=ReadOnlyPilotPolicy(policy);cfg=replace(cfg,live_mode=False)
+    if recover_pilot:
+        if seconds!=150 or cfg.live_mode or policy.mode!="ARMED" or policy.state.get("live_authorized") or policy.state.get("releases") or policy.state.get("test_capital_release",{}).get("status") in {"APPROVED","SUBMITTING"}:
+            raise ValueError("재자격은 ARMED·실주문 승인 없음·150초 조회만 허용")
+        # 파일의 승인한도는 보존하며 이 조회 실행에서만 주문자본을 0으로 제한한다.
+        auto=replace(auto,AUTO_TRADING_CAP_KRW=0)
     # 기존 Config의 비용 예약/총위험 계산에도 명시적 수수료를 반영한다.
     effective=replace(cfg,roundtrip_cost_fraction=auto.commission_buy+auto.commission_sell+auto.sell_tax)
     effective.validate()
     rest=Rest(effective); folder=root/'runtime'/('automation-smoke' if seconds else 'automation-'+cfg.broker_environment)
     engine=AutonomousEngine(effective,auto,policy,folder,rest,now)
+    observation_settings=load_observation(root);engine.observation_settings=observation_settings
     engine.candidate_audit=CandidateAudit()
+    engine.candidate_audit.refresh_seconds=auto.scan_seconds
     atomic_json(folder/'session_settings.json',{'config':asdict(cfg),'effective_config':asdict(effective),'automation':asdict(auto)})
     detector=PatternDetector(effective,auto,engine.costs)
+    detector.continuous_observation=True
     # 검사 시간 종료는 STOP과 같으며 LIVE의 시간 제한 검사는 금지한다.
     if seconds and (cfg.live_mode or auto.capital_limit!=0 or policy.mode!='ARMED' or
                     policy.state.get('test_capital_release',{}).get('status') in {'APPROVED','SUBMITTING'}):
@@ -188,15 +237,22 @@ def run(cfg,root,seconds=0):
     def clients():
         rank_rest=Rest(effective,auth_session=rest.auth_session); account_rest=Rest(effective,auth_session=rest.auth_session)
         for client in (rest,rank_rest,account_rest): client.session_guard=lambda:supported(now())
-        return (RadarWorker(effective,auto,policy,rank_rest,root),
-                AccountWorker(account_rest,effective.reconcile_seconds),Feed(rest,sorted(symbols)))
+        account_worker=AccountWorker(account_rest,effective.reconcile_seconds);account_worker.observation_settings=observation_settings
+        radar_worker=RadarWorker(effective,auto,policy,rank_rest,root)
+        radar_worker.observation_sink=lambda rows,stamp,capital:shadow.submit(rows,stamp,capital)
+        radar_worker.observation_allowed=not bool(engine.s['positions'] or engine.active_orders())
+        return (radar_worker,account_worker,Feed(rest,sorted(symbols)))
     symbols=set(engine.s['positions'])|{o['symbol'] for o in engine.active_orders()}
     radar,account,feed=clients()
     radar.refresh_account=account.request.set
     account.need_fills=bool(engine.active_orders())
     reporter=Reporter(root)
+    from automation.observation_worker import ObservationWorker
+    observation_rest=Rest(replace(effective,live_mode=False),auth_session=rest.auth_session);observation_rest.session_guard=lambda:supported(now());observation_rest.diagnostic_only=True
+    shadow=ObservationWorker(effective,auto,engine.costs,root,observation_rest);shadow.start()
+    shadow_state={};observation_drops=0
     lookup={}; rows=[]; prices={}; counts={'ticks':0,'radar_cycles':0,'account_checks':0,'subscription_acks':0}
-    last_radar=0.; radar_ok=False; last_report=0.; last_heartbeat=0.; started=now(); stop_at=time.monotonic()+seconds if seconds else None
+    last_radar=0.; radar_ok=False; last_report=0.; last_heartbeat=0.;last_board=0.; started=now(); stop_at=time.monotonic()+seconds if seconds else None
     smoke_ended=False; fatal=''; account_generation=0; kill_requested_at=None
     data_active=False; ever_started=False; blocked_day=None; reporter.start()
     engine.event('AUTOMATION_STARTED',mode=policy.mode,approved_cap=auto.capital_limit,live_mode=cfg.live_mode,
@@ -240,6 +296,7 @@ def run(cfg,root,seconds=0):
                     else:
                         for sym,error in result['snapshot'].get('book_errors',{}).items(): engine.event('EXISTING_BOOK_UNAVAILABLE',symbol=sym,**error)
                         engine.reconcile(result['snapshot'],result['fills']); counts['account_checks']+=1; account_generation+=1
+                        engine.event('ACCOUNT_LATENCY',**result['snapshot'].get('performance',{}))
                         external=set(engine.s['automation']['existing'])&(set(BREAKEVEN_EXITS)|({TEST_RELEASE_SYMBOL} if legacy_test_release_enabled() else set()))
                         account.external_symbols=external
                         radar.extra_symbols=set(engine.s['positions'])
@@ -251,11 +308,26 @@ def run(cfg,root,seconds=0):
                     if result['error']:
                         radar_ok=False; engine.event('RADAR_UNAVAILABLE',**{k:v for k,v in result.items() if k!='time'})
                     else:
+                        if result.get('phase')=='RAW':
+                            qualify_raw(engine,result['rows'],result['time'])
+                            engine.event('RAW_CANDIDATES',observed_at=result['time'],raw_count=len(result['rows']),
+                                candidates=[{k:row.get(k) for k in ('code','name','first_raw_at','first_raw_price','reference_price','source_count','affordability')} for row in result['rows']])
+                            continue
+                        if 'source_observed_at' in result or any('source_count' in row for row in result['rows']):qualify_raw(engine,result['rows'],result.get('source_observed_at',result['time']))
                         if engine.candidate_audit.started:
                             summary=engine.candidate_audit.summary(now().isoformat(),engine.capital_context())
                             atomic_json(root/'runtime/candidate_summary.json',summary)
                             engine.event('CANDIDATE_CYCLE_SUMMARY',**summary)
+                        prior_watch=set(lookup)
                         rows=result['rows']; lookup={x['code']:x for x in result['watch']}; radar_ok=True
+                        by_symbol={row['code']:row for row in rows}
+                        for sym in prior_watch^set(lookup):
+                            row=by_symbol.get(sym,{})
+                            engine.event('WATCH_TRANSITION',symbol=sym,name=row.get('name'),source_count=row.get('source_count'),
+                                from_status='WATCH' if sym in prior_watch else 'OBSERVE',to_status='WATCH' if sym in lookup else 'SHADOW_OR_UNSUBSCRIBED',
+                                reason=row.get('reason','RAW_SOURCE_MISSING'),observed_at=result['time'],
+                                data_action='RETAIN_CONTINUOUS_IF_SUBSCRIBED' if sym in detector.last else 'NO_DATA',
+                                stored_completed_bars=len(detector.history.get(sym,[])),usable_completed_bars=len(detector.usable_bars(sym)))
                         engine.candidate_audit.begin(rows,result['time'],result.get('capital_context',engine.capital_context()))
                         for row in rows:
                             engine.names[row['code']]=row.get('name')
@@ -267,6 +339,9 @@ def run(cfg,root,seconds=0):
                                         reference_price=row.get('reference_price'),affordability=row.get('affordability'),
                                         market_status=row.get('market_status'),overhead_share=row.get('overhead_share_estimate'),
                                         resistance=row.get('resistance'))},price=row.get('reference_price'))
+                        context=engine.capital_context()
+                        shadow.submit(rows,result['time'],context,allow_metadata=not bool(engine.s['positions'] or engine.active_orders()))
+                        engine.event('CANDIDATE_LATENCY',**result.get('performance',{}))
                         last_radar=time.monotonic(); counts['radar_cycles']+=1
                         engine.event('RADAR_UPDATED',watch=list(lookup),changes=result['changes'])
                 if last_radar and time.monotonic()-last_radar>auto.scan_seconds*3: radar_ok=False
@@ -275,9 +350,21 @@ def run(cfg,root,seconds=0):
                 if context['account_fresh'] and (not prior_context.get('account_fresh') or context['entry_budget']!=prior_context.get('entry_budget')):
                     radar.request.set()
                 radar.capital_context=context; radar.available_capital=context['entry_budget']
+                shadow.set_capital(context)
+                radar.observation_allowed=not bool(engine.s['positions'] or engine.active_orders())
+                shadow_state=shadow.runtime_view();radar.radar.momentum=shadow_state.get('evaluations',{})
                 desired=set(lookup)|set(engine.s['positions'])|{o['symbol'] for o in engine.active_orders()}
                 desired.update(set(engine.s['automation']['existing'])&(set(BREAKEVEN_EXITS)|({TEST_RELEASE_SYMBOL} if legacy_test_release_enabled() else set())))
+                real_symbols=set(desired)
+                observed=set(shadow_state.get('symbols',[]))
+                engine.candidate_audit.shadow_count=len(observed)
+                desired.update(observed)
+                if hasattr(feed,'configure_observation'):feed.configure_observation(real_symbols,observed,shadow.deliver)
                 if in_session and desired!=symbols:
+                    for sym in symbols-desired:
+                        if sym not in engine.s['positions']:
+                            engine.event('OBSERVATION_RELEASED',symbol=sym,data_action='RESET_UNSUBSCRIBED',stored_completed_bars=len(detector.history.get(sym,[])))
+                            detector.forget(sym)
                     engine.connected=False; account.request.set(); feed.update_symbols(sorted(desired)); symbols=desired
                 if feed.overflow.is_set():
                     feed.overflow.clear(); engine.halt('실시간 수신 큐 초과'); detector.reset()
@@ -286,11 +373,31 @@ def run(cfg,root,seconds=0):
                     if not in_session: raise queue.Empty
                     received,message=feed.q.get(timeout=.25)
                     if message.get('trnm')=='REG' and message.get('return_code') in (0,'0'): counts['subscription_acks']+=1
-                    counts['ticks']+=process_message(engine,detector,message,received,symbols,lookup,radar,prices,account,radar_ok and not smoke_ended)
+                    counts['ticks']+=process_message(engine,detector,message,received,real_symbols,lookup,radar,prices,account,radar_ok and not smoke_ended)
                 except queue.Empty:
                     if not in_session: time.sleep(.25)
                 engine.timer(prices)
+                if isinstance(getattr(account,'external_prices',None),dict):
+                    prior=account.external_prices;account.external_prices=dict(prices)
+                    if any(prices.get(sym,0)>=threshold*(1-observation_settings.near_threshold_fraction) and prior.get(sym,0)<threshold*(1-observation_settings.near_threshold_fraction) for sym,threshold in BREAKEVEN_EXITS.items()):account.request.set()
+                # 보호/주문 timer 처리 후에만 관찰 warmup을 넣는다. 가상 Setup 계산은 별도 작업자가 수행한다.
+                if isinstance(getattr(feed,'observation_q',None),queue.Queue):
+                    if feed.observation_drops!=observation_drops:
+                        observation_drops=feed.observation_drops
+                        for sym in observed:
+                            if sym not in real_symbols:
+                                for mapping in (detector.buffers,detector.minutes,detector.completed,detector.last,detector.history,detector.current,detector.day_high,detector.prior_high):mapping.pop(sym,None)
+                        engine.event('OBSERVATION_DATA_GAP',SHADOW_ONLY=True,dropped=observation_drops,data_action='RESET_PREWARM',actual_order_permission=False)
+                    for _ in range(64):
+                        try:observed_at,tick=feed.observation_q.get_nowait()
+                        except queue.Empty:break
+                        if tick.symbol in observed and tick.symbol not in real_symbols:detector.ingest(tick,now())
                 request_capital_refresh(engine,account,in_session)
+                if engine.candidate_audit.started and time.monotonic()-last_board>=5:
+                    summary=engine.candidate_audit.summary(now().isoformat(),engine.capital_context());summary['shadow']=len(observed)
+                    summary['raw_definition']='5개 ranking API의 일반주 고유종목 합집합; HTS 0168과 동일 목록은 아님'
+                    summary['refresh_seconds']=auto.scan_seconds
+                    atomic_json(root/'runtime/candidate_summary.json',summary);last_board=time.monotonic()
                 if stop_at and time.monotonic()>=stop_at: smoke_ended=True
                 if smoke_ended:
                     for o in engine.active_orders(side='BUY'): engine.cancel(o)
@@ -322,6 +429,7 @@ def run(cfg,root,seconds=0):
     except Exception as e:
         fatal=type(e).__name__; engine.event('WORKER_FATAL',error=fatal); raise
     finally:
+        shadow.close()
         if data_active: feed.close(); radar.close(); account.close()
         if engine.candidate_audit.started:
             summary=engine.candidate_audit.summary(now().isoformat(),engine.capital_context())

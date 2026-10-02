@@ -3,7 +3,7 @@ import json
 import queue
 import threading
 import time
-from datetime import date
+from datetime import date,datetime as date_time
 from dataclasses import replace
 from pathlib import Path
 from candidate_builder import RANKS, bars_from_csv, fetch_bars, structure
@@ -13,6 +13,13 @@ from core.broker import Rejected
 from automation.policy import BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL,legacy_test_release_enabled
 
 FIELDS=('flu_rt','cntr_str','now_trde_qty','pred_trde_qty','exp_cntr_qty','trde_prica','bigd_rank','now_rank','base_comp_chgr')
+
+def observation_structure(bars,price,cfg,day):
+    strict=structure(bars,price,replace(cfg,max_recent_range=.99),day)
+    strict['resistance_room_pass']=not (strict.get('resistance') and price and strict['resistance']/price-1<cfg.min_resistance_room)
+    if strict.get('reason')=='상단 저항 여유 부족':
+        strict.update(status='ELIGIBLE',reason='A/C 돌파 관찰; B는 상단 저항 여유 검사 유지',compression_deferred='RESISTANCE_ROOM_TO_SETUP',setup_allowlist=['A','C'])
+    return strict
 
 def ordinary(symbol,name):
     upper=name.upper()
@@ -32,6 +39,8 @@ def collect(rest):
                 try: detail['values'][field]=number(r[field],signed=True)
                 except (KeyError,ValueError): detail['values'][field]=None
             item['source_details'][api]=detail
+            detail['received_at']=now().isoformat()
+            item.setdefault('first_raw_at',detail['received_at'])
             # 장중 실제가격 소스가 예상체결가보다 우선한다.
             for field in ('cur_prc','past_curr_prc','exp_cntr_pric'):
                 try:
@@ -39,6 +48,8 @@ def collect(rest):
                     if px>0 and (field!='exp_cntr_pric' or item['reference_price'] is None): item['reference_price']=px
                     break
                 except (KeyError,ValueError): pass
+            # 최초 발견 가격은 이후 소스의 더 늦은 현재가로 덮어쓰지 않는다.
+            item.setdefault('first_raw_price',item['reference_price'])
     return list(result.values())
 
 class DynamicRadar:
@@ -46,9 +57,11 @@ class DynamicRadar:
         self.cfg=cfg; self.a=auto; self.policy=policy; self.previous={}; self.missing={}; self.weak={}; self.watch={}; self.day=None
         self.available_capital=None
         self.capital_context={}
+        self.momentum={}
+        self.affordability_ms=0.
 
     def affordable(self,x):
-        price=x.get('reference_price'); budget=self.available_capital
+        price=x.get('reference_price'); budget=self.capital_context.get('effective_auto_cap',self.available_capital)
         x['affordability']={'budget':budget,'one_share_cost':price*(1+self.a.commission_buy) if price else None,
                             'entry_eligible':False if self.a.capital_limit==0 else None,
                             'reason_code':'OBSERVATION_ONLY_ZERO_CAP' if self.a.capital_limit==0 else None}
@@ -62,6 +75,7 @@ class DynamicRadar:
         return ok
 
     def update(self,items,evaluate,stamp):
+        self.affordability_ms=0.
         if self.day!=stamp.date():
             self.previous={}; self.missing={}; self.weak={}; self.watch={}; self.day=stamp.date()
         rows=[]; selected=[]; present=set()
@@ -86,17 +100,27 @@ class DynamicRadar:
             x['delta_period_seconds']=(stamp-old['stamp']).total_seconds() if old else None
             rank_improvement=sum(d['rank_improvement'] or 0 for d in deltas.values())
             x['discovery_score']=len(sources)*10+sum(1/d['observed_rank'] for d in sources.values())+max(-10,min(10,rank_improvement))
-            affordable=self.affordable(x)
+            afford_started=time.perf_counter();affordable=self.affordable(x);self.affordability_ms+=(time.perf_counter()-afford_started)*1000
             if self.policy.locked(sym): x.update(status='REJECT',reason='HARD_LOCK')
             elif sym in BREAKEVEN_EXITS or (sym==TEST_RELEASE_SYMBOL and legacy_test_release_enabled()): x.update(status='REJECT',reason='EXISTING_POLICY_NO_BUY')
             elif not affordable: x.update(status='UNKNOWN' if x['affordability']['reason_code']=='ACCOUNT_CAPITAL_UNAVAILABLE' else 'REJECT',reason=x['affordability']['reason_code'])
-            elif len(sources)<self.a.min_source_count: x.update(status='REJECT',reason='소스 교집합 부족')
+            elif len(sources)<max(2,self.a.min_source_count): x.update(status='REJECT',reason='소스 교집합 부족')
             elif self.weak.get(sym): x.update(status='REJECT',reason='동일 소스 등락률 감속; 회복 스냅샷 대기')
             else:
                 try: x.update(evaluate(x))
                 except (OSError,ValueError,KeyError,RuntimeError) as e: x.update(status='UNKNOWN',reason=type(e).__name__)
             self.previous[sym]={'source_details':sources,'stamp':stamp}; self.missing[sym]=0; rows.append(x)
-        eligible=sorted((x for x in rows if x['status']=='ELIGIBLE'),key=lambda x:(-x['discovery_score'],x['overhead_share_estimate'],x['code']))
+        def priority(row):
+            observation=self.momentum.get(row['code'],{})
+            try:fresh=0<=(stamp-date_time.fromisoformat(observation['timestamp'])).total_seconds()<=15
+            except (KeyError,ValueError,TypeError):fresh=False
+            gates=observation.get('gates',{}) if fresh else {}
+            # 신선한 가속/유동성 PASS를 우선 관찰한다. 오래된 랭킹만으로 자리를 차지하지 않는다.
+            strong=all(gates.get(k,{}).get('result')=='PASS' for k in ('acceleration','liquidity'))
+            weak=bool(gates) and any(gates.get(k,{}).get('result')=='FAIL' for k in ('acceleration','liquidity'))
+            row['watch_priority_basis']='FRESH_MOMENTUM' if strong else 'FRESH_WEAK' if weak else 'RANK_ONLY'
+            return (0 if strong else 2 if weak else 1,-row['discovery_score'],row['overhead_share_estimate'],row['code'])
+        eligible=sorted((x for x in rows if x['status']=='ELIGIBLE'),key=priority)
         selected=eligible[:self.cfg.max_watchlist]
         for x in eligible: x['status']='WATCH' if x in selected else 'RESERVE'
         lookup={x['code']:x for x in selected}
@@ -118,14 +142,17 @@ class RadarWorker:
         self.available_capital=0.; self.status_fetched=0
         self.capital_context={}; self.refresh_account=None
         self.thread=threading.Thread(target=self.run,name='rank-radar',daemon=True)
+        self.timings={'status_ms':0.,'history_ms':0.,'structure_ms':0.};self.cycle_samples=[]
+        self.observation_sink=None;self.observation_allowed=True
 
     def evaluate(self,item):
         day=now().date(); sym=item['code']; key=(day,sym)
         if self.status_fetched>=self.a.max_scan_charts: return {'status':'UNKNOWN','reason':'STATUS_SCAN_LIMIT'}
         self.status_fetched+=1
-        status=self.rest.stock_status(sym)
+        status_started=time.perf_counter();status=self.rest.stock_status(sym);self.timings['status_ms']+=(time.perf_counter()-status_started)*1000
         if status['pass'] is not True:
             return {'status':'REJECT' if status['pass'] is False else 'UNKNOWN','reason':status['reason_code'],'market_status':status}
+        history_started=time.perf_counter()
         if key not in self.cache:
             path=self.root/'data/raw'/f'{sym}_daily.csv'
             bars=bars_from_csv(path,day) if path.exists() else []
@@ -134,9 +161,10 @@ class RadarWorker:
                 if self.fetched>=self.a.max_scan_charts: return {'status':'UNKNOWN','reason':'이번 주기 차트 조회 한도; 다음 주기 재시도'}
                 bars=fetch_bars(self.rest,sym,self.cfg,self.root/'data/raw',day); self.fetched+=1
             self.cache[key]=bars
+        self.timings['history_ms']+=(time.perf_counter()-history_started)*1000
         # 상승폭 자체로 강자를 배제하지 않는다. 가격구조/호가/손절거리는 신호 단계에서 검사한다.
         effective=replace(self.cfg,max_recent_range=0.99)
-        result=structure(self.cache[key],item['reference_price'],effective,day)
+        structure_started=time.perf_counter();result=observation_structure(self.cache[key],item['reference_price'],effective,day);self.timings['structure_ms']+=(time.perf_counter()-structure_started)*1000
         result['reference_basis']='랭킹 현재가; 일봉은 전일까지'
         result['market_status']=status
         return result
@@ -148,18 +176,39 @@ class RadarWorker:
     def run(self):
         while not self.stop.is_set():
             try:
+                cycle_started=time.perf_counter()
+                self.timings={'status_ms':0.,'history_ms':0.,'structure_ms':0.}
+                prior_profile=dict(getattr(self.rest,'profile',{}))
                 if self.refresh_account: self.refresh_account()
-                self.fetched=0; self.status_fetched=0; items=collect(self.rest)
+                self.fetched=0; self.status_fetched=0; fetch_started=time.perf_counter();items=collect(self.rest)
+                rank_ms=(time.perf_counter()-fetch_started)*1000
                 self.radar.available_capital=self.available_capital
                 self.radar.capital_context=dict(self.capital_context)
                 context=self.radar.capital_context
                 if context and time.monotonic()-context.get('last_account',0)>context.get('reconcile_seconds',5)*3:
                     context['account_fresh']=False
+                raw_rows=[]
+                for item in items:
+                    row={**item,'source_count':len(item['source_details']),'status':'RAW','reason':'진입 허가 전 raw 발견','observed_at':now().isoformat(),
+                        'discovery_score':len(item['source_details'])*10+sum(1/x['observed_rank'] for x in item['source_details'].values())}
+                    self.radar.affordable(row);raw_rows.append(row)
+                raw_stamp=now().isoformat()
+                self.emit({'phase':'RAW','time':raw_stamp,'rows':raw_rows,'capital_context':dict(context),'error':None})
+                if self.observation_sink and self.observation_allowed:self.observation_sink(raw_rows,raw_stamp,dict(context))
                 for sym in sorted(self.extra_symbols): self.evaluate({'code':sym,'reference_price':None})
                 # 일봉 조회 우선순위는 소스 교집합. 소스 원본은 모두 로그에 남긴다.
                 items.sort(key=lambda x:-len(x['source_details']))
+                compress_started=time.perf_counter()
                 rows,watch,changes=self.radar.update(items,self.evaluate,now())
-                payload={'time':now().isoformat(),'rows':rows,'watch':watch,'changes':changes,'capital_context':dict(context),'error':None}
+                cycle_ms=(time.perf_counter()-cycle_started)*1000;self.cycle_samples=(self.cycle_samples+[cycle_ms])[-100:]
+                payload={'time':now().isoformat(),'source_observed_at':raw_stamp,'rows':rows,'watch':watch,'changes':changes,'capital_context':dict(context),'error':None,
+                    'performance':{'rank_ms':rank_ms,'compression_ms':(time.perf_counter()-compress_started)*1000,'cycle_ms':cycle_ms,
+                        'cycle_mean_ms':sum(self.cycle_samples)/len(self.cycle_samples),'cycle_max_ms':max(self.cycle_samples),
+                        'affordability_ms':self.radar.affordability_ms,**self.timings,
+                        'api_wait_ms':getattr(self.rest,'profile',{}).get('api_wait_ms',0)-prior_profile.get('api_wait_ms',0),
+                        'http_ms':getattr(self.rest,'profile',{}).get('http_ms',0)-prior_profile.get('http_ms',0),
+                        'status_calls':self.status_fetched,'daily_fetches':self.fetched,'scan_wait_seconds':self.a.scan_seconds},
+                    'raw_definition':{'sources':[r[0] for r in RANKS],'basis':'5개 ranking 합집합; 일반주 명칭/종목코드 검사 후 고유종목','hts_0168_equivalence':False}}
                 atomic_json(self.root/'runtime/radar_latest.json',payload)
                 write_csv(self.root/'candidate_audit.csv',rows)
                 write_csv(self.root/'symbols_today.csv',watch)

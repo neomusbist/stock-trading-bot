@@ -6,6 +6,7 @@ from core.util import ProcessLock, atomic_json
 from operator_service import OperatorService, read_json, tail_events, age, in_window, decision_line, STRATEGY_VERSION
 from automation.policy import Policy, HARD_LOCKS, EXISTING_POLICIES, BREAKEVEN_EXITS
 from automation.session import supported
+from automation.decisions import BUILD_ID
 from local_diagnostics import redact
 
 PUBLIC_MENUS={'1':'상태 / 진단','2':'자동매매 시작','3':'자동매매 중지',
@@ -69,7 +70,7 @@ def presentation(s):
     elif running: operation='자동매매 중' if s['trading_on'] else '시장 관찰 / 주문 대기'
     else: operation='정지'
     clock=datetime.fromisoformat(s['time'])
-    market='운영시간 밖' if not s['supported'] else '신규진입 마감' if clock.strftime('%H:%M:%S')>=s.get('entry_cutoff','15:05:00') else '신규거래 시간 / 시장 확인 필요'
+    market='운영시간 밖' if not s['supported'] else '신규진입 마감' if clock.strftime('%H:%M:%S')>=s.get('entry_cutoff','15:05:00') else '신규거래 시간 / 정규장 확인' if s.get('market_confirmed') else '신규거래 시간 / 시장 현재성 미확인'
     safety='HALT — 안전중단' if s.get('halt') else '주의 — 보호정책 확인 필요' if not s['hard_ok'] else '주의 — 불명확 주문' if s['uncertain'] else '주의 — 현재 오류' if s.get('active_error') else '주의 — 프로세스 응답 지연' if running and s['process'].get('managed') and not s['process'].get('process_heartbeat_fresh') else '주의 — 계좌 / 실시간 확인 필요' if running and (not s.get('account_fresh') or s['websocket']!='현재 연결 정상') else '정상 / 계좌·실시간 연결 확인' if s['supported'] and s.get('account_fresh') and s['websocket']=='현재 연결 정상' else '로컬 상태 정상 / 실계좌 미확인'
     return operation,market,safety
 
@@ -91,6 +92,24 @@ def candidate_display(s):
         return empty,'최신 후보 집계가 없습니다. 현재 후보 미확인.'
     return {key:summary.get(key,'-') if summary.get(key) is not None else '-' for key in CANDIDATE_FIELDS},'집계시각: '+summary['timestamp']+' / 탈락 gate는 중복 가능'
 
+def candidate_wait_reason(s):
+    """저장 집계를 설명할 뿐 Setup이나 BUY 판단을 만들지 않는다."""
+    counts,_=candidate_display(s)
+    if counts['raw_candidates']=='-':return '최신 집계 대기 중'
+    summary=s.get('candidate_summary') or {}
+    if s.get('cap')==0:return '승인한도 0원: 관찰만 수행하며 실제 신규매수는 금지됩니다.'
+    if summary.get('affordable')==0:return money(s.get('available'))+'으로 비용 포함 1주 가능한 후보가 없습니다.'
+    if summary.get('watch')==0:return '매수 가능한 종목을 관찰 중입니다. 실제 WATCH 자격을 기다립니다.'
+    if summary.get('setup_candidates')==0:return 'WATCH '+str(summary['watch'])+'종목: 설명 가능한 Setup 형상을 기다립니다.'
+    if summary.get('risk_zero_qty',0)>0:return '위험예산으로 수량 0인 후보 '+str(summary['risk_zero_qty'])+'종목. 다른 gate 탈락과 중복될 수 있습니다.'
+    return '현재 집계의 주문가능 '+str(summary.get('final_entry_eligible',0))+'종목. 주문 직전에 계좌·시장·승인·위험을 다시 확인합니다.'
+
+def board_freshness(row,clock):
+    row=dict(row)
+    row['data_fresh']=bool(row.get('gates') and 0<=age(row.get('timestamp'),clock)<=15)
+    row['data_note']='현재 틱 판단' if row['data_fresh'] else '틱 판단 대기 / 오래된 기록'
+    return row
+
 def start_block(s):
     if s['process']['running']: return '이미 실행 중입니다.'
     if not s['supported']: return '운영시간 밖입니다. 시작은 09:00~15:20, 신규진입은 15:05 이전입니다. 진단·기록은 이용 가능합니다.'
@@ -102,10 +121,10 @@ def start_block(s):
     if s['mode'] in {'KILL','STOP_FLAT','OFF'}: return '중단 원인을 상세진단에서 확인하고 기존 안전 전환 절차를 사용하세요.'
     if datetime.fromisoformat(s['time']).strftime('%H:%M:%S')>=s.get('entry_cutoff','15:05:00'): return '신규진입 마감입니다. 진단·기록은 이용 가능합니다.'
     if s['mode'] in {'STOP','LIVE'} and s['live_mode']:
-        if not s['live_approved']: return '실제 자동매매 승인이 없습니다. 설정에서 준비 검사와 명시 승인이 필요합니다.'
-        if not s['costs_confirmed']: return '비용 설정 미확인'
+        if not s['live_approved'] and not s.get('guided_start'): return '실제 자동매매 승인이 없습니다. 설정에서 준비 검사와 명시 승인이 필요합니다.'
+        if not s['costs_confirmed'] and not s.get('guided_start'): return '비용 설정 미확인'
         if s['cap']<=0: return '승인한도가 0원입니다.'
-    elif s['mode']=='STOP': return '관찰 재개는 0원·실주문 비활성 상태의 조회 대기 전환이 필요합니다.'
+    elif s['mode']=='STOP' and not s.get('guided_start'): return '관찰 재개는 0원·실주문 비활성 상태의 조회 대기 전환이 필요합니다.'
     return ''
 
 class UserOperations(OperatorService):
@@ -114,7 +133,13 @@ class UserOperations(OperatorService):
         s=self.public_status(); cfg,auto,policy=self.settings(); folder,state,hb=self.latest()
         rows=tail_events(folder/'events.jsonl',250)
         cash_fresh=age(s['cash_time'],self.clock())<=cfg.reconcile_seconds*3
-        s.update(candidate_refresh_seconds=auto.scan_seconds,entry_cutoff=auto.new_entry_cutoff,flatten_start=auto.force_flatten_start,
+        market_fresh=(s['process']['running'] and 0<=age(hb.get('time'),self.clock())<=10
+            and (not s['process'].get('managed') or hb.get('time','')>=s['process'].get('started','')))
+        s.update(market_confirmed=bool(s['supported'] and market_fresh and hb.get('connected')
+                and hb.get('market')=='3' and hb.get('session')=='SUPPORTED_SESSION'),
+            market_code=hb.get('market'),session_classification=hb.get('session'),
+            subscription_acks=hb.get('counts',{}).get('subscription_acks'),
+            candidate_refresh_seconds=auto.scan_seconds,entry_cutoff=auto.new_entry_cutoff,flatten_start=auto.force_flatten_start,
             cash_fresh=cash_fresh,account_fresh=cash_fresh and s['account']=='현재 조회 정상',
             decision_rows=redact([r for r in rows if r.get('decision')][-10:]),
             log_rows=redact(rows[-80:]),orders=redact(list(state.get('orders',{}).values())[-100:]),
@@ -127,6 +152,33 @@ class UserOperations(OperatorService):
                 'ALLOW_OVERNIGHT':auto.ALLOW_OVERNIGHT,'commission_buy':auto.commission_buy,
                 'commission_sell':auto.commission_sell,'sell_tax':auto.sell_tax,'costs_confirmed':auto.costs_confirmed})
         s['hard_ok']=s['hard_ok'] and not any(x in policy.get('releases',{}) for x in HARD_LOCKS)
+        s['guided_start']=True;s['build_id']=BUILD_ID
+        s['decision_rows']=[r for r in s['decision_rows'] if r.get('primary_reason_code')!='ONE_SHARE_UNAFFORDABLE' and r.get('state')!='EXTERNAL_POLICY_HOLD']
+        shadow=read_json(self.root/'runtime/shadow_snapshot.json',{})
+        s['shadow_diagnostics']={'snapshot_at':shadow.get('timestamp'),'performance':shadow.get('performance',{}),'last_error_record':redact(shadow.get('last_error'))}
+        board={}
+        if s['process']['running'] and s['supported']:
+            for row in shadow.get('rows',[]):
+                symbol=row['code'];evaluation=shadow.get('evaluations',{}).get(symbol,{})
+                board[symbol]={'symbol':symbol,'name':row.get('name'),'state':'SHADOW','current_price':evaluation.get('current_price',row.get('reference_price')),
+                    'source_count':row.get('source_count'),'gates':evaluation.get('gates',{}),'timestamp':evaluation.get('timestamp',shadow.get('timestamp')),
+                    'primary_reason_code':'SHADOW_ONLY','setup_trials':evaluation.get('setup_trials')}
+            for row in (s.get('candidate_summary') or {}).get('candidates',[]):
+                if row.get('discovery_status') not in {'WATCH','RESERVE'}:continue
+                symbol=row['symbol'];board[symbol]={**board.get(symbol,{}),**row,'state':row.get('discovery_status'),'gates':row.get('gate_results',{})}
+        s['candidate_board']=[board_freshness(row,self.clock()) for row in list(board.values())[:40]]
+        radar=read_json(self.root/'runtime/radar_latest.json',{})
+        s['candidate_performance']=radar.get('performance',{}) if s['process']['running'] and 0<=age(radar.get('time'),self.clock())<=auto.scan_seconds*3 else {}
+        s['bot_positions']=[]
+        for sym,p in state.get('positions',{}).items():
+            current=next((r.get('current_price') for r in reversed(rows) if r.get('symbol')==sym and r.get('current_price')),None)
+            s['bot_positions'].append({'symbol':sym,'name':p.get('signal',{}).get('name') or sym,'entry':p.get('avg'),'current':current,'quantity':p.get('qty'),
+                'setup':p.get('pattern'),'invalidation':p.get('initial_stop'),'protection':p.get('stop'),'high':p.get('high'),
+                'MFE':p.get('high',p['avg'])-p['avg'],'MAE':p['avg']-p.get('low',p['avg']),
+                'risk':max(0,p['avg']-p['stop']+p['avg']*auto.commission_buy+p['stop']*(auto.commission_sell+auto.sell_tax+cfg.exit_slippage_fraction))*p['qty'],
+                'exit_mode':'수량 확인 필요 / 자동청산 보류' if p.get('qty_blocked') else '청산 대기' if p.get('exit_requested') else '구조 / 수익 보호',
+                'hold_reason':'장부·실계좌 수량 불일치. HTS에서 보유·미체결 확인 필요' if p.get('qty_blocked') else p.get('exit_reason') if p.get('exit_requested') else '현재 보호선 위; 강제청산 시각 전',
+                'next_exit':f"체결가/매수호가 ≤ {p['stop']} 또는 15:10 / 시세단절 / 중단 청산 요청"})
         s['active_error']=s['current_error'] not in {'현재 오류 미확인 / 과거 기록은 상세보기','기록 없음 (정상 연결을 뜻하지 않음)'}
         s['protection_rows']=[{'symbol':sym,'policy':'HARD_LOCK / 자동매매 금지' if sym in HARD_LOCKS else p,
              'breakeven':BREAKEVEN_EXITS.get(sym)} for sym,p in EXISTING_POLICIES.items()]
@@ -141,6 +193,8 @@ class UserOperations(OperatorService):
         if reason: raise ValueError(reason)
         recovery=s['mode'] in {'STOP','STOP_FLAT','KILL'} and bool(s['positions'] or s['pending'])
         if recovery: return self.start_continuous()  # 기존 보호 전용 경로. 신규매수 권한을 늘리지 않는다.
+        if s['mode']=='STOP' and not s['live_mode'] and s['cap']==0 and not s['live_approved']:
+            self.arm_safe(True);return self.start_continuous()
         if s['mode']=='STOP' and s['live_mode']:
             if confirmed is not True: raise ValueError('실제 자동매매 시작 확인이 필요합니다.')
             receipt=read_json(self.root/'runtime/operator_user_authorization.json',{})
@@ -164,6 +218,41 @@ class UserOperations(OperatorService):
             return self.resume_live_continuous(True)
         return self.start_continuous(confirm_live=confirmed)
 
+    def prepare_start(self,progress=lambda _:None):
+        """시작 버튼의 조회 검사. LIVE 승인은 별도 명시 입력에서만 수행한다."""
+        s=self.snapshot();reason=start_block(s)
+        if reason:raise ValueError(reason)
+        if s['positions'] or s['pending']:
+            return {'verdict':'READY_EXISTING','note':'기존 봇 보호 전용 재개. 신규 승인 권한은 늘리지 않는다.'}
+        cfg,auto,policy=self.settings()
+        if policy['mode']=='LIVE':
+            # 비정상 종료 뒤 mode만 남았어도 검사 중에는 신규 실행 권한을 잠근다.
+            self.stop('STOP');cfg,auto,policy=self.settings()
+        if auto.capital_limit>0 and not auto.costs_confirmed:
+            return {'verdict':'COST_CONFIRMATION_REQUIRED','cap':auto.capital_limit,'note':'비용 설정 미확인. 실제 확인한 비용을 명시 입력하기 전까지 LIVE 준비와 주문은 차단됩니다.'}
+        proof=self.pilot_proof()
+        if proof.get('verdict')!='PASS' or proof.get('strategy_version')!=STRATEGY_VERSION or proof.get('build_id')!=BUILD_ID or not self._approval_basis(cfg,auto,policy):
+            progress('안전검사: 150초. 실제 주문 권한 0으로 후보·연결을 확인합니다.')
+            result=self.pilot(progress,_recovery=True,_operational=True)
+            if result.get('verdict')!='PASS':return result
+        if auto.capital_limit==0:
+            return {'verdict':'READY_OBSERVE','note':'승인한도 0원. 시장 관찰만 수행합니다.'}
+        if not auto.costs_confirmed:raise ValueError('비용 설정 미확인. 증권사에서 확인한 비용을 설정해야 합니다.')
+        progress('계좌·연결·보호정책과 승인한도를 검사합니다.')
+        receipt=read_json(self.root/'runtime/operator_user_authorization.json',{})
+        if (cfg.live_mode and policy.get('live_authorized') and receipt.get('build_id')==BUILD_ID
+            and receipt.get('config_hash')==cfg.fingerprint() and receipt.get('auto_hash')==auto.fingerprint()):
+            # 재개 시에도 계좌와 연결을 새로 확인한다. 기존 승인한도와 mode를 바꾸지 않는다.
+            snap=self.gateway.snapshot();self.remember_account(snap)
+            if snap['orders']:raise ValueError('실계좌 미체결 주문 확인 필요')
+            before=self.clock();rc=self.gateway.command(['--check-connection'],timeout=65)
+            report=read_json(self.root/'connection_check.json',{})
+            if rc or not report.get('passed') or not in_window(report.get('started'),before,self.clock()) or not report.get('counts',{}).get('valid_regular_ticks'):raise ValueError('정규장 연결·신선한 틱 확인 필요')
+            if self.settings()!=(cfg,auto,policy):raise ValueError('검사 중 설정/승인 변경')
+            return {'verdict':'READY_LIVE','cap':auto.capital_limit,'note':'기존 명시 승인 범위. 실제 시작 확인이 필요합니다.'}
+        result=self.prepare_capital(progress)
+        return {**result,'verdict':'NEEDS_LIVE_APPROVAL','note':'준비 검사 완료. 현재 승인한도 금액과 실제매매승인 입력 전까지 실주문 OFF.'}
+
     def _flat_settings(self):
         cfg,auto,policy=self.settings(); counts=self.state_counts()
         if self.running(): raise ValueError('먼저 감시를 정상 중지하고 종료를 확인하세요.')
@@ -175,8 +264,15 @@ class UserOperations(OperatorService):
         return cfg,auto,policy
 
     def _approval_basis(self,cfg,auto,policy):
-        pilot=read_json(self.root/'runtime/operator_pilot.json',{})
+        pilot=self.pilot_proof()
         if pilot.get('verdict')!='PASS' or pilot.get('strategy_version')!=STRATEGY_VERSION: return False
+        if (pilot.get('operational_requalification') and pilot.get('timestamp','')[:10]==self.clock().date().isoformat()
+            and pilot.get('config_hash')==cfg.fingerprint() and pilot.get('auto_hash')==auto.fingerprint()
+            and pilot.get('policy_revision')==policy.get('revision') and policy['mode'] in {'ARMED','STOP','LIVE'}):return True
+        if (pilot.get('requalification') and pilot.get('timestamp','')[:10]==self.clock().date().isoformat()
+            and pilot.get('config_hash')==cfg.fingerprint() and pilot.get('auto_hash')==auto.fingerprint()
+            and pilot.get('policy_revision')==policy.get('revision') and policy['mode']=='ARMED'
+            and not cfg.live_mode and not policy.get('live_authorized')): return True
         if pilot.get('timestamp','')[:10]==self.clock().date().isoformat() and auto.capital_limit==0 and not cfg.live_mode and not policy.get('live_authorized'): return True
         previous=read_json(self.root/'runtime/operator_runner.json',{})
         if (policy.get('live_authorized') and cfg.live_mode and previous.get('initial_mode')=='LIVE'
@@ -185,8 +281,17 @@ class UserOperations(OperatorService):
         if (policy.get('live_authorized') and cfg.live_mode and receipt.get('config_hash')==cfg.fingerprint()
             and receipt.get('auto_hash')==auto.fingerprint()): return True
         change=read_json(self.root/'runtime/operator_cap_approval_basis.json',{})
+        basis_revision=change.get('policy_revision')
+        current_revision=policy.get('revision')
+        same_revision=basis_revision==current_revision
+        harmless=False
+        if isinstance(basis_revision,int) and isinstance(current_revision,int) and current_revision>basis_revision:
+            later=[c for c in policy.get('commands',[]) if c.get('revision',-1)>basis_revision]
+            harmless=(policy['mode'] in {'STOP','ARMED'} and not policy.get('releases')
+                and [c.get('revision') for c in later]==list(range(basis_revision+1,current_revision+1))
+                and all(c.get('command') in {'STOP','ARMED'} for c in later))
         return bool(change.get('approval_basis_valid') and change.get('config_hash')==cfg.fingerprint()
-            and change.get('auto_hash')==auto.fingerprint() and change.get('policy_revision')==policy['revision']
+            and change.get('auto_hash')==auto.fingerprint() and (same_revision or harmless)
             and (not change.get('initial_pilot_day') or change['initial_pilot_day']==self.clock().date().isoformat()))
 
     def change_cap(self,amount,confirmed=False,expected_cap=None):
@@ -206,7 +311,7 @@ class UserOperations(OperatorService):
             if policy.get('test_capital_release',{}).get('status') in {'APPROVED','SUBMITTING'}: raise ValueError('종료된 시험매도 장부를 확인하세요.')
             basis=self._approval_basis(cfg,auto,policy)
             prior_basis=read_json(self.root/'runtime/operator_cap_approval_basis.json',{})
-            pilot=read_json(self.root/'runtime/operator_pilot.json',{})
+            pilot=self.pilot_proof()
             initial_day='' if policy.get('live_authorized') and cfg.live_mode else pilot.get('timestamp','')[:10] if auto.capital_limit==0 and not cfg.live_mode else prior_basis.get('initial_pilot_day','')
             paths=[self.root/'config.json',self.root/'automation.json',self.root/'runtime/automation_policy.json',self.root/'runtime/operator_cap_approval_basis.json']
             old=[read_json(p) for p in paths]
@@ -263,6 +368,7 @@ class UserOperations(OperatorService):
                 new_cfg=replace(cfg,live_mode=True).validate(); atomic_json(paths[0],asdict(new_cfg))
                 p=Policy(paths[1]); p.command('LIVE',confirmation='LIVE'); p.command('STOP')
                 atomic_json(paths[2],{'timestamp':self.clock().isoformat(),'cap':auto.capital_limit,
+                    'build_id':BUILD_ID,
                     'config_hash':new_cfg.fingerprint(),'auto_hash':auto.fingerprint(),'policy_revision':p.state['revision']})
             except Exception:
                 for path,data in zip(paths,old):

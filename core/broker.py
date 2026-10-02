@@ -32,6 +32,7 @@ class Rest:
         self.auth_session=auth_session if auth_session is not None else {'identity':self.identity,'token':'',
             'expires':now(),'lock':threading.RLock(),'rate_lock':threading.Lock(),'next_call':0.}
         self.last_call=0
+        self.profile={'api_wait_ms':0.,'http_ms':0.,'requests':0}
         self.auth_lock=self.auth_session['lock']
 
     @property
@@ -46,6 +47,7 @@ class Rest:
     def get_token(self):
         with self.auth_lock:
             if not self.token or now()+timedelta(minutes=5)>=self.expires:
+                if getattr(self,'diagnostic_only',False):raise Rejected('DIAGNOSTIC_DEFERRED_AUTH_REFRESH')
                 body,_=self._http('/oauth2/token',{'grant_type':'client_credentials','appkey':self.key,'secretkey':self.secret},{})
                 if not body.get('token'):
                     raise Rejected('인증 응답에 토큰 없음',api='au10001',response=body)
@@ -55,10 +57,19 @@ class Rest:
 
     def _http(self,path,body,headers):
         # 같은 앱키를 쓰는 조회 스레드는 토큰과 전송 간격을 공유한다.
-        with self.auth_session['rate_lock']:
-            scheduled=max(time.monotonic(),self.auth_session['next_call'])
-            self.auth_session['next_call']=scheduled+0.3
+        wait_started=time.perf_counter()
+        deadline=time.monotonic()+1.2
+        while True:
+            with self.auth_session['rate_lock']:
+                scheduled=max(time.monotonic(),self.auth_session['next_call'])
+                deferred=getattr(self,'diagnostic_only',False) and scheduled>time.monotonic()+.001
+                if not deferred:
+                    self.auth_session['next_call']=scheduled+0.3;break
+            # 진단은 미래 슬롯을 선점하지 않는다. 정상 조회/주문이 먼저 예약할 수 있게 양보한다.
+            if scheduled-time.monotonic()>.8 or time.monotonic()>=deadline:raise Rejected('DIAGNOSTIC_DEFERRED_PRIORITY_API')
+            time.sleep(min(.05,max(0,scheduled-time.monotonic())))
         time.sleep(max(0,scheduled-time.monotonic()))
+        self.profile['api_wait_ms']+=(time.perf_counter()-wait_started)*1000
         self.last_call=time.monotonic()
         session_guard=getattr(self,'session_guard',None)
         if session_guard is not None and not session_guard(): raise Rejected('OUT_OF_SUPPORTED_SESSION')
@@ -68,11 +79,16 @@ class Rest:
             if not self.mutation_allowed(api,body): raise Rejected('dry-run: 주문 API 접근 차단')
             guard=getattr(self,'order_guard',None)
             if guard is not None: guard(api,body)  # 인증/대기 후 실제 전송 직전에도 시각·정책을 재검사한다.
-        with self.opener(req,timeout=8) as response:
-            data=json.load(response)
-            return data, {k.lower():v for k,v in response.headers.items()}
+        http_started=time.perf_counter()
+        try:
+            with self.opener(req,timeout=8) as response:
+                data=json.load(response)
+                return data, {k.lower():v for k,v in response.headers.items()}
+        finally:
+            self.profile['http_ms']+=(time.perf_counter()-http_started)*1000;self.profile['requests']+=1
 
     def mutation_allowed(self,api,body):
+        if getattr(self,'diagnostic_only',False):return False
         if self.cfg.live_mode is True: return True
         if api!='kt10001' or body.get('stk_cd')!='267320' or body.get('ord_qty')!='1': return False
         if getattr(self,'order_guard',None) is None: return False

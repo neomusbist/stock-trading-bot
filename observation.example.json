@@ -1,0 +1,9 @@
+{
+  "max_symbols": 32,
+  "metadata_budget": 4,
+  "metadata_ttl_seconds": 180,
+  "evaluation_seconds": 2,
+  "far_book_seconds": 30,
+  "near_threshold_fraction": 0.03,
+  "far_evaluation_seconds": 5
+}

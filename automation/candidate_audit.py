@@ -10,9 +10,9 @@ class CandidateAudit:
         self.rows={r['code']:dict(r) for r in rows}; self.evaluations={}
         self.started=stamp; self.context=dict(context)
 
-    def observe(self,symbol,reason,gates,decision):
+    def observe(self,symbol,reason,gates,decision,metadata=None):
         if symbol in self.rows:
-            self.evaluations[symbol]={'primary_reason_code':reason,'gates':gates,'decision':decision}
+            self.evaluations[symbol]={'primary_reason_code':reason,'gates':gates,'decision':decision,**(metadata or {})}
 
     def summary(self,stamp,context=None):
         counts=Counter(); reasons=Counter(); candidates=[]
@@ -34,14 +34,21 @@ class CandidateAudit:
             if sizing.get('risk_quantity')==0 and sizing.get('risk_per_share',0)>0: counts['risk_zero_qty']+=1
             if evaluation and gates and all(v['result']=='PASS' for v in gates.values()): counts['final_entry_eligible']+=1
             if evaluation: counts['evaluated']+=1
+            if row.get('status')=='WATCH':counts['watch']+=1
+            if (evaluation or {}).get('setup_trials'):counts['setup_candidates']+=1
+            if 'risk_quantity' in gates:counts['risk_reached']+=1
             candidates.append({'symbol':sym,'name':row.get('name'),'discovery_status':row.get('status'),
+                'current_price':(evaluation or {}).get('current_price',row.get('reference_price')),'source_count':row.get('source_count'),
+                'timestamp':(evaluation or {}).get('timestamp',row.get('observed_at')),'setup_trials':(evaluation or {}).get('setup_trials'),
                 'primary_reason_code':reason,'evaluation_observed':bool(evaluation),
                 'gate_results':{k:v['result'] for k,v in gates.items()},'sizing':sizing,'affordability':a})
         metrics={k:counts[k] for k in ('affordable','unaffordable','affordability_unknown_or_observation',
-                 'liquidity_fail','spread_fail','structure_fail','setup_not_ready','risk_zero_qty','final_entry_eligible','evaluated')}
+                 'liquidity_fail','spread_fail','structure_fail','setup_not_ready','risk_zero_qty','final_entry_eligible','evaluated','watch','setup_candidates','risk_reached')}
         return {'timestamp':stamp,'strategy_version':STRATEGY_VERSION,'cycle_started':self.started,
                 'capital_at_discovery':self.context,'capital_now':dict(context or self.context),
                 'effective_auto_cap':(context or self.context).get('effective_auto_cap'),
                 'raw_candidates':len(self.rows),'not_yet_evaluated':len(self.rows)-counts['evaluated'],
-                **metrics,'reason_counts':dict(reasons),'candidates':candidates,
+                **metrics,'shadow':getattr(self,'shadow_count',0),'refresh_seconds':getattr(self,'refresh_seconds',60),
+                'raw_definition':'5개 ranking API의 일반주 고유종목 합집합; HTS 0168과 동일 목록은 아님',
+                'reason_counts':dict(reasons),'candidates':candidates,
                 'count_basis':'주기 내 고유종목 최신판단; gate 탈락수는 중복 가능; 미평가를 통과로 세지 않음'}

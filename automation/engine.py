@@ -26,6 +26,8 @@ class AutonomousEngine(ExistingExits,Engine):
                          cfg.entry_slippage_fraction,cfg.exit_slippage_fraction)
         self.market='UNKNOWN'; self.prices={}; self.available_cash=0.; self.actual={}
         self.preview_at={}; self.kill_checked=False
+        self.source_qualification={}
+        self.source_qualification_seen=False
         self.control_revision=-1
         self.entry_intent=None
         self.books={}; self.external_open_orders=[]; self.external_qty_mismatch=set()
@@ -124,6 +126,13 @@ class AutonomousEngine(ExistingExits,Engine):
             age=(self.clock()-datetime.fromisoformat(status['checked_at'])).total_seconds()
             if not -1<=age<=self.a.scan_seconds*3: return 'MARKET_STATUS_STALE'
         if symbol in self.s['automation']['existing']: return '기존 보유: 추가매수 금지'
+        if self.source_qualification_seen or self.source_qualification:
+            qualification=self.source_qualification.get(symbol,{})
+            if qualification.get('source_count',0)<max(2,self.a.min_source_count):return 'SOURCE_COUNT_BUY_PERMISSION_DENIED'
+            if qualification.get('economic_reason')=='ONE_SHARE_UNAFFORDABLE':return 'ECONOMIC_UNIVERSE_EXCLUDED'
+            try:age=(self.clock()-datetime.fromisoformat(qualification['timestamp'])).total_seconds()
+            except (KeyError,ValueError,TypeError):return 'SOURCE_QUALIFICATION_UNKNOWN'
+            if not -1<=age<=self.a.scan_seconds*3:return 'SOURCE_QUALIFICATION_STALE'
         if self.a.capital_limit<=0: return '승인 자동매매 자본 0원'
         if self.policy.mode!='LIVE': return self.policy.mode+' 신규 실주문 금지'
         if not self.policy.state.get('live_authorized'): return 'LIVE 명시 승인 누락'
@@ -141,7 +150,11 @@ class AutonomousEngine(ExistingExits,Engine):
         return self.account_ok and time.monotonic()-self.last_account<=self.c.reconcile_seconds*3
 
     def capital_context(self):
+        equity=self.risk_equity()
+        used=sum(max(0,p['avg']-p['stop']+p['avg']*(self.c.roundtrip_cost_fraction+self.c.exit_slippage_fraction))*p['qty'] for p in self.s['positions'].values())
+        used+=sum((o['limit']-o['signal']['stop']+o['limit']*(self.c.roundtrip_cost_fraction+self.c.exit_slippage_fraction))*(o['qty']-o['filled']) for o in self.active_orders(side='BUY'))
         return {'actual_orderable_cash':self.available_cash,'approved_cap':self.a.capital_limit,
+                'risk_equity':equity,'risk_remaining':max(0,equity*self.c.max_daily_loss_fraction-self.s['daily_loss']-used),
                 'effective_auto_cap':self.auto_available_capital(),'entry_budget':self.watch_budget(),
                 'account_fresh':self.capital_account_valid(),'last_account':self.last_account,
                 'reconcile_seconds':self.c.reconcile_seconds,'snapshot_at':self.s['automation'].get('capital_snapshot',{}).get('timestamp')}
@@ -172,6 +185,8 @@ class AutonomousEngine(ExistingExits,Engine):
             'efficiency':gate(signal.get('efficiency',{}).get('decision')=='TRADE',efficiency=signal.get('efficiency'))}
 
     def enter(self,signal,tick):
+        if signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or ('source_count' in signal and signal['source_count']<max(2,self.a.min_source_count)):
+            self.decisions.emit('ENTRY_EVAL',tick.symbol,'NO_BUY','OBSERVATION_NOT_BUY_PERMISSION',signal=signal,price=tick.price);return None
         from automation.allocation import apply_empirical
         try:
             if code(signal.get('symbol'))!=tick.symbol: raise ValueError('signal/tick symbol mismatch')
@@ -273,6 +288,8 @@ class AutonomousEngine(ExistingExits,Engine):
         intents=[o for o in self.active_orders(sym,side) if o['status']=='INTENT' and o['qty']==qty and o['limit']==limit]
         if len(intents)!=1: raise Rejected('저장된 봇 주문 의도 없는 직접 주문 차단')
         if side=='BUY':
+            signal=intents[0].get('signal') or {}
+            if signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or ('source_count' in signal and signal['source_count']<max(2,self.a.min_source_count)):raise Rejected('OBSERVATION_NOT_BUY_PERMISSION')
             reason=self.new_entry_reason(sym)
             if reason or not self.entry_window() or not self.connected or not self.account_ok or self.s['halt']:
                 raise Rejected(reason or '시장/계좌/연결 조건 미충족')

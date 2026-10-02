@@ -207,8 +207,26 @@ class OperatorService:
             'order_permission':'OUTSIDE_TRADING_WINDOW — V1.1 운영시간 밖, 실주문 불가' if not supported(self.clock()) else 'LIVE 설정 승인됨 — 실제 계좌·시세·위험 조건도 통과해야 주문' if configured else
                 '나인테크 1주 SELL 전용 승인 — 일반 매수 금지' if legacy_test_release_enabled() and armed and approval.get('status')=='APPROVED' else '일반 신규매수 불가',
             'observation_time':hb.get('time')}
+    def pilot_proof(self):
+        latest=read_json(self.root/'runtime/operator_pilot.json',{})
+        if latest.get('verdict')=='PASS': return latest
+        if latest.get('phase')!='PREFLIGHT_REJECTED': return {}
+        passed=read_json(self.root/'runtime/operator_pilot_pass.json',{})
+        if (passed.get('verdict')=='PASS' and passed.get('strategy_version')==STRATEGY_VERSION
+            and passed.get('timestamp','')<=latest.get('timestamp','')): return passed
+        return {}
+
     def save_result(self,kind,result):
+        if kind=='pilot':
+            previous=read_json(self.root/'runtime/operator_pilot.json',{})
+            if previous.get('verdict')=='PASS' and previous.get('strategy_version')==STRATEGY_VERSION:
+                atomic_json(self.root/'runtime/operator_pilot_pass.json',previous)
         result={**result,'kind':kind,'timestamp':self.clock().isoformat(),'strategy_version':STRATEGY_VERSION}
+        if kind=='pilot' and result.get('verdict')=='PASS':
+            atomic_json(self.root/'runtime/operator_pilot_pass.json',result)
+        elif kind=='pilot' and result.get('phase')!='PREFLIGHT_REJECTED':
+            atomic_json(self.root/'runtime/operator_pilot_pass.json',
+                {'verdict':'INVALIDATED','timestamp':result['timestamp'],'failure':result})
         atomic_json(self.root/f'runtime/operator_{kind}.json',result)
         atomic_json(self.root/'runtime/operator_last_result.json',result)
         lines=['주식자동매매 최근 사용자 결과','검사 시각: '+result['timestamp'],'판정: '+result.get('verdict','미확인')]
@@ -229,7 +247,10 @@ class OperatorService:
                 'api':getattr(error,'api',None),'raw_response':response}
         if isinstance(response,dict): record.update(return_code=response.get('return_code'),return_msg=response.get('return_msg'))
         atomic_json(self.root/'runtime/operator_error.json',record)
-        return self.save_result('error',{'verdict':'FAIL','reasons':[str(error)]})
+        with ProcessLock(self.root/'runtime/operator_error_history.lock'):
+            with (self.root/'runtime/operator_error_history.jsonl').open('a',encoding='utf-8') as history:
+                history.write(json.dumps(record,ensure_ascii=False)+'\n')
+        return self.save_result('error',{**record,'verdict':'FAIL','reasons':[str(error)]})
     def run_command(self,args,timeout=60):
         if args[:1]==['--paper-seconds']:
             child=self.start_command(args)
@@ -286,7 +307,7 @@ class OperatorService:
         if not legacy_test_release_enabled() and policy.get('test_capital_release',{}).get('status') in {'APPROVED','SUBMITTING'}:
             reasons.append('종료된 시험매도에 미정리 승인/주문이 있습니다. 자동 재개하지 않고 장부 확인이 필요합니다.')
         recovery=mode in {'STOP','STOP_FLAT','KILL'} and bool(counts['positions'] or counts['pending'])
-        proof=read_json(self.root/'runtime/operator_pilot.json',{})
+        proof=self.pilot_proof()
         if not recovery and (proof.get('verdict')!='PASS' or proof.get('strategy_version')!=STRATEGY_VERSION):
             reasons.append('먼저 최초 150초 안전 시운전 PASS가 필요합니다. 이미 PASS이면 반복할 필요 없습니다.')
         if mode=='ARMED':
@@ -300,16 +321,37 @@ class OperatorService:
         self.gateway.start([])
         return self.save_result('continuous',{'verdict':'STARTED','mode':mode,'cap':auto.capital_limit,
             'note':'기존 봇 보호/복구 관리 재개. 신규진입 금지 상태 유지' if recovery else 'ARMED 지속 관찰 시작. 일반 실제 주문과 가상 포지션 없음' if mode=='ARMED' else '승인된 LIVE 계속 감시 시작. 계좌·시장·위험 조건은 기존 코어가 재검증합니다.'})
-    def pilot(self,progress=lambda x:None):
-        reasons=self.safe_reasons(require_cost_false=True)
-        if reasons: return self.save_result('pilot',{'verdict':'FAIL','reasons':reasons,'orders':None})
+    def recover_pilot(self,confirmed=False,progress=lambda x:None):
+        if confirmed is not True: raise ValueError("재자격 조회 검사 명시 확인이 필요합니다.")
+        return self.pilot(progress,_recovery=True)
+    def pilot(self,progress=lambda x:None,_recovery=False,_operational=False):
+        baseline=self.settings()
+        def preflight():
+            if _operational:
+                counts=self.state_counts();cfg,auto,p=self.settings();reasons=[]
+                if not supported(self.clock()):reasons.append('운영시간 밖입니다.')
+                if self.running():reasons.append('감시를 먼저 중지하세요.')
+                if p['mode'] not in {'ARMED','STOP','LIVE'}:reasons.append('KILL/청산 상태 해제를 먼저 확인하세요.')
+                if counts['positions'] or counts['pending'] or counts['uncertain']:reasons.append('봇 보유·미체결·불명확 주문 확인 필요')
+                if not self.hard_locks_ok() or p.get('releases'):reasons.append('HARD_LOCK 보호정책 확인 필요')
+                if p.get('test_capital_release',{}).get('status') in {'APPROVED','SUBMITTING'}:reasons.append('시험매도 승인 상태 확인 필요')
+            else:reasons=self.safe_reasons(require_zero=not _recovery,require_cost_false=not _recovery)
+            if _recovery:
+                if self.running(): reasons.append("감시를 중지한 뒤 재자격을 검사하세요.")
+                if self.state_counts()["uncertain"] or any(st.get("halt") for _,st in self.states()): reasons.append("HALT/불명확 주문 확인 필요")
+                if self.settings()[2].get("releases"): reasons.append("보호정책 해제 기록 확인 필요")
+            return reasons
+        reasons=preflight()
+        if reasons: return self.save_result('pilot',{'verdict':'FAIL','phase':'PREFLIGHT_REJECTED','reasons':reasons,'orders':None})
         with self.idle(): pass
         started=self.clock(); progress('계좌를 조회합니다. 실제 주문은 하지 않습니다.')
         snapshot=self.gateway.snapshot(); self.remember_account(snapshot)
-        reasons=self.safe_reasons(require_cost_false=True)
-        if reasons: return self.save_result('pilot',{'verdict':'FAIL','reasons':reasons,'orders':None})
+        reasons=preflight()
+        if _recovery and snapshot["orders"]: reasons.append("실계좌 미체결 주문이 있습니다.")
+        if _recovery and self.settings()!=baseline: reasons.append("검사 중 설정/승인이 변경되었습니다.")
+        if reasons: return self.save_result('pilot',{'verdict':'FAIL','phase':'PREFLIGHT_REJECTED','reasons':reasons,'orders':None})
         progress('약 150초 동안 WebSocket·정규장 틱·후보·A/B/C 판단을 관찰합니다. 비상정지 파일은 언제든 사용할 수 있습니다.')
-        rc=self.gateway.command(['--paper-seconds','150'],timeout=230)
+        rc=self.gateway.command(['--paper-seconds','150']+(['--recover-pilot'] if _recovery else [])+(['--operational-pilot'] if _operational else []),timeout=230)
         result=read_json(self.root/'automation_check.json',{}); folder=self.root/'runtime/automation-smoke'
         hb=read_json(folder/'heartbeat.json',{}); state=read_json(folder/'state.json',{})
         if not in_window(result.get('started'),started,self.clock()) or not result.get('finished'):
@@ -323,6 +365,7 @@ class OperatorService:
         watch=read_json(self.root/'watchlist.json',{})
         items=watch.get('items',[]) if watch.get('asof')==self.clock().date().isoformat() else []
         counts=result.get('counts',{}); reasons=[]
+        if _recovery and (self.settings()!=baseline or preflight()): reasons.append('검사 중 설정/안전상태가 변경되었습니다.')
         if rc or result.get('fatal'): reasons.append('감시 실행 오류가 있습니다. 최근 오류를 확인하세요.')
         if orders or state.get('positions') or actual or samsung or gwang: reasons.append('조회 시운전 중 주문 또는 포지션이 발견됐습니다.')
         if not supported(started) or not supported(self.clock()): verdict='INCONCLUSIVE'; reasons.append('지원시간 밖이거나 종료 경계를 지났습니다.')
@@ -332,7 +375,8 @@ class OperatorService:
               and items and evaluations): verdict='PASS'
         else: verdict='INCONCLUSIVE'; reasons.append('정규장 틱·계좌/연결·오늘 후보·A/B/C 판단로그 중 관측이 부족합니다. 신호 발생 자체는 필수가 아닙니다.')
         cash=state.get('automation',{}).get('capital_snapshot',{}).get('actual_orderable_cash',snapshot['cash'])
-        return self.save_result('pilot',{'verdict':verdict,'reasons':reasons,'cash':cash,'cap':0,'available':0,'orders':actual,
+        return self.save_result('pilot',{'verdict':verdict,'reasons':reasons,'cash':cash,'cap':baseline[1].capital_limit if _recovery else 0,'available':0,'orders':actual,
+            'requalification':_recovery,'operational_requalification':_operational,'build_id':__import__('automation.decisions',fromlist=['BUILD_ID']).BUILD_ID,'config_hash':baseline[0].fingerprint(),'auto_hash':baseline[1].fingerprint(),'policy_revision':baseline[2].get('revision'),
             'samsung_orders':samsung,'gwang_orders':gwang,'account_ok':counts.get('account_checks',0)>0,
             'websocket_ok':counts.get('subscription_acks',0)>0,'regular_ticks':counts.get('ticks',0),
             'radar_ok':counts.get('radar_cycles',0)>0,'candidate_count':len(items),'signals':len(signals),'entry_evaluations':len(evaluations),
@@ -416,7 +460,7 @@ class OperatorService:
         if not legacy_test_release_enabled(): raise ValueError('TEST_CAPITAL_RELEASE_RETIRED: 시험기능이 종료됐습니다.')
         if confirmed is not True: raise ValueError('나인테크 1주 실제 매도 확인이 필요합니다.')
         reasons=self.safe_reasons()
-        proof=read_json(self.root/'runtime/operator_pilot.json',{})
+        proof=self.pilot_proof()
         if proof.get('verdict')!='PASS' or proof.get('timestamp','')[:10]!=self.clock().date().isoformat() or proof.get('strategy_version')!=STRATEGY_VERSION:
             reasons.append('오늘의 0원 조회 시운전 PASS가 먼저 필요합니다.')
         if reasons: return self.save_result('release',{'verdict':'FAIL','reasons':reasons})
