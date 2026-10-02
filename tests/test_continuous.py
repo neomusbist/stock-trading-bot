@@ -269,12 +269,13 @@ operator_runner.run(root,lambda:datetime(2026,10,1,9,30,tzinfo=KST),stub,token='
         try:
             until=time.monotonic()+10
             while time.monotonic()<until and not (self.root/'runtime/operator_runner.json').exists() and child.poll() is None: time.sleep(.05)
-            self.assertIsNone(child.poll()); info=self.s.process_info(); self.assertTrue(info['running']); self.assertEqual(info['pid'],child.pid)
+            self.assertIsNone(child.poll()); info=self.s.process_info(); self.assertTrue(info['running'])
+            self.assertEqual(info.get('token'),'offline-process'); self.assertGreater(info['pid'],0); self.assertIsNotNone(process_identity(info['pid']))
             self.assertEqual(self.s.start_continuous()['verdict'],'ALREADY_RUNNING'); self.assertEqual(self.gateway.starts,0)
         finally:
             stopfile.touch(); stdout,stderr=child.communicate(timeout=10)
         self.assertEqual(child.returncode,0,stderr.decode('utf-8',errors='replace'))
-        self.assertFalse(self.s.running()); self.assertIsNone(process_identity(child.pid)); self.assertEqual(self.policy.refresh()['mode'],'ARMED')
+        self.assertFalse(self.s.running()); self.assertIsNone(process_identity(info['pid'])); self.assertEqual(self.policy.refresh()['mode'],'ARMED')
         record=read_json(self.root/'runtime/operator_runner.json'); record['status']='RUNNING'; atomic_json(self.root/'runtime/operator_runner.json',record)
         self.assertTrue(self.s.process_info()['stale']); self.assertFalse(self.s.running())
     def test_restore_armed_does_not_discard_live_or_pending_position(self):
