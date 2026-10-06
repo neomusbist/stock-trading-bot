@@ -1,6 +1,7 @@
 """단일 writer 주문/체결 상태기계. 접수는 포지션이 아니며 실제 체결만 수량에 반영한다."""
 import json
 import time
+from datetime import datetime
 from pathlib import Path
 from core.settings import now
 from core.util import atomic_json, number, code,read_json_retry,exception_details
@@ -171,12 +172,14 @@ class Engine:
             if not p:
                 p={'symbol':sym,'qty':0,'avg':price,'initial_stop':sig['stop'],'stop':sig['stop'],
                     'initial_r':max(1,price-sig['stop']),'high':price,'low':price,'opened':self.clock().isoformat(),
+                    'last_entry_fill_at':self.clock().isoformat(),
                     'exit_requested':False,'exit_reason':'','exit_attempts':0,'qty_blocked':False,'last_tick':self.clock().isoformat()}
                 positions[sym]=p
                 self.position_created(p,o)
             p['avg']=(p['qty']*p['avg']+delta*price)/(p['qty']+delta); p['qty']+=delta
             p['initial_r']=max(1,p['avg']-p['initial_stop'])
             p['high']=max(p['high'],price); p['low']=min(p['low'],price)
+            p['last_entry_fill_at']=self.clock().isoformat()
             self.s['cash']-=delta*price+self.buy_fee(delta*price)
             if price>o['limit'] or price<=p['stop']:
                 p['exit_requested']=True; p['exit_reason']='진입 체결가격 범위 이탈'
@@ -275,7 +278,6 @@ class Engine:
         self.drive_exits({t.symbol:t.bid or t.price})
 
     def timer(self,prices=None):
-        from datetime import datetime
         current=self.clock()
         if self.session_ending():
             for o in self.active_orders(side='BUY'): self.cancel(o)
@@ -317,6 +319,20 @@ class Engine:
         for sym,p in self.s['positions'].items():
             b=balances.get(sym)
             if not b or b['qty']!=p['qty']:
+                started=snapshot.get('query_started_at')
+                last_fill=p.get('last_entry_fill_at') or p.get('opened')
+                if started and last_fill:
+                    try:
+                        t_started=datetime.fromisoformat(started)
+                        t_fill=datetime.fromisoformat(last_fill)
+                        if t_started.tzinfo is not None and t_fill.tzinfo is None:
+                            t_fill=t_fill.replace(tzinfo=t_started.tzinfo)
+                        elif t_started.tzinfo is None and t_fill.tzinfo is not None:
+                            t_started=t_started.replace(tzinfo=t_fill.tzinfo)
+                        if t_started < t_fill:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
                 self.halt('관리 잔고와 실제 잔고 불일치: 자동 매도 보류 필요')
                 # 수량 불명 상태에서는 전체 주문을 보내지 않는다.
                 p['qty_blocked']=True
