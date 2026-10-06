@@ -5,14 +5,38 @@ from core.util import tick_size
 from automation.patterns import PatternDetector
 from automation.policy import HARD_LOCKS,BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL
 from automation.decisions import STRATEGY_VERSION
+from automation.focus_selection import calculate_tier, TIER_NAMES
+
+def make_evaluation_view(row):
+    """구조 view + 당시 원본 row의 메타데이터를 명시적으로 병합한 EvaluationView."""
+    view = dict(row)
+    shadow_view = row.get('shadow_view', {})
+    view.update(shadow_view)
+    view['code'] = row.get('code')
+    view['name'] = row.get('name')
+    view['source_count'] = row.get('source_count', len(row.get('source_details', {})))
+    view['source_details'] = dict(row.get('source_details', {}))
+    view['source_deltas'] = dict(row.get('source_deltas', {}))
+    view['observed_at'] = row.get('observed_at')
+    view['fallback_source1'] = bool(row.get('fallback_source1'))
+    view['status'] = 'WATCH' if view.get('status') in {'ELIGIBLE', 'WATCH'} else view.get('status')
+    if 'resistance_room_pass' in shadow_view:
+        view['resistance_room_pass'] = shadow_view['resistance_room_pass']
+    elif 'resistance_room_pass' in row:
+        view['resistance_room_pass'] = row['resistance_room_pass']
+    else:
+        view['resistance_room_pass'] = True
+    return view
 
 class ShadowObserver:
  def __init__(self,cfg,auto,costs,emit,risk=None,limit=32):
   self.cfg=cfg;self.auto=auto;self.detector=PatternDetector(cfg,auto,costs);self.emit=emit;self.risk=risk;self.limit=limit;self.rows={};self.first={};self.last_log={};self.previous={}
   self.capital={};self.epoch=None;self.eval_seconds=2;self.selected_at={};self.latest={};self.detached=set()
+  self.last_tier={};self.observation_seq=0
  def event(self,kind,stamp,**data):
   if kind=='SHADOW_EVAL':self.latest[data['symbol']]={'timestamp':stamp.isoformat(),**data}
-  self.emit(kind,timestamp=stamp.isoformat(),strategy_version=STRATEGY_VERSION,SHADOW_ONLY=True,**data)
+  data.setdefault('SHADOW_ONLY',True)
+  self.emit(kind,timestamp=stamp.isoformat(),strategy_version=STRATEGY_VERSION,**data)
  def update(self,rows,stamp):
   if isinstance(stamp,str):stamp=datetime.fromisoformat(stamp)
   if self.epoch!=stamp.date():
@@ -67,8 +91,10 @@ class ShadowObserver:
   if reset and not self.detector.continuous_observation:self.event('SHADOW_DATA_RESET',received,symbol=t.symbol,reason='STALE_TICK_GAP',gap_seconds=(t.time-old.time).total_seconds())
   previous=self.last_log.get(t.symbol)
   if previous and (received-previous[0]).total_seconds()<self.eval_seconds:return
-  view=dict(row.get('shadow_view',row));view['status']='WATCH' if view.get('status')=='ELIGIBLE' else view.get('status')
+  view=make_evaluation_view(row)
   sig=self.detector.signal(t,view);gates=self.detector.evaluation_gates(t,view)
+  if sig:
+   sig['SHADOW_ONLY']=True;sig['actual_order_permission']=False;sig['diagnostic_only']=True
   history=list(self.detector.history.get(t.symbol,[]));usable=[]
   for bar in reversed(history):
    if bar['first_second']>self.cfg.stale_seconds:break
@@ -86,6 +112,16 @@ class ShadowObserver:
    virtual={'limit':floor_tick(min(t.ask,setup['breakout']*(1+self.cfg.max_chase))),'stop':floor_tick(setup['support']*(1-self.cfg.structural_buffer))} if setup else None
    sizing=self.risk({'symbol':t.symbol,**virtual}) if virtual and self.risk else self.virtual_size(virtual) if virtual else None
    trials.append({'setup':name,'candidate_generated':bool(setup),'failed_reasons':why+pre+failed,'gates':trial,'virtual_entry':virtual['limit'] if virtual else None,'virtual_invalidation':virtual['stop'] if virtual else None,'invalidation_ticks':(virtual['limit']-virtual['stop'])/tick_size(t.price) if virtual else None,'virtual_risk_quantity':sizing,'risk_basis':'DIAGNOSTIC_SIZING_ONLY_NOT_ORDER_AUTHORIZATION'})
+  self.observation_seq+=1
+  current_tier=calculate_tier(gates,trials,row)
+  prior_tier=self.last_tier.get(t.symbol)
+  if prior_tier!=current_tier:
+   self.last_tier[t.symbol]=current_tier
+   self.event('OBSERVATION_READINESS_CHANGED',received,symbol=t.symbol,
+              tier=current_tier,prior_tier=prior_tier,readiness_kind=TIER_NAMES.get(current_tier,'TIER_CHANGED'),
+              observation_seq=self.observation_seq,source_count=row.get('source_count'),
+              usable_completed_bars=len(usable),stored_completed_bars=len(history),
+              SHADOW_ONLY=True,actual_order_permission=False,diagnostic_only=True)
   signature=repr(([(k,v['result']) for k,v in gates.items()],[(x['setup'],x['candidate_generated'],x['failed_reasons']) for x in trials]))
   previous=self.last_log.get(t.symbol)
   if previous and previous[1]==signature and (received-previous[0]).total_seconds()<10:return
@@ -98,4 +134,4 @@ class ShadowObserver:
   budget=max(0,capital.get('entry_budget',0));risk=max(0,min(capital.get('risk_equity',capital.get('effective_auto_cap',0))*self.cfg.risk_fraction,capital.get('risk_remaining',float('inf'))))
   unit=entry-stop+self.detector.costs.roundtrip(entry,stop)+stop*self.cfg.exit_slippage_fraction
   quantity=max(0,min(int(budget//(entry*(1+self.auto.commission_buy))),int(risk//unit))) if 0<stop<entry and unit>0 and capital.get('account_fresh') else 0
-  return {'quantity':quantity,'risk_budget':risk,'risk_per_share':unit,'entry_budget':budget,'account_fresh':capital.get('account_fresh',False),'diagnostic_only':True}
+  return {'quantity':quantity,'risk_budget':risk,'risk_per_share':unit,'entry_budget':budget,'account_fresh':capital.get('account_fresh',False),'diagnostic_only':True,'SHADOW_ONLY':True,'actual_order_permission':False}

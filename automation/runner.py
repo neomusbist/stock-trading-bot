@@ -23,6 +23,7 @@ from automation.performance import report
 from automation.session import supported,assessment
 from automation.candidate_audit import CandidateAudit
 from automation.observation_settings import ObservationSettings,load_observation
+from automation.focus_selection import select_focus
 
 def error_record(error):
     record=exception_details(error)
@@ -109,11 +110,22 @@ def request_capital_refresh(engine,account,in_session):
         return True
     return False
 
-def qualify_raw(engine,rows,stamp):
+def qualify_raw(engine,rows,stamp,is_raw_phase=False):
     engine.source_qualification_seen=True
-    engine.source_qualification={row['code']:{'source_count':row.get('source_count',0),'timestamp':stamp,
-        'economic_reason':row.get('affordability',{}).get('reason_code'),
-        'fallback_source1':bool(row.get('fallback_source1'))} for row in rows}
+    current_qual=getattr(engine,'source_qualification',{})
+    new_qual={}
+    for row in rows:
+        sym=row['code']
+        fb=bool(row.get('fallback_source1'))
+        if is_raw_phase and not fb and sym in current_qual:
+            fb=bool(current_qual[sym].get('fallback_source1'))
+        new_qual[sym]={
+            'source_count':row.get('source_count',0),
+            'timestamp':stamp,
+            'economic_reason':row.get('affordability',{}).get('reason_code'),
+            'fallback_source1':fb
+        }
+    engine.source_qualification=new_qual
 
 class SubscriptionState:
     """구독 변경은 소켓/계좌 연결과 별개이며 추가 종목만 새 정규장 틱을 기다린다."""
@@ -199,6 +211,63 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
         if tick.symbol in observed and tick.symbol not in priority and tick.symbol not in critical:detector.ingest(tick,now())
     return drops,priority
 
+def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_evaluated_frame=None):
+    if not watch or not engine.connected: return None
+    if last_evaluated_frame is not None:
+        key=(t.time,t.cumulative)
+        if last_evaluated_frame.get(t.symbol)==key:return None
+        last_evaluated_frame[t.symbol]=key
+    src_count=watch.get('source_count',len(watch.get('source_details',{})) if 'source_details' in watch else engine.a.min_source_count)
+    if src_count<max(2,engine.a.min_source_count) and not watch.get('fallback_source1'):
+        engine.event('NO_TRADE',symbol=t.symbol,reason='SOURCE_COUNT_BUY_PERMISSION_DENIED');return None
+    engine.names[t.symbol]=watch.get('name')
+    engine.market_status[t.symbol]=watch.get('market_status',{'pass':None,'reason_code':'MARKET_STATUS_UNKNOWN'})
+    sig=detector.signal(t,watch)
+    if not sig:
+        gates=detector.evaluation_gates(t,watch)
+        failed=[k for k,v in gates.items() if v['result']=='FAIL']
+        engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','PATTERN_OR_GATE_NOT_READY',
+            gates,price=t.price,extra={'failed_gates':failed,'signal_detected':False,'setup_trials':detector.last_eval.get(t.symbol,{}).get('trials',[])})
+        return None
+    sig['name']=watch.get('name')
+    sig['candidate_detected_at']=watch.get('observed_at')
+    sig['fallback_source1']=bool(watch.get('fallback_source1'))
+    bars=radar.cache.get((t.time.date(),t.symbol))
+    if not bars:
+        engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','HISTORY_UNAVAILABLE',
+            detector.evaluation_gates(t,watch),signal=sig,price=t.price)
+        return None
+    fresh=structure(bars,sig['limit'],replace(engine.c,max_recent_range=.99,min_resistance_room=0 if sig['pattern'] in {'A','C'} else engine.c.min_resistance_room),t.time.date())
+    if fresh.get('status')!='ELIGIBLE':
+        from automation.decisions import gate
+        engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','STRUCTURE_REJECTED',
+            {'structure':gate(False,**fresh)},signal=sig,price=t.price)
+        engine.event('NO_TRADE',symbol=t.symbol,reason=fresh['reason']); return None
+    sig=detector.signal(t,{**watch,**fresh})
+    if not sig:
+        engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','FRESH_STRUCTURE_SIGNAL_NOT_READY',
+            detector.evaluation_gates(t,{**watch,**fresh}),price=t.price)
+        return None
+    sig['name']=watch.get('name')
+    sig['candidate_detected_at']=watch.get('observed_at')
+    for sym,p in (list(engine.s['positions'].items()) if engine.a.replacement_enabled else []):
+        if sym==t.symbol or p.get('exit_requested'): continue
+        history=radar.cache.get((t.time.date(),sym)); price=prices.get(sym)
+        if not history or not price: continue
+        view=structure(history,price,replace(engine.c,max_recent_range=.99),t.time.date())
+        held={'price':price,'support':p['stop'],'resistance':view.get('resistance'),
+              'confidence':p['signal']['efficiency']['inputs']['confidence'],
+              'planned_minutes':p['signal']['efficiency']['inputs']['planned_minutes'],
+              'holding_minutes':(now()-datetime.fromisoformat(p['opened'])).total_seconds()/60,
+              'trend':'UP' if price>p['avg'] else 'WEAK','pattern':p['pattern']}
+        result=comparison(held,sig,engine.a,engine.costs,engine.market,engine.s['trades'])
+        engine.event('OPPORTUNITY_COMPARISON',symbol=sym,candidate=t.symbol,comparison=result)
+        if result['decision']=='REPLACE' and engine.policy.mode=='LIVE' and not engine.new_entry_reason(t.symbol):
+            engine.request_exit(sym,'비용/안전마진 포함 상대효율 교체')
+    o=engine.enter(sig,t)
+    account.need_fills=bool(engine.active_orders())
+    return o
+
 def process_message(engine,detector,message,received,symbols,lookup,radar,prices,account,radar_ok,subscriptions=None):
     tr=message.get('trnm')
     if tr in {'ERROR','DISCONNECTED'}:
@@ -228,62 +297,12 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
             if not detector.ingest(t,now()):continue
             if subscriptions is not None:subscriptions.accepted(t.symbol)
             accepted+=1; prices[t.symbol]=t.bid or t.price
-            # 중간에 시작했을 때 장시작 이벤트를 못 받은 경우, 신선한 정규장 체결의 공식 FID 290으로 확인.
             if engine.market=='UNKNOWN': engine.market='3'
             finished=list(detector.completed.get(t.symbol,[]))
             engine.on_tick(t,finished[-1]['low'] if finished else None)
             watch=lookup.get(t.symbol)
             if not watch or not radar_ok or not engine.connected: continue
-            src_count=watch.get('source_count',len(watch.get('source_details',{})) if 'source_details' in watch else engine.a.min_source_count)
-            if src_count<max(2,engine.a.min_source_count) and not watch.get('fallback_source1'):
-                engine.event('NO_TRADE',symbol=t.symbol,reason='SOURCE_COUNT_BUY_PERMISSION_DENIED');continue
-            engine.names[t.symbol]=watch.get('name')
-            engine.market_status[t.symbol]=watch.get('market_status',{'pass':None,'reason_code':'MARKET_STATUS_UNKNOWN'})
-            sig=detector.signal(t,watch)
-            if not sig:
-                gates=detector.evaluation_gates(t,watch)
-                failed=[k for k,v in gates.items() if v['result']=='FAIL']
-                engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','PATTERN_OR_GATE_NOT_READY',
-                    gates,price=t.price,extra={'failed_gates':failed,'signal_detected':False,'setup_trials':detector.last_eval.get(t.symbol,{}).get('trials',[])})
-                continue
-            sig['name']=watch.get('name')
-            sig['candidate_detected_at']=watch.get('observed_at')
-            sig['fallback_source1']=bool(watch.get('fallback_source1'))
-            bars=radar.cache.get((t.time.date(),t.symbol))
-            if not bars:
-                engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','HISTORY_UNAVAILABLE',
-                    detector.evaluation_gates(t,watch),signal=sig,price=t.price)
-                continue
-            fresh=structure(bars,sig['limit'],replace(engine.c,max_recent_range=.99,min_resistance_room=0 if sig['pattern'] in {'A','C'} else engine.c.min_resistance_room),t.time.date())
-            if fresh.get('status')!='ELIGIBLE':
-                from automation.decisions import gate
-                engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','STRUCTURE_REJECTED',
-                    {'structure':gate(False,**fresh)},signal=sig,price=t.price)
-                engine.event('NO_TRADE',symbol=t.symbol,reason=fresh['reason']); continue
-            sig=detector.signal(t,{**watch,**fresh})
-            if not sig:
-                engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','FRESH_STRUCTURE_SIGNAL_NOT_READY',
-                    detector.evaluation_gates(t,{**watch,**fresh}),price=t.price)
-                continue
-            sig['name']=watch.get('name')
-            sig['candidate_detected_at']=watch.get('observed_at')
-            # 현재 보유의 기회비용 비교. 교체 청산 뒤에도 새 틱으로 다시 진입 검증한다.
-            for sym,p in (list(engine.s['positions'].items()) if engine.a.replacement_enabled else []):
-                if sym==t.symbol or p.get('exit_requested'): continue
-                history=radar.cache.get((t.time.date(),sym)); price=prices.get(sym)
-                if not history or not price: continue
-                view=structure(history,price,replace(engine.c,max_recent_range=.99),t.time.date())
-                held={'price':price,'support':p['stop'],'resistance':view.get('resistance'),
-                      'confidence':p['signal']['efficiency']['inputs']['confidence'],
-                      'planned_minutes':p['signal']['efficiency']['inputs']['planned_minutes'],
-                      'holding_minutes':(now()-datetime.fromisoformat(p['opened'])).total_seconds()/60,
-                      'trend':'UP' if price>p['avg'] else 'WEAK','pattern':p['pattern']}
-                result=comparison(held,sig,engine.a,engine.costs,engine.market,engine.s['trades'])
-                engine.event('OPPORTUNITY_COMPARISON',symbol=sym,candidate=t.symbol,comparison=result)
-                if result['decision']=='REPLACE' and engine.policy.mode=='LIVE' and not engine.new_entry_reason(t.symbol):
-                    engine.request_exit(sym,'비용/안전마진 포함 상대효율 교체')
-            engine.enter(sig,t)
-            account.need_fills=bool(engine.active_orders())
+            evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,getattr(engine,'_last_eval_frame',None))
     return accepted
 
 class ReadOnlyPilotPolicy:
@@ -347,7 +366,8 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False):
     observation_rest=Rest(replace(effective,live_mode=False),auth_session=rest.auth_session);observation_rest.session_guard=lambda:supported(now());observation_rest.diagnostic_only=True
     shadow=ObservationWorker(effective,auto,engine.costs,root,observation_rest);shadow.start()
     shadow_state={};observation_drops=0
-    lookup={}; rows=[]; prices={}; counts={'ticks':0,'radar_cycles':0,'account_checks':0,'subscription_acks':0}
+    lookup={}; rows=[]; by_symbol={}; prices={}; counts={'ticks':0,'radar_cycles':0,'account_checks':0,'subscription_acks':0}
+    engine._last_eval_frame={}
     last_radar=0.; radar_ok=False; last_report=0.; last_heartbeat=0.;last_board=0.; started=now(); stop_at=time.monotonic()+seconds if seconds else None
     smoke_ended=False; fatal=''; account_generation=0; kill_requested_at=None
     data_active=False; ever_started=False; blocked_day=None; reporter.start()
@@ -405,11 +425,11 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False):
                         radar_ok=False; engine.event('RADAR_UNAVAILABLE',**{k:v for k,v in result.items() if k!='time'})
                     else:
                         if result.get('phase')=='RAW':
-                            qualify_raw(engine,result['rows'],result['time'])
+                            qualify_raw(engine,result['rows'],result['time'],is_raw_phase=True)
                             engine.event('RAW_CANDIDATES',observed_at=result['time'],raw_count=len(result['rows']),
                                 candidates=[{k:row.get(k) for k in ('code','name','first_raw_at','first_raw_price','reference_price','source_count','affordability')} for row in result['rows']])
                             continue
-                        if 'source_observed_at' in result or any('source_count' in row for row in result['rows']):qualify_raw(engine,result['rows'],result.get('source_observed_at',result['time']))
+                        if 'source_observed_at' in result or any('source_count' in row for row in result['rows']):qualify_raw(engine,result['rows'],result.get('source_observed_at',result['time']),is_raw_phase=False)
                         if engine.candidate_audit.started:
                             summary=engine.candidate_audit.summary(now().isoformat(),engine.capital_context())
                             atomic_json(root/'runtime/candidate_summary.json',summary)
@@ -420,8 +440,6 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False):
                         for sym in prior_watch^set(lookup):
                             row=by_symbol.get(sym,{})
                             engine.event('WATCH_TRANSITION',symbol=sym,name=row.get('name'),source_count=row.get('source_count'),
-                                from_status='WATCH' if sym in prior_watch else 'OBSERVE',to_status='WATCH' if sym in lookup else 'SHADOW_OR_UNSUBSCRIBED',
-                                reason=row.get('reason','RAW_SOURCE_MISSING'),observed_at=result['time'],
                                 data_action='RETAIN_CONTINUOUS_IF_SUBSCRIBED' if sym in detector.last else 'NO_DATA',
                                 stored_completed_bars=len(detector.history.get(sym,[])),usable_completed_bars=len(detector.usable_bars(sym)))
                         engine.candidate_audit.begin(rows,result['time'],result.get('capital_context',engine.capital_context()))
@@ -440,6 +458,50 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False):
                         engine.event('CANDIDATE_LATENCY',**result.get('performance',{}))
                         last_radar=time.monotonic(); counts['radar_cycles']+=1
                         engine.event('RADAR_UPDATED',watch=list(lookup),changes=result['changes'])
+                while in_session and hasattr(shadow,'focus_notifications') and not shadow.focus_notifications.empty():
+                    notif=shadow.focus_notifications.get_nowait()
+                    try:
+                        notif_dt=datetime.fromisoformat(notif.detected_at)
+                        notif_age=(now()-notif_dt).total_seconds()
+                    except Exception:notif_age=float('inf')
+                    if not -1<=notif_age<=5.0:
+                        engine.event('FOCUS_SELECTION_BLOCKED',symbol=notif.symbol,reason='NOTIFICATION_STALE')
+                        continue
+                    readiness=shadow.runtime_view().get('evaluations',{})
+                    selection=select_focus(
+                        current_watch=lookup,
+                        candidates=rows,
+                        readiness_map=readiness,
+                        max_watchlist=auto.max_watchlist,
+                        fallback_source1=auto.fallback_source1,
+                        clock_iso=now().isoformat()
+                    )
+                    if not selection.applied:
+                        if notif.symbol in selection.blocked_reasons:
+                            engine.event('FOCUS_SELECTION_BLOCKED',symbol=notif.symbol,reason=selection.blocked_reasons[notif.symbol])
+                        continue
+                    for dem in selection.demoted:
+                        lookup.pop(dem,None)
+                        if dem in engine.source_qualification:
+                            engine.source_qualification[dem]['fallback_source1']=False
+                    for prom in selection.promoted:
+                        prom_row=by_symbol.get(prom)
+                        if prom_row:
+                            lookup[prom]=prom_row
+                            is_fb=(prom_row.get('source_count',0)==1)
+                            if prom in engine.source_qualification:
+                                engine.source_qualification[prom]['fallback_source1']=is_fb
+                    engine.event('FOCUS_SELECTION_APPLIED',
+                                 promoted=selection.promoted,
+                                 demoted=selection.demoted,
+                                 next_watch=selection.next_watch,
+                                 previous_watch=selection.previous_watch,
+                                 primary_reason=selection.primary_reason,
+                                 applied_at=selection.focus_epoch)
+                    for prom in selection.promoted:
+                        prom_tick=detector.last.get(prom)
+                        if prom_tick and (now()-prom_tick.time).total_seconds()<=effective.stale_seconds:
+                            evaluate_actual_entry(engine,detector,prom_tick,lookup[prom],radar,prices,account,getattr(engine,'_last_eval_frame',None))
                 if last_radar and time.monotonic()-last_radar>auto.scan_seconds*3: radar_ok=False
                 # 실제 수량 변동 뒤에도 다음 후보 주기에서 같은 현금 상한을 사용한다.
                 context=engine.capital_context(); prior_context=radar.capital_context

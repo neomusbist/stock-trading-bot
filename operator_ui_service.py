@@ -5,7 +5,7 @@ from datetime import datetime
 from core.util import ProcessLock, atomic_json
 from operator_service import OperatorService, read_json, tail_events, age, in_window, decision_line, STRATEGY_VERSION
 from automation.policy import Policy, HARD_LOCKS, EXISTING_POLICIES, BREAKEVEN_EXITS
-from automation.session import supported
+from automation.session import supported, SessionPlan
 from automation.decisions import BUILD_ID
 from local_diagnostics import redact
 
@@ -170,6 +170,20 @@ def extract_important_events(log_rows, max_events=40):
             item = (stamp, '연결 수립', '시스템', '실시간 시세 및 브로커 연결 수립')
         elif kind == 'DISCONNECTED':
             item = (stamp, '연결 단절', '시스템', str(r.get('message', '연결 해제됨')))
+        elif kind == 'OBSERVATION_READINESS_CHANGED':
+            tier_name = r.get('readiness_kind') or f"Tier {r.get('tier')}"
+            target = f"{name} ({sym})" if sym else name
+            item = (stamp, '준비도 변화', target, f"관찰 준비도 전환: {tier_name} (보유봉 {r.get('usable_completed_bars',0)}/{r.get('stored_completed_bars',0)})")
+        elif kind == 'FOCUS_PROMOTION_REQUESTED':
+            target = f"{name} ({sym})" if sym else name
+            item = (stamp, '승격 요청', target, f"Focus 승격 요청: {r.get('primary_reason') or r.get('tier')}")
+        elif kind == 'FOCUS_SELECTION_APPLIED':
+            item = (stamp, 'Focus 적용', '시스템', f"WATCH 교체: +{r.get('promoted')} -{r.get('demoted')}")
+        elif kind == 'FOCUS_SELECTION_BLOCKED':
+            target = f"{name} ({sym})" if sym else name
+            item = (stamp, 'Focus 보류', target, f"승격 보류: {r.get('reason')}")
+        elif kind in ('SESSION_PLAN', 'ENTRY_WINDOW_CHANGED'):
+            item = (stamp, '세션 계획', '시스템', f"신규매수 마감 {r.get('effective_new_entry_end','14:55')}, 청산 {r.get('force_flatten_start','15:10')}")
 
         if item:
             events.append(item)
@@ -213,7 +227,8 @@ def presentation(s):
     elif running: operation='자동매매 중' if s['trading_on'] else '시장 관찰 / 주문 대기'
     else: operation='정지'
     clock=datetime.fromisoformat(s['time'])
-    market='운영시간 밖' if not s['supported'] else '신규진입 마감' if clock.strftime('%H:%M:%S')>=s.get('entry_cutoff','15:05:00') else '신규거래 시간 / 정규장 확인' if s.get('market_confirmed') else '신규거래 시간 / 시장 현재성 미확인'
+    eff_cutoff=s.get('effective_new_entry_end','14:55:00')
+    market='운영시간 밖' if not s['supported'] else '신규진입 마감' if clock.strftime('%H:%M:%S')>=s.get('entry_cutoff','15:05:00') else '관찰 중 · 신규매수 종료' if clock.strftime('%H:%M:%S')>=eff_cutoff else '신규거래 시간 / 정규장 확인' if s.get('market_confirmed') else '신규거래 시간 / 시장 현재성 미확인'
     safety='HALT — 안전중단' if s.get('halt') else '주의 — 보호정책 확인 필요' if not s['hard_ok'] else '주의 — 불명확 주문' if s['uncertain'] else '주의 — 현재 오류' if s.get('active_error') else '주의 — 프로세스 응답 지연' if running and s['process'].get('managed') and not s['process'].get('process_heartbeat_fresh') else '주의 — 계좌 / 실시간 확인 필요' if running and (not s.get('account_fresh') or s['websocket']!='현재 연결 정상') else '정상 / 계좌·실시간 연결 확인' if s['supported'] and s.get('account_fresh') and s['websocket']=='현재 연결 정상' else '로컬 상태 정상 / 실계좌 미확인'
     return operation,market,safety
 
@@ -283,6 +298,7 @@ class UserOperations(OperatorService):
             market_code=hb.get('market'),session_classification=hb.get('session'),
             subscription_acks=hb.get('counts',{}).get('subscription_acks'),
             candidate_refresh_seconds=auto.scan_seconds,entry_cutoff=auto.new_entry_cutoff,flatten_start=auto.force_flatten_start,
+            effective_new_entry_end=SessionPlan(hard_new_entry_end=auto.new_entry_cutoff,force_flatten_start=auto.force_flatten_start,allow_overnight=auto.ALLOW_OVERNIGHT).effective_new_entry_end,
             cash_fresh=cash_fresh,account_fresh=cash_fresh and s['account']=='현재 조회 정상',
             decision_rows=redact([r for r in rows if r.get('decision')][-10:]),
             log_rows=redact(rows[-80:]),orders=redact(list(state.get('orders',{}).values())[-100:]),

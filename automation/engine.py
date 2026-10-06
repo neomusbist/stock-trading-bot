@@ -10,7 +10,7 @@ from core.settings import KST
 from core.util import code, floor_tick,read_json_retry,atomic_json
 from automation.capital import Costs, initial_allocation, owned_equity
 from automation.policy import LEGACY_SYMBOL,BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL,HARD_LOCKS,legacy_test_release_enabled
-from automation.session import supported
+from automation.session import supported, SessionPlan
 from automation.decisions import DecisionLog,gate,STRATEGY_VERSION,safe_values
 from automation.existing import ExistingExits
 
@@ -64,6 +64,8 @@ class AutonomousEngine(ExistingExits,Engine):
         if prior_hash and prior_hash!=auto.fingerprint() and (self.s['positions'] or self.active_orders()):
             raise RuntimeError('관리 중 자동운용 설정 변경: 저장된 설정으로 복구 필요')
         self.s['automation']['config_hash']=auto.fingerprint()
+        min_rem=getattr(auto,'minimum_remaining_minutes',0)
+        self.session_plan=SessionPlan(hard_new_entry_end=auto.new_entry_cutoff,force_flatten_start=auto.force_flatten_start,minimum_remaining_minutes=min_rem,allow_overnight=auto.ALLOW_OVERNIGHT)
         self.broker.order_guard=self.order_guard
         self.broker.test_release_authorizer=self.test_release_authorized
         self.recover_test_release()
@@ -75,7 +77,8 @@ class AutonomousEngine(ExistingExits,Engine):
         self.save()
 
     def entry_window(self):
-        return supported(self.clock()) and self.market=='3' and self.clock().strftime('%H:%M:%S')<self.a.new_entry_cutoff
+        cutoff=getattr(self,'session_plan',None).effective_new_entry_end if hasattr(self,'session_plan') else self.a.new_entry_cutoff
+        return supported(self.clock()) and self.market=='3' and self.clock().strftime('%H:%M:%S')<cutoff
 
     def event(self,kind,**data):
         # 기존 이벤트명/체결 순서는 유지하고 공통 식별정보만 보강한다.
@@ -119,7 +122,8 @@ class AutonomousEngine(ExistingExits,Engine):
         if not supported(self.clock()): return 'OUT_OF_SUPPORTED_SESSION'
         if symbol in HARD_LOCKS or self.policy.locked(symbol): return 'HARD_LOCK'
         if symbol in BREAKEVEN_EXITS or (symbol==TEST_RELEASE_SYMBOL and legacy_test_release_enabled()): return 'EXISTING_POLICY_NO_BUY'
-        if self.clock().strftime('%H:%M:%S')>=self.a.new_entry_cutoff: return 'NEW_ENTRY_CUTOFF'
+        cutoff=min(self.a.new_entry_cutoff,getattr(self,'session_plan',SessionPlan()).effective_new_entry_end)
+        if self.clock().strftime('%H:%M:%S')>=cutoff: return 'NEW_ENTRY_CUTOFF'
         status=self.market_status.get(symbol)
         if not status or status.get('pass') is not True: return (status or {}).get('reason_code','MARKET_STATUS_UNKNOWN')
         if status.get('checked_at'):
@@ -185,7 +189,7 @@ class AutonomousEngine(ExistingExits,Engine):
             'efficiency':gate(signal.get('efficiency',{}).get('decision')=='TRADE',efficiency=signal.get('efficiency'))}
 
     def enter(self,signal,tick):
-        if signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or ('source_count' in signal and signal['source_count']<max(2,self.a.min_source_count) and not signal.get('fallback_source1')):
+        if signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or signal.get('diagnostic_only') is True or ('source_count' in signal and signal['source_count']<max(2,self.a.min_source_count) and not signal.get('fallback_source1')):
             self.decisions.emit('ENTRY_EVAL',tick.symbol,'NO_BUY','OBSERVATION_NOT_BUY_PERMISSION',signal=signal,price=tick.price);return None
         from automation.allocation import apply_empirical
         try:
@@ -233,6 +237,7 @@ class AutonomousEngine(ExistingExits,Engine):
     def submit(self,side,symbol,qty,limit=0,signal=None):
         # 강제로 생성한 주문도 같은 경계를 통과하며 ARMED에는 모의체결도 만들지 않는다.
         if not supported(self.clock()) or symbol in HARD_LOCKS or self.policy.locked(symbol): return None
+        if side=='BUY' and signal and (signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or signal.get('diagnostic_only') is True): return None
         if side=='BUY' and self.new_entry_reason(symbol): return None
         if side=='BUY' and (signal is not self.entry_intent or signal is None): return None
         if side=='SELL':
@@ -289,7 +294,7 @@ class AutonomousEngine(ExistingExits,Engine):
         if len(intents)!=1: raise Rejected('저장된 봇 주문 의도 없는 직접 주문 차단')
         if side=='BUY':
             signal=intents[0].get('signal') or {}
-            if signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or ('source_count' in signal and signal['source_count']<max(2,self.a.min_source_count) and not signal.get('fallback_source1')):raise Rejected('OBSERVATION_NOT_BUY_PERMISSION')
+            if signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or signal.get('diagnostic_only') is True or ('source_count' in signal and signal['source_count']<max(2,self.a.min_source_count) and not signal.get('fallback_source1')):raise Rejected('OBSERVATION_NOT_BUY_PERMISSION')
             reason=self.new_entry_reason(sym)
             if reason or not self.entry_window() or not self.connected or not self.account_ok or self.s['halt']:
                 raise Rejected(reason or '시장/계좌/연결 조건 미충족')

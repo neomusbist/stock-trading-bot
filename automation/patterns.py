@@ -1,4 +1,5 @@
 """완성된 봉과 현재까지 수신한 틱만으로 A/B/C 모멘텀 지속 패턴을 판별한다."""
+from datetime import timedelta
 from collections import deque
 from dataclasses import replace
 from core.strategy import Detector
@@ -14,10 +15,11 @@ class PatternDetector(Detector):
         self.a=auto; self.costs=costs; self.history={}; self.current={}; self.day_high={}; self.prior_high={}
         self.last_eval={}
         self.continuous_observation=False
+        self.last_gap_reason={}
 
     def reset(self):
         super().reset(); self.history.clear(); self.current.clear(); self.day_high.clear(); self.prior_high.clear()
-        self.last_eval.clear()
+        self.last_eval.clear(); self.last_gap_reason.clear()
 
     def ingest(self,t,received):
         if not supported(t.time) or not supported(received): return False
@@ -25,18 +27,28 @@ class PatternDetector(Detector):
         if not super().ingest(t,received,preserve_observation=self.continuous_observation): return False
         if old and (t.time-old.time).total_seconds()>self.cfg.stale_seconds and not self.continuous_observation:
             self.history.pop(t.symbol,None); self.current.pop(t.symbol,None)
+            self.last_gap_reason[t.symbol]='DISCONNECT_GAP'
         self.prior_high[t.symbol]=self.day_high.get(t.symbol,t.price)
         self.day_high[t.symbol]=max(t.price,self.day_high.get(t.symbol,t.price))
         minute=t.time.replace(second=0,microsecond=0); b=self.current.get(t.symbol)
         if b and b['time']!=minute:
             if (minute-b['time']).total_seconds()==60:
                 self.history.setdefault(t.symbol,deque(maxlen=30)).append(b)
-            else: self.history.pop(t.symbol,None)
+            else:
+                self.history.pop(t.symbol,None)
+                self.last_gap_reason[t.symbol]='MISSING_MINUTE'
             b=None
         if b is None:
-            b={'time':minute,'open':t.price,'high':t.price,'low':t.price,'close':t.price,'volume':0,'first_second':t.time.second}
+            gap_reason=None if t.time.second<=self.cfg.stale_seconds else 'FIRST_TRADE_AFTER_5S_COVERAGE_UNKNOWN'
+            b={'time':minute,'open':t.price,'high':t.price,'low':t.price,'close':t.price,'volume':0,
+               'first_second':t.time.second,'last_second':t.time.second,
+               'first_trade_time':t.time.isoformat(),'last_trade_time':t.time.isoformat(),
+               'tick_count':0,'coverage_start':minute.isoformat(),
+               'coverage_end':(minute+timedelta(seconds=60)).isoformat(),
+               'local_drop_count':0,'gap_reason':gap_reason}
             self.current[t.symbol]=b
         b['high']=max(b['high'],t.price); b['low']=min(b['low'],t.price); b['close']=t.price; b['volume']+=t.volume
+        b['last_second']=t.time.second; b['last_trade_time']=t.time.isoformat(); b['tick_count']+=1
         return True
 
     def pullback(self,bars):
@@ -60,6 +72,26 @@ class PatternDetector(Detector):
             if bar['first_second']>self.cfg.stale_seconds:break
             valid.append(bar)
         return list(reversed(valid))
+
+    def quality_summary(self,symbol):
+        history=list(self.history.get(symbol,[]))
+        usable=self.usable_bars(symbol)
+        stored_count=len(history)
+        usable_count=len(usable)
+        diff_reason=None
+        if stored_count>usable_count:
+            inv_idx=stored_count-usable_count-1
+            if 0<=inv_idx<stored_count:
+                inv_bar=history[inv_idx]
+                diff_reason=inv_bar.get('gap_reason') or ('FIRST_TRADE_AFTER_5S_COVERAGE_UNKNOWN' if inv_bar.get('first_second',0)>self.cfg.stale_seconds else 'PARTIAL_SUBSCRIPTION_START')
+        elif stored_count==0 and symbol in self.last_gap_reason:
+            diff_reason=self.last_gap_reason[symbol]
+        return {
+            'stored_completed_bars':stored_count,
+            'usable_completed_bars':usable_count,
+            'difference_reason':diff_reason,
+            'data_quality_status':'DATA_QUALITY_CHANGE_UNVERIFIED'
+        }
 
     def observation_fresh(self,symbol,stamp):
         last=self.last.get(symbol)

@@ -160,17 +160,33 @@ class RadarWorker:
         self.cfg=cfg; self.a=auto; self.rest=rest; self.root=Path(root); self.radar=DynamicRadar(cfg,auto,policy,fallback_source1=fallback_source1)
         self.q=queue.Queue(maxsize=2); self.stop=threading.Event(); self.request=threading.Event(); self.cache={}; self.fetched=0
         self.extra_symbols=set()
-        self.available_capital=0.; self.status_fetched=0
+        self.available_capital=0.; self.status_fetched=0; self.status_cache={}
         self.capital_context={}; self.refresh_account=None
         self.thread=threading.Thread(target=self.run,name='rank-radar',daemon=True)
         self.timings={'status_ms':0.,'history_ms':0.,'structure_ms':0.};self.cycle_samples=[]
         self.observation_sink=None;self.observation_allowed=True
 
+    def get_cached_metadata(self,symbol):
+        day=now().date()
+        bars=self.cache.get((day,symbol))
+        status=self.status_cache.get(symbol)
+        return {'bars':bars,'market_status':status}
+
     def evaluate(self,item):
         day=now().date(); sym=item['code']; key=(day,sym)
-        if self.status_fetched>=self.a.max_scan_charts: return {'status':'UNKNOWN','reason':'STATUS_SCAN_LIMIT'}
-        self.status_fetched+=1
-        status_started=time.perf_counter();status=self.rest.stock_status(sym);self.timings['status_ms']+=(time.perf_counter()-status_started)*1000
+        cached_status=self.status_cache.get(sym)
+        if cached_status and cached_status.get('checked_at'):
+            try:age=(now()-date_time.fromisoformat(cached_status['checked_at'])).total_seconds()
+            except (ValueError,TypeError):age=float('inf')
+            if -1<=age<=self.a.scan_seconds*3:
+                status=cached_status
+            else:cached_status=None
+        else:cached_status=None
+        if cached_status is None:
+            if self.status_fetched>=self.a.max_scan_charts: return {'status':'UNKNOWN','reason':'STATUS_SCAN_LIMIT'}
+            self.status_fetched+=1
+            status_started=time.perf_counter();status=self.rest.stock_status(sym);self.timings['status_ms']+=(time.perf_counter()-status_started)*1000
+            self.status_cache[sym]=status
         if status['pass'] is not True:
             return {'status':'REJECT' if status['pass'] is False else 'UNKNOWN','reason':status['reason_code'],'market_status':status}
         history_started=time.perf_counter()
@@ -196,6 +212,7 @@ class RadarWorker:
 
     def run(self):
         while not self.stop.is_set():
+            cycle_started_mono=time.monotonic()
             try:
                 cycle_started=time.perf_counter()
                 self.timings={'status_ms':0.,'history_ms':0.,'structure_ms':0.}
@@ -243,7 +260,9 @@ class RadarWorker:
                         return_code=e.response.get('return_code') if e.response else None,
                         return_msg=e.response.get('return_msg') if e.response else None)
                 self.emit(error)
-            self.request.wait(self.a.scan_seconds); self.request.clear()
+            elapsed=time.monotonic()-cycle_started_mono
+            wait_time=max(0.,self.a.scan_seconds-elapsed)
+            self.request.wait(wait_time); self.request.clear()
             if self.stop.is_set(): break
     def start(self): self.thread.start()
     def close(self): self.stop.set(); self.request.set(); self.thread.join(timeout=1)

@@ -12,6 +12,8 @@ from automation.policy import HARD_LOCKS, BREAKEVEN_EXITS, TEST_RELEASE_SYMBOL
 from automation.shadow_observation import ShadowObserver
 from core.settings import now
 from automation.observation_settings import load_observation
+from automation.radar import observation_structure
+from automation.focus_selection import FocusNotification
 
 class ObservationWorker:
     def __init__(self,cfg,auto,costs,root,rest=None,limit=32):
@@ -22,6 +24,7 @@ class ObservationWorker:
         self.observer.detector.continuous_observation=True
         self.observer.eval_seconds=self.settings.evaluation_seconds
         self.updates=queue.Queue(maxsize=1); self.prepared=queue.Queue(maxsize=1); self.ticks=queue.Queue(maxsize=4096)
+        self.focus_notifications=queue.Queue(maxsize=32)
         self.stop=threading.Event(); self.lock=threading.Lock(); self.event_lock=threading.Lock(); self.snapshot={}
         self.runtime_snapshot={'symbols':(), 'evaluations':{}}
         self.metadata={}; self.dropped=0; self.apis=0; self.tick_ms=0.; self.prepare_ms=0.
@@ -38,6 +41,17 @@ class ObservationWorker:
             with self.lock:
                 self.snapshot.setdefault('evaluations',{})[data['symbol']]=record
                 self.runtime_snapshot['evaluations'][data['symbol']]=momentum
+        elif kind=='OBSERVATION_READINESS_CHANGED':
+            notif=FocusNotification(
+                symbol=data.get('symbol',''),
+                event_seq=data.get('event_seq',0),
+                observation_seq=data.get('observation_seq',0),
+                transport_epoch=str(data.get('transport_epoch','')),
+                detected_at=data.get('timestamp',self.clock().isoformat()),
+                tier=data.get('tier',3),
+                readiness_kind=data.get('readiness_kind','TIER_CHANGED')
+            )
+            self.latest_put(self.focus_notifications,notif)
     @staticmethod
     def latest_put(target,item):
         try:target.put_nowait(item)
@@ -93,7 +107,8 @@ class ObservationWorker:
                     chart_attempted=True;self.apis+=1;saved['last_chart_attempt']=clock
                     bars=fetch_bars(self.rest,sym,self.cfg,self.root/'data/observation',clock.date());saved['bars']=bars
                 if not bars:bars=saved.get('bars') or []
-                row['shadow_view']={**structure(bars,row['reference_price'],replace(self.cfg,max_recent_range=.99,min_resistance_room=0),clock.date()),'market_status':saved['status']}
+                struct=observation_structure(bars,row['reference_price'],self.cfg,clock.date())
+                row['shadow_view']={**struct,'market_status':saved['status']}
             except Exception as error:
                 row['shadow_view']={'status':'UNKNOWN','market_status':saved['status'],'reason':'SHADOW_HISTORY_UNKNOWN'}
                 self.event('SHADOW_METADATA_ERROR',timestamp=clock.isoformat(),symbol=sym,SHADOW_ONLY=True,**exception_details(error))
