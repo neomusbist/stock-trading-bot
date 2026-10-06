@@ -9,14 +9,18 @@ from automation.decisions import STRATEGY_VERSION
 class ShadowObserver:
  def __init__(self,cfg,auto,costs,emit,risk=None,limit=32):
   self.cfg=cfg;self.auto=auto;self.detector=PatternDetector(cfg,auto,costs);self.emit=emit;self.risk=risk;self.limit=limit;self.rows={};self.first={};self.last_log={};self.previous={}
-  self.capital={};self.epoch=None;self.eval_seconds=2;self.selected_at={};self.latest={}
+  self.capital={};self.epoch=None;self.eval_seconds=2;self.selected_at={};self.latest={};self.detached=set()
  def event(self,kind,stamp,**data):
   if kind=='SHADOW_EVAL':self.latest[data['symbol']]={'timestamp':stamp.isoformat(),**data}
   self.emit(kind,timestamp=stamp.isoformat(),strategy_version=STRATEGY_VERSION,SHADOW_ONLY=True,**data)
  def update(self,rows,stamp):
   if isinstance(stamp,str):stamp=datetime.fromisoformat(stamp)
   if self.epoch!=stamp.date():
-   self.detector.reset();self.first={};self.previous={};self.rows={};self.last_log={};self.selected_at={};self.latest={};self.epoch=stamp.date()
+   self.detector.reset();self.first={};self.previous={};self.rows={};self.last_log={};self.selected_at={};self.latest={};self.detached=set();self.epoch=stamp.date()
+  for sym in list(self.detached):
+   if not self.detector.observation_fresh(sym,stamp):
+    self.detector.forget(sym);self.detached.discard(sym)
+    self.event('SHADOW_DATA_RESET',stamp,symbol=sym,data_action='RESET_STALE_GAP')
   eligible=[]
   for row in rows:
    sym=row['code']
@@ -42,14 +46,17 @@ class ShadowObserver:
   selected={r['code']:r for r in eligible[:self.limit]}
   for row in eligible[self.limit:]:self.event('SHADOW_CAPACITY',stamp,symbol=row['code'],reason='DIAGNOSTIC_LIMIT',limit=self.limit)
   for sym,row in selected.items():
+   if sym in self.detached:
+    if not self.detector.observation_fresh(sym,stamp):self.detector.forget(sym)
+    self.detached.discard(sym)
    self.selected_at.setdefault(sym,stamp)
    prior=self.previous.get(sym);first_start=self.first[sym].setdefault('first_shadow_at',stamp.isoformat())
    if sym not in self.rows or not prior or (prior.get('source_count'),prior.get('status'))!=(row.get('source_count'),row.get('status')):
     last=self.detector.last.get(sym);fresh=bool(last and (stamp-last.time).total_seconds()<=self.cfg.stale_seconds)
     self.event('SHADOW_TRANSITION',stamp,symbol=sym,name=row.get('name'),**self.first[sym],from_status=(prior or {}).get('status'),to_status=row.get('status'),source_before=(prior or {}).get('source_count'),source_count=row.get('source_count'),reason=row.get('reason'),data_action='RETAIN_CONTINUOUS' if last and self.detector.continuous_observation else 'RETAIN_FRESH' if fresh else 'NO_DATA' if last is None else 'STALE_PENDING_RESET',live_detector_unchanged=True)
   for sym in self.rows.keys()-selected.keys():
-   self.event('SHADOW_ENDED',stamp,symbol=sym,reason='INELIGIBLE_OR_CAPACITY',data_action='RESET_UNSUBSCRIBED')
-   self.detector.forget(sym);self.selected_at.pop(sym,None);self.last_log.pop(sym,None);self.latest.pop(sym,None)
+   self.event('SHADOW_ENDED',stamp,symbol=sym,reason='INELIGIBLE_OR_CAPACITY',data_action='RETAIN_UNTIL_STALE_GAP')
+   self.detached.add(sym);self.selected_at.pop(sym,None);self.last_log.pop(sym,None);self.latest.pop(sym,None)
   self.rows=selected;self.previous.update(selected)
  def tick(self,t,received):
   row=self.rows.get(t.symbol)

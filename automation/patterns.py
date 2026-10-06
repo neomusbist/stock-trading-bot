@@ -61,6 +61,11 @@ class PatternDetector(Detector):
             valid.append(bar)
         return list(reversed(valid))
 
+    def observation_fresh(self,symbol,stamp):
+        last=self.last.get(symbol)
+        return bool(last and last.time.date()==stamp.date() and
+                    0<=(stamp-last.time).total_seconds()<=self.cfg.stale_seconds)
+
     def forget(self,symbol):
         for mapping in (self.buffers,self.minutes,self.completed,self.last,self.history,self.current,self.day_high,self.prior_high,self.last_eval):mapping.pop(symbol,None)
 

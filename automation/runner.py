@@ -1,5 +1,6 @@
 """일봉/계좌 조회는 별도 스레드, 주문/체결/보호 상태는 주 스레드 하나에서 변경한다."""
 import copy
+from contextlib import nullcontext
 import json
 import queue
 import threading
@@ -113,17 +114,105 @@ def qualify_raw(engine,rows,stamp):
     engine.source_qualification={row['code']:{'source_count':row.get('source_count',0),'timestamp':stamp,
         'economic_reason':row.get('affordability',{}).get('reason_code')} for row in rows}
 
-def process_message(engine,detector,message,received,symbols,lookup,radar,prices,account,radar_ok):
+class SubscriptionState:
+    """구독 변경은 소켓/계좌 연결과 별개이며 추가 종목만 새 정규장 틱을 기다린다."""
+    def __init__(self,symbols=()):
+        self.symbols=set(symbols); self.waiting={}; self.detached=set(); self.refresh_pending=False
+
+    def disconnected(self,stamp):
+        self.waiting={sym:stamp for sym in self.symbols}
+        self.detached.clear(); self.refresh_pending=False
+
+    def acknowledge(self):
+        self.refresh_pending=False
+
+    def refresh(self,engine,detector,feed,desired,stamp):
+        desired=set(desired)
+        for sym in list(self.detached-desired):
+            if not detector.observation_fresh(sym,stamp):
+                detector.forget(sym); self.detached.discard(sym)
+                engine.event('OBSERVATION_RELEASED',symbol=sym,data_action='RESET_STALE_GAP')
+        if desired==self.symbols:return False
+        added=desired-self.symbols; removed=self.symbols-desired
+        for sym in removed:
+            self.waiting.pop(sym,None)
+            self.detached.add(sym)
+            engine.event('OBSERVATION_RELEASED',symbol=sym,data_action='RETAIN_UNTIL_STALE_GAP',
+                stored_completed_bars=len(detector.history.get(sym,[])))
+        for sym in added:
+            had_data=sym in detector.last
+            fresh=detector.observation_fresh(sym,stamp)
+            if had_data and not fresh:detector.forget(sym)
+            self.detached.discard(sym); self.waiting[sym]=stamp
+            engine.event('OBSERVATION_REJOINED',symbol=sym,
+                data_action='RETAIN_FRESH' if fresh else 'RESET_STALE_GAP' if had_data else 'NO_DATA',
+                fresh_regular_tick_required=True)
+        feed.update_symbols(sorted(desired))
+        self.symbols=desired; self.refresh_pending=True
+        engine.event('SUBSCRIPTION_REFRESH',added=sorted(added),removed=sorted(removed),
+            connected=engine.connected,account_ok=engine.account_ok)
+        return True
+
+    def tick_ready(self,t,received):
+        since=self.waiting.get(t.symbol)
+        return since is None or (t.regular and t.time.date()==since.date() and t.time>=since and received>=since)
+
+    def accepted(self,symbol):
+        self.waiting.pop(symbol,None)
+
+def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,drops,sink=None):
+    """구독 라우팅 경계에서 승격 종목의 기존 예열 큐만 인계한다. 주문은 하지 않는다."""
+    priority=set(real_symbols)
+    if not isinstance(getattr(feed,'observation_q',None),queue.Queue):
+        if hasattr(feed,'configure_observation'):feed.configure_observation(priority,observed,sink)
+        return drops,priority
+    critical=set(engine.s['positions'])|{o['symbol'] for o in engine.active_orders()}
+    critical.update(set(engine.s['automation']['existing'])&set(BREAKEVEN_EXITS))
+    promotions=(priority-set(prior_priority))&observed-critical
+    promoted=[]
+    # emit도 같은 lock을 쓰므로 인계 경계 이후의 새 WATCH 틱은 REAL 큐로 간다.
+    with getattr(feed,'subscription_lock',nullcontext()):
+        if feed.observation_drops!=drops:
+            drops=feed.observation_drops
+            for sym in observed-set(prior_priority)-critical:detector.forget(sym)
+            engine.event('OBSERVATION_DATA_GAP',SHADOW_ONLY=True,dropped=drops,data_action='RESET_PREWARM',actual_order_permission=False)
+        if promotions:
+            remaining=[]
+            for _ in range(feed.observation_q.qsize()):
+                try:item=feed.observation_q.get_nowait()
+                except queue.Empty:break
+                feed.observation_q.task_done()
+                if item[1].symbol in promotions:promoted.append(item)
+                else:remaining.append(item)
+            for item in remaining:feed.observation_q.put_nowait(item)
+        feed.configure_observation(priority,observed,sink)
+    for index,(_,tick) in enumerate(promoted):
+        detector.ingest(tick,now())
+        if critical and (index+1)%64==0:engine.timer(engine.prices)
+    if promoted:
+        engine.event('OBSERVATION_PREWARM_HANDOFF',symbols=sorted(promotions),queued_ticks=len(promoted),
+            SHADOW_ONLY=True,actual_order_permission=False)
+    for _ in range(64):
+        try:observed_at,tick=feed.observation_q.get_nowait()
+        except queue.Empty:break
+        if tick.symbol in observed and tick.symbol not in priority and tick.symbol not in critical:detector.ingest(tick,now())
+    return drops,priority
+
+def process_message(engine,detector,message,received,symbols,lookup,radar,prices,account,radar_ok,subscriptions=None):
     tr=message.get('trnm')
     if tr in {'ERROR','DISCONNECTED'}:
-        engine.disconnect(); engine.account_ok=False; engine.reset_detector=True; detector.reset(); return 0
+        engine.disconnect(); engine.account_ok=False; engine.reset_detector=True; detector.reset()
+        if subscriptions is not None:subscriptions.disconnected(received)
+        return 0
     if tr=='REG':
         if message.get('return_code') not in (0,'0'):
             engine.halt('실시간 구독 실패'); return 0
         if not engine.connected:
             if getattr(engine,'reset_detector',True): detector.reset()
             engine.reset_detector=False; engine.account_ok=False; account.request.set()
-        engine.connected=True; return 0
+        engine.connected=True
+        if subscriptions is not None:subscriptions.acknowledge()
+        return 0
     accepted=0
     if tr!='REAL': return accepted
     for item in message.get('data',[]):
@@ -133,7 +222,10 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
         elif kind=='0s': update_market(engine,str(item['values']['215']))
         elif kind=='0B':
             t=parse_tick(item,received)
-            if t.symbol not in symbols or not detector.ingest(t,now()): continue
+            if t.symbol not in symbols:continue
+            if subscriptions is not None and not subscriptions.tick_ready(t,received):continue
+            if not detector.ingest(t,now()):continue
+            if subscriptions is not None:subscriptions.accepted(t.symbol)
             accepted+=1; prices[t.symbol]=t.bid or t.price
             # 중간에 시작했을 때 장시작 이벤트를 못 받은 경우, 신선한 정규장 체결의 공식 FID 290으로 확인.
             if engine.market=='UNKNOWN': engine.market='3'
@@ -243,6 +335,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False):
         radar_worker.observation_allowed=not bool(engine.s['positions'] or engine.active_orders())
         return (radar_worker,account_worker,Feed(rest,sorted(symbols)))
     symbols=set(engine.s['positions'])|{o['symbol'] for o in engine.active_orders()}
+    subscriptions=SubscriptionState(symbols); priority_symbols=set(symbols)
     radar,account,feed=clients()
     radar.refresh_account=account.request.set
     account.need_fills=bool(engine.active_orders())
@@ -359,13 +452,9 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False):
                 observed=set(shadow_state.get('symbols',[]))
                 engine.candidate_audit.shadow_count=len(observed)
                 desired.update(observed)
-                if hasattr(feed,'configure_observation'):feed.configure_observation(real_symbols,observed,shadow.deliver)
-                if in_session and desired!=symbols:
-                    for sym in symbols-desired:
-                        if sym not in engine.s['positions']:
-                            engine.event('OBSERVATION_RELEASED',symbol=sym,data_action='RESET_UNSUBSCRIBED',stored_completed_bars=len(detector.history.get(sym,[])))
-                            detector.forget(sym)
-                    engine.connected=False; account.request.set(); feed.update_symbols(sorted(desired)); symbols=desired
+                observation_drops,priority_symbols=prewarm_handoff(engine,detector,feed,observed,real_symbols,priority_symbols,observation_drops,shadow.deliver)
+                if in_session:
+                    subscriptions.refresh(engine,detector,feed,desired,now()); symbols=set(subscriptions.symbols)
                 if feed.overflow.is_set():
                     feed.overflow.clear(); engine.halt('실시간 수신 큐 초과'); detector.reset()
                     for sym in list(engine.s['positions']): engine.request_exit(sym,'수신 큐 초과')
@@ -373,25 +462,13 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False):
                     if not in_session: raise queue.Empty
                     received,message=feed.q.get(timeout=.25)
                     if message.get('trnm')=='REG' and message.get('return_code') in (0,'0'): counts['subscription_acks']+=1
-                    counts['ticks']+=process_message(engine,detector,message,received,real_symbols,lookup,radar,prices,account,radar_ok and not smoke_ended)
+                    counts['ticks']+=process_message(engine,detector,message,received,real_symbols,lookup,radar,prices,account,radar_ok and not smoke_ended,subscriptions)
                 except queue.Empty:
                     if not in_session: time.sleep(.25)
                 engine.timer(prices)
                 if isinstance(getattr(account,'external_prices',None),dict):
                     prior=account.external_prices;account.external_prices=dict(prices)
                     if any(prices.get(sym,0)>=threshold*(1-observation_settings.near_threshold_fraction) and prior.get(sym,0)<threshold*(1-observation_settings.near_threshold_fraction) for sym,threshold in BREAKEVEN_EXITS.items()):account.request.set()
-                # 보호/주문 timer 처리 후에만 관찰 warmup을 넣는다. 가상 Setup 계산은 별도 작업자가 수행한다.
-                if isinstance(getattr(feed,'observation_q',None),queue.Queue):
-                    if feed.observation_drops!=observation_drops:
-                        observation_drops=feed.observation_drops
-                        for sym in observed:
-                            if sym not in real_symbols:
-                                for mapping in (detector.buffers,detector.minutes,detector.completed,detector.last,detector.history,detector.current,detector.day_high,detector.prior_high):mapping.pop(sym,None)
-                        engine.event('OBSERVATION_DATA_GAP',SHADOW_ONLY=True,dropped=observation_drops,data_action='RESET_PREWARM',actual_order_permission=False)
-                    for _ in range(64):
-                        try:observed_at,tick=feed.observation_q.get_nowait()
-                        except queue.Empty:break
-                        if tick.symbol in observed and tick.symbol not in real_symbols:detector.ingest(tick,now())
                 request_capital_refresh(engine,account,in_session)
                 if engine.candidate_audit.started and time.monotonic()-last_board>=5:
                     summary=engine.candidate_audit.summary(now().isoformat(),engine.capital_context());summary['shadow']=len(observed)
@@ -412,6 +489,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False):
                     atomic_json(folder/'heartbeat.json',{'time':now().isoformat(),'mode':policy.mode,'market':engine.market,
                         'session':assessment(now())['classification'],
                         'account_ok':engine.account_ok,'radar_ok':radar_ok,'connected':engine.connected,
+                        'subscription_refresh_pending':subscriptions.refresh_pending,'subscription_tick_waiting':sorted(subscriptions.waiting),
                         'available_capital':min(engine.available_cash,auto.capital_limit),'approved_cap':auto.capital_limit,
                         'bot_cash':engine.s['cash'],'positions':len(engine.s['positions']),'pending':len(engine.active_orders()),
                         'strategy':'MANAGE' if engine.s['positions'] else 'SCAN' if lookup else 'QUIET','counts':counts})
