@@ -128,7 +128,7 @@ class AutonomousEngine(ExistingExits,Engine):
         if symbol in self.s['automation']['existing']: return '기존 보유: 추가매수 금지'
         if self.source_qualification_seen or self.source_qualification:
             qualification=self.source_qualification.get(symbol,{})
-            if qualification.get('source_count',0)<max(2,self.a.min_source_count):return 'SOURCE_COUNT_BUY_PERMISSION_DENIED'
+            if qualification.get('source_count',0)<max(2,self.a.min_source_count) and not qualification.get('fallback_source1'):return 'SOURCE_COUNT_BUY_PERMISSION_DENIED'
             if qualification.get('economic_reason')=='ONE_SHARE_UNAFFORDABLE':return 'ECONOMIC_UNIVERSE_EXCLUDED'
             try:age=(self.clock()-datetime.fromisoformat(qualification['timestamp'])).total_seconds()
             except (KeyError,ValueError,TypeError):return 'SOURCE_QUALIFICATION_UNKNOWN'
@@ -185,7 +185,7 @@ class AutonomousEngine(ExistingExits,Engine):
             'efficiency':gate(signal.get('efficiency',{}).get('decision')=='TRADE',efficiency=signal.get('efficiency'))}
 
     def enter(self,signal,tick):
-        if signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or ('source_count' in signal and signal['source_count']<max(2,self.a.min_source_count)):
+        if signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or ('source_count' in signal and signal['source_count']<max(2,self.a.min_source_count) and not signal.get('fallback_source1')):
             self.decisions.emit('ENTRY_EVAL',tick.symbol,'NO_BUY','OBSERVATION_NOT_BUY_PERMISSION',signal=signal,price=tick.price);return None
         from automation.allocation import apply_empirical
         try:
@@ -289,7 +289,7 @@ class AutonomousEngine(ExistingExits,Engine):
         if len(intents)!=1: raise Rejected('저장된 봇 주문 의도 없는 직접 주문 차단')
         if side=='BUY':
             signal=intents[0].get('signal') or {}
-            if signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or ('source_count' in signal and signal['source_count']<max(2,self.a.min_source_count)):raise Rejected('OBSERVATION_NOT_BUY_PERMISSION')
+            if signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or ('source_count' in signal and signal['source_count']<max(2,self.a.min_source_count) and not signal.get('fallback_source1')):raise Rejected('OBSERVATION_NOT_BUY_PERMISSION')
             reason=self.new_entry_reason(sym)
             if reason or not self.entry_window() or not self.connected or not self.account_ok or self.s['halt']:
                 raise Rejected(reason or '시장/계좌/연결 조건 미충족')

@@ -40,6 +40,7 @@ UI_REASONS.update({
     'AUTO_CAP_ZERO': '승인한도 0원 (관찰 전용)',
     'ONE_SHARE_UNAFFORDABLE': '1주 매수 자본 부족',
     'SHADOW_ONLY': '단일 소스 (SHADOW 관찰 데이터 축적 중)',
+    'WATCH_FALLBACK_SOURCE1': 'WATCH 승격 (단일소스 보조 슬롯)',
     'RESISTANCE_CLEARANCE_INSUFFICIENT': '상단 저항 여유 부족',
     'ACCELERATION_FAIL': '체결 가속 미달',
     'SPREAD_FAIL': '호가 스프레드 과대',
@@ -127,8 +128,12 @@ def extract_important_events(log_rows, max_events=40):
             elif decision == 'HOLD':
                 item = (stamp, '보유 유지', target, f"포지션 유지: {desc}")
         elif kind == 'WATCH_TRANSITION':
-            to_st = r.get('to_state') or r.get('state') or 'WATCH'
-            item = (stamp, '후보 승격', f"{name} ({sym})" if sym else name, f"다중 소스 확인 → {to_st} 진입검토 대상으로 전환")
+            to_st = r.get('to_status') or r.get('to_state') or r.get('state') or 'WATCH'
+            reason = r.get('reason','')
+            if reason == 'WATCH_FALLBACK_SOURCE1':
+                item = (stamp, '보조 승격', f"{name} ({sym})" if sym else name, "단일 소스 fallback → WATCH 슬롯 승격")
+            else:
+                item = (stamp, '후보 승격', f"{name} ({sym})" if sym else name, f"다중 소스 확인 → {to_st} 진입검토 대상으로 전환")
         elif kind == 'SHADOW_TRANSITION':
             to_st = r.get('to_state') or r.get('state') or 'SHADOW'
             item = (stamp, '관찰 등록', f"{name} ({sym})" if sym else name, f"후보 발견 → {to_st} 관찰 데이터 축적 시작")

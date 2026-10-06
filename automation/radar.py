@@ -53,12 +53,13 @@ def collect(rest):
     return list(result.values())
 
 class DynamicRadar:
-    def __init__(self,cfg,auto,policy):
+    def __init__(self,cfg,auto,policy,fallback_source1=False):
         self.cfg=cfg; self.a=auto; self.policy=policy; self.previous={}; self.missing={}; self.weak={}; self.watch={}; self.day=None
         self.available_capital=None
         self.capital_context={}
         self.momentum={}
         self.affordability_ms=0.
+        self.fallback_source1=fallback_source1 or getattr(auto,'watch_fallback_source1',False)
 
     def affordable(self,x):
         price=x.get('reference_price'); budget=self.capital_context.get('effective_auto_cap',self.available_capital)
@@ -119,7 +120,7 @@ class DynamicRadar:
             strong=all(gates.get(k,{}).get('result')=='PASS' for k in ('acceleration','liquidity'))
             weak=bool(gates) and any(gates.get(k,{}).get('result')=='FAIL' for k in ('acceleration','liquidity'))
             row['watch_priority_basis']='FRESH_MOMENTUM' if strong else 'FRESH_WEAK' if weak else 'RANK_ONLY'
-            return (0 if strong else 2 if weak else 1,-row['discovery_score'],row['overhead_share_estimate'],row['code'])
+            return (0 if strong else 2 if weak else 1,-row['discovery_score'],row.get('overhead_share_estimate',0),row['code'])
         eligible=sorted((x for x in rows if x['status']=='ELIGIBLE'),key=priority)
         selected=eligible[:self.cfg.max_watchlist]
         for x in eligible: x['status']='WATCH' if x in selected else 'RESERVE'
@@ -130,13 +131,33 @@ class DynamicRadar:
             self.missing[sym]=self.missing.get(sym,0)+1
             if self.missing[sym]<self.a.rank_decay_cycles and len(lookup)<self.cfg.max_watchlist:
                 lookup[sym]={**old,'reason':'랭킹 누락 유예','source_deltas':{},'observed_at':stamp.isoformat()}
+        if self.fallback_source1 and len(lookup)<self.cfg.max_watchlist:
+            fallbacks=[x for x in rows
+                       if x.get('source_count')==1
+                       and x.get('affordability',{}).get('entry_eligible') is True
+                       and not self.policy.locked(x['code'])
+                       and x['code'] not in BREAKEVEN_EXITS
+                       and (x['code']!=TEST_RELEASE_SYMBOL or not legacy_test_release_enabled())
+                       and not self.weak.get(x['code'])
+                       and x['code'] not in lookup]
+            fallbacks.sort(key=priority)
+            for fb in fallbacks:
+                if len(lookup)>=self.cfg.max_watchlist: break
+                try: ev=evaluate(fb); fb.update(ev)
+                except (OSError,ValueError,KeyError,RuntimeError) as e: fb.update(status='UNKNOWN',reason=type(e).__name__)
+                if fb.get('status')=='ELIGIBLE':
+                    fb['status']='WATCH'
+                    fb['watch_type']='FALLBACK_SOURCE1'
+                    fb['fallback_source1']=True
+                    fb['reason']='WATCH_FALLBACK_SOURCE1'
+                    lookup[fb['code']]=fb
         changes={'added':sorted(set(lookup)-set(self.watch)),'removed':sorted(set(self.watch)-set(lookup))}
         self.watch=lookup
         return rows,list(lookup.values()),changes
 
 class RadarWorker:
-    def __init__(self,cfg,auto,policy,rest,root):
-        self.cfg=cfg; self.a=auto; self.rest=rest; self.root=Path(root); self.radar=DynamicRadar(cfg,auto,policy)
+    def __init__(self,cfg,auto,policy,rest,root,fallback_source1=True):
+        self.cfg=cfg; self.a=auto; self.rest=rest; self.root=Path(root); self.radar=DynamicRadar(cfg,auto,policy,fallback_source1=fallback_source1)
         self.q=queue.Queue(maxsize=2); self.stop=threading.Event(); self.request=threading.Event(); self.cache={}; self.fetched=0
         self.extra_symbols=set()
         self.available_capital=0.; self.status_fetched=0

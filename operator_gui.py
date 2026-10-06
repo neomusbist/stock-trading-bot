@@ -421,6 +421,8 @@ class MainWindow(QMainWindow):
         for row in board:
             geometry=any(trial.get('candidate_generated',bool(trial.get('setup') and trial.get('gates'))) for trial in (row.get('setup_trials') or []))
             state=('SETUP 형상 / ' if geometry else '')+{'SHADOW':'관찰만 (SHADOW)','WATCH':'진입검토 (WATCH)','RESERVE':'감시대기 (RESERVE)'}.get(row['state'],row['state'])
+            if row.get('fallback_source1') or row.get('watch_type')=='FALLBACK_SOURCE1':
+                state=state.replace('진입검토 (WATCH)','진입검토 (WATCH·보조)')
             if row.get('data_fresh') is False: state+=' / 틱 미확인'
             sym_name=str(row.get('name') or row['symbol'])+' '+row['symbol']
             price_val=money(row.get('current_price'))

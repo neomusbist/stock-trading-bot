@@ -112,7 +112,8 @@ def request_capital_refresh(engine,account,in_session):
 def qualify_raw(engine,rows,stamp):
     engine.source_qualification_seen=True
     engine.source_qualification={row['code']:{'source_count':row.get('source_count',0),'timestamp':stamp,
-        'economic_reason':row.get('affordability',{}).get('reason_code')} for row in rows}
+        'economic_reason':row.get('affordability',{}).get('reason_code'),
+        'fallback_source1':bool(row.get('fallback_source1'))} for row in rows}
 
 class SubscriptionState:
     """구독 변경은 소켓/계좌 연결과 별개이며 추가 종목만 새 정규장 틱을 기다린다."""
@@ -233,7 +234,8 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
             engine.on_tick(t,finished[-1]['low'] if finished else None)
             watch=lookup.get(t.symbol)
             if not watch or not radar_ok or not engine.connected: continue
-            if watch.get('source_count',len(watch.get('source_details',{})) if 'source_details' in watch else engine.a.min_source_count)<max(2,engine.a.min_source_count):
+            src_count=watch.get('source_count',len(watch.get('source_details',{})) if 'source_details' in watch else engine.a.min_source_count)
+            if src_count<max(2,engine.a.min_source_count) and not watch.get('fallback_source1'):
                 engine.event('NO_TRADE',symbol=t.symbol,reason='SOURCE_COUNT_BUY_PERMISSION_DENIED');continue
             engine.names[t.symbol]=watch.get('name')
             engine.market_status[t.symbol]=watch.get('market_status',{'pass':None,'reason_code':'MARKET_STATUS_UNKNOWN'})
@@ -246,6 +248,7 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
                 continue
             sig['name']=watch.get('name')
             sig['candidate_detected_at']=watch.get('observed_at')
+            sig['fallback_source1']=bool(watch.get('fallback_source1'))
             bars=radar.cache.get((t.time.date(),t.symbol))
             if not bars:
                 engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','HISTORY_UNAVAILABLE',

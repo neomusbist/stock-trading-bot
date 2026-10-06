@@ -130,6 +130,7 @@ class PatternDetector(Detector):
                 'target':target,'target_basis':'과거 저항으로 제한한 관측 패턴 폭 연장 가설; 고정 익절선 아님',
                 'turnover':turnover,'turnover_ratio':ratio,'gain':t.price/fast[0].price-1,
                 'efficiency':score,'source_count':watch.get('source_count',len(watch.get('source_details',{}))),'source_details':watch.get('source_details',{}),'source_deltas':watch.get('source_deltas',{}),
+                'fallback_source1':bool(watch.get('fallback_source1')),
                 'structure':{k:watch.get(k) for k in ('long_position','overhead_share_estimate','resistance','recent_support')},
                 'risk_per_share':score['risk_per_share'],'market_state':'3'}
         return None

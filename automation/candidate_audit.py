@@ -41,6 +41,7 @@ class CandidateAudit:
                 'current_price':(evaluation or {}).get('current_price',row.get('reference_price')),'source_count':row.get('source_count'),
                 'timestamp':(evaluation or {}).get('timestamp',row.get('observed_at')),'setup_trials':(evaluation or {}).get('setup_trials'),
                 'primary_reason_code':reason,'evaluation_observed':bool(evaluation),
+                'fallback_source1':bool(row.get('fallback_source1')),'watch_type':row.get('watch_type'),
                 'gate_results':{k:v['result'] for k,v in gates.items()},'sizing':sizing,'affordability':a})
         metrics={k:counts[k] for k in ('affordable','unaffordable','affordability_unknown_or_observation',
                  'liquidity_fail','spread_fail','structure_fail','setup_not_ready','risk_zero_qty','final_entry_eligible','evaluated','watch','setup_candidates','risk_reached')}

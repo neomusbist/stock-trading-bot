@@ -2,7 +2,8 @@
 import json
 import math
 STRATEGY_VERSION='V1.1-policy-20261001'
-BUILD_ID='V1.1-audit-20261002'
+BUILD_ID='V1.1-src1-fallback-20261006'
+STRATEGY_EXPERIMENT='V1.1-src1-fallback-20261006'
 
 def reason_code(reason,position):
     exact={'승인 자동매매 자본 0원':'AUTO_CAP_ZERO','기존 보유: 추가매수 금지':'EXTERNAL_HOLD_NO_BUY',
