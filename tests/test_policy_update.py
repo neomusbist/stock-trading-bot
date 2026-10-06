@@ -157,11 +157,11 @@ class PolicyUpdateTests(unittest.TestCase):
         self.engine.timer(); self.assertFalse(self.broker.orders)
 
     def test_entry_cutoff_exact_boundary_and_default_flatten(self):
-        self.clock[0]=self.clock[0].replace(hour=15,minute=4,second=59)
+        self.clock[0]=self.clock[0].replace(hour=14,minute=54,second=59)
         self.assertTrue(self.engine.entry_window())
         self.clock[0]+=timedelta(seconds=1); self.assertFalse(self.engine.entry_window())
         self.assertFalse(self.engine.session_ending())
-        self.clock[0]=self.clock[0].replace(minute=10); self.assertTrue(self.engine.session_ending())
+        self.clock[0]=self.clock[0].replace(hour=15,minute=10); self.assertTrue(self.engine.session_ending())
 
     def test_forced_flatten_uses_existing_bot_exit_state_machine(self):
         self.buy(); self.clock[0]=self.clock[0].replace(hour=15,minute=10)

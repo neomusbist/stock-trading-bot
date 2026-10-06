@@ -5,7 +5,7 @@ from datetime import datetime
 from core.util import ProcessLock, atomic_json
 from operator_service import OperatorService, read_json, tail_events, age, in_window, decision_line, STRATEGY_VERSION
 from automation.policy import Policy, HARD_LOCKS, EXISTING_POLICIES, BREAKEVEN_EXITS
-from automation.session import supported, SessionPlan
+from automation.session import supported, control_supported, SessionPlan
 from automation.decisions import BUILD_ID
 from local_diagnostics import redact
 
@@ -228,7 +228,7 @@ def presentation(s):
     else: operation='정지'
     clock=datetime.fromisoformat(s['time'])
     eff_cutoff=s.get('effective_new_entry_end','14:55:00')
-    market='운영시간 밖' if not s['supported'] else '신규진입 마감' if clock.strftime('%H:%M:%S')>=s.get('entry_cutoff','15:05:00') else '관찰 중 · 신규매수 종료' if clock.strftime('%H:%M:%S')>=eff_cutoff else '신규거래 시간 / 정규장 확인' if s.get('market_confirmed') else '신규거래 시간 / 시장 현재성 미확인'
+    market='08시 사전 준비 / 09시 개장 증거 대기' if s.get('control_supported') and not s['supported'] else '운영시간 밖' if not s['supported'] else '신규진입 마감' if clock.strftime('%H:%M:%S')>=s.get('entry_cutoff','15:05:00') else '관찰 중 · 신규매수 종료' if clock.strftime('%H:%M:%S')>=eff_cutoff else '신규거래 시간 / 정규장 확인' if s.get('market_confirmed') else '신규거래 시간 / 시장 현재성 미확인'
     safety='HALT — 안전중단' if s.get('halt') else '주의 — 보호정책 확인 필요' if not s['hard_ok'] else '주의 — 불명확 주문' if s['uncertain'] else '주의 — 현재 오류' if s.get('active_error') else '주의 — 프로세스 응답 지연' if running and s['process'].get('managed') and not s['process'].get('process_heartbeat_fresh') else '주의 — 계좌 / 실시간 확인 필요' if running and (not s.get('account_fresh') or s['websocket']!='현재 연결 정상') else '정상 / 계좌·실시간 연결 확인' if s['supported'] and s.get('account_fresh') and s['websocket']=='현재 연결 정상' else '로컬 상태 정상 / 실계좌 미확인'
     return operation,market,safety
 
@@ -270,7 +270,7 @@ def board_freshness(row,clock):
 
 def start_block(s):
     if s['process']['running']: return '이미 실행 중입니다.'
-    if not s['supported']: return '운영시간 밖입니다. 시작은 09:00~15:20, 신규진입은 15:05 이전입니다. 진단·기록은 이용 가능합니다.'
+    if not s.get('control_supported',s['supported']): return '운영시간 밖(준비시간 밖)입니다. 08:00 이후 사전 준비/승인, 09:00 이후 증거 확인 뒤 주문 가능합니다.'
     if s.get('halt'): return 'HALT가 활성화되어 있습니다: '+str(s['halt'])
     if not s['hard_ok']: return '삼성전자·광전자 보호정책을 확인해야 합니다.'
     if s['uncertain']: return '결과가 불명확한 주문을 먼저 확인하세요. 자동 재전송하지 않습니다.'
@@ -311,6 +311,11 @@ class UserOperations(OperatorService):
                 'ALLOW_OVERNIGHT':auto.ALLOW_OVERNIGHT,'commission_buy':auto.commission_buy,
                 'commission_sell':auto.commission_sell,'sell_tax':auto.sell_tax,'costs_confirmed':auto.costs_confirmed})
         s['hard_ok']=s['hard_ok'] and not any(x in policy.get('releases',{}) for x in HARD_LOCKS)
+        from automation.readiness import authorization_valid
+        valid,missing=authorization_valid(self.root,cfg,auto,policy,self.clock())
+        s['daily_authorization_valid']=valid;s['authorization_missing']=missing
+        s['readiness']=hb.get('readiness',{})
+        if not valid or hb.get('readiness',{}).get('state')!='OPEN_READY':s['trading_on']=False
         s['guided_start']=True;s['build_id']=BUILD_ID
         s['decision_rows']=[r for r in s['decision_rows'] if r.get('primary_reason_code')!='ONE_SHARE_UNAFFORDABLE' and r.get('state')!='EXTERNAL_POLICY_HOLD']
         shadow=read_json(self.root/'runtime/shadow_snapshot.json',{})
@@ -355,7 +360,10 @@ class UserOperations(OperatorService):
         if recovery: return self.start_continuous()  # 기존 보호 전용 경로. 신규매수 권한을 늘리지 않는다.
         if s['mode']=='STOP' and not s['live_mode'] and s['cap']==0 and not s['live_approved']:
             self.arm_safe(True);return self.start_continuous()
-        if s['mode']=='STOP' and s['live_mode']:
+        if s['mode'] in {'STOP','LIVE'} and s['live_mode']:
+            from automation.readiness import authorization_valid
+            c,a,p=self.settings();valid,why=authorization_valid(self.root,c,a,p,self.clock())
+            if not valid:raise ValueError('오늘 LIVE 명시 승인을 다시 확인하세요: '+', '.join(why))
             if confirmed is not True: raise ValueError('실제 자동매매 시작 확인이 필요합니다.')
             receipt=read_json(self.root/'runtime/operator_user_authorization.json',{})
             cfg,auto,policy=self.settings()
@@ -364,7 +372,7 @@ class UserOperations(OperatorService):
                     c,a,p=self.settings()
                     counts=self.state_counts()
                     if (c!=cfg or a!=auto or p!=policy or counts['positions'] or counts['pending'] or counts['uncertain']
-                        or not supported(self.clock()) or self.clock().strftime('%H:%M:%S')>=a.new_entry_cutoff
+                        or not control_supported(self.clock()) or self.clock().strftime('%H:%M:%S')>=a.new_entry_cutoff
                         or any(st.get('halt') for _,st in self.states()) or not self.hard_locks_ok()
                         or any(x in p.get('releases',{}) for x in HARD_LOCKS)):
                         raise ValueError('시작 직전 설정/승인/장부가 변경되었습니다.')
@@ -390,9 +398,12 @@ class UserOperations(OperatorService):
             self.stop('STOP');cfg,auto,policy=self.settings()
         if auto.capital_limit>0 and not auto.costs_confirmed:
             return {'verdict':'COST_CONFIRMATION_REQUIRED','cap':auto.capital_limit,'note':'비용 설정 미확인. 실제 확인한 비용을 명시 입력하기 전까지 LIVE 준비와 주문은 차단됩니다.'}
+        if not supported(self.clock()):
+            result=self.preopen_local_ready()
+            if result.get('verdict')!='PASS':return result
         proof=self.pilot_proof()
         if proof.get('verdict')!='PASS' or proof.get('strategy_version')!=STRATEGY_VERSION or proof.get('build_id')!=BUILD_ID or not self._approval_basis(cfg,auto,policy):
-            progress('안전검사: 150초. 실제 주문 권한 0으로 후보·연결을 확인합니다.')
+            progress('안전검사: readiness 증거를 확인합니다. 고정 대기 없이 충족 즉시 완료합니다.')
             result=self.pilot(progress,_recovery=True,_operational=True)
             if result.get('verdict')!='PASS':return result
         if auto.capital_limit==0:
@@ -400,9 +411,12 @@ class UserOperations(OperatorService):
         if not auto.costs_confirmed:raise ValueError('비용 설정 미확인. 증권사에서 확인한 비용을 설정해야 합니다.')
         progress('계좌·연결·보호정책과 승인한도를 검사합니다.')
         receipt=read_json(self.root/'runtime/operator_user_authorization.json',{})
-        if (cfg.live_mode and policy.get('live_authorized') and receipt.get('build_id')==BUILD_ID
-            and receipt.get('config_hash')==cfg.fingerprint() and receipt.get('auto_hash')==auto.fingerprint()):
+        from automation.readiness import authorization_valid
+        valid,_=authorization_valid(self.root,cfg,auto,policy,self.clock())
+        if cfg.live_mode and policy.get('live_authorized') and valid:
             # 재개 시에도 계좌와 연결을 새로 확인한다. 기존 승인한도와 mode를 바꾸지 않는다.
+            if not supported(self.clock()):
+                return {'verdict':'READY_LIVE','cap':auto.capital_limit,'note':'오늘 명시 승인 유효. 09시 개장 증거까지 주문 OFF; 감시를 시작하면 자동 준비합니다.'}
             snap=self.gateway.snapshot();self.remember_account(snap)
             if snap['orders']:raise ValueError('실계좌 미체결 주문 확인 필요')
             before=self.clock();rc=self.gateway.command(['--check-connection'],timeout=65)
@@ -490,11 +504,16 @@ class UserOperations(OperatorService):
 
     def prepare_capital(self,progress=lambda _:None):
         cfg,auto,policy=self._flat_settings()
-        if not supported(self.clock()) or self.clock().strftime('%H:%M:%S')>=auto.new_entry_cutoff: raise ValueError('신규진입 가능시간에 준비 검사를 수행하세요.')
+        if not control_supported(self.clock()) or self.clock().strftime('%H:%M:%S')>=auto.new_entry_cutoff: raise ValueError('신규진입 가능시간에 준비 검사를 수행하세요.')
         if auto.capital_limit<=0: raise ValueError('승인한도가 0원입니다. 준비 검사로 한도를 자동 증액하지 않습니다.')
         if not auto.costs_confirmed: raise ValueError('비용 설정 미확인')
         if not self._approval_basis(cfg,auto,policy): raise ValueError('최초 안전 시운전 또는 유효한 기존 LIVE 승인 근거가 필요합니다.')
         with self.idle(): pass
+        if not supported(self.clock()):
+            return self.save_result('capital_ready',{'verdict':'PASS','cap':auto.capital_limit,'cash':None,'available':None,
+                'readiness_phase':'PREOPEN_LOCAL_READY','config_hash':cfg.fingerprint(),'auto_hash':auto.fingerprint(),
+                'policy_revision':policy['revision'],'account_ok':False,'websocket_ok':False,
+                'note':'당일 로컬 사전검사 완료. 계좌/실시간은 감시 시작 후 실제 응답으로 확인하며 09시 OPEN_READY 전 주문은 불가합니다.'})
         started=self.clock(); progress('계좌와 주문가능현금을 조회합니다. 실제 주문은 하지 않습니다.')
         snap=self.gateway.snapshot(); self.remember_account(snap)
         if snap['orders']: raise ValueError('실제 계좌에 미체결 주문이 있습니다.')
@@ -503,7 +522,7 @@ class UserOperations(OperatorService):
         if rc or not connection.get('passed') or not in_window(connection.get('started'),started,self.clock()) or not connection.get('counts',{}).get('valid_regular_ticks'):
             raise ValueError('이번 정규장 연결·신선한 틱 검사가 미완료입니다. 실제매매를 승인하지 않습니다.')
         c,a,p=self._flat_settings()
-        if (c,a,p)!=(cfg,auto,policy) or not supported(self.clock()) or self.clock().strftime('%H:%M:%S')>=auto.new_entry_cutoff: raise ValueError('검사 중 설정/승인 또는 운영시간이 변경되었습니다.')
+        if (c,a,p)!=(cfg,auto,policy) or not control_supported(self.clock()) or self.clock().strftime('%H:%M:%S')>=auto.new_entry_cutoff: raise ValueError('검사 중 설정/승인 또는 운영시간이 변경되었습니다.')
         return self.save_result('capital_ready',{'verdict':'PASS','cash':snap['cash'],'cap':auto.capital_limit,'available':min(snap['cash'],auto.capital_limit),
             'config_hash':cfg.fingerprint(),'auto_hash':auto.fingerprint(),'policy_revision':policy['revision'],
             'note':'조회 검사만 통과했습니다. 실제매매 명시 승인과 시작은 별도입니다.'})
@@ -518,7 +537,7 @@ class UserOperations(OperatorService):
             if (proof.get('verdict')!='PASS' or age(proof.get('timestamp'),self.clock())>60
                 or proof.get('config_hash')!=cfg.fingerprint() or proof.get('auto_hash')!=auto.fingerprint()
                 or proof.get('policy_revision')!=policy['revision'] or not auto.costs_confirmed or auto.capital_limit<=0
-                or not supported(self.clock()) or self.clock().strftime('%H:%M:%S')>=auto.new_entry_cutoff
+                or not control_supported(self.clock()) or self.clock().strftime('%H:%M:%S')>=auto.new_entry_cutoff
                 or not self._approval_basis(cfg,auto,policy) or any(st.get('halt') for _,st in self.states())
                 or not self.hard_locks_ok() or any(x in policy.get('releases',{}) for x in HARD_LOCKS)):
                 raise ValueError('최신 준비 검사·비용·승인 근거·시간·장부를 다시 확인하세요.')
@@ -527,7 +546,10 @@ class UserOperations(OperatorService):
             try:
                 new_cfg=replace(cfg,live_mode=True).validate(); atomic_json(paths[0],asdict(new_cfg))
                 p=Policy(paths[1]); p.command('LIVE',confirmation='LIVE'); p.command('STOP')
+                from automation.readiness import policy_hash,security_state,digest
                 atomic_json(paths[2],{'timestamp':self.clock().isoformat(),'cap':auto.capital_limit,
+                    'authorization_kind':'DAILY_PREOPEN_V13','trading_day':self.clock().date().isoformat(),
+                    'policy_hash':policy_hash(p.state),'security_state_hash':digest(security_state(self.root)),
                     'build_id':BUILD_ID,
                     'config_hash':new_cfg.fingerprint(),'auto_hash':auto.fingerprint(),'policy_revision':p.state['revision']})
             except Exception:
@@ -536,7 +558,7 @@ class UserOperations(OperatorService):
                     elif path.exists(): path.unlink()
                 raise
         return self.save_result('capital_authorization',{'verdict':'SAVED','cap':auto.capital_limit,
-            'note':'실제매매 승인을 저장했습니다. 감시는 정지 상태입니다. 시작 버튼에서 별도로 확인하세요.'})
+            'note':'오늘 이 build/설정/승인한도의 LIVE 동의를 저장했습니다. 시작 시 개장 증거 전 주문은 차단됩니다.'})
 
     def local_diagnostic(self):
         from local_diagnostics import diagnose

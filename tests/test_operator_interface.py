@@ -24,7 +24,7 @@ class FakeGateway:
     def snapshot(self): self.calls.append('snapshot'); return copy.deepcopy(self.snapshot_data)
     def command(self,args,timeout=60):
         self.calls.append(tuple(args)); root=self.t.root; stamp=self.t.clock[0]
-        if args==['--paper-seconds','150']:
+        if args==['--readiness-check']:
             cfg,auto,p=self.t.s.settings(); policy=Policy(root/'runtime/automation_policy.json'); broker=fixture.FakeBroker()
             e=AutonomousEngine(cfg,auto,policy,root/'runtime/automation-smoke',broker,lambda:self.t.clock[0])
             e.reconcile(self.snapshot_data); e.connected=True; e.market='3'

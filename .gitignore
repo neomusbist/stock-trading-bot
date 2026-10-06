@@ -115,3 +115,5 @@ operator_*approval*.json
 /private/
 /logs/
 /test_dependencies/
+
+!/V1.3_HANDOFF_20261007.md

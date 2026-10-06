@@ -20,7 +20,7 @@ from automation.patterns import PatternDetector
 from automation.radar import RadarWorker,observation_structure
 from automation.allocation import comparison
 from automation.performance import report
-from automation.session import supported,assessment
+from automation.session import supported,control_supported,assessment
 from automation.candidate_audit import CandidateAudit
 from automation.observation_settings import ObservationSettings,load_observation
 from automation.focus_selection import select_focus
@@ -296,7 +296,7 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
             if subscriptions is not None and not subscriptions.tick_ready(t,received):continue
             if not detector.ingest(t,now()):continue
             if subscriptions is not None:subscriptions.accepted(t.symbol)
-            accepted+=1; prices[t.symbol]=t.bid or t.price
+            accepted+=1; prices[t.symbol]=t.bid or t.price;engine.last_regular_tick_at=t.time
             if engine.market=='UNKNOWN': engine.market='3'
             finished=list(detector.completed.get(t.symbol,[]))
             engine.on_tick(t,finished[-1]['low'] if finished else None)
@@ -320,21 +320,47 @@ class ReadOnlyPilotPolicy:
         if command not in {'STOP','KILL'}:raise ValueError('조회 실행에 권한을 부여할 수 없습니다.')
         self.state['mode']='STOP'
 
-def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False):
+def readiness_snapshot(engine,counts,radar_ok,stamp,detector=None):
+    """증거를 평가한다. 경과 초 수나 전략 완성봉 수를 readiness 조건으로 쓰지 않는다."""
+    in_control=control_supported(stamp); in_market=supported(stamp)
+    last=getattr(engine,'last_regular_tick_at',None)
+    if detector is not None:
+        regular=[t.time for t in detector.last.values() if t.regular and supported(t.time)]
+        if regular:last=max(regular+[last] if last else regular)
+    tick_age=(stamp-last).total_seconds() if last is not None else None
+    fresh_tick=in_market and tick_age is not None and 0<=tick_age<=engine.c.stale_seconds and last.date()==stamp.date()
+    radar_at=getattr(engine,'last_radar_at',None)
+    radar_current=radar_ok and radar_at is not None and supported(radar_at) and radar_at.date()==stamp.date()
+    gates={'control_session':in_control,'websocket_reg_ack':bool(engine.connected and counts['subscription_acks']>0),
+           'account_fresh':engine.capital_account_valid(),'safe_state':not engine.s['halt'] and not any(o.get('status')=='UNKNOWN' for o in engine.active_orders())}
+    if in_market:gates.update(observation_session=True,regular_market=engine.market=='3',fresh_regular_tick=fresh_tick,radar_pipeline=radar_current)
+    missing=[key.upper()+'_NOT_READY' for key,passed in gates.items() if not passed]
+    state=('OPEN_READY' if in_market else 'PREOPEN_READY') if not missing else 'WAITING'
+    return {'state':state,'phase':assessment(stamp)['phase'],'gates':gates,'missing':missing,
+            'regular_epoch':stamp.replace(hour=9,minute=0,second=0,microsecond=0).isoformat(),
+            'last_regular_tick_at':last.isoformat() if last else None,'regular_tick_age':tick_age,
+            'market_pending':not in_market,'strategy_warmup_separate':True}
+
+def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness_check=False):
     root=Path(root); auto=load_automation(root/'automation.json'); policy=Policy(root/'runtime/automation_policy.json')
     if operational_pilot:
-        if not recover_pilot or seconds!=150 or policy.mode not in {'ARMED','STOP','LIVE'} or policy.state.get('releases') or policy.state.get('test_capital_release',{}).get('status') in {'APPROVED','SUBMITTING'}:
-            raise ValueError('운영 재자격은 기존 보호정책·150초 조회 실행만 허용')
+        if not recover_pilot or not (readiness_check or seconds>0) or policy.mode not in {'ARMED','STOP','LIVE'} or policy.state.get('releases') or policy.state.get('test_capital_release',{}).get('status') in {'APPROVED','SUBMITTING'}:
+            raise ValueError('운영 재자격은 기존 보호정책·주문 금지 readiness 검사만 허용')
         policy=ReadOnlyPilotPolicy(policy);cfg=replace(cfg,live_mode=False)
     if recover_pilot:
-        if seconds!=150 or cfg.live_mode or policy.mode!="ARMED" or policy.state.get("live_authorized") or policy.state.get("releases") or policy.state.get("test_capital_release",{}).get("status") in {"APPROVED","SUBMITTING"}:
-            raise ValueError("재자격은 ARMED·실주문 승인 없음·150초 조회만 허용")
+        if not (readiness_check or seconds>0) or cfg.live_mode or policy.mode!="ARMED" or policy.state.get("live_authorized") or policy.state.get("releases") or policy.state.get("test_capital_release",{}).get("status") in {"APPROVED","SUBMITTING"}:
+            raise ValueError("재자격은 ARMED·실주문 승인 없음·주문 금지 readiness 검사만 허용")
         # 파일의 승인한도는 보존하며 이 조회 실행에서만 주문자본을 0으로 제한한다.
         auto=replace(auto,AUTO_TRADING_CAP_KRW=0)
+    if readiness_check:
+        if policy.mode not in {'ARMED','STOP','LIVE'} or policy.state.get('releases') or policy.state.get('test_capital_release',{}).get('status') in {'APPROVED','SUBMITTING'}:
+            raise ValueError('readiness 조회는 위험상태 및 시험매도 승인이 없는 때만 허용')
+        if not isinstance(policy,ReadOnlyPilotPolicy):policy=ReadOnlyPilotPolicy(policy)
+        cfg=replace(cfg,live_mode=False);auto=replace(auto,AUTO_TRADING_CAP_KRW=0)
     # 기존 Config의 비용 예약/총위험 계산에도 명시적 수수료를 반영한다.
     effective=replace(cfg,roundtrip_cost_fraction=auto.commission_buy+auto.commission_sell+auto.sell_tax)
     effective.validate()
-    rest=Rest(effective); folder=root/'runtime'/('automation-smoke' if seconds else 'automation-'+cfg.broker_environment)
+    rest=Rest(effective); folder=root/'runtime'/('automation-smoke' if seconds or readiness_check else 'automation-'+cfg.broker_environment)
     engine=AutonomousEngine(effective,auto,policy,folder,rest,now)
     observation_settings=load_observation(root);engine.observation_settings=observation_settings
     engine.candidate_audit=CandidateAudit()
@@ -350,7 +376,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False):
         engine.event('OFF'); return {'mode':'OFF','real_orders_sent':0}
     def clients():
         rank_rest=Rest(effective,auth_session=rest.auth_session); account_rest=Rest(effective,auth_session=rest.auth_session)
-        for client in (rest,rank_rest,account_rest): client.session_guard=lambda:supported(now())
+        for client in (rest,rank_rest,account_rest): client.session_guard=lambda:control_supported(now())
         account_worker=AccountWorker(account_rest,effective.reconcile_seconds);account_worker.observation_settings=observation_settings
         radar_worker=RadarWorker(effective,auto,policy,rank_rest,root)
         radar_worker.observation_sink=lambda rows,stamp,capital:shadow.submit(rows,stamp,capital)
@@ -363,20 +389,34 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False):
     account.need_fills=bool(engine.active_orders())
     reporter=Reporter(root)
     from automation.observation_worker import ObservationWorker
-    observation_rest=Rest(replace(effective,live_mode=False),auth_session=rest.auth_session);observation_rest.session_guard=lambda:supported(now());observation_rest.diagnostic_only=True
+    observation_rest=Rest(replace(effective,live_mode=False),auth_session=rest.auth_session);observation_rest.session_guard=lambda:control_supported(now());observation_rest.diagnostic_only=True
     shadow=ObservationWorker(effective,auto,engine.costs,root,observation_rest);shadow.start()
     shadow_state={};observation_drops=0
     lookup={}; rows=[]; by_symbol={}; prices={}; counts={'ticks':0,'radar_cycles':0,'account_checks':0,'subscription_acks':0}
     engine._last_eval_frame={}
-    last_radar=0.; radar_ok=False; last_report=0.; last_heartbeat=0.;last_board=0.; started=now(); stop_at=time.monotonic()+seconds if seconds else None
+    last_radar=0.; radar_ok=False; last_report=0.; last_heartbeat=0.;last_board=0.; started=now(); stop_at=time.monotonic()+(seconds or 120) if seconds or readiness_check else None
     smoke_ended=False; fatal=''; account_generation=0; kill_requested_at=None
     data_active=False; ever_started=False; blocked_day=None; reporter.start()
-    engine.event('AUTOMATION_STARTED',mode=policy.mode,approved_cap=auto.capital_limit,live_mode=cfg.live_mode,
+    engine.readiness_reason=lambda:entry_readiness_reason()
+    def entry_readiness_reason():
+        ready=readiness_snapshot(engine,counts,radar_ok,now(),detector)
+        if ready['state']!='OPEN_READY':return 'OPEN_READINESS_'+(ready['missing'][0] if ready['missing'] else 'MARKET_NOT_OPEN')
+        if cfg.live_mode:
+            from automation.readiness import authorization_valid
+            valid,reasons=authorization_valid(root,cfg,auto,policy,now())
+            if not valid:return 'DAILY_AUTHORIZATION_'+(reasons[0] if reasons else 'INVALID')
+        return ''
+    from automation.decisions import BUILD_ID,STRATEGY_EXPERIMENT
+    context=engine.capital_context()
+    engine.event('AUTOMATION_STARTED',mode=policy.mode,approved_cap=auto.capital_limit,live_mode=cfg.live_mode,build_id=BUILD_ID,strategy_experiment=STRATEGY_EXPERIMENT,risk_fraction=cfg.risk_fraction,max_daily_loss_fraction=cfg.max_daily_loss_fraction,allowed_risk_krw=context['risk_equity']*cfg.risk_fraction,remaining_daily_risk_krw=context['risk_remaining'],
                  message='기존 보유 평가금액 제외; 기본 실제 신규 주문 불가')
     try:
         while True:
             try:
-                in_session=supported(now())
+                in_session=control_supported(now())
+                if supported(now()) and getattr(engine,'observation_epoch',None)!=now().date():
+                    engine.observation_epoch=now().date();radar.request.set();account.request.set()
+                    engine.event('MARKET_OBSERVATION_STARTED',regular_epoch=now().replace(hour=9,minute=0,second=0,microsecond=0).isoformat(),pre_market_bars_used=False)
                 if not in_session and blocked_day!=now().date():
                     blocked_day=now().date()
                     engine.event('SESSION_BLOCK',reason_code='OUT_OF_SUPPORTED_SESSION',decision='NO_BUY',strategy_version='V1.1-policy-20261001')
@@ -389,7 +429,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False):
                     engine.reset_detector=True
                 elif not in_session and data_active:
                     feed.close(); radar.close(); account.close(); data_active=False
-                    detector.reset(); engine.disconnect(); engine.account_ok=False; engine.market='UNKNOWN'; radar_ok=False
+                    detector.reset(); engine.disconnect(); engine.account_ok=False; engine.market='UNKNOWN'; radar_ok=False;engine.last_regular_tick_at=None;engine.last_radar_at=None
                     engine.event('OUT_OF_SUPPORTED_SESSION',message='연결 검사/조회와 신규 주문을 다음 정규장까지 대기')
                     if engine.s['positions'] or engine.active_orders():
                         engine.event('POSITION_REMAINS_AFTER_SESSION',reason_code='OVERNIGHT_RISK',allow_overnight=auto.ALLOW_OVERNIGHT,
@@ -435,7 +475,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False):
                             atomic_json(root/'runtime/candidate_summary.json',summary)
                             engine.event('CANDIDATE_CYCLE_SUMMARY',**summary)
                         prior_watch=set(lookup)
-                        rows=result['rows']; lookup={x['code']:x for x in result['watch']}; radar_ok=True
+                        rows=result['rows']; lookup={x['code']:x for x in result['watch']}; radar_ok=True;engine.last_radar_at=datetime.fromisoformat(result['time'])
                         by_symbol={row['code']:row for row in rows}
                         for sym in prior_watch^set(lookup):
                             row=by_symbol.get(sym,{})
@@ -513,6 +553,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False):
                 shadow_state=shadow.runtime_view();radar.radar.momentum=shadow_state.get('evaluations',{})
                 desired=set(lookup)|set(engine.s['positions'])|{o['symbol'] for o in engine.active_orders()}
                 desired.update(set(engine.s['automation']['existing'])&(set(BREAKEVEN_EXITS)|({TEST_RELEASE_SYMBOL} if legacy_test_release_enabled() else set())))
+                if (readiness_check or (in_session and not supported(now()))) and not desired:desired.add('005930')  # 조회 증거용; HARD_LOCK 종목은 WATCH/주문 대상이 아니다.
                 real_symbols=set(desired)
                 observed=set(shadow_state.get('symbols',[]))
                 engine.candidate_audit.shadow_count=len(observed)
@@ -540,6 +581,10 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False):
                     summary['raw_definition']='5개 ranking API의 일반주 고유종목 합집합; HTS 0168과 동일 목록은 아님'
                     summary['refresh_seconds']=auto.scan_seconds
                     atomic_json(root/'runtime/candidate_summary.json',summary);last_board=time.monotonic()
+                ready=readiness_snapshot(engine,counts,radar_ok,now(),detector)
+                if ready['state']!=getattr(engine,'last_readiness_state',None):
+                    engine.event('READINESS_CHANGED',readiness=ready);engine.last_readiness_state=ready['state']
+                if readiness_check and ready['state'] in {'PREOPEN_READY','OPEN_READY'}:smoke_ended=True
                 if stop_at and time.monotonic()>=stop_at: smoke_ended=True
                 if smoke_ended:
                     for o in engine.active_orders(side='BUY'): engine.cancel(o)
@@ -552,7 +597,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False):
                     engine.save(); reporter.submit(rows,engine.s); last_report=time.monotonic()
                 if time.monotonic()-last_heartbeat>=1:
                     atomic_json(folder/'heartbeat.json',{'time':now().isoformat(),'mode':policy.mode,'market':engine.market,
-                        'session':assessment(now())['classification'],
+                        'session':assessment(now())['classification'],'readiness':ready,'build_id':BUILD_ID,'strategy_experiment':STRATEGY_EXPERIMENT,
                         'account_ok':engine.account_ok,'radar_ok':radar_ok,'connected':engine.connected,
                         'subscription_refresh_pending':subscriptions.refresh_pending,'subscription_tick_waiting':sorted(subscriptions.waiting),
                         'available_capital':min(engine.available_cash,auto.capital_limit),'approved_cap':auto.capital_limit,
@@ -580,12 +625,16 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False):
         engine.save(); reporter.submit(rows,engine.s); reporter.close()
         result={'started':started.isoformat(),'finished':now().isoformat(),'mode':policy.mode,'approved_cap':auto.capital_limit,
                 'counts':counts,'remaining_positions':len(engine.s['positions']),'remaining_orders':len(engine.active_orders()),
+                'readiness':readiness_snapshot(engine,counts,radar_ok,now(),detector),'build_id':BUILD_ID,'strategy_experiment':STRATEGY_EXPERIMENT,
                 'fatal':fatal,'real_orders_sent':sum(1 for o in engine.s['orders'].values() if not o['id'].startswith('PAPER-') and o['id']),
                 'passed':not fatal and counts['account_checks']>0 and counts['radar_cycles']>0 and counts['subscription_acks']>0 and not engine.s['positions'] and not engine.active_orders()}
-        if not supported(started):
+        if readiness_check:
+            result['passed']=not fatal and result['readiness']['state'] in {'PREOPEN_READY','OPEN_READY'} and not engine.s['positions'] and not engine.active_orders()
+            result['classification']=result['readiness']['state'] if result['passed'] else 'INCONCLUSIVE_READINESS'
+        if not control_supported(started):
             result.update(classification='OUT_OF_SUPPORTED_SESSION',passed=None,regression_failure=False)
-        elif seconds and counts['ticks']==0:
+        elif seconds and not readiness_check and counts['ticks']==0:
             result.update(classification='INCONCLUSIVE_NO_REGULAR_TICKS',passed=None,regression_failure=False)
-        atomic_json(root/('automation_check.json' if seconds else 'automation_last_run.json'),result)
+        atomic_json(root/('automation_check.json' if seconds or readiness_check else 'automation_last_run.json'),result)
     return result
 

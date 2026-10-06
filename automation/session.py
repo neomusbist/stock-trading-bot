@@ -6,8 +6,9 @@ from core.settings import KST
 
 @dataclass(frozen=True)
 class SessionPlan:
+    preopen_control_start: str = '08:00:00'
     observe_start: str = '09:00:00'
-    new_entry_start: str = '09:02:00'
+    new_entry_start: str = '09:00:00'
     hard_new_entry_end: str = '15:05:00'
     force_flatten_start: str = '15:10:00'
     minimum_remaining_minutes: int = 15
@@ -24,18 +25,31 @@ class SessionPlan:
         return min(self.hard_new_entry_end, computed)
 
     def validate(self):
-        assert self.observe_start <= self.new_entry_start < self.effective_new_entry_end < self.force_flatten_start < self.support_end, "Invalid session sequence"
+        assert self.preopen_control_start < self.observe_start <= self.new_entry_start < self.effective_new_entry_end < self.force_flatten_start < self.support_end, "Invalid session sequence"
         assert not self.allow_overnight, "Overnight trading not permitted"
         return self
 
     def fingerprint(self) -> str:
-        data = f"{self.observe_start}|{self.new_entry_start}|{self.effective_new_entry_end}|{self.hard_new_entry_end}|{self.force_flatten_start}|{self.minimum_remaining_minutes}|{self.support_end}|{self.allow_overnight}"
+        data = f"{self.preopen_control_start}|{self.observe_start}|{self.new_entry_start}|{self.effective_new_entry_end}|{self.hard_new_entry_end}|{self.force_flatten_start}|{self.minimum_remaining_minutes}|{self.support_end}|{self.allow_overnight}"
         return hashlib.sha256(data.encode('utf-8')).hexdigest()
 
     def is_supported(self, stamp: datetime) -> bool:
         if stamp.tzinfo is None: return False
         local = stamp.astimezone(KST)
         return local.weekday() < 5 and self.observe_start <= local.strftime('%H:%M:%S') < self.support_end
+
+    def is_control_window(self, stamp: datetime) -> bool:
+        if stamp.tzinfo is None: return False
+        local = stamp.astimezone(KST)
+        return local.weekday() < 5 and self.preopen_control_start <= local.strftime('%H:%M:%S') < self.support_end
+
+    def phase(self, stamp: datetime) -> str:
+        if not self.is_control_window(stamp): return 'SUPPORT_END' if stamp.tzinfo is not None and stamp.astimezone(KST).strftime('%H:%M:%S') >= self.support_end else 'OUT_OF_CONTROL_SESSION'
+        local_time = stamp.astimezone(KST).strftime('%H:%M:%S')
+        if local_time < self.observe_start: return 'PREOPEN_CONTROL'
+        if local_time >= self.force_flatten_start: return 'FORCE_FLATTEN'
+        if self.is_entry_window(stamp): return 'NEW_ENTRY'
+        return 'MARKET_OBSERVATION'
 
     def is_entry_window(self, stamp: datetime) -> bool:
         if not self.is_supported(stamp): return False
@@ -49,6 +63,7 @@ class SessionPlan:
 
     def summary(self) -> dict:
         return {
+            'preopen_control_start': self.preopen_control_start,
             'observe_start': self.observe_start,
             'new_entry_start': self.new_entry_start,
             'effective_new_entry_end': self.effective_new_entry_end,
@@ -68,10 +83,17 @@ END = DEFAULT_SESSION_PLAN.support_end
 def supported(stamp):
     return DEFAULT_SESSION_PLAN.is_supported(stamp)
 
+def control_supported(stamp):
+    return DEFAULT_SESSION_PLAN.is_control_window(stamp)
+
+def observation_supported(stamp):
+    return supported(stamp)
+
 def assessment(stamp, plan=None):
     active_plan = plan or DEFAULT_SESSION_PLAN
     return {
-        'classification': 'SUPPORTED_SESSION' if active_plan.is_supported(stamp) else 'OUT_OF_SUPPORTED_SESSION',
+        'classification': 'SUPPORTED_SESSION' if active_plan.is_supported(stamp) else 'PREOPEN_CONTROL' if active_plan.is_control_window(stamp) else 'OUT_OF_SUPPORTED_SESSION',
+        'phase': active_plan.phase(stamp),
         'support': f'평일 KST {active_plan.observe_start[:5]} 이상 {active_plan.support_end[:5]} 미만 + 거래소 정규장 상태 확인',
         'checked_at': stamp.isoformat(),
         'regression_failure': False,

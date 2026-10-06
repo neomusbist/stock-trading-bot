@@ -96,7 +96,7 @@ class ContinuousTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.s.start_continuous()
         self.assertEqual(self.gateway.starts,0)
     def test_after_hours_start_no_process_no_network(self):
-        for hour,minute in ((8,59),(15,20),(20,0)):
+        for hour,minute in ((7,59),(15,20),(20,0)):
             self.clock[0]=self.clock[0].replace(hour=hour,minute=minute)
             self.assertEqual(self.s.start_continuous()['verdict'],'FAIL')
         self.assertEqual(self.gateway.starts,0)

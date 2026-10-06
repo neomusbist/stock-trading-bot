@@ -2,8 +2,8 @@
 import json
 import math
 STRATEGY_VERSION='V1.1-policy-20261001'
-BUILD_ID='V1.1-src1-fallback-20261006'
-STRATEGY_EXPERIMENT='V1.1-src1-fallback-20261006'
+BUILD_ID='V1.3-preopen-risk2-20261007'
+STRATEGY_EXPERIMENT='20261007-risk2-daily4-cap20000'  # 위험관리 실험; A/B/C 신호 정의는 동일
 
 def reason_code(reason,position):
     exact={'승인 자동매매 자본 0원':'AUTO_CAP_ZERO','기존 보유: 추가매수 금지':'EXTERNAL_HOLD_NO_BUY',
@@ -46,20 +46,32 @@ class DecisionLog:
         stamp=e.clock().timestamp(); prev=self.last.get(key)
         if not force and prev and prev[0]==signature and stamp-prev[1]<e.a.decision_snapshot_seconds: return
         self.last[key]=(signature,stamp)
+        risk_context=e.capital_context() if hasattr(e,'capital_context') else {}
+        risk_gate_values=gates.get('risk_quantity',{}).get('values',{})
+        # 수량 판단 뒤 주문/자금 예약이 생겨도 해당 RiskGate가 실제 사용한 기준을 보존한다.
+        risk_equity=risk_gate_values.get('equity',e.risk_equity())
+        risk_remaining=risk_gate_values.get('remaining_risk',risk_context.get('risk_remaining',
+            max(0,risk_equity*e.c.max_daily_loss_fraction-e.s.get('daily_loss',0))))
+        risk_identity={'risk_fraction':e.c.risk_fraction,'max_daily_loss_fraction':e.c.max_daily_loss_fraction,
+                       'allowed_risk_krw':risk_equity*e.c.risk_fraction,
+                       'remaining_daily_risk_krw':max(0,risk_remaining)}
+        if 'risk_quantity' in gates:
+            gates={**gates,'risk_quantity':{**gates['risk_quantity'],'values':{**gates['risk_quantity'].get('values',{}),**risk_identity}}}
         current=price if price is not None else e.prices.get(symbol)
         entry=p.get('avg',sig.get('limit')); qty=p.get('qty',extra.get('quantity'))
         cost=None
         if entry is not None and qty is not None and current is not None:
             cost=e.buy_fee(entry*qty)+e.sell_fee(current*qty)
         codes=[k.upper() for k,v in gates.items() if v['result']!='PASS' and k!=reason]
-        e.event(kind,timestamp=e.clock().isoformat(timespec='milliseconds'),strategy_version=STRATEGY_VERSION,symbol=symbol,
+        e.event(kind,timestamp=e.clock().isoformat(timespec='milliseconds'),strategy_version=STRATEGY_VERSION,
+            build_id=BUILD_ID,strategy_experiment=STRATEGY_EXPERIMENT,**risk_identity,symbol=symbol,
             name=sig.get('name') or e.names.get(symbol),setup=sig.get('pattern'),
             signal_detected=bool(sig.get('pattern') and sig.get('time')),signal_at=sig.get('time'),
             price_structure=sig.get('structure'),setup_trials=sig.get('setup_trials',extra.get('setup_trials')),state=state,decision=decision,primary_reason_code=reason,
             additional_reason_codes=codes,gates=gates,current_price=current,entry_price=entry,
             invalidation=p.get('initial_stop',sig.get('stop')),protection=p.get('stop'),quantity=qty,
             invalidation_price=p.get('initial_stop',sig.get('stop')),protection_price=p.get('stop'),
-            highest_price=p.get('high'),lowest_price=p.get('low'),allowed_risk_krw=e.risk_equity()*e.c.risk_fraction,
+            highest_price=p.get('high'),lowest_price=p.get('low'),
             actual_orderable_cash=e.available_cash,approved_cap=e.a.capital_limit,effective_auto_cap=e.auto_available_capital(),calculated_available_capital=e.watch_budget(),
             MFE=p.get('high')-entry if p.get('high') is not None and entry is not None else None,
             MAE=entry-p.get('low') if p.get('low') is not None and entry is not None else None,

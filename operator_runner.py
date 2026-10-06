@@ -9,11 +9,11 @@ sys.path.insert(0,str(ROOT/'vendor'))
 from core.settings import now,load_config
 from core.util import ProcessLock,atomic_json,exception_details
 from automation.policy import Policy,load_automation,legacy_test_release_enabled
-from automation.session import supported
+from automation.session import supported,control_supported
 from operator_process import process_identity
 
 def session_end(root,clock):
-    if supported(clock()): return False
+    if control_supported(clock()): return False
     with ProcessLock(root/'runtime/control.lock'):
         policy=Policy(root/'runtime/automation_policy.json')
         if policy.mode in {'ARMED','LIVE'}: policy.command('STOP')
@@ -34,7 +34,7 @@ def run(root=ROOT,clock=now,supervise=None,token=None,purpose='CONTINUOUS'):
         raise ValueError('TEST_CAPITAL_RELEASE_RETIRED: 시험 전용 실행은 종료됐습니다.')
     root=Path(root); token=token or uuid.uuid4().hex
     with ProcessLock(root/'runtime/operator_runner.lock'):
-        if not supported(clock()): raise ValueError('지원시간 밖: 계속 감시를 시작하지 않습니다.')
+        if not control_supported(clock()): raise ValueError('지원시간 밖: 계속 감시를 시작하지 않습니다.')
         with ProcessLock(root/'runtime/supervisor.lock'),ProcessLock(root/'runtime/process.lock'): pass
         policy=Policy(root/'runtime/automation_policy.json'); initial=policy.mode
         record={'pid':os.getpid(),'identity':process_identity(os.getpid()),'token':token,'purpose':purpose,
@@ -76,7 +76,7 @@ if __name__=='__main__':
     import argparse
     parser=argparse.ArgumentParser(); parser.add_argument('--token',required=True); parser.add_argument('--purpose',default='CONTINUOUS')
     args=parser.parse_args()
-    if not supported(now()):
+    if not control_supported(now()):
         from local_diagnostics import diagnose
         import json
         print(json.dumps(diagnose(ROOT,now()),ensure_ascii=False)); raise SystemExit(0)

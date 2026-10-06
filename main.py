@@ -82,22 +82,22 @@ def safe_report(rows,engine):
         print(f'보고서 저장 보류 ({type(e).__name__}). 포지션 관리는 계속 실행됩니다.')
 
 def check_connection(cfg):
-    """인증/실시간 스키마만 30초 확인. Engine/주문 모듈을 실행하지 않는다."""
+    """인증/실시간 증거가 충족되면 즉시 종료. Engine/주문 모듈을 실행하지 않는다."""
     from core.realtime import Feed,parse_tick
-    from automation.session import supported
-    if not supported(now()): raise ValueError('OUT_OF_SUPPORTED_SESSION')
+    from automation.session import control_supported
+    if not control_supported(now()): raise ValueError('OUT_OF_SUPPORTED_SESSION')
     path=ROOT/'watchlist.json'
     w=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {'items':[]}
     symbols=[r['code'] for r in w['items']]
     # 매매 후보 0개는 정상 NO_TRADE. 연결 진단은 주문 없이 기준종목 체결만 확인한다.
     diagnostic_only=not symbols
     if diagnostic_only: symbols=['005930']
-    rest=Rest(cfg); rest.session_guard=lambda:supported(now())
+    rest=Rest(cfg); rest.session_guard=lambda:control_supported(now())
     feed=Feed(rest,symbols); counts={'REG':0,'REAL_0B':0,'valid_regular_ticks':0,'invalid_ticks':0,'ERROR':0}
     started=now(); deadline=time.monotonic()+30; feed.start()
     try:
         while time.monotonic()<deadline:
-            if not supported(now()): break
+            if not control_supported(now()): break
             try: received,m=feed.q.get(timeout=0.5)
             except queue.Empty: continue
             if m.get('trnm')=='REG' and m.get('return_code') in (0,'0'): counts['REG']+=1
@@ -111,17 +111,18 @@ def check_connection(cfg):
                         if t.regular and 0<=((received-t.time).total_seconds())<=cfg.stale_seconds:
                             counts['valid_regular_ticks']+=1
                     except (ValueError,KeyError,TypeError): counts['invalid_ticks']+=1
+            if counts['REG']>0 and counts['invalid_ticks']==0 and (now().hour<9 or counts['valid_regular_ticks']>0):break
     finally: feed.close()
     result={'started':started.isoformat(),'finished':now().isoformat(),'orders_sent':0,'counts':counts,
       'diagnostic_only':diagnostic_only,'diagnostic_symbols':symbols,
-      'passed':counts['REG']>0 and counts['valid_regular_ticks']>0 and counts['invalid_ticks']==0}
+      'passed':counts['REG']>0 and (now().hour<9 or counts['valid_regular_ticks']>0) and counts['invalid_ticks']==0}
     atomic_json(ROOT/'connection_check.json',result); print(json.dumps(result,ensure_ascii=False))
-    if not result['passed']: raise RuntimeError('30초 실시간 연결 검사 미통과: 휴장/비거래시간 또는 접속 확인 필요')
+    if not result['passed']: raise RuntimeError('실시간 연결 증거 미충족: 휴장/비거래시간 또는 접속 확인 필요')
 
 def check_account(cfg):
     """잔고·미체결·체결 조회 필드 검사. 잔고액/종목/계좌번호는 보고서에 저장하지 않는다."""
-    from automation.session import supported
-    rest=Rest(cfg); rest.session_guard=lambda:supported(now())
+    from automation.session import control_supported
+    rest=Rest(cfg); rest.session_guard=lambda:control_supported(now())
     snapshot=rest.snapshot(); fills=rest.fills()
     result={'checked_at':now().isoformat(),'orders_sent':0,'holding_count':len(snapshot['holdings']),
         'open_order_count':len(snapshot['orders']),'fill_row_count':len(fills),
@@ -236,15 +237,16 @@ def main():
     p.add_argument('--self-test',action='store_true')
     p.add_argument('--diagnostics',action='store_true',help='시간과 무관한 로컬 상태/설정/파일 I/O 진단 (네트워크 없음)')
     p.add_argument('--diagnostic-account',action='store_true',help='명시 선택한 조회 전용 계좌 진단. 운영시간 밖에도 API가 허용하면 조회; 주문 불가')
-    p.add_argument('--check-connection',action='store_true',help='30초 조회 전용 실시간 연결 검사')
+    p.add_argument('--check-connection',action='store_true',help='조회 전용 조건 충족형 실시간 연결 검사')
+    p.add_argument('--readiness-check',action='store_true',help='고정 최소 대기 없이 필수 증거 충족 즉시 종료하는 주문 금지 준비검사')
     p.add_argument('--check-account',action='store_true',help='조회 전용 잔고/미체결/체결 필드 검사')
     p.add_argument('--paper-seconds',type=int,default=0,help='별도 paper-smoke 상태로 지정 초 동안 dry-run 감시 후 청산/종료')
     p.add_argument('--legacy-monitor',action='store_true',help='V1 원형의 합성/조회용 감시. 실제 주문 불가')
     p.add_argument("--recover-pilot",action="store_true",help="설정을 보존하는 주문 금지 재자격 조회")
     p.add_argument('--operational-pilot',action='store_true',help='정지한 운영 설정을 보존하며 내부 주문권한 0으로 재자격 검사')
     args=p.parse_args()
-    if args.recover_pilot and args.paper_seconds!=150: raise ValueError("재자격 검사는 150초 조회만 허용")
-    if args.operational_pilot and (not args.recover_pilot or args.paper_seconds!=150):raise ValueError('운영 재자격은 150초 조회 전용')
+    if args.recover_pilot and not (args.readiness_check or args.paper_seconds>0):raise ValueError('재자격은 주문 금지 readiness 조회만 허용')
+    if args.operational_pilot and (not args.recover_pilot or not (args.readiness_check or args.paper_seconds>0)):raise ValueError('운영 재자격은 주문 금지 readiness 조회 전용')
     if args.self_test:
         import unittest
         result=unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.discover(str(ROOT/'tests')))
@@ -252,8 +254,8 @@ def main():
           'failures':len(result.failures),'errors':len(result.errors),'skipped':len(result.skipped),'passed':result.wasSuccessful()})
         return 0 if result.wasSuccessful() else 1
     cfg=load_config(args.config)
-    from automation.session import supported
-    if args.diagnostics or args.diagnostic_account or (not supported(now()) and not any((args.demo,args.offline,args.check_connection,args.check_account,args.paper_seconds,args.collect_only,args.legacy_monitor))):
+    from automation.session import supported,control_supported
+    if args.diagnostics or args.diagnostic_account or (not control_supported(now()) and not any((args.demo,args.offline,args.check_connection,args.check_account,args.paper_seconds,args.readiness_check,args.collect_only,args.legacy_monitor))):
         from local_diagnostics import diagnose,account_diagnostic
         result=diagnose(ROOT,now())
         if args.diagnostic_account:
@@ -261,9 +263,9 @@ def main():
             result['account_diagnostic']=account_diagnostic(cfg,ROOT,now())
         print(json.dumps(result,ensure_ascii=False)); return 0
     prerequisites()
-    if args.check_connection or args.check_account or args.paper_seconds or args.collect_only or args.legacy_monitor:
+    if args.check_connection or args.check_account or args.paper_seconds or args.readiness_check or args.collect_only or args.legacy_monitor:
         from automation.session import supported,assessment
-        if not supported(now()):
+        if not control_supported(now()):
             result={**assessment(now()),'test':'실제 연결 검사','passed':None,'reason':'INCONCLUSIVE_AFTER_HOURS',
                     'next_step':'다음 실제 개장일 V1.1 운영시간 09:00 이상 15:20 미만에 다시 검사'}
             atomic_json(ROOT/'diagnostic_session_guard.json',result)
@@ -279,8 +281,8 @@ def main():
         if args.check_account: check_account(cfg); return 0
         if not args.demo and not args.offline and not args.collect_only and not args.legacy_monitor:
             from automation.runner import run
-            result=run(cfg,ROOT,args.paper_seconds,**({"recover_pilot":True} if args.recover_pilot else {}),**({'operational_pilot':True} if args.operational_pilot else {}))
-            print(json.dumps(result,ensure_ascii=False)); return 0 if not args.paper_seconds or result['passed'] is not False else 1
+            result=run(cfg,ROOT,args.paper_seconds,readiness_check=args.readiness_check,**({"recover_pilot":True} if args.recover_pilot else {}),**({'operational_pilot':True} if args.operational_pilot else {}))
+            print(json.dumps(result,ensure_ascii=False)); return 0 if not (args.paper_seconds or args.readiness_check) or result['passed'] is not False else 1
         if args.legacy_monitor and cfg.live_mode: raise ValueError('원형 감시 경로의 실제 주문은 금지. 기본 자동운용 경로 사용')
         folder=ROOT/'runtime'/('live-'+cfg.broker_environment if cfg.live_mode else 'paper')
         state_path=folder/'state.json'

@@ -11,7 +11,7 @@ from core.util import code, floor_tick,read_json_retry,atomic_json
 from automation.capital import Costs, initial_allocation, owned_equity
 from automation.policy import LEGACY_SYMBOL,BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL,HARD_LOCKS,legacy_test_release_enabled
 from automation.session import supported, SessionPlan
-from automation.decisions import DecisionLog,gate,STRATEGY_VERSION,safe_values
+from automation.decisions import DecisionLog,gate,STRATEGY_VERSION,BUILD_ID,STRATEGY_EXPERIMENT,safe_values
 from automation.existing import ExistingExits
 
 
@@ -64,7 +64,7 @@ class AutonomousEngine(ExistingExits,Engine):
         if prior_hash and prior_hash!=auto.fingerprint() and (self.s['positions'] or self.active_orders()):
             raise RuntimeError('관리 중 자동운용 설정 변경: 저장된 설정으로 복구 필요')
         self.s['automation']['config_hash']=auto.fingerprint()
-        min_rem=getattr(auto,'minimum_remaining_minutes',0)
+        min_rem=getattr(auto,'minimum_remaining_minutes',15)
         self.session_plan=SessionPlan(hard_new_entry_end=auto.new_entry_cutoff,force_flatten_start=auto.force_flatten_start,minimum_remaining_minutes=min_rem,allow_overnight=auto.ALLOW_OVERNIGHT)
         self.broker.order_guard=self.order_guard
         self.broker.test_release_authorizer=self.test_release_authorized
@@ -78,13 +78,14 @@ class AutonomousEngine(ExistingExits,Engine):
 
     def entry_window(self):
         cutoff=getattr(self,'session_plan',None).effective_new_entry_end if hasattr(self,'session_plan') else self.a.new_entry_cutoff
-        return supported(self.clock()) and self.market=='3' and self.clock().strftime('%H:%M:%S')<cutoff
+        return self.session_plan.is_entry_window(self.clock()) and self.market=='3' and self.clock().strftime('%H:%M:%S')<cutoff
 
     def event(self,kind,**data):
         # 기존 이벤트명/체결 순서는 유지하고 공통 식별정보만 보강한다.
         sym=data.get('symbol'); p=self.s.get('positions',{}).get(sym,{})
         info={'timestamp':self.clock().isoformat(timespec='milliseconds'),'strategy_version':STRATEGY_VERSION,
-              'name':self.names.get(sym),'setup':(p.get('signal') or {}).get('pattern')}
+              'name':self.names.get(sym),'setup':(p.get('signal') or {}).get('pattern'),
+              'build_id':BUILD_ID,'strategy_experiment':STRATEGY_EXPERIMENT}
         info.update(data)
         return super().event(kind,**safe_values(info))
     def session_ending(self):
@@ -122,6 +123,10 @@ class AutonomousEngine(ExistingExits,Engine):
         if not supported(self.clock()): return 'OUT_OF_SUPPORTED_SESSION'
         if symbol in HARD_LOCKS or self.policy.locked(symbol): return 'HARD_LOCK'
         if symbol in BREAKEVEN_EXITS or (symbol==TEST_RELEASE_SYMBOL and legacy_test_release_enabled()): return 'EXISTING_POLICY_NO_BUY'
+        readiness_reason=getattr(self,'readiness_reason',None)
+        if readiness_reason:
+            reason=readiness_reason()
+            if reason:return reason
         cutoff=min(self.a.new_entry_cutoff,getattr(self,'session_plan',SessionPlan()).effective_new_entry_end)
         if self.clock().strftime('%H:%M:%S')>=cutoff: return 'NEW_ENTRY_CUTOFF'
         status=self.market_status.get(symbol)
@@ -185,7 +190,7 @@ class AutonomousEngine(ExistingExits,Engine):
             'connection_account':gate(self.connected and self.account_ok and not self.s['halt'] and (not self.c.live_mode or time.monotonic()-self.last_account<=self.c.reconcile_seconds*3),connected=self.connected,account_ok=self.account_ok,halt=self.s['halt'],account_age=time.monotonic()-self.last_account),
             'tick':gate(tick.regular and abs((self.clock()-tick.time).total_seconds())<=self.c.stale_seconds,lag=(self.clock()-tick.time).total_seconds(),regular=tick.regular,stale_limit=self.c.stale_seconds),
             'repeat_slots':gate(not self.active_orders(sym) and sym not in self.s['positions'] and sym not in self.s['excluded'] and self.s['entries'].get(sym,0)<self.c.max_entries_per_symbol and sum(self.s['entries'].values())<self.c.max_entries_per_day and len(set(self.s['positions'])|{o['symbol'] for o in buys})<self.c.max_positions,entries=self.s['entries'].get(sym,0),daily_entries=sum(self.s['entries'].values()),slots=len(set(self.s['positions'])|{o['symbol'] for o in buys})),
-            'risk_quantity':gate(qty>0,**sizing,equity=equity,remaining_risk=remaining,reserved_cash=reserved,book_cash=self.s['cash'],actual_cash=self.available_cash,entry=signal['limit'],stop=signal['stop']),
+            'risk_quantity':gate(qty>0,**sizing,equity=equity,remaining_risk=remaining,reserved_cash=reserved,book_cash=self.s['cash'],actual_cash=self.available_cash,entry=signal['limit'],stop=signal['stop'],risk_fraction=self.c.risk_fraction,max_daily_loss_fraction=self.c.max_daily_loss_fraction,allowed_risk_krw=equity*self.c.risk_fraction,remaining_daily_risk_krw=max(0,remaining)),
             'efficiency':gate(signal.get('efficiency',{}).get('decision')=='TRADE',efficiency=signal.get('efficiency'))}
 
     def enter(self,signal,tick):

@@ -170,9 +170,9 @@ class SettingsDialog(QDialog):
         self.authorize=QPushButton('실제매매 명시 승인'); self.authorize.clicked.connect(self.approve); manual_layout.addWidget(self.authorize)
         layout.addWidget(manual);manual.hide()
         idle=not s['process']['running'] and not(s['positions'] or s['pending'] or s['uncertain'] or s['halt'])
-        self.change.setEnabled(idle); self.ready.setEnabled(idle and s['supported'] and s['costs_confirmed']); self.authorize.setEnabled(idle and s['supported'] and s['costs_confirmed'])
+        self.change.setEnabled(idle); self.ready.setEnabled(idle and s.get('control_supported',s['supported']) and s['costs_confirmed']); self.authorize.setEnabled(idle and s.get('control_supported',s['supported']) and s['costs_confirmed'])
         self.change.setToolTip('감시 중지·봇 보유/미체결/불명확 주문·HALT 없음이 필요합니다.' if not idle else '새 원 단위 한도를 입력하고 변경 확인을 선택하세요.')
-        reason='감시·장부 안전상태 확인 필요' if not idle else '운영시간 밖' if not s['supported'] else '비용 설정 미확인' if not s['costs_confirmed'] else '기존 안전조건을 다시 검사합니다.'
+        reason='감시·장부 안전상태 확인 필요' if not idle else '운영시간 밖' if not s.get('control_supported',s['supported']) else '비용 설정 미확인' if not s['costs_confirmed'] else '기존 안전조건을 다시 검사합니다.'
         self.ready.setToolTip(reason); self.authorize.setToolTip(reason)
         layout.addWidget(QLabel('한도 변경 시 실제매매 승인은 해제됩니다. 준비 검사 → 금액·문구 확인 → 별도 시작이 필요합니다.\n실행 중에는 변경할 수 없습니다. 비용 미확인이면 실제매매 승인을 차단합니다.'))
         self.result=QPlainTextEdit(); self.result.setReadOnly(True); layout.addWidget(self.result)
@@ -208,9 +208,9 @@ class MainWindow(QMainWindow):
         self.jobs=set(); self.read_pool=QThreadPool(self); self.read_pool.setMaxThreadCount(1)
         self.command_pool=QThreadPool(self); self.command_pool.setMaxThreadCount(1)
         self.emergency_pool=QThreadPool(self); self.emergency_pool.setMaxThreadCount(1)
-        self.setWindowTitle('주식자동매매 V1.2'); self.resize(1220,820); self.setMinimumSize(980,700)
+        self.setWindowTitle('주식자동매매 V1.3'); self.resize(1220,820); self.setMinimumSize(980,700)
         body=QWidget(); self.setCentralWidget(body); outer=QVBoxLayout(body); outer.setContentsMargins(20,16,20,16)
-        header=QHBoxLayout(); title=QLabel('주식자동매매 V1.2'); title.setObjectName('title'); header.addWidget(title)
+        header=QHBoxLayout(); title=QLabel('주식자동매매 V1.3'); title.setObjectName('title'); header.addWidget(title)
         header.addSpacing(14)
         self.mode_badge=QLabel('요청 모드: 확인 중'); self.mode_badge.setObjectName('modeBadge'); header.addWidget(self.mode_badge)
         self.permission_badge=QLabel('주문 권한: 확인 중'); self.permission_badge.setObjectName('permissionBadge'); header.addWidget(self.permission_badge)
@@ -222,7 +222,7 @@ class MainWindow(QMainWindow):
             value.setObjectName('cardValue'); boxlayout.addWidget(value); self.cards[key]=value; grid.addWidget(box,i//4,i%4)
         outer.addLayout(grid)
         self.notice=QLabel('안전 상태를 읽기 전에는 자동매매를 시작할 수 없습니다.'); self.notice.setWordWrap(True); self.notice.setObjectName('notice'); outer.addWidget(self.notice)
-        self.check_progress=QProgressBar();self.check_progress.setRange(0,150);self.check_progress.hide();outer.addWidget(self.check_progress)
+        self.check_progress=QProgressBar();self.check_progress.setRange(0,0);self.check_progress.hide();outer.addWidget(self.check_progress)
         self.check_started=None;self.check_stage='';self.progress_update.connect(self._check_stage)
         self.check_timer=QTimer(self);self.check_timer.setInterval(250);self.check_timer.timeout.connect(self._check_elapsed)
         split=QSplitter(Qt.Orientation.Horizontal); outer.addWidget(split,1)
@@ -377,7 +377,7 @@ class MainWindow(QMainWindow):
         self.cards['inventory'].setText(f"{s['position_count']}종목 / {s['pending']}건\n불명확 주문 {s['uncertain']}건")
         block=start_block(s); running=s['process']['running']
         self.buttons['start'].setEnabled(not block and not self.working); self.buttons['start'].setToolTip(block or '기존 안전 검사 후 별도 감시 프로세스를 시작합니다.')
-        self.buttons['start'].setText('자동매매 시작 (시간 밖)' if not s['supported'] else '자동매매 시작')
+        self.buttons['start'].setText('자동매매 시작 (시간 밖)' if not s.get('control_supported',s['supported']) else '사전 준비 / 자동매매 시작' if not s['supported'] else '자동매매 시작')
         self.buttons['stop'].setEnabled(running)
         self.buttons['stop'].setToolTip('실행 중인 감시를 정상 중지합니다. 기존 봇 포지션 보호는 종료될 때까지 유지됩니다.' if running else '감시가 중지되어 있습니다.')
         self.buttons['flat'].setEnabled(bool(running or s['positions'] or s['pending']))
@@ -504,16 +504,14 @@ class MainWindow(QMainWindow):
         if real and not self.confirm(f"승인한도 {money(self.status['cap'])} 내 실제 주문이 가능해집니다.\n계좌·연결·시장·위험 조건은 기존 엔진이 다시 검사합니다. 시작할까요?",'자동매매 시작'): return
         self.submit(lambda:self.service.start_user(confirmed=bool(real)))
     def _check_stage(self,text):
-        self.check_stage=text
-        if '150' in text:
-            self.check_started=time.monotonic();self.check_progress.setRange(0,150);self.check_timer.start()
+        self.check_stage=text;self.check_started=time.monotonic()
+        self.check_progress.setRange(0,0);self.check_timer.start()
         self.notice.setText('안전검사 진행 중 · '+text)
     def _check_elapsed(self):
         if self.check_started is None:return
         elapsed=int(time.monotonic()-self.check_started)
-        if elapsed>=150:
-            self.check_progress.setRange(0,0);self.notice.setText('안전검사 결과 정리 중 — 검사 결과가 도착할 때까지 기다립니다.')
-        else:self.check_progress.setValue(elapsed);self.check_progress.setFormat(str(elapsed)+' / 150초 · '+self.check_stage)
+        self.check_progress.setRange(0,0)
+        self.notice.setText('안전검사 결과 정리 중 / 증거 확인 '+str(elapsed)+'초 · '+self.check_stage)
     def _prepared_start(self,result):
         self.check_timer.stop();self.check_progress.hide()
         verdict=result.get('verdict')
@@ -550,19 +548,19 @@ class MainWindow(QMainWindow):
     def show_result(self,result): QMessageBox.information(self,'요청 / 검사 결과',result_text(result))
     def diagnostic(self):
         d=QDialog(self); d.setWindowTitle('상태 / 진단'); d.resize(650,360); layout=QVBoxLayout(d)
-        layout.addWidget(QLabel('상태 확인은 저장파일 조회입니다. 운영시간 밖에서도 이용할 수 있습니다.\n고급 150초 시운전은 최초 0원 조회 검사이며 현재 승인을 자동 변경하지 않습니다.'))
+        layout.addWidget(QLabel('상태 확인은 저장파일 조회입니다. 운영시간 밖에서도 이용할 수 있습니다.\n고급 안전 준비검사은 최초 0원 조회 검사이며 현재 승인을 자동 변경하지 않습니다.'))
         for label,call in [('상세 상태 보기 (읽기 전용)',lambda:self.details(self.status)),
             ('최근 요청 / 검사 결과 (기록시각 확인)',lambda:self.show_result((self.status or {}).get('recent_result',{}))),
             ('로컬 진단 (네트워크 없음)',lambda:self.submit(self.service.local_diagnostic)),
-            ('고급 진단: 최초 150초 안전 시운전',self.smoke),
-            ('운영 설정 유지: 150초 재자격 조회 검사',self.recover_pilot)]:
+            ('고급 진단: 최초 증거 기반 안전 준비검사',self.smoke),
+            ('운영 설정 유지: 증거 기반 재자격 조회 검사',self.recover_pilot)]:
             b=QPushButton(label); b.clicked.connect(call); layout.addWidget(b)
         close=QPushButton('닫기'); close.clicked.connect(d.accept); layout.addWidget(close); d.exec()
     def recover_pilot(self):
-        if self.confirm("승인한도·비용 설정을 보존하고 150초 조회로 증빙을 다시 취득합니다.\nARMED·실제매매 OFF·감시 중지·보유/주문 없음이 필요합니다.\n실제 주문과 LIVE 승인은 수행하지 않습니다.","재자격 조회 확인"):
+        if self.confirm("승인한도·비용 설정을 보존하고 증거 기반 조회로 증빙을 다시 취득합니다.\nARMED·실제매매 OFF·감시 중지·보유/주문 없음이 필요합니다.\n실제 주문과 LIVE 승인은 수행하지 않습니다.","재자격 조회 확인"):
             self.submit(lambda:self.service.recover_pilot(True))
     def smoke(self):
-        if self.confirm('최초 안전 시운전 조건(0원·조회 대기·실주문 꺼짐·비용 미확인)을 먼저 검사합니다.\n현재 설정을 자동으로 바꾸지 않으며 검사 시간은 약 150초입니다.','150초 안전 시운전'):
+        if self.confirm('최초 안전 시운전 조건(0원·조회 대기·실주문 꺼짐·비용 미확인)을 먼저 검사합니다.\n현재 설정을 자동으로 바꾸지 않으며 필수 증거를 확인하면 즉시 끝납니다.','증거 기반 안전 준비검사'):
             self.submit(lambda:self.service.pilot())
     def settings(self):
         if self.status: SettingsDialog(self).exec()

@@ -13,12 +13,12 @@ from pathlib import Path
 from core.settings import ROOT,now,load_config
 from core.util import ProcessLock,atomic_json,read_json_retry,exception_details
 from automation.policy import Policy,load_automation,HARD_LOCKS,BREAKEVEN_EXITS,EXISTING_POLICIES,legacy_test_release_enabled
-from automation.session import supported
-from automation.decisions import STRATEGY_VERSION
+from automation.session import supported,control_supported
+from automation.decisions import STRATEGY_VERSION,BUILD_ID
 from operator_process import process_identity,busy
 
 TERMINAL={'FILLED','CANCELED','REJECTED'}
-MENUS={'1':'현재 상태 / 최근 판단','2':'150초 안전 시운전','3':'계속 감시 및 거래 시작',
+MENUS={'1':'현재 상태 / 최근 판단','2':'증거 기반 안전 준비검사','3':'계속 감시 및 거래 시작',
        '4':'감시 및 거래 중단 STOP',
        '6':'자본 / 설정','7':'봇 포지션 청산 후 중단 STOP_FLAT',
        '8':'비상정지 KILL','9':'최근 결과 / 상세 로그','0':'프로그램 메뉴 종료'}
@@ -84,12 +84,12 @@ class Gateway:
     """실제 연결은 사용자가 선택한 지원시간 내 작업에서만 한다."""
     def __init__(self,service): self.service=service
     def snapshot(self):
-        if not supported(self.service.clock()): raise ValueError('지원시간 밖: 계좌 연결을 시작하지 않습니다.')
+        if not control_supported(self.service.clock()): raise ValueError('지원시간 밖: 계좌 연결을 시작하지 않습니다.')
         import main
         from core.broker import Rest
         main.load_credentials()
         cfg=load_config(self.service.root/'config.json'); rest=Rest(cfg)
-        rest.session_guard=lambda:supported(self.service.clock())
+        rest.session_guard=lambda:control_supported(self.service.clock())
         snapshot=rest.snapshot(); rest.fills()
         return snapshot
     def command(self,args,timeout=60):
@@ -139,7 +139,7 @@ class OperatorService:
         return {'005930','017900'}<=HARD_LOCKS and '017900' not in BREAKEVEN_EXITS and EXISTING_POLICIES.get('017900')=='HARD_LOCK'
     def safe_reasons(self,require_zero=True,require_disabled=True,require_cost_false=False):
         cfg,auto,policy=self.settings(); reasons=[]; counts=self.state_counts()
-        if not supported(self.clock()): reasons.append('지원시간 밖입니다. 실제 개장일 09:00 이상 15:20 미만에 선택하세요.')
+        if not control_supported(self.clock()): reasons.append('준비시간 밖입니다. 평일 08:00 이상 15:20 미만에 선택하세요.')
         if not policy or policy['mode']!='ARMED': reasons.append('운영모드가 ARMED가 아닙니다.')
         if policy and policy.get('live_authorized'): reasons.append('기존 LIVE 승인 기록이 남아 있습니다. 임의로 지우지 않고 점검을 중단합니다.')
         if cfg.live_mode: reasons.append('실제 자동매매 설정이 켜져 있습니다.')
@@ -186,7 +186,7 @@ class OperatorService:
         activity={'SCAN':'후보와 A/B/C 조건 관찰','MANAGE':'봇 보유 보호/청산 관리','QUIET':'후보 대기'}.get(hb.get('strategy'),'대기')
         if not fresh: activity='감시 미실행/현재 관측 미확인 — 마지막 동작: '+activity
         approval=policy.get('test_capital_release',{})
-        return {'time':self.clock().isoformat(),'supported':supported(self.clock()),'mode':policy['mode'],'live_mode':cfg.live_mode,
+        return {'time':self.clock().isoformat(),'supported':supported(self.clock()),'control_supported':control_supported(self.clock()),'build_id':BUILD_ID,'mode':policy['mode'],'live_mode':cfg.live_mode,
             'candidate_summary':read_json(self.root/'runtime/candidate_summary.json',{}),
             'live_approved':bool(policy.get('live_authorized') and cfg.live_mode),
             'halt':state.get('halt') or '', 'halt_info':state.get('halt_info',{}),
@@ -221,7 +221,7 @@ class OperatorService:
             previous=read_json(self.root/'runtime/operator_pilot.json',{})
             if previous.get('verdict')=='PASS' and previous.get('strategy_version')==STRATEGY_VERSION:
                 atomic_json(self.root/'runtime/operator_pilot_pass.json',previous)
-        result={**result,'kind':kind,'timestamp':self.clock().isoformat(),'strategy_version':STRATEGY_VERSION}
+        result={'build_id':BUILD_ID,**result,'kind':kind,'timestamp':self.clock().isoformat(),'strategy_version':STRATEGY_VERSION} if kind!='pilot' else {**result,'kind':kind,'timestamp':self.clock().isoformat(),'strategy_version':STRATEGY_VERSION}
         if kind=='pilot' and result.get('verdict')=='PASS':
             atomic_json(self.root/'runtime/operator_pilot_pass.json',result)
         elif kind=='pilot' and result.get('phase')!='PREFLIGHT_REJECTED':
@@ -252,7 +252,7 @@ class OperatorService:
                 history.write(json.dumps(record,ensure_ascii=False)+'\n')
         return self.save_result('error',{**record,'verdict':'FAIL','reasons':[str(error)]})
     def run_command(self,args,timeout=60):
-        if args[:1]==['--paper-seconds']:
+        if args[:1] in (['--paper-seconds'],['--readiness-check']):
             child=self.start_command(args)
             try: return child.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
@@ -279,7 +279,7 @@ class OperatorService:
         with ProcessLock(self.root/'runtime/operator_launch.lock'):
             if self.running(): raise ValueError('이미 감시 중입니다. 새 인스턴스를 시작하지 않습니다.')
             with self.idle(): pass
-            if not supported(self.clock()): raise ValueError('지원시간 밖: 계속 감시를 시작하지 않습니다.')
+            if not control_supported(self.clock()): raise ValueError('사전 준비시간 밖: 08:00~15:20에 시작하세요.')
             cfg,auto,policy=self.settings()
             if not legacy_test_release_enabled() and policy.get('test_capital_release',{}).get('status') in {'APPROVED','SUBMITTING'}:
                 raise ValueError('TEST_CAPITAL_RELEASE_RETIRED: 미정리 과거 승인/주문은 수동 확인하세요.')
@@ -301,7 +301,7 @@ class OperatorService:
     def start_continuous(self,confirm_live=False):
         if self.running(): return {'verdict':'ALREADY_RUNNING','note':'이미 감시 중입니다. 새 인스턴스를 시작하지 않습니다.'}
         cfg,auto,policy=self.settings(); counts=self.state_counts(); reasons=[]
-        if not supported(self.clock()): reasons.append('OUTSIDE_TRADING_WINDOW: V1.1 감시/실주문 운영은 09:00 이상 15:20 미만입니다. 메뉴·로컬 진단은 계속 사용할 수 있습니다.')
+        if not control_supported(self.clock()): reasons.append('OUTSIDE_PREOPEN_CONTROL: 준비/감시는 08:00~15:20, 실제 신규주문은 정규장 증거 확인 후에만 가능합니다.')
         if not self.hard_locks_ok(): reasons.append('삼성/광전자 HARD_LOCK 확인 실패')
         mode=policy['mode']
         if not legacy_test_release_enabled() and policy.get('test_capital_release',{}).get('status') in {'APPROVED','SUBMITTING'}:
@@ -309,7 +309,7 @@ class OperatorService:
         recovery=mode in {'STOP','STOP_FLAT','KILL'} and bool(counts['positions'] or counts['pending'])
         proof=self.pilot_proof()
         if not recovery and (proof.get('verdict')!='PASS' or proof.get('strategy_version')!=STRATEGY_VERSION):
-            reasons.append('먼저 최초 150초 안전 시운전 PASS가 필요합니다. 이미 PASS이면 반복할 필요 없습니다.')
+            reasons.append('먼저 최초 증거 기반 안전 준비검사 PASS가 필요합니다. 이미 PASS이면 반복할 필요 없습니다.')
         if mode=='ARMED':
             if counts['positions'] or counts['pending']: reasons.append('기존 봇 보유/미체결 관리부터 확인하세요.')
             if policy.get('test_capital_release',{}).get('status') in {'APPROVED','SUBMITTING'}: reasons.append('나인테크 전용 시험 경로로 확인하세요. 일반 감시에서 승인하지 않습니다.')
@@ -321,6 +321,31 @@ class OperatorService:
         self.gateway.start([])
         return self.save_result('continuous',{'verdict':'STARTED','mode':mode,'cap':auto.capital_limit,
             'note':'기존 봇 보호/복구 관리 재개. 신규진입 금지 상태 유지' if recovery else 'ARMED 지속 관찰 시작. 일반 실제 주문과 가상 포지션 없음' if mode=='ARMED' else '승인된 LIVE 계속 감시 시작. 계좌·시장·위험 조건은 기존 코어가 재검증합니다.'})
+    def preopen_local_ready(self):
+        cfg,auto,policy=self.settings();counts=self.state_counts()
+        reasons=[]
+        if isinstance(self.gateway,Gateway):
+            env_path=self.root/'.env'
+            if not env_path.exists() and (self.root/'legacy_credentials_enabled.local').exists():env_path=Path.home()/'Desktop/kiwoom_data_collector/.env'
+            keys={k for k in ('KIWOOM_APP_KEY','KIWOOM_APP_SECRET') if os.environ.get(k)}
+            if env_path.exists():
+                for line in env_path.read_text(encoding='utf-8-sig').splitlines():
+                    if '=' in line and not line.lstrip().startswith('#'):
+                        k,v=line.split('=',1)
+                        if k.strip() in {'KIWOOM_APP_KEY','KIWOOM_APP_SECRET'} and v.strip():keys.add(k.strip())
+            if len(keys)!=2:reasons.append('로컬 API 인증 설정 확인 필요 (값은 표시하지 않음)')
+        if not control_supported(self.clock()):reasons.append('08:00 이전 또는 지원종료 이후입니다.')
+        if policy['mode'] not in {'ARMED','STOP','LIVE'}:reasons.append('KILL/청산 상태 확인 필요')
+        if self.running() or counts['positions'] or counts['pending'] or counts['uncertain']:reasons.append('감시 중지·봇 보유/미체결/불명확 없음 확인 필요')
+        if any(st.get('halt') for _,st in self.states()) or not self.hard_locks_ok() or policy.get('releases'):reasons.append('HALT/보호정책 확인 필요')
+        if policy.get('test_capital_release',{}).get('status') in {'APPROVED','SUBMITTING'}:reasons.append('시험매도 장부 확인 필요')
+        if auto.capital_limit>0 and not auto.costs_confirmed:reasons.append('비용 설정 미확인')
+        return self.save_result('pilot',{'verdict':'FAIL' if reasons else 'PASS','reasons':reasons,
+            'readiness_phase':'PREOPEN_LOCAL_READY','operational_requalification':True,'build_id':BUILD_ID,
+            'config_hash':cfg.fingerprint(),'auto_hash':auto.fingerprint(),'policy_revision':policy['revision'],
+            'orders':0,'account_ok':False,'websocket_ok':False,'regular_ticks':0,
+            'note':'로컬 사전검사 결과. 실계좌/WS/정규장 tick 통과를 뜻하지 않습니다. 09시 실제 증거 전 주문은 차단됩니다.'})
+
     def recover_pilot(self,confirmed=False,progress=lambda x:None):
         if confirmed is not True: raise ValueError("재자격 조회 검사 명시 확인이 필요합니다.")
         return self.pilot(progress,_recovery=True)
@@ -329,7 +354,7 @@ class OperatorService:
         def preflight():
             if _operational:
                 counts=self.state_counts();cfg,auto,p=self.settings();reasons=[]
-                if not supported(self.clock()):reasons.append('운영시간 밖입니다.')
+                if not control_supported(self.clock()):reasons.append('준비시간 밖입니다.')
                 if self.running():reasons.append('감시를 먼저 중지하세요.')
                 if p['mode'] not in {'ARMED','STOP','LIVE'}:reasons.append('KILL/청산 상태 해제를 먼저 확인하세요.')
                 if counts['positions'] or counts['pending'] or counts['uncertain']:reasons.append('봇 보유·미체결·불명확 주문 확인 필요')
@@ -350,8 +375,8 @@ class OperatorService:
         if _recovery and snapshot["orders"]: reasons.append("실계좌 미체결 주문이 있습니다.")
         if _recovery and self.settings()!=baseline: reasons.append("검사 중 설정/승인이 변경되었습니다.")
         if reasons: return self.save_result('pilot',{'verdict':'FAIL','phase':'PREFLIGHT_REJECTED','reasons':reasons,'orders':None})
-        progress('약 150초 동안 WebSocket·정규장 틱·후보·A/B/C 판단을 관찰합니다. 비상정지 파일은 언제든 사용할 수 있습니다.')
-        rc=self.gateway.command(['--paper-seconds','150']+(['--recover-pilot'] if _recovery else [])+(['--operational-pilot'] if _operational else []),timeout=230)
+        progress('안전검사: 실제 readiness 증거를 확인합니다. 필요한 증거가 모이면 즉시 종료합니다.')
+        rc=self.gateway.command(['--readiness-check']+(['--recover-pilot'] if _recovery else [])+(['--operational-pilot'] if _operational else []),timeout=135)
         result=read_json(self.root/'automation_check.json',{}); folder=self.root/'runtime/automation-smoke'
         hb=read_json(folder/'heartbeat.json',{}); state=read_json(folder/'state.json',{})
         if not in_window(result.get('started'),started,self.clock()) or not result.get('finished'):
@@ -368,15 +393,16 @@ class OperatorService:
         if _recovery and (self.settings()!=baseline or preflight()): reasons.append('검사 중 설정/안전상태가 변경되었습니다.')
         if rc or result.get('fatal'): reasons.append('감시 실행 오류가 있습니다. 최근 오류를 확인하세요.')
         if orders or state.get('positions') or actual or samsung or gwang: reasons.append('조회 시운전 중 주문 또는 포지션이 발견됐습니다.')
-        if not supported(started) or not supported(self.clock()): verdict='INCONCLUSIVE'; reasons.append('지원시간 밖이거나 종료 경계를 지났습니다.')
+        if not control_supported(started) or not control_supported(self.clock()): verdict='INCONCLUSIVE'; reasons.append('준비시간 밖이거나 종료 경계를 지났습니다.')
         elif reasons: verdict='FAIL'
+        elif result.get('readiness',{}).get('state') in {'OPEN_READY','PREOPEN_READY'}: verdict='PASS'
         elif (counts.get('account_checks',0)>0 and counts.get('subscription_acks',0)>0 and counts.get('radar_cycles',0)>0
               and counts.get('ticks',0)>0 and hb.get('market')=='3' and hb.get('connected') and hb.get('account_ok')
               and items and evaluations): verdict='PASS'
         else: verdict='INCONCLUSIVE'; reasons.append('정규장 틱·계좌/연결·오늘 후보·A/B/C 판단로그 중 관측이 부족합니다. 신호 발생 자체는 필수가 아닙니다.')
         cash=state.get('automation',{}).get('capital_snapshot',{}).get('actual_orderable_cash',snapshot['cash'])
         return self.save_result('pilot',{'verdict':verdict,'reasons':reasons,'cash':cash,'cap':baseline[1].capital_limit if _recovery else 0,'available':0,'orders':actual,
-            'requalification':_recovery,'operational_requalification':_operational,'build_id':__import__('automation.decisions',fromlist=['BUILD_ID']).BUILD_ID,'config_hash':baseline[0].fingerprint(),'auto_hash':baseline[1].fingerprint(),'policy_revision':baseline[2].get('revision'),
+            'readiness':result.get('readiness',{}),'readiness_phase':result.get('readiness',{}).get('state'),'requalification':_recovery,'operational_requalification':_operational,'build_id':__import__('automation.decisions',fromlist=['BUILD_ID']).BUILD_ID,'config_hash':baseline[0].fingerprint(),'auto_hash':baseline[1].fingerprint(),'policy_revision':baseline[2].get('revision'),
             'samsung_orders':samsung,'gwang_orders':gwang,'account_ok':counts.get('account_checks',0)>0,
             'websocket_ok':counts.get('subscription_acks',0)>0,'regular_ticks':counts.get('ticks',0),
             'radar_ok':counts.get('radar_cycles',0)>0,'candidate_count':len(items),'signals':len(signals),'entry_evaluations':len(evaluations),
