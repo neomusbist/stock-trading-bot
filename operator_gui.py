@@ -9,10 +9,10 @@ ROOT=Path(__file__).resolve().parent
 for folder in ('vendor','gui_vendor'):
     sys.path.insert(0,str(ROOT/folder))
 from PySide6.QtCore import Qt, QTimer, QObject, Signal, QRunnable, QThreadPool
-from PySide6.QtGui import QFont,QFontDatabase
+from PySide6.QtGui import QFont,QFontDatabase,QAction,QKeySequence
 from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QLabel,QPushButton,
     QVBoxLayout,QHBoxLayout,QGridLayout,QGroupBox,QSplitter,QTabWidget,QTableWidget,
-    QTableWidgetItem,QHeaderView,QPlainTextEdit,QMessageBox,QDialog,QLineEdit,QFormLayout,QInputDialog,QProgressBar)
+    QTableWidgetItem,QHeaderView,QPlainTextEdit,QMessageBox,QDialog,QLineEdit,QFormLayout,QInputDialog,QProgressBar,QMenu)
 from operator_ui_service import (UserOperations, CANDIDATE_FIELDS, GATE_NAMES, money, presentation,
     start_block, human_decision, result_text, candidate_display, candidate_wait_reason,
     format_observation_age, human_blocker_reason, extract_important_events)
@@ -41,6 +41,98 @@ class Work(QRunnable):
         except Exception as error:
             self.signals.failed.emit(redact(type(error).__name__+': '+str(error)))
 
+def clean_tsv_value(val):
+    if val is None:
+        return ''
+    return str(val).replace('\r\n', ' ').replace('\n', ' ').replace('\t', ' ')
+
+def table_to_tsv(widget, row_indices=None):
+    col_count = widget.columnCount()
+    if col_count == 0:
+        return ''
+    headers = []
+    for c in range(col_count):
+        item = widget.horizontalHeaderItem(c)
+        h_text = item.text() if item is not None else f'열 {c + 1}'
+        headers.append(clean_tsv_value(h_text))
+    
+    total_rows = widget.rowCount()
+    if total_rows == 0:
+        return ''
+    
+    if row_indices is None:
+        target_rows = list(range(total_rows))
+    else:
+        target_rows = sorted({r for r in row_indices if 0 <= r < total_rows})
+    
+    if not target_rows:
+        return ''
+    
+    lines = ['\t'.join(headers)]
+    for r in target_rows:
+        row_vals = []
+        for c in range(col_count):
+            item = widget.item(r, c)
+            val = item.text() if item is not None else ''
+            row_vals.append(clean_tsv_value(val))
+        lines.append('\t'.join(row_vals))
+    return '\n'.join(lines)
+
+def copy_table_tsv(widget, row_indices=None):
+    tsv = table_to_tsv(widget, row_indices)
+    if not tsv:
+        return ''
+    app = QApplication.instance()
+    if app:
+        cb = app.clipboard()
+        if cb:
+            cb.setText(tsv)
+    return tsv
+
+def create_table_context_menu(widget, pos=None):
+    menu = QMenu(widget)
+    total_rows = widget.rowCount()
+    selected_indexes = widget.selectionModel().selectedIndexes() if widget.selectionModel() else []
+    selected_rows = sorted({i.row() for i in selected_indexes})
+    if pos is not None:
+        idx = widget.indexAt(pos)
+        if idx.isValid() and idx.row() not in selected_rows:
+            widget.selectRow(idx.row())
+            selected_rows = [idx.row()]
+    has_rows = total_rows > 0
+    has_selection = has_rows and len(selected_rows) > 0
+    act_sel = menu.addAction('선택 행 복사')
+    act_sel.setEnabled(has_selection)
+    act_sel.triggered.connect(lambda: copy_table_tsv(widget, selected_rows))
+    act_all = menu.addAction('표 전체 복사')
+    act_all.setEnabled(has_rows)
+    act_all.triggered.connect(lambda: copy_table_tsv(widget, None))
+    return menu, act_sel, act_all
+
+def setup_table_copy_menu(w):
+    w.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+    def on_custom_context_menu(pos):
+        menu, _, _ = create_table_context_menu(w, pos)
+        menu.exec(w.viewport().mapToGlobal(pos))
+    w.customContextMenuRequested.connect(on_custom_context_menu)
+    
+    copy_act = QAction(w)
+    copy_act.setShortcut(QKeySequence.Copy)
+    copy_act.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)
+    def on_copy_shortcut():
+        if w.rowCount() == 0:
+            return
+        selected_indexes = w.selectionModel().selectedIndexes() if w.selectionModel() else []
+        selected_rows = sorted({i.row() for i in selected_indexes})
+        copy_table_tsv(w, selected_rows if selected_rows else None)
+    copy_act.triggered.connect(on_copy_shortcut)
+    w.addAction(copy_act)
+    w._copy_action = copy_act
+    
+    w.to_tsv = lambda rows=None: table_to_tsv(w, rows)
+    w.copy_selected = lambda: copy_table_tsv(w, sorted({i.row() for i in w.selectionModel().selectedIndexes()}) if w.selectionModel() else [])
+    w.copy_all = lambda: copy_table_tsv(w, None)
+
 def table(headers):
     w=QTableWidget(0,len(headers)); w.setHorizontalHeaderLabels(headers)
     w.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -48,6 +140,7 @@ def table(headers):
     w.setAlternatingRowColors(True); w.verticalHeader().hide()
     w.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
     w.horizontalHeader().setStretchLastSection(True)
+    setup_table_copy_menu(w)
     return w
 
 def rows_to_table(widget,rows):
