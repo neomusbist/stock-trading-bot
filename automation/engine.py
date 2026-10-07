@@ -284,6 +284,13 @@ class AutonomousEngine(ExistingExits,Engine):
         if self.policy.state.get('test_capital_release',{}).get('order_local')!=o['local']: return False
         return self.external_guard(TEST_RELEASE_SYMBOL,1,limit,sig)
 
+    def authorization_context(self):
+        """현재 enter()가 만든 정확한 자기 INTENT만 승인 재검사에서 구분한다."""
+        intent=getattr(self,'_guard_intent',None)
+        if intent is None or self.entry_intent is None or intent.get('signal') is not self.entry_intent:
+            return {}
+        return {'own_intent':(self.path,intent)}
+
     def order_guard(self,api,body):
         self.policy.refresh(); sym=code(body['stk_cd'])
         if api=='kt10003':
@@ -300,7 +307,9 @@ class AutonomousEngine(ExistingExits,Engine):
         if side=='BUY':
             signal=intents[0].get('signal') or {}
             if signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or signal.get('diagnostic_only') is True or ('source_count' in signal and signal['source_count']<max(2,self.a.min_source_count) and not signal.get('fallback_source1')):raise Rejected('OBSERVATION_NOT_BUY_PERMISSION')
-            reason=self.new_entry_reason(sym)
+            self._guard_intent=intents[0]
+            try:reason=self.new_entry_reason(sym)
+            finally:self._guard_intent=None
             if reason or not self.entry_window() or not self.connected or not self.account_ok or self.s['halt']:
                 raise Rejected(reason or '시장/계좌/연결 조건 미충족')
             other=sum((o['qty']-o['filled'])*o['limit']*(1+self.a.commission_buy) for o in self.active_orders(side='BUY') if o is not intents[0])

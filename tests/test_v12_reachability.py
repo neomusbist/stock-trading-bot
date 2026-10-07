@@ -209,11 +209,20 @@ class V12ReachabilityTests(unittest.TestCase):
         self.assertEqual(res2.promoted, ['001003'])
         self.assertEqual(res2.demoted, ['001002'])
 
+        # 동일 tier hysteresis: 기존 WATCH +2.0점. 2.0점 이내 우위는 churn 없음, 초과 우위는 즉시 교체.
+        eval_views['001003'] = {'tier': 2, 'gates': {}, 'setup_trials': []}
+        near = [dict(all_candidates[0]), dict(all_candidates[1]), {**all_candidates[2], 'score': 91}]
+        self.assertFalse(select_focus(current_watch, near, eval_views, max_watchlist=2).applied)
+        clear = [dict(all_candidates[0]), dict(all_candidates[1]), {**all_candidates[2], 'score': 93}]
+        res3 = select_focus(current_watch, clear, eval_views, max_watchlist=2)
+        self.assertEqual(res3.promoted, ['001003'])
+        self.assertEqual(res3.demoted, ['001002'])
+
     def test_source_primary_priority_and_fallback_in_empty_slots_only(self):
         current_watch = []
         all_candidates = [
             {'code': 'PRIMARY1', 'status': 'SHADOW', 'source_count': 2, 'score': 100},
-            {'code': 'FALLBACK1', 'status': 'SHADOW', 'source_count': 1, 'score': 999},  # 점수가 높아도 source_count=1
+            {'code': 'FALLBACK1', 'status': 'SHADOW', 'source_count': 1, 'score': 999},  # 높은 점수와 tier 0을 가진 source_count=1
             {'code': 'PRIMARY2', 'status': 'SHADOW', 'source_count': 3, 'score': 50}
         ]
         eval_views = {
@@ -221,14 +230,19 @@ class V12ReachabilityTests(unittest.TestCase):
             'FALLBACK1': {'tier': 0, 'gates': {}, 'setup_trials': []},  # fallback이지만 tier 0
             'PRIMARY2': {'tier': 2, 'gates': {}, 'setup_trials': []}
         }
-        # max_watchlist = 2: PRIMARY1과 PRIMARY2가 우선 채워지고, 빈 슬롯이 없으면 FALLBACK1은 진입 불가
+        # max_watchlist = 2: FALLBACK1(tier 0)과 PRIMARY1(tier 2, score 100)이 상위 2개로 선택되고, PRIMARY2(tier 2, score 50)는 탈락
         res = select_focus(current_watch, all_candidates, eval_views, max_watchlist=2)
-        self.assertEqual(set(res.next_watch), {'PRIMARY1', 'PRIMARY2'})
-        self.assertNotIn('FALLBACK1', res.next_watch)
+        self.assertEqual(set(res.next_watch), {'FALLBACK1', 'PRIMARY1'})
+        self.assertNotIn('PRIMARY2', res.next_watch)
 
-        # max_watchlist = 3으로 빈 슬롯이 있으면 FALLBACK1이 빈 슬롯에 진입
+        # max_watchlist = 3이면 세 후보 모두 진입
         res_3 = select_focus(current_watch, all_candidates, eval_views, max_watchlist=3)
         self.assertEqual(set(res_3.next_watch), {'PRIMARY1', 'PRIMARY2', 'FALLBACK1'})
+
+        # WATCH가 꽉 차 있어도 더 강한 source1 후보는 최하위 기존 WATCH를 교체
+        res_full = select_focus(['PRIMARY1', 'PRIMARY2'], all_candidates, eval_views, max_watchlist=2)
+        self.assertEqual(res_full.promoted, ['FALLBACK1'])
+        self.assertEqual(res_full.demoted, ['PRIMARY2'])
 
     # -------------------------------------------------------------------------
     # 4. SessionPlan 단일 기준 및 불변식

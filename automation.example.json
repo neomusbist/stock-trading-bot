@@ -11,7 +11,7 @@
   "scan_seconds": 60,
   "rank_decay_cycles": 2,
   "max_scan_charts": 20,
-  "min_source_count": 2,
+  "min_source_count": 1,
   "weakening_drop_points": 2.0,
   "cooldown_seconds": 900,
   "max_consecutive_losses": 3,

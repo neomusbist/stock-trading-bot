@@ -213,7 +213,7 @@ class ContinuousTests(unittest.TestCase):
         account=Mock(); account.q=queue.Queue(); account.request=threading.Event()
         account.q.put({'snapshot':{'cash':5000,'equity':5000,'holdings':{},'orders':[]},'fills':[],'started':time.monotonic(),'error':None})
         radar=Mock(); radar.q=queue.Queue(); radar.cache={}
-        row={'code':fixture.SYMBOL,'name':'합성후보','status':'WATCH','resistance':11000,'market_status':{'pass':True}}
+        row={'code':fixture.SYMBOL,'name':'합성후보','status':'WATCH','source_count':2,'source_details':{'one':{},'two':{}},'resistance':11000,'market_status':{'pass':True}}
         payload={'time':self.clock[0].isoformat(),'rows':[row],'watch':[row],'changes':{'added':[fixture.SYMBOL],'removed':[]},'error':None}
         radar.q.put(payload); pending=queue.Queue()
         pending.put({'trnm':'REG','return_code':0})

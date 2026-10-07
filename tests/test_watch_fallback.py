@@ -68,8 +68,7 @@ class WatchFallbackTests(unittest.TestCase):
         self.assertEqual(len(changes['added']), 5)
         for fb in fallbacks:
             row = next(r for r in rows if r['code'] == fb['code'])
-            self.assertEqual(row['status'], 'REJECT')
-            self.assertEqual(row['reason'], '소스 교집합 부족')
+            self.assertEqual(row['status'], 'RESERVE')
 
         radar2 = self.make_radar(fallback_source1=True)
         p3 = [self.primary_item(f'10000{i}') for i in range(3)]
@@ -123,6 +122,8 @@ class WatchFallbackTests(unittest.TestCase):
 
     def test_6_watch_total_never_exceeds_max_watchlist(self):
         """6. WATCH 총 개수는 절대 max_watchlist 초과 금지."""
+        self.assertEqual(Config().max_watchlist, 8)
+        self.assertEqual(AutomationConfig().min_source_count, 1)
         radar = self.make_radar(fallback_source1=True)
         for i in range(10):
             primaries = [self.primary_item(f'10000{j}') for j in range(i % 6)]

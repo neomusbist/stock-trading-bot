@@ -153,6 +153,7 @@ class SubscriptionRefreshTests(unittest.TestCase):
                 self.send(self.frame(tick),{SYM:self.watch})
         self.assertEqual(len(self.broker.orders),1);self.assertEqual(self.broker.orders[0][0],'BUY')
     def test_source_one_still_cannot_buy_despite_preserved_prewarm(self):
+        self.e.a=replace(self.auto,min_source_count=2)
         self.warm();self.clock+=timedelta(seconds=1)
         with patch.object(self.d,'signal',return_value=self.signal()) as signal:
             self.send(self.frame(self.tick(sec=121)),{SYM:{**self.watch,'source_count':1}})

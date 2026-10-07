@@ -38,7 +38,7 @@ flowchart LR
   E -->|불가 / 자본 미확인| X[집계만 / 개별 평가 종료]
   E -->|가능| N[보호 / 공식 종목 상태]
   N --> S[SHADOW 관찰 · 데이터 축적]
-  N -->|source2 주경로 / source1 빈칸 보조 · 압축 통과| W[WATCH 최대 5]
+  N -->|source1 이상 단일 경쟁 풀 · 압축 통과| W[WATCH 기본 최대 8]
   S -. 유효 관측 데이터 .-> W
   W --> A[완성봉 · 가속 · 유동성 · spread]
   A --> P[A/B/C · 무효화 · RR · 비용]
@@ -52,7 +52,7 @@ RAW는 기존 `ka10029 / ka10032 / ka10027 / ka00198 / ka10031` ranking 응답�
 
 양수 한도에서 `effective_auto_cap=min(신선한 실제 주문가능현금, 사용자 승인한도)`보다 비용 포함 1주 예상금액이 크면 이후 종목 상태조회·일봉·구조·SHADOW·WATCH·Setup에 보내지 않습니다. 전체 RAW 통계에는 포함하고 GUI는 `1주 매수 불가 N종목`으로 집계합니다. 한도 0원에서는 기존 다중소스 관찰판정을 계속하고 최종 주문 단계에서 NO_BUY 처리합니다. 1주 가능을 요구하는 단일소스 SHADOW는 0원 자본에서 새로 선정되지 않습니다.
 
-source 1이라도 1주 가능·보호 제외·공식 정상 상태가 확인되면 SHADOW 데이터 수집이 가능합니다. 최대 32개이며 WATCH, 신선한 강세, 필요한 warmup과 신규 발견을 고려해 교체합니다. SHADOW 가상 Setup/수량은 주문 엔진·포지션을 바꾸지 않습니다. **V1.2의 source2 주경로와 source1 빈 WATCH 슬롯 보조 경로를 그대로 유지**합니다. source1 보조는 명시적으로 표시된 기존 fallback 자격과 나머지 모든 조건을 통과해야 하며 SHADOW 자체는 BUY 권한이 아닙니다. 최신 RAW에서 자격이 사라지거나 stale이면 기존 WATCH가 남아 있어도 BUY하지 않습니다.
+source 1이라도 1주 가능·보호 제외·공식 정상 상태가 확인되면 SHADOW 데이터 수집이 가능합니다. 최대 32개이며 WATCH, 신선한 강세, 필요한 warmup과 신규 발견을 고려해 교체합니다. SHADOW 가상 Setup/수량은 주문 엔진·포지션을 바꾸지 않습니다. **source1 이상 후보가 압축 검사를 통과하면 하나의 WATCH 경쟁 풀에 참여**합니다. 기본 WATCH 한도는 8개입니다. source 수는 발견 점수에 계속 반영되며, source1도 슬롯이 가득 찬 상태에서 더 좋은 현재 tier 또는 점수로 기존 후보를 교체할 수 있습니다. 같은 tier에서는 기존 WATCH에 +2점 유지 여유를 주어 작은 차이의 반복 교체를 줄입니다. 실제 BUY의 source 하한은 기존 `max(2, min_source_count)`를 유지합니다. source1은 WATCH에 선정되어 후보 행·현재 자격·최종 신호에 일치하는 기존 `fallback_source1` 표시가 있고 나머지 모든 조건을 통과해야 하며 SHADOW 자체는 BUY 권한이 아닙니다. 최신 RAW에서 자격이 사라지거나 stale이면 기존 WATCH가 남아 있어도 BUY하지 않습니다.
 
 유효한 연속 구독 데이터는 source 1↔2 때문에 버리지 않습니다. 실제 구독 해제·누락된 분·disconnect·overflow·지연된 틱에는 기존 리셋/차단이 적용됩니다. 단순히 체결 간격이 5초 넘었다는 이유만으로 정상 완성봉을 지우지 않습니다. A/B/C warmup도 실제 사용 가능한 완성봉으로 판정합니다.
 
@@ -99,3 +99,12 @@ A는 관측 고점 돌파와 최근 2개 완성봉 지지, B는 상승→거래�
 오프라인 검사 예: `python -m unittest discover -s tests`. 설치본의 vendor/gui_vendor 의존성과 UTF-8 실행환경이 필요할 수 있습니다. Qt 검사는 offscreen 합성 서비스입니다. `tools/session_audit.py`는 저장 로그를 오프라인 집계하며 HTS 목록/시각이 없는 경우 선행 포착률을 추정하지 않습니다. `tools/offline_benchmark.py`는 합성 CPU/큐 계측이며 실시장 전체 성능이 아닙니다.
 
 검증 결과와 남은 실시장 항목은 [TEST_REPORT](TEST_REPORT.md)에 기록합니다. 이전 날짜 문서는 과거 작업 기록이며 현행 운영 절차는 이 README, GUI_GUIDE, 사용자 가이드와 NEXT_SESSION_CHECK를 우선합니다.
+
+
+### 2026-10-07 Discovery/WATCH 중단 작업 복원
+
+기존 운영 설정의 `min_source_count=2`도 단일소스의 관찰 경쟁을 막지 않습니다. 이 설정은 BUY guard에서 유지됩니다. `fallback_source1=false`로 명시한 호환 모드는 기존 단일소스 차단을 유지합니다. 별도 관찰 detector와 유효한 history 유지 정책은 변경하지 않았습니다.
+
+저장된 개인 `config.json`에 `max_watchlist=5`가 있으면 코드의 기본 8개보다 개인 설정이 우선합니다. 이번 소스 작업은 운영 설정·승인·runtime을 수정하거나 실행 중 봇을 재시작하지 않습니다. 추후 정상 중단 후 코드와 WATCH 설정을 적용하고, 변경된 설정에 대한 기존 명시적 LIVE 승인을 다시 거쳐야 합니다.
+
+당일 LIVE 승인 재검사는 현재 `enter()`가 생성하고 제출 guard가 확인한 자기 INTENT 한 개만, 정확한 장부 경로·local ID·전체 저장 레코드 일치 시 구분합니다. 일반 상태조회와 승인 생성은 모든 INTENT를 계속 불명확으로 취급합니다. 다른 INTENT/UNKNOWN/HALT 또는 저장 불일치는 여전히 신규매수를 차단합니다.

@@ -123,9 +123,9 @@ class ExitAuditTests(AuditFixture):
         self.buy();self.e.reconcile(self.snap);self.e.request_exit('999990','synthetic');self.e.drive_exits()
         self.assertTrue(self.e.s['positions']['999990']['qty_blocked']);self.assertEqual(self.sells(),[])
     def test_shadow_signal_and_source_floor_blocked_at_engine_boundary(self):
-        for extra in ({'SHADOW_ONLY':True},{'actual_order_permission':False},{'source_count':1}):
+        for extra in ({'SHADOW_ONLY':True},{'actual_order_permission':False},{'source_count':0}):
             self.assertIsNone(self.e.enter({**self.signal(),**extra},self.tick()))
-        self.e.a=replace(self.auto,min_source_count=1)
+        self.e.a=replace(self.auto,min_source_count=2)
         self.assertIsNone(self.e.enter({**self.signal(),'source_count':1},self.tick()))
         self.assertEqual(self.broker.orders,[])
     def test_cap_zero_hardlocks_and_stop_keep_meaning(self):
@@ -133,6 +133,7 @@ class ExitAuditTests(AuditFixture):
         for sym in ('005930','017900'):self.assertIsNone(self.e.submit('SELL',sym,1))
         self.assertEqual(self.broker.orders,[])
     def test_raw_qualification_updates_buy_eligibility(self):
+        self.e.a=replace(self.auto,min_source_count=2)
         # 1. source_count 1 revokes, source_count 2 restores
         qualify_raw(self.e,[{'code':'999990','source_count':1}],self.clock[0].isoformat())
         self.assertIsNone(self.e.enter(self.signal(),self.tick()));self.assertEqual(self.broker.orders,[])
@@ -383,6 +384,7 @@ class SetupReachabilityTests(AuditFixture):
         signal=detector.signal(tick,watch);self.assertIsNotNone(signal);self.e.enter(signal,tick)
         self.assertEqual(self.broker.orders,[]);self.assertFalse(self.e.s['positions'])
     def test_source_churn_observation_retained_but_buy_qualified_only_after_two_sources(self):
+        self.e.a=replace(self.auto,min_source_count=2)
         detector,tick,watch=self.build('A');detector.ingest(tick,tick.time);saved=detector.history['999990']
         self.assertIsNotNone(detector.signal(tick,watch));self.assertIs(saved,detector.history['999990'])
         sig=detector.signal(tick,{**watch,'source_count':1});self.e.enter(sig,tick);self.assertEqual(self.broker.orders,[])

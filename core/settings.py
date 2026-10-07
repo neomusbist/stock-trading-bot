@@ -27,7 +27,7 @@ class Config:
     history_bars: int = 750
     min_history_bars: int = 500
     max_history_age_days: int = 7
-    max_watchlist: int = 5
+    max_watchlist: int = 8
     overhead_band: float = 0.10
     max_overhead_share: float = 0.25
     min_resistance_room: float = 0.025

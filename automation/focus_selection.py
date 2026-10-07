@@ -88,117 +88,103 @@ def calculate_tier(gates: dict, setup_trials: list, row: dict = None) -> int:
         return TIER_GEOMETRY_BASE_READY
     return TIER_MOMENTUM_BASE_READY
 
-def candidate_priority_tuple(row: dict, tier: int) -> tuple:
-    """동일 tier 비교는 discovery_score(내림차순), overhead_share(오름차순), symbol(오름차순)."""
-    score = row.get('discovery_score', row.get('source_count', 0) * 10)
-    overhead = row.get('overhead_share_estimate', 0.0) or 0.0
-    return (tier, -score, overhead, row.get('code', ''))
+def candidate_priority_tuple(row: dict, tier: int, is_existing: bool = False) -> tuple:
+    """우선순위 튜플: (tier, -effective_score, overhead_share, symbol)
+    - tier: 0 (SIGNAL_READY) ~ 4 (FRESH_WEAK). 작을수록 우선.
+    - effective_score: discovery_score 또는 score.
+      단일 틱 flip-flop 방지를 위해 동일 티어 내 기존 WATCH 종목에는 +2.0점 히스테리시스 부여.
+    - overhead_share: 매물대 부담. 작을수록 우선.
+    - symbol: 동률 시 결정적(deterministic) 정렬.
+    """
+    raw_score = row.get('discovery_score', row.get('score', row.get('source_count', 0) * 10))
+    score = float(raw_score if raw_score is not None else 0.0)
+    effective_score = score + (2.0 if is_existing else 0.0)
+    overhead = float(row.get('overhead_share_estimate', 0.0) or 0.0)
+    return (tier, -effective_score, overhead, row.get('code', ''))
 
 def select_focus(
     current_watch: Dict[str, dict],
     candidates: List[dict],
     readiness_map: Dict[str, dict],
-    max_watchlist: int = 5,
+    max_watchlist: int = 8,
     fallback_source1: bool = True,
     clock_iso: str = ''
 ) -> FocusSelection:
     """Main thread에서 focus 선택을 재계산하고 FocusSelection을 반환한다.
     
     규칙:
-    1. primary(source_count >= 2)가 fallback(source_count == 1)보다 엄격히 우선.
-    2. primary 후보 중 strictly higher tier (tier < current_tier)만 기존 WATCH를 교체 가능.
-    3. same tier에서는 기존 WATCH를 유지 (zero churn).
-    4. fallback은 빈 슬롯(< max_watchlist)에만 배치.
-    5. fallback이 primary를 밀어낼 수 없음.
+    1. source_count >= 1 종목 전체가 단일 풀에서 순위 경쟁 참여.
+    2. source_count는 scoring 보너스(+10 per source)로 반영됨.
+    3. higher tier 또는 higher score(동일 티어 내 2.0점 초과 우위)를 가진 신규 후보는 기존 WATCH를 교체 가능.
+    4. 동일 티어 내 기존 WATCH 종목에는 단일 틱 뒤집힘(flip-flop) 방지를 위한 +2.0점 히스테리시스 부여.
+    5. 상위 max_watchlist(기본 8개) 종목이 원자적으로 선택됨.
     """
     prev_watch_symbols = list(current_watch.keys()) if isinstance(current_watch, dict) else list(current_watch)
     tier_map: Dict[str, int] = {}
     priority_tuples: Dict[str, tuple] = {}
-    by_code: Dict[str, dict] = {r['code']: r for r in candidates}
+    by_code: Dict[str, dict] = {r['code']: r for r in candidates if 'code' in r}
+    for s in prev_watch_symbols:
+        if s not in by_code and isinstance(current_watch, dict) and isinstance(current_watch.get(s), dict):
+            by_code[s] = current_watch[s]
 
-    # 1. 모든 후보의 tier 및 priority tuple 계산
-    for r in candidates:
+    # 적격 후보 필터링
+    eligible_candidates = []
+    for r in by_code.values():
+        sym = r.get('code')
+        if not sym:
+            continue
+        reason = str(r.get('reason', ''))
+        if reason.startswith('HARD_LOCK') or reason.startswith('EXISTING_POLICY'):
+            continue
+        if r.get('affordability', {}).get('entry_eligible') is False:
+            continue
+        status = r.get('status')
+        if status and status not in {'ELIGIBLE', 'WATCH', 'RESERVE', 'SHADOW'}:
+            continue
+        src_count = r.get('source_count', 0)
+        if src_count < 1:
+            continue
+        if not fallback_source1 and src_count < 2:
+            continue
+        eligible_candidates.append(r)
+
+    # 각 후보의 tier 및 priority tuple 계산
+    for r in eligible_candidates:
         sym = r['code']
         r_info = readiness_map.get(sym, {})
         tier = r_info['tier'] if 'tier' in r_info else calculate_tier(r_info.get('gates', {}), r_info.get('setup_trials', []), r)
         tier_map[sym] = tier
-        priority_tuples[sym] = candidate_priority_tuple(r, tier)
+        is_existing = (sym in prev_watch_symbols)
+        priority_tuples[sym] = candidate_priority_tuple(r, tier, is_existing=is_existing)
 
-    # 기존 WATCH 종목 중 아직 후보에 남아있는 종목들
-    existing_watch_candidates = [by_code[s] for s in prev_watch_symbols if s in by_code]
+    # 정렬: (tier, -effective_score, overhead, symbol)
+    eligible_candidates.sort(key=lambda r: priority_tuples[r['code']])
 
-    # Primary 후보군 (source_count >= 2)과 Fallback 후보군 (source_count == 1)
-    primary_candidates = [
-        r for r in candidates
-        if r.get('source_count', 0) >= 2
-        and r.get('status') in {'ELIGIBLE', 'WATCH', 'RESERVE', 'SHADOW'}
-    ]
-    primary_candidates.sort(key=lambda r: priority_tuples[r['code']])
+    selected_candidates = eligible_candidates[:max_watchlist]
+    next_watch_symbols = [r['code'] for r in selected_candidates]
 
-    fallback_candidates = [
-        r for r in candidates
-        if r.get('source_count', 0) == 1
-        and (r.get('affordability', {}).get('entry_eligible') is True or r.get('fallback_source1') or r.get('watch_type') == 'FALLBACK_SOURCE1' or r.get('status') in {'ELIGIBLE', 'WATCH', 'RESERVE', 'SHADOW'})
-        and r.get('status') in {'ELIGIBLE', 'WATCH', 'RESERVE', 'REJECT', 'SHADOW'}
-        and not r.get('reason', '').startswith('HARD_LOCK')
-    ]
-    fallback_candidates.sort(key=lambda r: priority_tuples[r['code']])
-
-    # 2. Focus Selection 계산
-    next_watch: Dict[str, dict] = {}
-    blocked_reasons: Dict[str, str] = {}
-
-    # (A) 먼저 기존 WATCH 중 primary였던 종목들을 우선 유지 후보로 유지
-    for s in prev_watch_symbols:
-        if s in by_code:
-            r = by_code[s]
-            if r.get('source_count', 0) >= 2:
-                next_watch[s] = r
-
-    # (B) 더 높은 tier의 새 primary 후보가 기존 lower-tier primary를 교체할 수 있는지 검사
-    for p in primary_candidates:
-        sym = p['code']
-        if sym in next_watch:
-            continue
-        p_tier = tier_map[sym]
-
-        if len(next_watch) < max_watchlist:
-            next_watch[sym] = p
-        else:
-            # 현재 next_watch 중 가장 낮은 tier (숫자가 가장 큰 tier) 탐색
-            # 동률이면 discovery_score가 가장 낮은 종목
-            worst_sym = max(next_watch.keys(), key=lambda s: priority_tuples[s])
-            worst_tier = tier_map[worst_sym]
-
-            # strictly higher tier만 교체 허용 (p_tier < worst_tier)
-            if p_tier < worst_tier:
-                del next_watch[worst_sym]
-                next_watch[sym] = p
-                blocked_reasons[worst_sym] = f"DISPLACED_BY_HIGHER_TIER_{TIER_NAMES[p_tier]}"
-            else:
-                blocked_reasons[sym] = f"SAME_OR_LOWER_TIER_PRESERVED_{TIER_NAMES[worst_tier]}"
-
-    # (C) 빈 슬롯이 남았고 fallback_source1 허용인 경우, fallback 후보로 채운다
-    if fallback_source1 and len(next_watch) < max_watchlist:
-        # 기존 WATCH 중 fallback이었던 종목을 먼저 유지
-        for s in prev_watch_symbols:
-            if s in by_code and s not in next_watch:
-                r = by_code[s]
-                if r.get('source_count', 0) == 1 and len(next_watch) < max_watchlist:
-                    next_watch[s] = r
-
-        # 그래도 빈 자리가 있으면 새 fallback 후보 추가
-        for fb in fallback_candidates:
-            if len(next_watch) >= max_watchlist:
-                break
-            sym = fb['code']
-            if sym not in next_watch:
-                next_watch[sym] = fb
-
-    next_watch_symbols = list(next_watch.keys())
     promoted = [s for s in next_watch_symbols if s not in prev_watch_symbols]
     demoted = [s for s in prev_watch_symbols if s not in next_watch_symbols]
     applied = bool(promoted or demoted)
+
+    blocked_reasons: Dict[str, str] = {}
+    for r in eligible_candidates[max_watchlist:]:
+        sym = r['code']
+        sym_tier = tier_map.get(sym, 3)
+        if selected_candidates:
+            worst_selected = selected_candidates[-1]
+            w_sym = worst_selected['code']
+            w_tier = tier_map.get(w_sym, 3)
+            if sym in prev_watch_symbols:
+                if w_tier < sym_tier:
+                    blocked_reasons[sym] = f"DISPLACED_BY_HIGHER_TIER_{TIER_NAMES.get(w_tier, 'UNKNOWN')}"
+                else:
+                    blocked_reasons[sym] = f"DISPLACED_BY_HIGHER_SCORE_{w_sym}"
+            else:
+                if w_tier < sym_tier:
+                    blocked_reasons[sym] = f"SAME_OR_LOWER_TIER_PRESERVED_{TIER_NAMES.get(w_tier, 'UNKNOWN')}"
+                else:
+                    blocked_reasons[sym] = f"SCORE_BELOW_THRESHOLD_{w_sym}"
 
     primary_reason = "FOCUS_UNCHANGED"
     if promoted:

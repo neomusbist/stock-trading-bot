@@ -213,6 +213,21 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
         if tick.symbol in observed and tick.symbol not in priority and tick.symbol not in critical:detector.ingest(tick,now())
     return drops,priority
 
+def apply_focus_selection(engine,lookup,by_symbol,selection):
+    """main thread에서 WATCH 자격 표시만 동기화한다. detector/주문 상태는 바꾸지 않는다."""
+    for sym in selection.demoted:
+        lookup.pop(sym,None)
+        if sym in engine.source_qualification:
+            engine.source_qualification[sym]['fallback_source1']=False
+    for sym in selection.promoted:
+        row=by_symbol.get(sym)
+        if row is None:continue
+        source1=row.get('source_count',0)==1
+        lookup[sym]={**row,'status':'WATCH','fallback_source1':source1,
+                     'watch_type':'FALLBACK_SOURCE1' if source1 else 'PRIMARY'}
+        if sym in engine.source_qualification:
+            engine.source_qualification[sym]['fallback_source1']=source1
+
 def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_evaluated_frame=None):
     if not watch or not engine.connected: return None
     if last_evaluated_frame is not None:
@@ -252,6 +267,7 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
         return None
     sig['name']=watch.get('name')
     sig['candidate_detected_at']=watch.get('observed_at')
+    sig['fallback_source1']=bool(watch.get('fallback_source1'))
     for sym,p in (list(engine.s['positions'].items()) if engine.a.replacement_enabled else []):
         if sym==t.symbol or p.get('exit_requested'): continue
         history=radar.cache.get((t.time.date(),sym)); price=prices.get(sym)
@@ -405,7 +421,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
         if ready['state']!='OPEN_READY':return 'OPEN_READINESS_'+(ready['missing'][0] if ready['missing'] else 'MARKET_NOT_OPEN')
         if cfg.live_mode:
             from automation.readiness import authorization_valid
-            valid,reasons=authorization_valid(root,cfg,auto,policy,now())
+            valid,reasons=authorization_valid(root,cfg,auto,policy,now(),**engine.authorization_context())
             if not valid:return 'DAILY_AUTHORIZATION_'+(reasons[0] if reasons else 'INVALID')
         return ''
     from automation.decisions import BUILD_ID,STRATEGY_EXPERIMENT
@@ -522,17 +538,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         if notif.symbol in selection.blocked_reasons:
                             engine.event('FOCUS_SELECTION_BLOCKED',symbol=notif.symbol,reason=selection.blocked_reasons[notif.symbol])
                         continue
-                    for dem in selection.demoted:
-                        lookup.pop(dem,None)
-                        if dem in engine.source_qualification:
-                            engine.source_qualification[dem]['fallback_source1']=False
-                    for prom in selection.promoted:
-                        prom_row=by_symbol.get(prom)
-                        if prom_row:
-                            lookup[prom]=prom_row
-                            is_fb=(prom_row.get('source_count',0)==1)
-                            if prom in engine.source_qualification:
-                                engine.source_qualification[prom]['fallback_source1']=is_fb
+                    apply_focus_selection(engine,lookup,by_symbol,selection)
                     engine.event('FOCUS_SELECTION_APPLIED',
                                  promoted=selection.promoted,
                                  demoted=selection.demoted,

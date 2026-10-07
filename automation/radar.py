@@ -105,7 +105,8 @@ class DynamicRadar:
             if self.policy.locked(sym): x.update(status='REJECT',reason='HARD_LOCK')
             elif sym in BREAKEVEN_EXITS or (sym==TEST_RELEASE_SYMBOL and legacy_test_release_enabled()): x.update(status='REJECT',reason='EXISTING_POLICY_NO_BUY')
             elif not affordable: x.update(status='UNKNOWN' if x['affordability']['reason_code']=='ACCOUNT_CAPITAL_UNAVAILABLE' else 'REJECT',reason=x['affordability']['reason_code'])
-            elif len(sources)<max(2,self.a.min_source_count): x.update(status='REJECT',reason='소스 교집합 부족')
+            # 관찰 경쟁은 source1부터. 설정의 source 하한은 실제 주문 guard에서 유지한다.
+            elif len(sources)<1 or (not self.fallback_source1 and len(sources)<max(2,self.a.min_source_count)): x.update(status='REJECT',reason='소스 교집합 부족')
             elif self.weak.get(sym): x.update(status='REJECT',reason='동일 소스 등락률 감속; 회복 스냅샷 대기')
             else:
                 try: x.update(evaluate(x))
@@ -120,10 +121,18 @@ class DynamicRadar:
             strong=all(gates.get(k,{}).get('result')=='PASS' for k in ('acceleration','liquidity'))
             weak=bool(gates) and any(gates.get(k,{}).get('result')=='FAIL' for k in ('acceleration','liquidity'))
             row['watch_priority_basis']='FRESH_MOMENTUM' if strong else 'FRESH_WEAK' if weak else 'RANK_ONLY'
-            return (0 if strong else 2 if weak else 1,-row['discovery_score'],row.get('overhead_share_estimate',0),row['code'])
+            effective_score=row['discovery_score']+(2.0 if row['code'] in self.watch else 0.0)
+            return (0 if strong else 2 if weak else 1,-effective_score,row.get('overhead_share_estimate',0),row['code'])
         eligible=sorted((x for x in rows if x['status']=='ELIGIBLE'),key=priority)
         selected=eligible[:self.cfg.max_watchlist]
-        for x in eligible: x['status']='WATCH' if x in selected else 'RESERVE'
+        for x in eligible:
+            if x in selected:
+                x['status']='WATCH'
+                if x.get('source_count')==1:
+                    x['fallback_source1']=True
+                    x['watch_type']='FALLBACK_SOURCE1'
+            else:
+                x['status']='RESERVE'
         lookup={x['code']:x for x in selected}
         for sym,old in self.watch.items():
             if sym in present: continue
@@ -131,26 +140,6 @@ class DynamicRadar:
             self.missing[sym]=self.missing.get(sym,0)+1
             if self.missing[sym]<self.a.rank_decay_cycles and len(lookup)<self.cfg.max_watchlist:
                 lookup[sym]={**old,'reason':'랭킹 누락 유예','source_deltas':{},'observed_at':stamp.isoformat()}
-        if self.fallback_source1 and len(lookup)<self.cfg.max_watchlist:
-            fallbacks=[x for x in rows
-                       if x.get('source_count')==1
-                       and x.get('affordability',{}).get('entry_eligible') is True
-                       and not self.policy.locked(x['code'])
-                       and x['code'] not in BREAKEVEN_EXITS
-                       and (x['code']!=TEST_RELEASE_SYMBOL or not legacy_test_release_enabled())
-                       and not self.weak.get(x['code'])
-                       and x['code'] not in lookup]
-            fallbacks.sort(key=priority)
-            for fb in fallbacks:
-                if len(lookup)>=self.cfg.max_watchlist: break
-                try: ev=evaluate(fb); fb.update(ev)
-                except (OSError,ValueError,KeyError,RuntimeError) as e: fb.update(status='UNKNOWN',reason=type(e).__name__)
-                if fb.get('status')=='ELIGIBLE':
-                    fb['status']='WATCH'
-                    fb['watch_type']='FALLBACK_SOURCE1'
-                    fb['fallback_source1']=True
-                    fb['reason']='WATCH_FALLBACK_SOURCE1'
-                    lookup[fb['code']]=fb
         changes={'added':sorted(set(lookup)-set(self.watch)),'removed':sorted(set(self.watch)-set(lookup))}
         self.watch=lookup
         return rows,list(lookup.values()),changes

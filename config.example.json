@@ -12,7 +12,7 @@
   "history_bars": 750,
   "min_history_bars": 500,
   "max_history_age_days": 7,
-  "max_watchlist": 5,
+  "max_watchlist": 8,
   "overhead_band": 0.1,
   "max_overhead_share": 0.25,
   "min_resistance_room": 0.025,
