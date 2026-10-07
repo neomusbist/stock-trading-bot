@@ -4,7 +4,7 @@ from pathlib import Path
 from core.util import read_json_retry
 from automation.policy import HARD_LOCKS,EXISTING_POLICIES,BREAKEVEN_EXITS
 from automation.decisions import BUILD_ID
-from automation.session import control_supported
+from automation.session import control_supported, after_control_supported
 
 def digest(value):
     return hashlib.sha256(json.dumps(value,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
@@ -47,5 +47,6 @@ def authorization_valid(root,cfg,auto,policy,stamp,own_intent=None):
     if receipt.get('policy_hash')!=policy_hash(policy):reasons.append('LIVE_APPROVAL_POLICY_MISMATCH')
     current=security_state(root,own_intent=own_intent)
     if current or receipt.get('security_state_hash')!=digest(current):reasons.append('LIVE_APPROVAL_CRITICAL_STATE_CHANGED')
-    if not control_supported(stamp):reasons.append('OUTSIDE_PREOPEN_CONTROL')
+    is_ctrl=control_supported(stamp) or (getattr(cfg,'after_enabled',False) and after_control_supported(stamp))
+    if not is_ctrl:reasons.append('OUTSIDE_PREOPEN_CONTROL')
     return not reasons,reasons

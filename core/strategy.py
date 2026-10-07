@@ -14,6 +14,13 @@ class Tick:
     ask: float
     bid: float
     regular: bool = True
+    ask_qty: int = 0
+    bid_qty: int = 0
+    venue: str = 'KRX'
+    vi_active: bool = False
+    depth_available: bool | None = None
+    book_time: datetime | None = None
+    depth_source: str = 'UNKNOWN'
 
 class Detector:
     def __init__(self,cfg):

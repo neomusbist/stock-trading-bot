@@ -10,7 +10,7 @@ from core.settings import KST
 from core.util import code, floor_tick,read_json_retry,atomic_json
 from automation.capital import Costs, initial_allocation, owned_equity
 from automation.policy import LEGACY_SYMBOL,BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL,HARD_LOCKS,legacy_test_release_enabled
-from automation.session import supported, SessionPlan
+from automation.session import supported, SessionPlan, AfterSessionPlan, after_supported, after_entry_supported, current_session
 from automation.decisions import DecisionLog,gate,STRATEGY_VERSION,BUILD_ID,STRATEGY_EXPERIMENT,safe_values
 from automation.existing import ExistingExits
 
@@ -66,6 +66,9 @@ class AutonomousEngine(ExistingExits,Engine):
         self.s['automation']['config_hash']=auto.fingerprint()
         min_rem=getattr(auto,'minimum_remaining_minutes',15)
         self.session_plan=SessionPlan(hard_new_entry_end=auto.new_entry_cutoff,force_flatten_start=auto.force_flatten_start,minimum_remaining_minutes=min_rem,allow_overnight=auto.ALLOW_OVERNIGHT)
+        self.after_session_plan=AfterSessionPlan(prep_start=getattr(auto,'after_prep_start','15:40:00'),market_start=getattr(auto,'after_market_start','16:00:00'),entry_cutoff=getattr(auto,'after_entry_cutoff','19:45:00'),force_flatten_start=getattr(auto,'after_force_flatten_start','19:55:00'),market_close=getattr(auto,'after_market_close','20:00:00'),allow_overnight=auto.ALLOW_OVERNIGHT)
+        self.after_enabled=getattr(self.c,'after_enabled',False)
+        self.after_default_venue=getattr(self.c,'after_default_venue','SOR')
         self.broker.order_guard=self.order_guard
         self.broker.test_release_authorizer=self.test_release_authorized
         self.recover_test_release()
@@ -76,9 +79,42 @@ class AutonomousEngine(ExistingExits,Engine):
             if carried: self.event('POSITION_REMAINS_AFTER_SESSION',reason_code='OVERNIGHT_RISK',symbols=sorted(carried),message='새 계좌 대조 전 주문 보류')
         self.save()
 
+    @property
+    def after_live_authorized(self):
+        if hasattr(self, '_after_live_authorized') and self._after_live_authorized is not None:
+            return self._after_live_authorized
+        if hasattr(self, 'policy') and hasattr(self.policy, 'state'):
+            return bool(self.policy.state.get('after_live_authorized', False))
+        return False
+
+    @after_live_authorized.setter
+    def after_live_authorized(self, value):
+        self._after_live_authorized = bool(value) if value is not None else None
+        if hasattr(self, 'policy') and hasattr(self.policy, 'state'):
+            self.policy.state['after_live_authorized'] = bool(value)
+
+    def current_session(self):
+        t=self.clock()
+        if supported(t): return 'REGULAR'
+        if self.after_enabled and after_supported(t): return 'AFTER'
+        return 'CLOSED'
+
+    def is_supported_now(self):
+        t=self.clock()
+        return supported(t) or (self.after_enabled and after_supported(t))
+
     def entry_window(self):
-        cutoff=getattr(self,'session_plan',None).effective_new_entry_end if hasattr(self,'session_plan') else self.a.new_entry_cutoff
-        return self.session_plan.is_entry_window(self.clock()) and self.market=='3' and self.clock().strftime('%H:%M:%S')<cutoff
+        t=self.clock()
+        sess=self.current_session()
+        if sess=='REGULAR':
+            cutoff=getattr(self,'session_plan',None).effective_new_entry_end if hasattr(self,'session_plan') else self.a.new_entry_cutoff
+            return self.session_plan.is_entry_window(t) and self.market=='3' and t.strftime('%H:%M:%S')<cutoff
+        elif sess=='AFTER':
+            if not self.after_enabled: return False
+            if not self.after_session_plan.is_entry_window(t): return False
+            if self.c.live_mode and not self.after_live_authorized: return False
+            return t.strftime('%H:%M:%S')<getattr(self.a,'after_entry_cutoff','19:45:00')
+        return False
 
     def event(self,kind,**data):
         # 기존 이벤트명/체결 순서는 유지하고 공통 식별정보만 보강한다.
@@ -89,7 +125,13 @@ class AutonomousEngine(ExistingExits,Engine):
         info.update(data)
         return super().event(kind,**safe_values(info))
     def session_ending(self):
-        return self.market in {'2','4','8','9'} or (not self.a.ALLOW_OVERNIGHT and self.clock().strftime('%H:%M:%S')>=self.a.force_flatten_start)
+        sess=self.current_session()
+        t=self.clock().strftime('%H:%M:%S')
+        if sess=='REGULAR':
+            return self.market in {'2','4','8','9'} or (not self.a.ALLOW_OVERNIGHT and t>=self.a.force_flatten_start)
+        elif sess=='AFTER':
+            return not self.a.ALLOW_OVERNIGHT and t>=getattr(self.a,'after_force_flatten_start','19:55:00')
+        return False
     def risk_equity(self):
         return min(self.a.capital_limit,owned_equity(self.s['cash'],self.s['positions'],self.prices))
     def buy_fee(self,amount): return self.costs.buy_fee(amount)
@@ -120,15 +162,36 @@ class AutonomousEngine(ExistingExits,Engine):
 
     def new_entry_reason(self,symbol):
         self.policy.refresh()
-        if not supported(self.clock()): return 'OUT_OF_SUPPORTED_SESSION'
+        if not self.is_supported_now(): return 'OUT_OF_SUPPORTED_SESSION'
         if symbol in HARD_LOCKS or self.policy.locked(symbol): return 'HARD_LOCK'
         if symbol in BREAKEVEN_EXITS or (symbol==TEST_RELEASE_SYMBOL and legacy_test_release_enabled()): return 'EXISTING_POLICY_NO_BUY'
+        sess=self.current_session()
+        if sess=='AFTER':
+            t_str=self.clock().strftime('%H:%M:%S')
+            if t_str<getattr(self.a,'after_market_start','16:00:00'): return 'AFTER_PREWARM_NO_BUY'
+            if t_str>=getattr(self.a,'after_entry_cutoff','19:45:00'): return 'AFTER_ENTRY_CUTOFF'
+            if self.c.live_mode and not self.after_live_authorized: return 'AFTER_LIVE_NOT_AUTHORIZED'
+            status=self.market_status.get(symbol,{})
+            if status.get('vi_active') or status.get('single_price_auction'): return 'VI_AUCTION_NO_BUY'
+            if status.get('is_etf_etn') or status.get('after_ineligible'): return 'AFTER_INELIGIBLE_SYMBOL'
+            raw_text='|'.join(str((status.get('raw') or {}).get(k) or '') for k in ('state','auditInfo'))
+            for bad_kw, r_code in (
+                ('관리종목', 'AFTER_INELIGIBLE_MANAGED'),
+                ('투자경고', 'AFTER_INELIGIBLE_INVESTMENT_WARNING'),
+                ('투자위험', 'AFTER_INELIGIBLE_INVESTMENT_RISK'),
+                ('이상급등', 'AFTER_INELIGIBLE_ABNORMAL_SURGE'),
+                ('초저유동', 'AFTER_INELIGIBLE_ULTRA_LOW_LIQUIDITY'),
+                ('투자주의환기', 'AFTER_INELIGIBLE_INVESTMENT_CAUTION_ALERT'),
+                ('투자유의', 'AFTER_INELIGIBLE_INVESTMENT_CAUTION'),
+            ):
+                if bad_kw in raw_text: return r_code
+        else:
+            cutoff=min(self.a.new_entry_cutoff,getattr(self,'session_plan',SessionPlan()).effective_new_entry_end)
+            if self.clock().strftime('%H:%M:%S')>=cutoff: return 'NEW_ENTRY_CUTOFF'
         readiness_reason=getattr(self,'readiness_reason',None)
         if readiness_reason:
             reason=readiness_reason()
             if reason:return reason
-        cutoff=min(self.a.new_entry_cutoff,getattr(self,'session_plan',SessionPlan()).effective_new_entry_end)
-        if self.clock().strftime('%H:%M:%S')>=cutoff: return 'NEW_ENTRY_CUTOFF'
         status=self.market_status.get(symbol)
         if not status or status.get('pass') is not True: return (status or {}).get('reason_code','MARKET_STATUS_UNKNOWN')
         if status.get('checked_at'):
@@ -144,7 +207,7 @@ class AutonomousEngine(ExistingExits,Engine):
             if not -1<=age<=self.a.scan_seconds*3:return 'SOURCE_QUALIFICATION_STALE'
         if self.a.capital_limit<=0: return '승인 자동매매 자본 0원'
         if self.policy.mode!='LIVE': return self.policy.mode+' 신규 실주문 금지'
-        if not self.policy.state.get('live_authorized'): return 'LIVE 명시 승인 누락'
+        if not self.policy.state.get('live_authorized') and sess=='REGULAR': return 'LIVE 명시 승인 누락'
         if not self.c.live_mode and not self.shadow: return 'live_mode=false'
         if not self.a.costs_confirmed: return '거래비용 설정 미확인'
         if self.s['automation']['consecutive_losses']>=self.a.max_consecutive_losses: return '연속손실 한도'
@@ -160,8 +223,8 @@ class AutonomousEngine(ExistingExits,Engine):
 
     def capital_context(self):
         equity=self.risk_equity()
-        used=sum(max(0,p['avg']-p['stop']+p['avg']*(self.c.roundtrip_cost_fraction+self.c.exit_slippage_fraction))*p['qty'] for p in self.s['positions'].values())
-        used+=sum((o['limit']-o['signal']['stop']+o['limit']*(self.c.roundtrip_cost_fraction+self.c.exit_slippage_fraction))*(o['qty']-o['filled']) for o in self.active_orders(side='BUY'))
+        used=sum(max(0,p['avg']-p.get('stop',p['avg'])+p['avg']*(self.c.roundtrip_cost_fraction+self.c.exit_slippage_fraction))*p['qty'] for p in self.s['positions'].values() if p.get('ownership','BOT')=='BOT')
+        used+=sum((o['limit']-(o.get('signal') or {}).get('stop',o['limit'])+o['limit']*(self.c.roundtrip_cost_fraction+self.c.exit_slippage_fraction))*(o['qty']-o['filled']) for o in self.active_orders(side='BUY'))
         return {'actual_orderable_cash':self.available_cash,'approved_cap':self.a.capital_limit,
                 'risk_equity':equity,'risk_remaining':max(0,equity*self.c.max_daily_loss_fraction-self.s['daily_loss']-used),
                 'effective_auto_cap':self.auto_available_capital(),'entry_budget':self.watch_budget(),
@@ -170,7 +233,7 @@ class AutonomousEngine(ExistingExits,Engine):
 
     def watch_budget(self):
         if not self.capital_account_valid(): return 0
-        exposure=sum(p['qty']*p['avg'] for p in self.s['positions'].values())
+        exposure=sum(p['qty']*p['avg'] for p in self.s['positions'].values() if p.get('ownership','BOT')=='BOT')
         reserved=sum((o['qty']-o['filled'])*o['limit']*(1+self.a.commission_buy) for o in self.active_orders(side='BUY'))
         return max(0,min(self.available_cash,self.s['cash'],self.a.capital_limit-exposure,
                          self.risk_equity()*self.c.max_position_fraction)-reserved)
@@ -178,38 +241,39 @@ class AutonomousEngine(ExistingExits,Engine):
     def entry_gates(self,signal,tick):
         sym=tick.symbol; buys=self.active_orders(side='BUY'); equity=self.risk_equity()
         reserved=sum(o['qty']*o['limit']*(1+self.c.roundtrip_cost_fraction) for o in buys)
-        used=sum(max(0,p['avg']-p['stop']+p['avg']*(self.c.roundtrip_cost_fraction+self.c.exit_slippage_fraction))*p['qty'] for p in self.s['positions'].values())
-        used+=sum((o['limit']-o['signal']['stop']+o['limit']*(self.c.roundtrip_cost_fraction+self.c.exit_slippage_fraction))*(o['qty']-o['filled']) for o in buys)
+        used=sum(max(0,p['avg']-p.get('stop',p['avg'])+p['avg']*(self.c.roundtrip_cost_fraction+self.c.exit_slippage_fraction))*p['qty'] for p in self.s['positions'].values() if p.get('ownership','BOT')=='BOT')
+        used+=sum((o['limit']-(o.get('signal') or {}).get('stop',o['limit'])+o['limit']*(self.c.roundtrip_cost_fraction+self.c.exit_slippage_fraction))*(o['qty']-o['filled']) for o in buys)
         remaining=equity*self.c.max_daily_loss_fraction-self.s['daily_loss']-used
         sizing=self.quantity_details(signal,equity,self.s['cash']-reserved,remaining); qty=sizing['quantity']
         reason=self.new_entry_reason(sym)
         return qty,{**signal.get('evaluation_gates',{}),
             'policy':gate(not reason,reason=reason,mode=self.policy.mode,live_mode=self.c.live_mode,approved_cap=self.a.capital_limit,costs_confirmed=self.a.costs_confirmed),
             'market_status':gate(self.market_status.get(sym,{}).get('pass'),status=self.market_status.get(sym)),
-            'session':gate(self.entry_window(),time=self.clock().strftime('%H:%M:%S'),cutoff=self.a.new_entry_cutoff,market=self.market),
+            'session':gate(self.entry_window(),time=self.clock().strftime('%H:%M:%S'),cutoff=getattr(self.a,'after_entry_cutoff','19:45:00') if self.current_session()=='AFTER' else self.a.new_entry_cutoff,market=self.market),
             'connection_account':gate(self.connected and self.account_ok and not self.s['halt'] and (not self.c.live_mode or time.monotonic()-self.last_account<=self.c.reconcile_seconds*3),connected=self.connected,account_ok=self.account_ok,halt=self.s['halt'],account_age=time.monotonic()-self.last_account),
             'tick':gate(tick.regular and abs((self.clock()-tick.time).total_seconds())<=self.c.stale_seconds,lag=(self.clock()-tick.time).total_seconds(),regular=tick.regular,stale_limit=self.c.stale_seconds),
-            'repeat_slots':gate(not self.active_orders(sym) and sym not in self.s['positions'] and sym not in self.s['excluded'] and self.s['entries'].get(sym,0)<self.c.max_entries_per_symbol and sum(self.s['entries'].values())<self.c.max_entries_per_day and len(set(self.s['positions'])|{o['symbol'] for o in buys})<self.c.max_positions,entries=self.s['entries'].get(sym,0),daily_entries=sum(self.s['entries'].values()),slots=len(set(self.s['positions'])|{o['symbol'] for o in buys})),
+            'repeat_slots':gate(not self.entry_failure(sym) and not self.active_orders(sym) and sym not in self.s['positions'] and sym not in self.s['excluded'] and self.s['entries'].get(sym,0)<self.c.max_entries_per_symbol and self.entry_slots_available() and len(set(self.s['positions'])|{o['symbol'] for o in buys})<self.c.max_positions,entries=self.s['entries'].get(sym,0),daily_entries=sum(self.s['entries'].values()),reserved_entry_slots=self.pending_entry_lifecycles(),entry_count_basis=self.s.get('entry_count_basis'),failure_latch=self.entry_failure(sym),slots=len(set(self.s['positions'])|{o['symbol'] for o in buys})),
             'risk_quantity':gate(qty>0,**sizing,equity=equity,remaining_risk=remaining,reserved_cash=reserved,book_cash=self.s['cash'],actual_cash=self.available_cash,entry=signal['limit'],stop=signal['stop'],risk_fraction=self.c.risk_fraction,max_daily_loss_fraction=self.c.max_daily_loss_fraction,allowed_risk_krw=equity*self.c.risk_fraction,remaining_daily_risk_krw=max(0,remaining)),
             'efficiency':gate(signal.get('efficiency',{}).get('decision')=='TRADE',efficiency=signal.get('efficiency'))}
 
     def enter(self,signal,tick):
         if signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or signal.get('diagnostic_only') is True or ('source_count' in signal and signal['source_count']<max(2,self.a.min_source_count) and not signal.get('fallback_source1')):
             self.decisions.emit('ENTRY_EVAL',tick.symbol,'NO_BUY','OBSERVATION_NOT_BUY_PERMISSION',signal=signal,price=tick.price);return None
+        self.diagnostic('signal_count')
         from automation.allocation import apply_empirical
         try:
             if code(signal.get('symbol'))!=tick.symbol: raise ValueError('signal/tick symbol mismatch')
         except (TypeError,ValueError):
             self.decisions.emit('ENTRY_EVAL',tick.symbol,'NO_BUY','INVALID_SYMBOL',{'symbol':gate(False,signal_symbol=signal.get('symbol'),tick_symbol=tick.symbol)},price=tick.price)
-            return None
-        if not supported(self.clock()):
+            self.diagnostic('internal_reject_count'); return None
+        if not self.is_supported_now():
             self.decisions.emit('ENTRY_EVAL',tick.symbol,'NO_BUY','NO_BUY_OUTSIDE_SESSION',
                 {'session':gate(False,clock=self.clock().isoformat(),timezone_known=self.clock().tzinfo is not None)},signal=signal,price=tick.price)
-            return None
+            self.diagnostic('internal_reject_count'); return None
         if any(not isinstance(signal.get(k),(int,float)) or not math.isfinite(signal[k]) or signal[k]<=0 for k in ('limit','stop')) or signal['stop']>=signal['limit']:
             self.decisions.emit('ENTRY_EVAL',tick.symbol,'NO_BUY','INVALIDATION_UNKNOWN_OR_INVALID',
                 {'invalidation':gate(False,entry=signal.get('limit'),stop=signal.get('stop'))},signal=signal,price=tick.price,extra={'quantity':0})
-            return None
+            self.diagnostic('internal_reject_count'); return None
         signal=apply_empirical(signal,self.s['trades'],self.a)
         qty,gates=self.entry_gates(signal,tick)
         reason=self.new_entry_reason(signal['symbol'])
@@ -221,18 +285,21 @@ class AutonomousEngine(ExistingExits,Engine):
                 self.preview_at[tick.symbol]=stamp
                 self.event('NO_TRADE',symbol=tick.symbol,reason=reason,signal=signal,
                            approved_cap=self.a.capital_limit,available_capital=min(self.available_cash,self.a.capital_limit))
-            return None
+            self.diagnostic('internal_reject_count'); return None
+        sess=self.current_session()
+        venue=signal.get('venue') or (self.after_default_venue if sess=='AFTER' else 'KRX')
         signal={**signal,'account_risk_budget_krw':self.risk_equity()*self.c.risk_fraction,
                 'daily_risk_budget_krw':self.risk_equity()*self.c.max_daily_loss_fraction,
                 'approved_cap_krw':self.a.capital_limit,'bot_equity_krw':self.risk_equity(),
                 'reentry':self.s['entries'].get(signal['symbol'],0)>0,'market_state':self.market,
                 'daily_attempt':sum(self.s['entries'].values())+1,'symbol_attempt':self.s['entries'].get(signal['symbol'],0)+1,
-                'order_sent_at':self.clock().isoformat()}
+                'order_sent_at':self.clock().isoformat(),
+                'session':sess,'venue':venue}
         self.s['automation']['strategy']='ENTER'
         self.entry_intent=signal
         try:
-            o=super().enter(signal,tick)
-            failed=[k for k,v in gates.items() if v['result']=='FAIL']
+            o=super().enter(signal,tick,count_signal=False)
+            failed=[k for k,v in gates.items() if v['result']=='FAIL' and v.get('required',True)]
             self.decisions.emit('ENTRY_EVAL',tick.symbol,'BUY' if o and o['status'] in {'ACCEPTED','FILLED'} else 'NO_BUY',
                 'ENTRY_INTENT_ACCEPTED' if o and o['status'] in {'ACCEPTED','FILLED'} else (gates['risk_quantity']['values']['reason_code'] if failed and failed[0]=='risk_quantity' else failed[0] if failed else 'ORDER_NOT_ACCEPTED'),
                 gates,signal=signal,price=tick.price,extra={'quantity':qty},force=bool(o))
@@ -241,10 +308,20 @@ class AutonomousEngine(ExistingExits,Engine):
 
     def submit(self,side,symbol,qty,limit=0,signal=None):
         # 강제로 생성한 주문도 같은 경계를 통과하며 ARMED에는 모의체결도 만들지 않는다.
-        if not supported(self.clock()) or symbol in HARD_LOCKS or self.policy.locked(symbol): return None
+        if not self.is_supported_now() or symbol in HARD_LOCKS or self.policy.locked(symbol): return None
         if side=='BUY' and signal and (signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or signal.get('diagnostic_only') is True): return None
         if side=='BUY' and self.new_entry_reason(symbol): return None
         if side=='BUY' and (signal is not self.entry_intent or signal is None): return None
+        sess=self.current_session()
+        venue=(signal or {}).get('venue') or (self.after_default_venue if sess=='AFTER' else 'KRX')
+        if side=='SELL' and sess=='AFTER' and (limit<=0 or limit is None):
+            px=self.prices.get(symbol) or (self.s['positions'].get(symbol,{}).get('avg',0))
+            limit=floor_tick(px) if px>0 else 0
+        if signal is None:
+            signal={'session':sess,'venue':venue}
+        else:
+            signal.setdefault('session',sess)
+            signal.setdefault('venue',venue)
         if side=='SELL':
             p=self.s['positions'].get(symbol)
             external=signal and signal.get('ownership')=='EXISTING_POLICY'
@@ -294,17 +371,50 @@ class AutonomousEngine(ExistingExits,Engine):
     def order_guard(self,api,body):
         self.policy.refresh(); sym=code(body['stk_cd'])
         if api=='kt10003':
-            if not supported(self.clock()): raise Rejected('OUT_OF_SUPPORTED_SESSION')
+            if not self.is_supported_now(): raise Rejected('OUT_OF_SUPPORTED_SESSION')
             if not any(o['symbol']==sym and o['id']==str(body['orig_ord_no']) and o['status']=='CANCEL_SENT' for o in self.active_orders()):
                 raise Rejected('봇 취소 의도와 불일치')
             return
-        if not supported(self.clock()): raise Rejected('OUT_OF_SUPPORTED_SESSION')
+        if not self.is_supported_now(): raise Rejected('OUT_OF_SUPPORTED_SESSION')
         if sym in HARD_LOCKS or self.policy.locked(sym): raise Rejected('HARD_LOCK')
         side='BUY' if api=='kt10000' else 'SELL' if api=='kt10001' else None
         qty=int(body['ord_qty']); limit=float(body.get('ord_uv') or 0)
+        sess=self.current_session()
+        if sess=='AFTER':
+            if str(body.get('trde_tp'))=='3':
+                raise Rejected('AFTER 시장에서는 시장가 주문(trde_tp=3) 금지: 지정가만 허용')
+            if side=='BUY':
+                if self.c.live_mode and not self.after_live_authorized:
+                    raise Rejected('AFTER_LIVE_NOT_AUTHORIZED')
+                t_str=self.clock().strftime('%H:%M:%S')
+                if t_str<getattr(self.a,'after_market_start','16:00:00'):
+                    raise Rejected('AFTER_PREWARM_NO_BUY')
+                if t_str>=getattr(self.a,'after_entry_cutoff','19:45:00'):
+                    raise Rejected('AFTER_ENTRY_CUTOFF')
+                st=self.market_status.get(sym,{})
+                if st.get('vi_active') or st.get('single_price_auction'):
+                    raise Rejected('VI_AUCTION_NO_BUY')
+                if st.get('is_etf_etn') or st.get('after_ineligible'):
+                    raise Rejected('AFTER_INELIGIBLE_SYMBOL')
+                raw_text='|'.join(str((st.get('raw') or {}).get(k) or '') for k in ('state','auditInfo'))
+                for bad_kw, r_code in (
+                    ('관리종목', 'AFTER_INELIGIBLE_MANAGED'),
+                    ('투자경고', 'AFTER_INELIGIBLE_INVESTMENT_WARNING'),
+                    ('투자위험', 'AFTER_INELIGIBLE_INVESTMENT_RISK'),
+                    ('이상급등', 'AFTER_INELIGIBLE_ABNORMAL_SURGE'),
+                    ('초저유동', 'AFTER_INELIGIBLE_ULTRA_LOW_LIQUIDITY'),
+                    ('투자주의환기', 'AFTER_INELIGIBLE_INVESTMENT_CAUTION_ALERT'),
+                    ('투자유의', 'AFTER_INELIGIBLE_INVESTMENT_CAUTION'),
+                ):
+                    if bad_kw in raw_text: raise Rejected(r_code)
         intents=[o for o in self.active_orders(sym,side) if o['status']=='INTENT' and o['qty']==qty and o['limit']==limit]
         if len(intents)!=1: raise Rejected('저장된 봇 주문 의도 없는 직접 주문 차단')
         if side=='BUY':
+            for o in self.s['orders'].values():
+                if o is not intents[0] and o.get('status') in {'UNKNOWN', 'INTENT'}:
+                    raise Rejected(f'다른 미해결/INTENT 주문 존재 ({o.get("symbol")}): 신규 매수 차단')
+            if self.s.get('halt'):
+                raise Rejected(f'HALT 상태: 신규 매수 차단 ({self.s["halt"]})')
             signal=intents[0].get('signal') or {}
             if signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or signal.get('diagnostic_only') is True or ('source_count' in signal and signal['source_count']<max(2,self.a.min_source_count) and not signal.get('fallback_source1')):raise Rejected('OBSERVATION_NOT_BUY_PERMISSION')
             self._guard_intent=intents[0]
@@ -313,15 +423,16 @@ class AutonomousEngine(ExistingExits,Engine):
             if reason or not self.entry_window() or not self.connected or not self.account_ok or self.s['halt']:
                 raise Rejected(reason or '시장/계좌/연결 조건 미충족')
             other=sum((o['qty']-o['filled'])*o['limit']*(1+self.a.commission_buy) for o in self.active_orders(side='BUY') if o is not intents[0])
-            exposure=sum(p['qty']*p['avg'] for p in self.s['positions'].values())
+            exposure=sum(p['qty']*p['avg'] for p in self.s['positions'].values() if p.get('ownership','BOT')=='BOT')
             available=min(self.available_cash,self.s['cash'],max(0,self.a.capital_limit-exposure))-other
             if qty*limit*(1+self.a.commission_buy)>available: raise Rejected('승인 자본/현금 초과')
             signal=intents[0]['signal']
-            used=sum(max(0,p['avg']-p['stop']+self.costs.roundtrip(p['avg'],p['stop'])+p['stop']*self.c.exit_slippage_fraction)*p['qty'] for p in self.s['positions'].values())
-            used+=sum((o['limit']-o['signal']['stop']+self.costs.roundtrip(o['limit'],o['signal']['stop'])+o['signal']['stop']*self.c.exit_slippage_fraction)*(o['qty']-o['filled']) for o in self.active_orders(side='BUY') if o is not intents[0])
+            used=sum(max(0,p['avg']-p.get('stop',p['avg'])+self.costs.roundtrip(p['avg'],p.get('stop',p['avg']))+p.get('stop',p['avg'])*self.c.exit_slippage_fraction)*p['qty'] for p in self.s['positions'].values() if p.get('ownership','BOT')=='BOT')
+            used+=sum((o['limit']-(o.get('signal') or {}).get('stop',o['limit'])+self.costs.roundtrip(o['limit'],(o.get('signal') or {}).get('stop',o['limit']))+(o.get('signal') or {}).get('stop',o['limit'])*self.c.exit_slippage_fraction)*(o['qty']-o['filled']) for o in self.active_orders(side='BUY') if o is not intents[0])
             remaining=self.risk_equity()*self.c.max_daily_loss_fraction-self.s['daily_loss']-used
             if qty>self.quantity(signal,self.risk_equity(),available,remaining): raise Rejected('주문 경계에서 위험 수량 재검증 실패')
-            if len(set(self.s['positions'])|{o['symbol'] for o in self.active_orders(side='BUY')})>self.c.max_positions: raise Rejected('동시 포지션 초과')
+            bot_positions={s for s,p in self.s['positions'].items() if p.get('ownership','BOT')=='BOT'}
+            if len(bot_positions|{o['symbol'] for o in self.active_orders(side='BUY')})>self.c.max_positions: raise Rejected('동시 포지션 초과')
         else:
             p=self.s['positions'].get(sym)
             if (intents[0].get('signal') or {}).get('ownership')=='EXISTING_POLICY':
@@ -336,7 +447,9 @@ class AutonomousEngine(ExistingExits,Engine):
         if time.monotonic()-self.last_account>self.c.reconcile_seconds*3: raise Rejected('계좌 대조 지연')
 
     def can_exit(self,symbol,p):
-        return (symbol not in HARD_LOCKS and symbol not in BREAKEVEN_EXITS and (symbol!=TEST_RELEASE_SYMBOL or not legacy_test_release_enabled()) and supported(self.clock()) and self.market in {'3','2'} and not self.policy.locked(symbol) and p.get('ownership')=='BOT' and
+        sess=self.current_session()
+        sess_ok = (supported(self.clock()) and self.market in {'3','2'}) if sess=='REGULAR' else (after_supported(self.clock()) if sess=='AFTER' else False)
+        return (symbol not in HARD_LOCKS and symbol not in BREAKEVEN_EXITS and (symbol!=TEST_RELEASE_SYMBOL or not legacy_test_release_enabled()) and sess_ok and not self.policy.locked(symbol) and p.get('ownership')=='BOT' and
                 not p.get('qty_blocked') and (self.policy.mode!='KILL' or self.kill_checked))
 
     def position_created(self,p,o):
@@ -539,11 +652,68 @@ class AutonomousEngine(ExistingExits,Engine):
             self.drive_exits(prices)
         return mode in {'OFF','STOP','STOP_FLAT','KILL'} and not self.s['positions'] and not self.active_orders()
 
+    def drive_exits(self,prices=None):
+        sess=self.current_session()
+        t_str=self.clock().strftime('%H:%M:%S')
+        is_after_flatten=(sess=='AFTER' and not self.a.ALLOW_OVERNIGHT and
+                          t_str>=getattr(self.a,'after_force_flatten_start','19:55:00'))
+        if not is_after_flatten:
+            return super().drive_exits(prices)
+
+        # 20:00 이후 신규 주문 생성 절대 금지 및 미청산 잔고 감지 시 HALT
+        if t_str>=getattr(self.a,'after_market_close','20:00:00'):
+            bot_positions={sym:p['qty'] for sym,p in self.s['positions'].items() if p.get('ownership')=='BOT' and p.get('qty',0)>0}
+            if bot_positions and not self.s.get('halt'):
+                self.event('AFTER_CLOSE_UNFLATTENED_POSITION',symbols=list(bot_positions.keys()),holdings=bot_positions)
+                self.halt(f'AFTER 마감 시점 미청산 봇 잔고 감지: {bot_positions}')
+            return
+
+        prices=prices or self.prices or {}
+        for sym,p in list(self.s['positions'].items()):
+            if p.get('ownership')!='BOT': continue # 외부/HARD_LOCK 보유는 절대 강제청산 대상 아님
+            if not self.can_exit(sym,p): continue
+            if not p.get('exit_requested'):
+                p['exit_requested']=True; p['exit_reason']='AFTER 강제 청산'; self.save()
+            if self.active_orders(sym): continue # 중복 SELL 금지: 기존 주문 취소/체결 대기
+            if any(o.get('status') in {'UNKNOWN','INTENT'} for o in self.s['orders'].values() if o.get('symbol')==sym):
+                continue # UNKNOWN/INTENT 발생 시 fail-closed (reconcile 후 재개)
+            if p.get('qty_blocked') or p['qty']<=0: continue
+            if self.c.live_mode and (not self.account_ok or time.monotonic()-self.last_account>self.c.reconcile_seconds*3):
+                continue
+
+            # 일반 정상 청산의 max_exit_attempts=3 제한을 우회하여 19:55~19:59:50 지속 재시도
+            p['exit_attempts']=p.get('exit_attempts',0)+1
+
+            # 현재 허용된 가장 공격적인 지정가 재산출 (시장가 생성 금지)
+            px=prices.get(sym) or self.prices.get(sym) or p.get('avg',0)
+            st=self.market_status.get(sym,{})
+            bid=prices.get(sym) or getattr(st,'bid',None) or px
+            limit_px=floor_tick(bid*(1-self.c.exit_slippage_fraction)) if bid>0 else floor_tick(px)
+            if limit_px<=0: limit_px=floor_tick(px) if px>0 else 0
+
+            o=self.submit('SELL',sym,p['qty'],limit=limit_px)
+            if o and not self.c.live_mode and o['status']=='ACCEPTED':
+                fill_px=prices.get(sym,limit_px)
+                self.cumulative_fill(o,o['qty'],o['qty']*fill_px*(1-self.c.exit_slippage_fraction))
+
     def timer(self,prices=None):
         self.prices=prices or self.prices
-        if not supported(self.clock()): return
-        if self.clock().strftime('%H:%M:%S')>=self.a.new_entry_cutoff:
+        t_str=self.clock().strftime('%H:%M:%S')
+        if not self.is_supported_now():
+            if t_str>='20:00:00' and not self.a.ALLOW_OVERNIGHT:
+                bot_positions={sym:p['qty'] for sym,p in self.s['positions'].items() if p.get('ownership')=='BOT' and p.get('qty',0)>0}
+                if bot_positions and not self.s.get('halt'):
+                    self.event('AFTER_CLOSE_UNFLATTENED_POSITION',symbols=list(bot_positions.keys()),holdings=bot_positions)
+                    self.halt(f'AFTER 마감 시점 미청산 봇 잔고 감지: {bot_positions}')
+            return
+        sess=self.current_session()
+        cutoff=getattr(self.a,'after_entry_cutoff','19:45:00') if sess=='AFTER' else self.a.new_entry_cutoff
+        if t_str>=cutoff:
             for o in list(self.active_orders(side='BUY')): self.cancel(o)
+        if sess=='AFTER' and not self.a.ALLOW_OVERNIGHT and t_str>=getattr(self.a,'after_force_flatten_start','19:55:00'):
+            for sym,p in list(self.s['positions'].items()):
+                if p.get('ownership')=='BOT' and not p.get('exit_requested'):
+                    self.request_exit(sym,'AFTER 강제 청산')
         super().timer(prices)
         self.evaluate_existing()
         for sym,p in self.s['positions'].items(): self.position_eval(sym,p)
@@ -553,9 +723,9 @@ class AutonomousEngine(ExistingExits,Engine):
         previous=self.s['positions'].get(t.symbol,{}).get('stop')
         super().on_tick(t,completed_low)
         p=self.s['positions'].get(t.symbol)
-        if p and previous is not None and p['stop']>previous:
+        if p and previous is not None and p.get('stop',0)>previous:
             self.decisions.emit('PROTECTION_UPDATE',t.symbol,'HOLD','PROTECTION_RAISED',
-                {'protection':gate(True,previous=previous,new=p['stop'],completed_low=completed_low)},position=p,price=t.price,force=True)
+                {'protection':gate(True,previous=previous,new=p.get('stop',0),completed_low=completed_low)},position=p,price=t.price,force=True)
         if p: self.position_eval(t.symbol,p,t.price)
 
     def position_eval(self,sym,p,price=None):
@@ -573,16 +743,27 @@ class AutonomousEngine(ExistingExits,Engine):
                 o['manual_cancel_required']=True; self.save()
                 self.event('TEST_RELEASE_CANCEL_REQUIRES_MANUAL',symbol=o['symbol'],local=o['local'])
             return
-        if supported(self.clock()): return super().cancel(o)
+        if self.is_supported_now(): return super().cancel(o)
         # 지원 시간 밖에서는 새 API 연결을 만들지 않고 취소 의도를 다음 정규장까지 보존한다.
         o['cancel_requested']=True; self.save()
+
+    def transition_to_after(self):
+        """정규장 종료 후 AFTER 진입 시 미체결 정규장 주문 취소 및 세션 상태 전이"""
+        for o in list(self.active_orders()):
+            if o.get('session')!='AFTER':
+                self.cancel(o)
+        for k,o in list(self.s['orders'].items()):
+            if o.get('status')=='INTENT' and o.get('session')!='AFTER':
+                o['status']='CANCELED'
+        self.save()
+        self.event('SESSION_TRANSITION',from_session='REGULAR',to_session='AFTER',time=self.clock().isoformat())
 
     def roll_day(self):
         day=self.clock().date().isoformat()
         if day==self.s['day']: return False
         if self.active_orders():
             self.halt('전일 미해결 주문: 실제 계좌 대조 필요'); return False
-        self.s.update(day=day,entries={},daily_loss=0.,orders={})
+        self.s.update(day=day,entries={},daily_loss=0.,orders={},entry_lifecycles={},entry_failures={},entry_diagnostics={})
         self.s['automation']['consecutive_losses']=0
         self.market='UNKNOWN'; self.connected=False; self.account_ok=False; self.save()
         return True

@@ -141,6 +141,9 @@ class SubscriptionRefreshTests(unittest.TestCase):
         shadow.update([row],START);shadow.detector.ingest(self.tick(),START);buf=shadow.detector.buffers[SYM]
         shadow.update([],START+timedelta(seconds=1));shadow.update([row],START+timedelta(seconds=2));self.assertIs(buf,shadow.detector.buffers[SYM])
         shadow.update([],START+timedelta(seconds=3));shadow.update([],START+timedelta(seconds=self.cfg.stale_seconds+1))
+        # Only three seconds outside the universe: an old last trade is not a six-second subscription gap.
+        self.assertIs(buf,shadow.detector.buffers[SYM])
+        shadow.update([],START+timedelta(seconds=3+self.cfg.stale_seconds+1))
         self.assertNotIn(SYM,shadow.detector.last);self.assertEqual(self.broker.orders,[])
     def test_default_A_ticks_can_use_existing_fake_order_path_after_churn(self):
         cumulative=0;self.radar.cache={(START.date(),SYM):[{}]}

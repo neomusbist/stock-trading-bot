@@ -27,7 +27,7 @@ class Config:
     history_bars: int = 750
     min_history_bars: int = 500
     max_history_age_days: int = 7
-    max_watchlist: int = 8
+    max_watchlist: int = 12
     overhead_band: float = 0.10
     max_overhead_share: float = 0.25
     min_resistance_room: float = 0.025
@@ -39,6 +39,7 @@ class Config:
     min_price_gain: float = 0.003
     min_turnover_ratio: float = 3.0
     min_window_turnover: float = 30000000
+    min_bc_window_turnover: float = 20000000
     max_chase: float = 0.008
     max_gap: float = 0.12
     max_spread: float = 0.004
@@ -59,12 +60,21 @@ class Config:
     order_timeout_seconds: int = 10
     reconcile_seconds: int = 5
     max_exit_attempts: int = 3
+    after_enabled: bool = False
+    after_a_accel_ratio: float = 2.5
+    after_a_min_gain: float = 0.003
+    after_a_liquidity_mode: str = 'depth'
+    after_default_venue: str = 'SOR'
 
     def validate(self):
-        if type(self.live_mode) is not bool:
-            raise ValueError('live_mode는 JSON true/false만 허용')
+        if type(self.live_mode) is not bool or type(self.after_enabled) is not bool:
+            raise ValueError('live_mode / after_enabled는 JSON true/false만 허용')
         if self.broker_environment not in ('production', 'mock'):
             raise ValueError('broker_environment 오류')
+        if self.after_default_venue not in ('SOR', 'KRX', 'NXT'):
+            raise ValueError('after_default_venue 오류')
+        if self.after_a_liquidity_mode not in ('depth', 'turnover'):
+            raise ValueError('after_a_liquidity_mode 오류')
         for k, v in asdict(self).items():
             if isinstance(v, (int, float)) and not isinstance(v, bool):
                 if not math.isfinite(v) or v <= 0:
@@ -72,7 +82,7 @@ class Config:
                 if k=='max_position_fraction':
                     if v>1: raise ValueError('max_position_fraction: 1 이하여야 함')
                     continue
-                if (k.endswith('_fraction') or k in ('max_chase','max_gap','max_spread','overhead_band','max_overhead_share','min_resistance_room','max_recent_range','min_price_gain','structural_buffer')) and v >= 1:
+                if (k.endswith('_fraction') or k in ('max_chase','max_gap','max_spread','overhead_band','max_overhead_share','min_resistance_room','max_recent_range','min_price_gain','after_a_min_gain','structural_buffer')) and v >= 1:
                     raise ValueError(f'{k}: 1 미만이어야 함')
         for k in ('max_positions','max_entries_per_symbol','max_entries_per_day','history_bars','min_history_bars','max_history_age_days','max_watchlist','acceleration_seconds','baseline_seconds','breakout_seconds','stale_seconds','position_stale_seconds','order_timeout_seconds','reconcile_seconds','max_exit_attempts'):
             if type(getattr(self,k)) is not int:

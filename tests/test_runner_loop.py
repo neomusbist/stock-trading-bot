@@ -49,7 +49,7 @@ class RunnerLoopTests(unittest.TestCase):
         account.q.put({'snapshot':{'cash':9000000,'equity':100000000,'holdings':{},'orders':[]},
                        'fills':[],'started':time.monotonic(),'error':None})
         radar=Mock(); radar.q=queue.Queue(); radar.cache={}
-        row={'code':'999990','name':'가짜 후보','status':'WATCH','resistance':11000}
+        row={'code':'999990','name':'가짜 후보','status':'WATCH','source_count':2,'resistance':11000}
         radar.q.put({'time':stamp.isoformat(),'rows':[row],'watch':[row],
                      'changes':{'added':['999990'],'removed':[]},'error':None})
         frames=[{'trnm':'REG','return_code':0},{'trnm':'REAL','data':[{'type':'0s','values':{'215':'3'}}]},

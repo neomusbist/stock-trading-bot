@@ -79,6 +79,8 @@ class Rest:
             if not self.mutation_allowed(api,body): raise Rejected('dry-run: 주문 API 접근 차단')
             guard=getattr(self,'order_guard',None)
             if guard is not None: guard(api,body)  # 인증/대기 후 실제 전송 직전에도 시각·정책을 재검사한다.
+        observer=getattr(self,'submission_observer',None)
+        if api in {'kt10000','kt10001','kt10003'} and observer is not None: observer(api,body)
         http_started=time.perf_counter()
         try:
             with self.opener(req,timeout=8) as response:
@@ -179,21 +181,26 @@ class Rest:
                 'regular':True,'status':status,'source':'ka10004',
                 'raw':{k:raw[k] for k in ('bid_req_base_tm','buy_fpr_bid','buy_fpr_req')}}
 
-    def submit(self,side,symbol,qty,limit=0):
+    def submit(self,side,symbol,qty,limit=0,venue='KRX',session='REGULAR'):
         if type(qty) is not int or qty<=0:
             raise Rejected('양의 정수 주문수량 필요')
         code(symbol)
+        if session=='AFTER' and (side=='SELL' and limit<=0):
+            raise Rejected('AFTER 시장에서는 지정가 주문만 허용 (시장가 매도 금지)')
         if side not in ('BUY','SELL') or (side=='BUY' and limit<=0):
             raise Rejected('매수는 가격 상한 지정가만 허용')
+        stex = venue if venue in ('SOR','NXT','KRX') else 'KRX'
+        trde_tp = '0' if limit or session=='AFTER' else '3'
         data,_=self.call('kt10000' if side=='BUY' else 'kt10001','/api/dostk/ordr',{
-            'dmst_stex_tp':'KRX','stk_cd':symbol,'ord_qty':str(qty),'ord_uv':str(int(limit)) if limit else '',
-            'trde_tp':'0' if limit else '3','cond_uv':''},mutation=True)
+            'dmst_stex_tp':stex,'stk_cd':symbol,'ord_qty':str(qty),'ord_uv':str(int(limit)) if limit else '',
+            'trde_tp':trde_tp,'cond_uv':''},mutation=True)
         if not data.get('ord_no'):
             raise AmbiguousOrder('주문번호 없는 접수 응답')
         return str(data['ord_no'])
 
-    def cancel(self,symbol,order_id):
-        data,_=self.call('kt10003','/api/dostk/ordr',{'dmst_stex_tp':'KRX','orig_ord_no':order_id,
+    def cancel(self,symbol,order_id,venue='KRX'):
+        stex = venue if venue in ('SOR','NXT','KRX') else 'KRX'
+        data,_=self.call('kt10003','/api/dostk/ordr',{'dmst_stex_tp':stex,'orig_ord_no':order_id,
             'stk_cd':symbol,'cncl_qty':'0'},mutation=True)
         if not data.get('ord_no'):
             raise AmbiguousOrder('취소 주문번호 누락')

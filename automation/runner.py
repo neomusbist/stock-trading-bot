@@ -14,6 +14,7 @@ from core.settings import now
 from core.util import atomic_json,ProcessLock,exception_details
 from core.broker import Rest,Rejected
 from core.realtime import Feed,parse_tick
+from core.strategy import Tick
 from core.report import export
 from candidate_builder import structure
 from automation.policy import Policy,load_automation,LEGACY_SYMBOL,BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL,legacy_test_release_enabled
@@ -22,7 +23,7 @@ from automation.patterns import PatternDetector
 from automation.radar import RadarWorker,observation_structure
 from automation.allocation import comparison
 from automation.performance import report
-from automation.session import supported,control_supported,assessment
+from automation.session import supported,control_supported,assessment,market_phase,after_supported,after_control_supported,after_entry_supported
 from automation.candidate_audit import CandidateAudit
 from automation.observation_settings import ObservationSettings,load_observation
 from automation.focus_selection import select_focus
@@ -132,35 +133,49 @@ def qualify_raw(engine,rows,stamp,is_raw_phase=False):
 class SubscriptionState:
     """구독 변경은 소켓/계좌 연결과 별개이며 추가 종목만 새 정규장 틱을 기다린다."""
     def __init__(self,symbols=()):
-        self.symbols=set(symbols); self.waiting={}; self.detached=set(); self.refresh_pending=False
+        self.symbols=set(symbols); self.waiting={}; self.detached=set(); self.detached_at={}; self.refresh_pending=False
 
     def disconnected(self,stamp):
         self.waiting={sym:stamp for sym in self.symbols}
-        self.detached.clear(); self.refresh_pending=False
+        self.detached.clear(); self.detached_at.clear(); self.refresh_pending=False
 
     def acknowledge(self):
         self.refresh_pending=False
 
+    def gap_expired(self,detector,symbol,stamp):
+        last=detector.last.get(symbol)
+        if last and last.time.date()!=stamp.date():return True
+        detached_at=self.detached_at.get(symbol)
+        # A quiet stock's last trade age is not the length of a subscription gap.
+        return bool(detached_at and (stamp-detached_at).total_seconds()>detector.cfg.stale_seconds
+                    and not detector.observation_fresh(symbol,stamp))
+
     def refresh(self,engine,detector,feed,desired,stamp):
         desired=set(desired)
         for sym in list(self.detached-desired):
-            if not detector.observation_fresh(sym,stamp):
-                detector.forget(sym); self.detached.discard(sym)
-                engine.event('OBSERVATION_RELEASED',symbol=sym,data_action='RESET_STALE_GAP')
+            if self.gap_expired(detector,sym,stamp):
+                gap=(stamp-self.detached_at[sym]).total_seconds()
+                detector.forget(sym); self.detached.discard(sym);self.detached_at.pop(sym,None)
+                engine.event('OBSERVATION_RELEASED',symbol=sym,data_action='RESET_STALE_GAP',
+                             subscription_gap_seconds=gap)
         if desired==self.symbols:return False
         added=desired-self.symbols; removed=self.symbols-desired
         for sym in removed:
             self.waiting.pop(sym,None)
-            self.detached.add(sym)
+            self.detached.add(sym);self.detached_at[sym]=stamp
             engine.event('OBSERVATION_RELEASED',symbol=sym,data_action='RETAIN_UNTIL_STALE_GAP',
                 stored_completed_bars=len(detector.history.get(sym,[])))
         for sym in added:
             had_data=sym in detector.last
             fresh=detector.observation_fresh(sym,stamp)
-            if had_data and not fresh:detector.forget(sym)
-            self.detached.discard(sym); self.waiting[sym]=stamp
+            expired=had_data and self.gap_expired(detector,sym,stamp)
+            since=self.detached_at.get(sym)
+            gap=(stamp-since).total_seconds() if since else 0.0
+            if expired:detector.forget(sym)
+            self.detached.discard(sym);self.detached_at.pop(sym,None);self.waiting[sym]=stamp
             engine.event('OBSERVATION_REJOINED',symbol=sym,
-                data_action='RETAIN_FRESH' if fresh else 'RESET_STALE_GAP' if had_data else 'NO_DATA',
+                data_action='RESET_STALE_GAP' if expired else 'RETAIN_FRESH' if fresh else 'RETAIN_OBSERVATION' if had_data else 'NO_DATA',
+                subscription_gap_seconds=gap,stored_completed_bars=len(detector.history.get(sym,[])),
                 fresh_regular_tick_required=True)
         feed.update_symbols(sorted(desired))
         self.symbols=desired; self.refresh_pending=True
@@ -228,6 +243,27 @@ def apply_focus_selection(engine,lookup,by_symbol,selection):
         if sym in engine.source_qualification:
             engine.source_qualification[sym]['fallback_source1']=source1
 
+def resolve_radar_focus(engine,lookup,rows,rank_watch,readiness,cfg,auto,stamp):
+    """Commit the final focus against actual incumbents, before subscription changes."""
+    pool={row['code']:row for row in rows}
+    # Preserve the radar's existing bounded grace for temporarily missing ranks.
+    for row in rank_watch:pool.setdefault(row['code'],row)
+    previous=list(lookup)
+    incumbents={sym:row for sym,row in lookup.items() if sym in pool}
+    selection=select_focus(incumbents,list(pool.values()),readiness,cfg.max_watchlist,
+                           auto.fallback_source1,stamp.isoformat())
+    selection.previous_watch=previous
+    selection.demoted=[sym for sym in previous if sym not in selection.next_watch]
+    selection.applied=bool(selection.promoted or selection.demoted)
+    apply_focus_selection(engine,lookup,pool,selection)
+    for sym in selection.next_watch:
+        row=pool[sym];source1=row.get('source_count',0)==1
+        lookup[sym]={**row,'status':'WATCH','fallback_source1':source1,
+                     'watch_type':'FALLBACK_SOURCE1' if source1 else 'PRIMARY'}
+        if sym in engine.source_qualification:engine.source_qualification[sym]['fallback_source1']=source1
+    return selection
+
+
 def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_evaluated_frame=None):
     if not watch or not engine.connected: return None
     if last_evaluated_frame is not None:
@@ -263,7 +299,8 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
     sig=detector.signal(t,{**watch,**fresh})
     if not sig:
         engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','FRESH_STRUCTURE_SIGNAL_NOT_READY',
-            detector.evaluation_gates(t,{**watch,**fresh}),price=t.price)
+            detector.evaluation_gates(t,{**watch,**fresh}),price=t.price,
+            extra={'signal_detected':False,'setup_trials':detector.last_eval.get(t.symbol,{}).get('trials',[])})
         return None
     sig['name']=watch.get('name')
     sig['candidate_detected_at']=watch.get('observed_at')
@@ -307,9 +344,17 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
         kind=item.get('type')
         if kind=='00':
             engine.on_order_event(item['values']); account.need_fills=bool(engine.active_orders()); account.request.set()
+        elif kind=='0D' and item.get('item') in symbols and after_supported(received):
+            book=item.get('_book') or {}
+            sym=item['item']; last_log=getattr(engine,'_depth_log_at',{}).get(sym)
+            if book and (last_log is None or (received-last_log).total_seconds()>=5):
+                if not hasattr(engine,'_depth_log_at'):engine._depth_log_at={}
+                engine._depth_log_at[sym]=received
+                engine.event('BOOK_DEPTH_OBSERVED',symbol=sym,book=book,diagnostic_only=True)
         elif kind=='0s': update_market(engine,str(item['values']['215']))
         elif kind=='0B':
-            t=parse_tick(item,received)
+            parsed=item.get('_observation_tick')
+            t=parsed[1] if isinstance(parsed,tuple) and len(parsed)==2 and parsed[0]==received and isinstance(parsed[1],Tick) else parse_tick(item,received,book_stale_seconds=engine.c.stale_seconds)
             if t.symbol not in symbols:continue
             if subscriptions is not None and not subscriptions.tick_ready(t,received):continue
             if not detector.ingest(t,now()):continue
@@ -340,10 +385,17 @@ class ReadOnlyPilotPolicy:
 
 def readiness_snapshot(engine,counts,radar_ok,stamp,detector=None):
     """증거를 평가한다. 경과 초 수나 전략 완성봉 수를 readiness 조건으로 쓰지 않는다."""
-    in_control=control_supported(stamp); in_market=supported(stamp)
+    sess=getattr(engine,'current_session',lambda:current_session(stamp))()
+    is_after=sess=='AFTER'
+    if is_after:
+        in_control=getattr(engine.c,'after_enabled',False) and after_control_supported(stamp)
+        in_market=getattr(engine.c,'after_enabled',False) and after_entry_supported(stamp)
+    else:
+        in_control=control_supported(stamp)
+        in_market=supported(stamp)
     last=getattr(engine,'last_regular_tick_at',None)
     if detector is not None:
-        regular=[t.time for t in detector.last.values() if t.regular and supported(t.time)]
+        regular=[t.time for t in detector.last.values() if t.regular or is_after]
         if regular:last=max(regular+[last] if last else regular)
     tick_age=(stamp-last).total_seconds() if last is not None else None
     fresh_tick=in_market and tick_age is not None and 0<=tick_age<=engine.c.stale_seconds and last.date()==stamp.date()
@@ -351,7 +403,11 @@ def readiness_snapshot(engine,counts,radar_ok,stamp,detector=None):
     radar_current=radar_ok and radar_at is not None and supported(radar_at) and radar_at.date()==stamp.date()
     gates={'control_session':in_control,'websocket_reg_ack':bool(engine.connected and counts['subscription_acks']>0),
            'account_fresh':engine.capital_account_valid(),'safe_state':not engine.s['halt'] and not any(o.get('status')=='UNKNOWN' for o in engine.active_orders())}
-    if in_market:gates.update(observation_session=True,regular_market=engine.market=='3',fresh_regular_tick=fresh_tick,radar_pipeline=radar_current)
+    if in_market:
+        if is_after:
+            gates.update(observation_session=True,regular_market=bool(engine.market),fresh_regular_tick=fresh_tick)
+        else:
+            gates.update(observation_session=True,regular_market=engine.market=='3',fresh_regular_tick=fresh_tick,radar_pipeline=radar_current)
     missing=[key.upper()+'_NOT_READY' for key,passed in gates.items() if not passed]
     state=('OPEN_READY' if in_market else 'PREOPEN_READY') if not missing else 'WAITING'
     return {'state':state,'phase':assessment(stamp)['phase'],'gates':gates,'missing':missing,
@@ -394,7 +450,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
         engine.event('OFF'); return {'mode':'OFF','real_orders_sent':0}
     def clients():
         rank_rest=Rest(effective,auth_session=rest.auth_session); account_rest=Rest(effective,auth_session=rest.auth_session)
-        for client in (rest,rank_rest,account_rest): client.session_guard=lambda:control_supported(now())
+        for client in (rest,rank_rest,account_rest): client.session_guard=lambda:control_supported(now()) or (getattr(effective,'after_enabled',False) and after_control_supported(now()))
         account_worker=AccountWorker(account_rest,effective.reconcile_seconds);account_worker.observation_settings=observation_settings
         radar_worker=RadarWorker(effective,auto,policy,rank_rest,root)
         radar_worker.observation_sink=lambda rows,stamp,capital:shadow.submit(rows,stamp,capital)
@@ -407,14 +463,14 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     account.need_fills=bool(engine.active_orders())
     reporter=Reporter(root)
     from automation.observation_worker import ObservationWorker
-    observation_rest=Rest(replace(effective,live_mode=False),auth_session=rest.auth_session);observation_rest.session_guard=lambda:control_supported(now());observation_rest.diagnostic_only=True
+    observation_rest=Rest(replace(effective,live_mode=False),auth_session=rest.auth_session);observation_rest.session_guard=lambda:control_supported(now()) or (getattr(effective,'after_enabled',False) and after_control_supported(now()));observation_rest.diagnostic_only=True
     shadow=ObservationWorker(effective,auto,engine.costs,root,observation_rest);shadow.start()
     shadow_state={};observation_drops=0
     lookup={}; rows=[]; by_symbol={}; prices={}; counts={'ticks':0,'radar_cycles':0,'account_checks':0,'subscription_acks':0}
     engine._last_eval_frame={}
     last_radar=0.; radar_ok=False; last_report=0.; last_heartbeat=0.;last_board=0.; started=now(); stop_at=time.monotonic()+(seconds or 120) if seconds or readiness_check else None
     smoke_ended=False; fatal=''; account_generation=0; kill_requested_at=None
-    data_active=False; ever_started=False; blocked_day=None; reporter.start()
+    data_active=False; ever_started=False; blocked_day=None; session_transition_done=False; reporter.start()
     engine.readiness_reason=lambda:entry_readiness_reason()
     def entry_readiness_reason():
         ready=readiness_snapshot(engine,counts,radar_ok,now(),detector)
@@ -431,7 +487,11 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     try:
         while True:
             try:
-                in_session=control_supported(now())
+                in_session=control_supported(now()) or (getattr(cfg,'after_enabled',False) and after_control_supported(now()))
+                t_str=now().strftime('%H:%M:%S')
+                if not session_transition_done and t_str>=getattr(auto,'after_prep_start','15:40:00') and engine.current_session()=='AFTER':
+                    engine.transition_to_after()
+                    session_transition_done=True
                 if supported(now()) and getattr(engine,'observation_epoch',None)!=now().date():
                     engine.observation_epoch=now().date();radar.request.set();account.request.set()
                     engine.event('MARKET_OBSERVATION_STARTED',regular_epoch=now().replace(hour=9,minute=0,second=0,microsecond=0).isoformat(),pre_market_bars_used=False)
@@ -477,6 +537,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         if kill_requested_at is not None and result['started']<kill_requested_at: engine.kill_checked=False
                         if engine.kill_checked: kill_requested_at=None
                     account.need_fills=bool(engine.active_orders())
+                focus_promotions=[]
                 while in_session and not radar.q.empty():
                     result=radar.q.get_nowait()
                     if result['error']:
@@ -493,7 +554,19 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                             atomic_json(root/'runtime/candidate_summary.json',summary)
                             engine.event('CANDIDATE_CYCLE_SUMMARY',**summary)
                         prior_watch=set(lookup)
-                        rows=result['rows']; lookup={x['code']:x for x in result['watch']}; radar_ok=True;engine.last_radar_at=datetime.fromisoformat(result['time'])
+                        rows=result['rows'];radar_ok=True;engine.last_radar_at=datetime.fromisoformat(result['time'])
+                        selection=resolve_radar_focus(engine,lookup,rows,result['watch'],
+                            shadow.runtime_view().get('evaluations',{}),effective,auto,now())
+                        focus_promotions.extend(selection.promoted)
+                        if selection.applied:
+                            engine.event('FOCUS_SELECTION_APPLIED',promoted=selection.promoted,demoted=selection.demoted,
+                                next_watch=selection.next_watch,previous_watch=selection.previous_watch,
+                                primary_reason=selection.primary_reason,applied_at=selection.focus_epoch,basis='RADAR_FINAL_FOCUS',
+                                tier_map=selection.tier_map,priority_tuples=selection.priority_tuples)
+                        # Both observation and subsequent notifications see the committed roles.
+                        for row in rows:
+                            if row['code'] in lookup:row.update(status='WATCH',fallback_source1=lookup[row['code']]['fallback_source1'])
+                            elif row.get('status')=='WATCH':row.update(status='RESERVE',fallback_source1=False)
                         by_symbol={row['code']:row for row in rows}
                         for sym in prior_watch^set(lookup):
                             row=by_symbol.get(sym,{})
@@ -515,7 +588,8 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         shadow.submit(rows,result['time'],context,allow_metadata=not bool(engine.s['positions'] or engine.active_orders()))
                         engine.event('CANDIDATE_LATENCY',**result.get('performance',{}))
                         last_radar=time.monotonic(); counts['radar_cycles']+=1
-                        engine.event('RADAR_UPDATED',watch=list(lookup),changes=result['changes'])
+                        engine.event('RADAR_UPDATED',watch=list(lookup),changes={'added':sorted(set(lookup)-prior_watch),'removed':sorted(prior_watch-set(lookup))},rank_changes=result['changes'])
+                focus_dirty=False
                 while in_session and hasattr(shadow,'focus_notifications') and not shadow.focus_notifications.empty():
                     notif=shadow.focus_notifications.get_nowait()
                     try:
@@ -525,6 +599,8 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     if not -1<=notif_age<=5.0:
                         engine.event('FOCUS_SELECTION_BLOCKED',symbol=notif.symbol,reason='NOTIFICATION_STALE')
                         continue
+                    focus_dirty=True
+                if focus_dirty:
                     readiness=shadow.runtime_view().get('evaluations',{})
                     selection=select_focus(
                         current_watch=lookup,
@@ -534,22 +610,15 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         fallback_source1=auto.fallback_source1,
                         clock_iso=now().isoformat()
                     )
-                    if not selection.applied:
-                        if notif.symbol in selection.blocked_reasons:
-                            engine.event('FOCUS_SELECTION_BLOCKED',symbol=notif.symbol,reason=selection.blocked_reasons[notif.symbol])
-                        continue
-                    apply_focus_selection(engine,lookup,by_symbol,selection)
-                    engine.event('FOCUS_SELECTION_APPLIED',
-                                 promoted=selection.promoted,
-                                 demoted=selection.demoted,
-                                 next_watch=selection.next_watch,
-                                 previous_watch=selection.previous_watch,
-                                 primary_reason=selection.primary_reason,
-                                 applied_at=selection.focus_epoch)
-                    for prom in selection.promoted:
-                        prom_tick=detector.last.get(prom)
-                        if prom_tick and (now()-prom_tick.time).total_seconds()<=effective.stale_seconds:
-                            evaluate_actual_entry(engine,detector,prom_tick,lookup[prom],radar,prices,account,getattr(engine,'_last_eval_frame',None))
+                    if selection.applied:
+                        apply_focus_selection(engine,lookup,by_symbol,selection)
+                        focus_promotions.extend(selection.promoted)
+                        engine.event('FOCUS_SELECTION_APPLIED',promoted=selection.promoted,demoted=selection.demoted,
+                            next_watch=selection.next_watch,previous_watch=selection.previous_watch,
+                            primary_reason=selection.primary_reason,applied_at=selection.focus_epoch,
+                            tier_map=selection.tier_map,priority_tuples=selection.priority_tuples)
+                    elif notif.symbol in selection.blocked_reasons:
+                        engine.event('FOCUS_SELECTION_BLOCKED',symbol=notif.symbol,reason=selection.blocked_reasons[notif.symbol])
                 if last_radar and time.monotonic()-last_radar>auto.scan_seconds*3: radar_ok=False
                 # 실제 수량 변동 뒤에도 다음 후보 주기에서 같은 현금 상한을 사용한다.
                 context=engine.capital_context(); prior_context=radar.capital_context
@@ -558,6 +627,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 radar.capital_context=context; radar.available_capital=context['entry_budget']
                 shadow.set_capital(context)
                 radar.observation_allowed=not bool(engine.s['positions'] or engine.active_orders())
+                radar.status_priority_symbols=frozenset(lookup)
                 shadow_state=shadow.runtime_view();radar.radar.momentum=shadow_state.get('evaluations',{})
                 desired=set(lookup)|set(engine.s['positions'])|{o['symbol'] for o in engine.active_orders()}
                 desired.update(set(engine.s['automation']['existing'])&(set(BREAKEVEN_EXITS)|({TEST_RELEASE_SYMBOL} if legacy_test_release_enabled() else set())))
@@ -569,6 +639,11 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 observation_drops,priority_symbols=prewarm_handoff(engine,detector,feed,observed,real_symbols,priority_symbols,observation_drops,shadow.deliver)
                 if in_session:
                     subscriptions.refresh(engine,detector,feed,desired,now()); symbols=set(subscriptions.symbols)
+                    # Rejoined symbols must first deliver a fresh post-subscription regular tick.
+                    for prom in set(focus_promotions)&set(lookup):
+                        prom_tick=detector.last.get(prom)
+                        if prom not in subscriptions.waiting and prom_tick and 0<=(now()-prom_tick.time).total_seconds()<=effective.stale_seconds:
+                            evaluate_actual_entry(engine,detector,prom_tick,lookup[prom],radar,prices,account,getattr(engine,'_last_eval_frame',None))
                 if feed.overflow.is_set():
                     feed.overflow.clear(); engine.halt('실시간 수신 큐 초과'); detector.reset()
                     for sym in list(engine.s['positions']): engine.request_exit(sym,'수신 큐 초과')
@@ -604,8 +679,24 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     atomic_json(root/'runtime/candidate_summary.json',summary)
                     engine.save(); reporter.submit(rows,engine.s); last_report=time.monotonic()
                 if time.monotonic()-last_heartbeat>=1:
+                    sess_name=engine.current_session()
+                    phase_str=market_phase(now(),live_approved=getattr(engine,'after_live_authorized',False))
+                    if sess_name=='AFTER':
+                        if phase_str=='AFTER_PREP': hb_session='AFTER_PREP'
+                        elif phase_str=='AFTER_EXIT_ONLY': hb_session='AFTER_EXIT_ONLY'
+                        elif phase_str=='FORCE_FLATTEN': hb_session='AFTER_FLATTEN'
+                        elif getattr(engine,'after_live_authorized',False) and cfg.live_mode: hb_session='AFTER_LIVE'
+                        else: hb_session='AFTER_READY'
+                    elif sess_name=='REGULAR':
+                        hb_session='REGULAR'
+                    else:
+                        t_now=now().strftime('%H:%M:%S')
+                        if '15:40:00'<=t_now<'16:00:00': hb_session='AFTER_PREP'
+                        elif '08:00:00'<=t_now<'09:00:00': hb_session='PREOPEN'
+                        else: hb_session='CLOSED'
                     atomic_json(folder/'heartbeat.json',{'time':now().isoformat(),'mode':policy.mode,'market':engine.market,
-                        'session':assessment(now())['classification'],'readiness':ready,'build_id':BUILD_ID,'strategy_experiment':STRATEGY_EXPERIMENT,
+                        'session':hb_session,'market_phase':phase_str,'venue':getattr(engine,'after_default_venue','SOR') if sess_name=='AFTER' else 'KRX',
+                        'session_classification':assessment(now())['classification'],'readiness':ready,'build_id':BUILD_ID,'strategy_experiment':STRATEGY_EXPERIMENT,
                         'pid':os.getpid(),'identity':process_identity(os.getpid()),
                         'account_ok':engine.account_ok,'radar_ok':radar_ok,'connected':engine.connected,
                         'subscription_refresh_pending':subscriptions.refresh_pending,'subscription_tick_waiting':sorted(subscriptions.waiting),
@@ -634,7 +725,9 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
         engine.save(); reporter.submit(rows,engine.s); reporter.close()
         try:
             atomic_json(folder/'heartbeat.json',{'time':now().isoformat(),'mode':policy.mode,'market':getattr(engine,'market','3'),
-                'session':'OUT_OF_SESSION' if not in_session else 'WORKER_TERMINATED',
+                'session':'CLOSED' if not in_session else 'WORKER_TERMINATED',
+                'market_phase':'CLOSED',
+                'venue':'KRX',
                 'readiness':{'state':'STOPPED','gates':{},'missing':['WORKER_TERMINATED']},
                 'build_id':BUILD_ID,'strategy_experiment':STRATEGY_EXPERIMENT,
                 'pid':os.getpid(),'identity':process_identity(os.getpid()),
@@ -652,7 +745,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
         if readiness_check:
             result['passed']=not fatal and result['readiness']['state'] in {'PREOPEN_READY','OPEN_READY'} and not engine.s['positions'] and not engine.active_orders()
             result['classification']=result['readiness']['state'] if result['passed'] else 'INCONCLUSIVE_READINESS'
-        if not control_supported(started):
+        if not (control_supported(started) or (getattr(cfg,'after_enabled',False) and after_control_supported(started))):
             result.update(classification='OUT_OF_SUPPORTED_SESSION',passed=None,regression_failure=False)
         elif seconds and not readiness_check and counts['ticks']==0:
             result.update(classification='INCONCLUSIVE_NO_REGULAR_TICKS',passed=None,regression_failure=False)

@@ -5,7 +5,7 @@ from dataclasses import replace
 from core.strategy import Detector
 from core.util import floor_tick,tick_size
 from automation.allocation import efficiency
-from automation.session import supported
+from automation.session import supported, after_supported
 from automation.decisions import gate
 
 class PatternDetector(Detector):
@@ -13,23 +13,37 @@ class PatternDetector(Detector):
         # 원래 순수 Detector는 회귀 계약 유지. 확장 판단에는 시간 마감/전일 상승률 필터가 없다.
         super().__init__(replace(cfg,entry_start='09:00:00',entry_end='23:59:59'))
         self.a=auto; self.costs=costs; self.history={}; self.current={}; self.day_high={}; self.prior_high={}
+        self.after_day_high={}; self.after_prior_high={}
         self.last_eval={}
+        self._eval_keys={}
         self.continuous_observation=False
         self.last_gap_reason={}
+        self.observation_start={}; self.observation_session={}
 
     def reset(self):
         super().reset(); self.history.clear(); self.current.clear(); self.day_high.clear(); self.prior_high.clear()
+        self.after_day_high.clear(); self.after_prior_high.clear()
         self.last_eval.clear(); self.last_gap_reason.clear()
+        self._eval_keys.clear()
+        self.observation_start.clear(); self.observation_session.clear()
 
     def ingest(self,t,received):
-        if not supported(t.time) or not supported(received): return False
+        if (not supported(t.time) and not after_supported(t.time)) or (not supported(received) and not after_supported(received)): return False
         old=self.last.get(t.symbol)
         if not super().ingest(t,received,preserve_observation=self.continuous_observation): return False
         if old and (t.time-old.time).total_seconds()>self.cfg.stale_seconds and not self.continuous_observation:
             self.history.pop(t.symbol,None); self.current.pop(t.symbol,None)
             self.last_gap_reason[t.symbol]='DISCONNECT_GAP'
-        self.prior_high[t.symbol]=self.day_high.get(t.symbol,t.price)
-        self.day_high[t.symbol]=max(t.price,self.day_high.get(t.symbol,t.price))
+            self.observation_start.pop(t.symbol,None)
+        session=(t.time.date(),'AFTER' if after_supported(t.time) else 'REGULAR')
+        if t.symbol not in self.observation_start or self.observation_session.get(t.symbol)!=session:
+            self.observation_start[t.symbol]=t.time; self.observation_session[t.symbol]=session
+        if t.time.strftime('%H:%M:%S')>='15:40:00':
+            self.after_prior_high[t.symbol]=self.after_day_high.get(t.symbol,t.price)
+            self.after_day_high[t.symbol]=max(t.price,self.after_day_high.get(t.symbol,t.price))
+        else:
+            self.prior_high[t.symbol]=self.day_high.get(t.symbol,t.price)
+            self.day_high[t.symbol]=max(t.price,self.day_high.get(t.symbol,t.price))
         minute=t.time.replace(second=0,microsecond=0); b=self.current.get(t.symbol)
         if b and b['time']!=minute:
             if (minute-b['time']).total_seconds()==60:
@@ -66,16 +80,20 @@ class PatternDetector(Detector):
         return {'pattern':'B','breakout':peak,'support':low,'projection':peak+rise,
                 'pullback_volume_ratio':pull_volume/impulse_volume,'retrace':(peak-low)/rise}
 
-    def usable_bars(self,symbol):
+    def usable_bars(self,symbol,after_only=False):
         valid=[]
-        for bar in reversed(list(self.history.get(symbol,[]))):
+        for bar in reversed(self.history.get(symbol,())):
             if bar['first_second']>self.cfg.stale_seconds:break
+            if after_only and bar['time'].strftime('%H:%M:%S')<'15:40:00':
+                break
             valid.append(bar)
         return list(reversed(valid))
 
-    def quality_summary(self,symbol):
+    def quality_summary(self,symbol,after_only=False):
         history=list(self.history.get(symbol,[]))
-        usable=self.usable_bars(symbol)
+        if after_only:
+            history=[b for b in history if b['time'].strftime('%H:%M:%S')>='15:40:00']
+        usable=self.usable_bars(symbol,after_only=after_only)
         stored_count=len(history)
         usable_count=len(usable)
         diff_reason=None
@@ -99,11 +117,12 @@ class PatternDetector(Detector):
                     0<=(stamp-last.time).total_seconds()<=self.cfg.stale_seconds)
 
     def forget(self,symbol):
-        for mapping in (self.buffers,self.minutes,self.completed,self.last,self.history,self.current,self.day_high,self.prior_high,self.last_eval):mapping.pop(symbol,None)
+        for mapping in (self.buffers,self.minutes,self.completed,self.last,self.history,self.current,self.day_high,self.prior_high,self.after_day_high,self.after_prior_high,self.last_eval,self.observation_start,self.observation_session):mapping.pop(symbol,None)
+        self._eval_keys.pop(symbol,None)
 
-    def candidates(self,t,bars):
+    def candidates(self,t,bars,is_after=False):
         setups=[self.pullback(bars),self.box(bars)]
-        prior=self.prior_high.get(t.symbol)
+        prior=(self.after_prior_high if is_after else self.prior_high).get(t.symbol)
         if prior and t.price>prior and len(bars)>=2:
             support=min(b['low'] for b in bars[-2:])
             setups.append({'pattern':'A','breakout':prior,'support':support,'projection':prior+2*(prior-support)})
@@ -121,56 +140,104 @@ class PatternDetector(Detector):
         if not 0<(top-low)/low<=self.a.box_max_range: return None
         return {'pattern':'C','breakout':top,'support':low,'projection':top+2*(top-low),'box_width':top-low}
 
+    def setup_trials(self,t,watch,gates=None,*,_bars=None):
+        """A/B/C geometry is evaluated independently; only A requires acceleration."""
+        is_after=after_supported(t.time)
+        gates=self.base_gates(t,watch) if gates is None else gates
+        bars=self.usable_bars(t.symbol,after_only=is_after) if _bars is None else _bars
+        setups={s['pattern']:s for s in self.candidates(t,bars,is_after=is_after)}
+        trials=[]
+        for name in ('A','B','C'):
+            setup=setups.get(name)
+            required=2 if name=='A' else 4 if name=='B' else self.a.box_min_bars
+            why=[]
+            if not supported(t.time) and not is_after:why.append('OUT_OF_SUPPORTED_SESSION')
+            if not setup:
+                why.append('INSUFFICIENT_USABLE_BARS' if len(bars)<required else
+                           'PRIOR_HIGH_NOT_BROKEN' if name=='A' else
+                           'NO_CONTROLLED_PULLBACK' if name=='B' else 'BOX_NOT_FORMED')
+            price_gates=self.setup_gates(t,watch,setup) if setup else {}
+            # Market-status authorization remains at the unchanged engine/order boundary.
+            common={k:gates[k] for k in ('warmup','spread','structure')}
+            if is_after:
+                common['liquidity']=gates['liquidity']
+            else:
+                threshold=self.cfg.min_window_turnover if name=='A' else self.cfg.min_bc_window_turnover
+                amount=gates['liquidity']['values']['window_turnover']
+                common['liquidity']=gate(amount>=threshold,window_turnover=amount,min_turnover=threshold,setup=name)
+            trial_gates={**common,**price_gates}
+            if name=='A':trial_gates['acceleration']=gates['acceleration']
+            failed=[k for k,v in trial_gates.items() if v['result']!='PASS']
+            why.extend('ACCELERATION_FAIL' if k=='acceleration' else
+                       'NO_REBREAKOUT' if k=='breakout' and name=='B' else
+                       'BREAKOUT_NOT_REACHED' if k=='breakout' else k.upper()+'_FAIL' for k in failed)
+            virtual=price_gates.get('invalidation',{}).get('values',{})
+            trials.append({'setup':name,'evaluated':True,'candidate_generated':bool(setup),
+                'acceleration_required':name=='A','acceleration_observation':gates['acceleration'],
+                'failed_reasons':why,'primary_reason_code':why[0] if why else 'SETUP_PRICE_GATES_PASS',
+                'gates':trial_gates,'setup_geometry':setup,
+                'entry_ready':bool(setup and not why),
+                'price_action':{'condition':'CONTROLLED_PULLBACK' if name=='B' else 'INTRADAY_BOX' if name=='C' else 'PRIOR_HIGH_BREAKOUT',
+                    'formed':bool(setup),'breakout':price_gates.get('breakout',gate(False,reason='GEOMETRY_ABSENT'))},
+                'virtual_entry':virtual.get('entry'),'virtual_invalidation':virtual.get('stop')})
+        return trials
+
     def signal(self,t,watch):
-        self.last_eval[t.symbol]={'time':t.time,'cumulative':t.cumulative,'gates':self.base_gates(t,watch),'trials':[]}
-        if not supported(t.time): return None
-        if watch.get('status') not in {'WATCH','ELIGIBLE','RESERVE'}: return None
-        bars=self.usable_bars(t.symbol)
-        candidates=self.candidates(t,bars)
-        # 형상 시도와 실제 신호를 구분한다. 가속 실패 때도 형상 시험을 기록한다.
-        self.last_eval[t.symbol]['trials']=[{'setup':s['pattern'],'gates':self.setup_gates(t,watch,s)} for s in candidates]
-        if len(bars)<2: return None
-        c=self.cfg; buf=list(self.buffers.get(t.symbol,[]))
-        if not buf or (t.time-buf[0].time).total_seconds()<c.baseline_seconds+c.acceleration_seconds: return None
-        fast=[x for x in buf if 0<=(t.time-x.time).total_seconds()<c.acceleration_seconds]
-        base=[x for x in buf if c.acceleration_seconds<=(t.time-x.time).total_seconds()<c.baseline_seconds+c.acceleration_seconds]
-        if len(fast)<2 or not base or not 0<t.bid<=t.ask: return None
-        turnover=sum(x.price*x.volume for x in fast); baseline=sum(x.price*x.volume for x in base)/c.baseline_seconds
-        ratio=turnover/c.acceleration_seconds/baseline if baseline else 0
-        if ratio<c.min_turnover_ratio or turnover<c.min_window_turnover or t.price/fast[0].price-1<c.min_price_gain: return None
-        if (t.ask-t.bid)/t.price>c.max_spread: return None
-        for setup in candidates:
-            if not setup: continue
-            if setup['pattern']=='B' and watch.get('resistance_room_pass') is False:continue
-            trial=self.setup_gates(t,watch,setup)
-            self.last_eval[t.symbol]['gates'].update(trial)
-            breakout=setup['breakout']
-            if t.price<=breakout or t.ask/breakout-1>c.max_chase: continue
-            stop=floor_tick(setup['support']*(1-c.structural_buffer))
-            # 호가 확인 뒤 매수1호가가 아닌 매도1호가에 상한 지정가. 비용 계산은 예상 슬리피지도 유지한다.
-            limit=floor_tick(min(t.ask,breakout*(1+c.max_chase)))
-            if limit<t.ask or not 0<stop<limit or not c.min_stop_fraction<=(limit-stop)/limit<=c.max_stop_fraction: continue
-            target=self.target(t,watch,setup,limit)
-            if (target-limit)/(limit-stop)<c.min_reward_risk: continue
-            horizon=getattr(self.a,'horizon_'+setup['pattern'].lower()+'_minutes')
-            confidence=min(1.,0.4+0.1*len(watch.get('source_details',{})))
-            score=efficiency(limit,stop,target,confidence,horizon,self.costs,self.a.min_efficiency_score)
-            if score['decision']!='TRADE': continue
-            self.last_eval[t.symbol]['gates']['pattern']=gate(True,setup=setup['pattern'])
+        # One evaluation owns its window and bars. Never cache live safety inputs across ticks.
+        gates,bars,fast_count,base_count=self._base_evaluation(t,watch)
+        trials=self.setup_trials(t,watch,gates,_bars=bars)
+        self.last_eval[t.symbol]={'time':t.time,'cumulative':t.cumulative,'gates':gates,'trials':trials}
+        self._eval_keys[t.symbol]=self._evaluation_key(t,watch)
+        is_after=after_supported(t.time)
+        if (not supported(t.time) and not is_after) or watch.get('status') not in {'WATCH','ELIGIBLE','RESERVE'}:return None
+        if is_after:
+            if watch.get('vi_active') or getattr(t,'vi_active',False) or watch.get('single_price_auction'): return None
+            if watch.get('is_etf_etn') or watch.get('after_ineligible'): return None
+        # Keep warmup, turnover, spread and existing tick-window prerequisites.
+        if any(gates[k]['result']!='PASS' for k in ('warmup','spread','structure')):return None
+        c=self.cfg
+        if fast_count<2 or not base_count or not 0<t.bid<=t.ask:return None
+        turnover=gates['liquidity']['values']['window_turnover']
+        ratio=gates['acceleration']['values']['ratio'];gain=gates['acceleration']['values']['gain']
+        # Preserve the existing B, C, A precedence when more than one setup qualifies.
+        for name in ('B','C','A'):
+            trial=next(x for x in trials if x['setup']==name)
+            if not trial['entry_ready']:continue
+            setup=trial['setup_geometry']
+            price_gates=trial['gates']
+            stop=trial['virtual_invalidation'];limit=trial['virtual_entry']
+            if limit<t.ask:continue
+            target=price_gates['risk_reward']['values']['target']
+            score=price_gates['economic']['values']['score']
+            gates.update({key:price_gates[key] for key in ('breakout','chase','invalidation','risk_reward','resistance','order_price','economic')})
+            gates['liquidity']=trial['gates']['liquidity']
+            gates['acceleration']={**gates['acceleration'],'required':name=='A','scope':'ENTRY_GATE' if name=='A' else 'OBSERVATION_ONLY'}
+            gates['pattern']=gate(True,setup=name,acceleration_required=name=='A')
+            venue=watch.get('venue') or (getattr(c,'after_default_venue','SOR') if is_after else 'KRX')
+            planned_qty=max(1,int(20000//t.price)) if t.price>0 else 1
             return {'symbol':t.symbol,'time':t.time.isoformat(),'limit':limit,'stop':stop,**setup,
-                'evaluation_gates':self.last_eval[t.symbol]['gates'],'setup_trials':self.last_eval[t.symbol]['trials'],
+                'evaluation_gates':gates,'setup_trials':trials,'acceleration_required':name=='A',
                 'target':target,'target_basis':'과거 저항으로 제한한 관측 패턴 폭 연장 가설; 고정 익절선 아님',
-                'turnover':turnover,'turnover_ratio':ratio,'gain':t.price/fast[0].price-1,
+                'turnover':turnover,'turnover_ratio':ratio,'gain':gain,
                 'efficiency':score,'source_count':watch.get('source_count',len(watch.get('source_details',{}))),'source_details':watch.get('source_details',{}),'source_deltas':watch.get('source_deltas',{}),
                 'fallback_source1':bool(watch.get('fallback_source1')),
                 'structure':{k:watch.get(k) for k in ('long_position','overhead_share_estimate','resistance','recent_support')},
-                'risk_per_share':score['risk_per_share'],'market_state':'3'}
+                'risk_per_share':score['risk_per_share'],'market_state':'3',
+                'session':'AFTER' if is_after else 'REGULAR','venue':venue,
+                'planned_qty':planned_qty if is_after else None,'liquidity_mode':'depth' if is_after else 'turnover'}
         return None
 
     def evaluation_gates(self,t,watch):
         last=self.last_eval.get(t.symbol,{})
-        if last.get('time')==t.time and last.get('cumulative')==t.cumulative: return last['gates']
+        if last and self._eval_keys.get(t.symbol)==self._evaluation_key(t,watch): return last['gates']
         return self.base_gates(t,watch)
+
+    @staticmethod
+    def _evaluation_key(t,watch):
+        # Frozen Tick includes price, volume, quote, depth and session inputs, not just trade time.
+        return (t,watch.get('status'),watch.get('resistance'),watch.get('overhead_share_estimate'),
+                repr(watch.get('market_status',{})),watch.get('resistance_room_pass'),
+                len(watch.get('source_details',{})),watch.get('ask_qty'),watch.get('bid_qty'))
 
     def setup_gates(self,t,watch,setup):
         c=self.cfg; breakout=setup['breakout']; stop=floor_tick(setup['support']*(1-c.structural_buffer))
@@ -185,24 +252,58 @@ class PatternDetector(Detector):
             'invalidation':gate(None if distance is None else 0<stop<limit and c.min_stop_fraction<=distance<=c.max_stop_fraction,
                 entry=limit,stop=stop,distance_pct=distance,min_pct=c.min_stop_fraction,max_pct=c.max_stop_fraction),
             'risk_reward':gate(None if rr is None else rr>=c.min_reward_risk,calculated_rr=rr,required_rr=c.min_reward_risk,target=target),
-            'resistance':gate(watch.get('status') in {'ELIGIBLE','WATCH','RESERVE'},resistance=resistance,
+            'resistance':gate(watch.get('status') in {'ELIGIBLE','WATCH','RESERVE'} and (setup['pattern']!='B' or watch.get('resistance_room_pass') is not False),resistance_room_pass=watch.get('resistance_room_pass'),resistance=resistance,
                 distance_pct=resistance/limit-1 if resistance is not None and limit>0 else None,min_room=c.min_resistance_room),
+            'order_price':gate(limit>=t.ask,limit=limit,ask=t.ask),
             'economic':gate(score['decision']=='TRADE',score=score,tick_size=tick_size(t.price),tick_cost_fraction=tick_size(t.price)/t.price)}
 
     def base_gates(self,t,watch):
-        c=self.cfg; buf=list(self.buffers.get(t.symbol,[])); bars=self.usable_bars(t.symbol)
-        elapsed=(t.time-buf[0].time).total_seconds() if buf else 0
-        fast=[x for x in buf if 0<=(t.time-x.time).total_seconds()<c.acceleration_seconds]
-        base=[x for x in buf if c.acceleration_seconds<=(t.time-x.time).total_seconds()<c.baseline_seconds+c.acceleration_seconds]
+        return self._base_evaluation(t,watch)[0]
+
+    def _base_evaluation(self,t,watch):
+        """Per-call only: gates, completed bars, and original tick-window prerequisites."""
+        c=self.cfg
+        is_after=after_supported(t.time)
+        buf=[x for x in list(self.buffers.get(t.symbol,[])) if x.time.strftime('%H:%M:%S')>='15:40:00'] if is_after else list(self.buffers.get(t.symbol,[]))
+        bars=self.usable_bars(t.symbol,after_only=is_after)
+        start=self.observation_start.get(t.symbol)
+        elapsed=max(0,(t.time-start).total_seconds()) if start is not None else 0
+        buffer_span=(t.time-buf[0].time).total_seconds() if buf else 0
+        fast=[];base=[]
+        for x in buf:
+            age=(t.time-x.time).total_seconds()
+            if 0<=age<c.acceleration_seconds:fast.append(x)
+            elif c.acceleration_seconds<=age<c.baseline_seconds+c.acceleration_seconds:base.append(x)
         amount=sum(x.price*x.volume for x in fast); baseline=sum(x.price*x.volume for x in base)/c.baseline_seconds
         ratio=amount/c.acceleration_seconds/baseline if baseline else None
         gain=t.price/fast[0].price-1 if fast else None
         spread=(t.ask-t.bid)/t.price if 0<t.bid<=t.ask and t.price>0 else None
-        return {'warmup':gate(elapsed>=c.baseline_seconds+c.acceleration_seconds and len(bars)>=2,elapsed_seconds=elapsed,required_seconds=c.baseline_seconds+c.acceleration_seconds,completed_bars=len(bars)),
-                'acceleration':gate(None if ratio is None or gain is None else ratio>=c.min_turnover_ratio and gain>=c.min_price_gain,ratio=ratio,min_ratio=c.min_turnover_ratio,gain=gain,min_gain=c.min_price_gain),
-                'liquidity':gate(amount>=c.min_window_turnover,window_turnover=amount,min_turnover=c.min_window_turnover),
+        min_ratio=getattr(c,'after_a_accel_ratio',2.5) if is_after else c.min_turnover_ratio
+        min_gain=getattr(c,'after_a_min_gain',0.003) if is_after else c.min_price_gain
+        accel_pass=None if ratio is None or gain is None else ratio>=min_ratio and gain>=min_gain
+        accel_gate=gate(accel_pass,ratio=ratio,min_ratio=min_ratio,gain=gain,min_gain=min_gain,session='AFTER' if is_after else 'REGULAR')
+        if is_after:
+            planned_qty=max(1,int(20000//t.price)) if t.price>0 else 1
+            available=getattr(t,'depth_available',None)
+            ask_qty=getattr(t,'ask_qty',0)
+            bid_qty=getattr(t,'bid_qty',0)
+            if available is None:  # Legacy synthetic Tick compatibility only.
+                ask_qty=ask_qty or watch.get('ask_qty',0)
+                bid_qty=bid_qty or watch.get('bid_qty',0)
+                available=ask_qty>0 and bid_qty>0
+            depth_pass=bool(ask_qty>=planned_qty and bid_qty>=planned_qty and ask_qty>0 and bid_qty>0 and spread is not None and spread<=c.max_spread) if available else None
+            liq_gate=gate(depth_pass,mode='depth',planned_qty=planned_qty,ask_qty=ask_qty,bid_qty=bid_qty,
+                depth_available=available,data_status='AVAILABLE' if available else 'DATA_UNAVAILABLE',
+                depth_source=getattr(t,'depth_source','UNKNOWN'),book_time=t.book_time.isoformat() if getattr(t,'book_time',None) else None,
+                window_turnover=amount,min_turnover=0)
+        else:
+            liq_gate=gate(amount>=c.min_window_turnover,window_turnover=amount,min_turnover=c.min_window_turnover)
+        gates={'warmup':gate(elapsed>=c.baseline_seconds+c.acceleration_seconds and len(bars)>=2,elapsed_seconds=elapsed,observation_start=start.isoformat() if start else None,buffer_span_seconds=buffer_span,required_seconds=c.baseline_seconds+c.acceleration_seconds,completed_bars=len(bars)),
+                'acceleration':accel_gate,
+                'liquidity':liq_gate,
                 'spread':gate(None if spread is None else spread<=c.max_spread,bid=t.bid,ask=t.ask,spread=spread,max_spread=c.max_spread),
                 'structure':gate(watch.get('status') in {'WATCH','ELIGIBLE','RESERVE'},status=watch.get('status'),resistance=watch.get('resistance'),overhead_share=watch.get('overhead_share_estimate')),
                 'market_status':gate(watch.get('market_status',{}).get('pass'),status=watch.get('market_status')),
                 'pattern':gate(False,reason='완성봉/돌파/추격/무효화/효율 중 신호 미충족')}
+        return gates,bars,len(fast),len(base)
 

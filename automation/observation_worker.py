@@ -3,17 +3,19 @@ import json
 import queue
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from candidate_builder import bars_from_csv, fetch_bars, structure
 from core.util import atomic_json, exception_details
+from core.event_log import append_jsonl
 from automation.policy import HARD_LOCKS, BREAKEVEN_EXITS, TEST_RELEASE_SYMBOL
 from automation.shadow_observation import ShadowObserver
 from core.settings import now
 from automation.observation_settings import load_observation
 from automation.radar import observation_structure
-from automation.focus_selection import FocusNotification
+from automation.focus_selection import FocusNotification,calculate_tier
 
 class ObservationWorker:
     def __init__(self,cfg,auto,costs,root,rest=None,limit=32):
@@ -27,17 +29,17 @@ class ObservationWorker:
         self.focus_notifications=queue.Queue(maxsize=32)
         self.stop=threading.Event(); self.lock=threading.Lock(); self.event_lock=threading.Lock(); self.snapshot={}
         self.runtime_snapshot={'symbols':(), 'evaluations':{}}
-        self.metadata={}; self.dropped=0; self.apis=0; self.tick_ms=0.; self.prepare_ms=0.
+        self.metadata={}; self.daily_cache=OrderedDict(); self.dropped=0; self.apis=0; self.tick_ms=0.; self.prepare_ms=0.
         self.thread=threading.Thread(target=self.run,name='shadow-diagnostic',daemon=True)
         self.metadata_thread=threading.Thread(target=self.prepare_loop,name='shadow-metadata',daemon=True)
     def event(self,kind,**data):
         record={'event':kind,**data}
-        line=json.dumps(record,ensure_ascii=False,default=str)+'\n'
         with self.event_lock:
-            with (self.folder/'shadow_events.jsonl').open('a',encoding='utf-8') as stream:stream.write(line)
+            append_jsonl(self.folder/'shadow_events.jsonl',record,default=str)
         if kind=='SHADOW_EVAL':
             momentum={'timestamp':data['timestamp'],'gates':{key:{'result':data.get('gates',{}).get(key,{}).get('result')}
                 for key in ('acceleration','liquidity')}}
+            momentum['tier']=calculate_tier(data.get('gates',{}),data.get('setup_trials',[]))
             with self.lock:
                 self.snapshot.setdefault('evaluations',{})[data['symbol']]=record
                 self.runtime_snapshot['evaluations'][data['symbol']]=momentum
@@ -77,6 +79,24 @@ class ObservationWorker:
     def set_capital(self,capital):
         with self.lock:self.snapshot['capital']=dict(capital)
         self.current_capital=dict(capital)
+    def daily_bars(self,symbol,path,day):
+        """Metadata-thread-only cache: day + file identity; never account/status/permission."""
+        try:info=path.stat()
+        except FileNotFoundError:
+            self.daily_cache.pop(symbol,None);return []
+        key=(day,info.st_mtime_ns,info.st_size,info.st_ino,info.st_dev)
+        cached=self.daily_cache.get(symbol)
+        if cached and cached[0]==key:
+            self.daily_cache.move_to_end(symbol);return cached[1]
+        bars=bars_from_csv(path,day)
+        after=path.stat()
+        if (after.st_mtime_ns,after.st_size,after.st_ino,after.st_dev)==key[1:]:
+            self.daily_cache[symbol]=(key,bars)
+            self.daily_cache.move_to_end(symbol)
+            # Bounded I/O optimization only. Eviction does not release observation/history.
+            while len(self.daily_cache)>2*self.observer.limit:self.daily_cache.popitem(last=False)
+        else:self.daily_cache.pop(symbol,None)
+        return bars
     def prepare(self,rows,stamp,capital,allow_metadata=True,publish=True):
         started=time.perf_counter(); clock=datetime.fromisoformat(stamp) if isinstance(stamp,str) else stamp
         eligible=[r for r in rows if r.get('affordability',{}).get('entry_eligible') is True
@@ -88,20 +108,20 @@ class ObservationWorker:
         for row in eligible:
             sym=row['code']; saved=self.metadata.get(sym)
             if row.get('market_status'):
-                saved={'checked':clock,'status':row['market_status'],'bars':None}; self.metadata[sym]=saved
+                saved={**(saved or {}),'checked':clock,'status':row['market_status']}; self.metadata[sym]=saved
             if saved is None or (clock-saved['checked']).total_seconds()>self.settings.metadata_ttl_seconds:
                 if not self.rest or not allow_metadata or attempts>=self.settings.metadata_budget:continue
                 # 같은 API 키의 호출 대기를 제한한다. 봇 포지션/미체결 중에는 새 진단 조회를 시작하지 않는다.
                 attempts+=1; self.apis+=1
                 try:
                     status=self.rest.stock_status(sym)
-                    saved={'checked':clock,'status':status,'bars':None}; self.metadata[sym]=saved
+                    saved={**(saved or {}),'checked':clock,'status':status}; self.metadata[sym]=saved
                 except Exception as error:
                     self.event('SHADOW_METADATA_ERROR',timestamp=clock.isoformat(),symbol=sym,SHADOW_ONLY=True,**exception_details(error));continue
             if saved['status'].get('pass') is not True:continue
             path=self.root/'data/raw'/f'{sym}_daily.csv'
             try:
-                bars=bars_from_csv(path,clock.date()) if path.exists() else []
+                bars=self.daily_bars(sym,path,clock.date())
                 # 독립 일봉 캐시. 갱신당 최대 1종목. LIVE 캐시에 되돌려 쓰지 않는다.
                 if len(bars)<self.cfg.min_history_bars and self.rest and allow_metadata and not chart_attempted and saved.get('bars') is None and (clock-saved.get('last_chart_attempt',clock.replace(year=clock.year-1))).total_seconds()>=30:
                     chart_attempted=True;self.apis+=1;saved['last_chart_attempt']=clock

@@ -117,3 +117,6 @@ operator_*approval*.json
 /test_dependencies/
 
 !/V1.3_HANDOFF_20261007.md
+
+# Reviewed offline-only night profiling tool (outputs stay private).
+!/tools/night_profile.py

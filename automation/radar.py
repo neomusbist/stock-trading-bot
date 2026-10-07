@@ -1,3 +1,4 @@
+from core.event_log import append_jsonl
 """랭킹은 발견 레이더다. 동일 소스의 연속 스냅샷을 비교하고 일봉 구조를 붙인다."""
 import json
 import queue
@@ -149,6 +150,7 @@ class RadarWorker:
         self.cfg=cfg; self.a=auto; self.rest=rest; self.root=Path(root); self.radar=DynamicRadar(cfg,auto,policy,fallback_source1=fallback_source1)
         self.q=queue.Queue(maxsize=2); self.stop=threading.Event(); self.request=threading.Event(); self.cache={}; self.fetched=0
         self.extra_symbols=set()
+        self.status_priority_symbols=frozenset()  # Actual main-thread WATCH, including fast promotions.
         self.available_capital=0.; self.status_fetched=0; self.status_cache={}
         self.capital_context={}; self.refresh_account=None
         self.thread=threading.Thread(target=self.run,name='rank-radar',daemon=True)
@@ -223,8 +225,11 @@ class RadarWorker:
                 self.emit({'phase':'RAW','time':raw_stamp,'rows':raw_rows,'capital_context':dict(context),'error':None})
                 if self.observation_sink and self.observation_allowed:self.observation_sink(raw_rows,raw_stamp,dict(context))
                 for sym in sorted(self.extra_symbols): self.evaluate({'code':sym,'reference_price':None})
-                # 일봉 조회 우선순위는 소스 교집합. 소스 원본은 모두 로그에 남긴다.
-                items.sort(key=lambda x:-len(x['source_details']))
+                # Refresh incumbent WATCH status within the unchanged API budget first.
+                # A stale/unknown status still fails; query scheduling must not create a gap.
+                # New candidates retain their existing source-count ordering afterwards.
+                active_watch=self.status_priority_symbols  # Immutable snapshot; no cross-thread detector access.
+                items.sort(key=lambda x:(x['code'] not in active_watch,x['code'] not in self.radar.watch,-len(x['source_details'])))
                 compress_started=time.perf_counter()
                 rows,watch,changes=self.radar.update(items,self.evaluate,now())
                 cycle_ms=(time.perf_counter()-cycle_started)*1000;self.cycle_samples=(self.cycle_samples+[cycle_ms])[-100:]
@@ -240,7 +245,7 @@ class RadarWorker:
                 write_csv(self.root/'candidate_audit.csv',rows)
                 write_csv(self.root/'symbols_today.csv',watch)
                 atomic_json(self.root/'watchlist.json',{'asof':now().date().isoformat(),'offline':False,'config_hash':self.cfg.fingerprint(),'items':watch})
-                with (self.root/'runtime/radar_history.jsonl').open('a',encoding='utf-8') as f: f.write(json.dumps(payload,ensure_ascii=False)+'\n')
+                append_jsonl(self.root/'runtime/radar_history.jsonl',payload)
                 self.emit(payload)
             except Exception as e:
                 error={'time':now().isoformat(),'error':str(e) if isinstance(e,Rejected) else type(e).__name__}

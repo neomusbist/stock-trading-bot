@@ -7,11 +7,15 @@ from automation.policy import Policy
 
 def main():
     p=argparse.ArgumentParser()
-    p.add_argument('command',choices=['status','OFF','ARMED','LIVE','STOP','STOP_FLAT','KILL','RELEASE'])
+    p.add_argument('command',choices=['status','OFF','ARMED','LIVE','STOP','STOP_FLAT','KILL','RESET_KILL','RELEASE'])
     p.add_argument('symbol',nargs='?'); p.add_argument('--confirm')
     a=p.parse_args()
     with ProcessLock(ROOT/'runtime/control.lock'):
         policy=Policy(ROOT/'runtime/automation_policy.json')
+        if a.command=='KILL' and a.confirm!='KILL':
+            raise ValueError("비상정지(KILL)를 실행하려면 명시적 확인 옵션(--confirm KILL)이 필요합니다.")
+        if a.command=='RESET_KILL' and a.confirm!='RESET KILL':
+            raise ValueError("비상정지 해제를 실행하려면 명시적 확인 옵션(--confirm \"RESET KILL\")이 필요합니다.")
         if a.command in {'OFF','ARMED'}:
             for path in (ROOT/'runtime').glob('automation-*/state.json'):
                 state=json.loads(path.read_text(encoding='utf-8'))

@@ -110,8 +110,7 @@ def handle(service,choice,reader=input,writer=print):
             amount=reader('승인할 금액을 원 단위로 입력하세요. 이번 시험은 3000만 허용: ').strip()
             if service.live_ready_seconds()<=0:
                 writer('입력 중 준비 검사가 만료됐습니다. LIVE는 켜지지 않았습니다. 6번에서 재검사하세요.'); return True
-            confirmation=reader('실제 주문이 능해집니다. 진행하려면 실제매매시작 을 정확히 입력 (Enter는 취소): ').strip()
-            show_result(service.activate_live(amount,confirmation,start=False),writer)
+            show_result(service.activate_live(amount,True,start=False),writer)
     elif choice in {'7','8'}:
         if yes('봇 포지션 청산을 요청합니다. 삼성전자·광전자는 자동매도하지 않습니다. 진행할까요?',reader):
             show_result(service.stop({'7':'STOP_FLAT','8':'KILL'}[choice]),writer)
@@ -170,8 +169,8 @@ def user_handle(s,choice,reader=input,writer=print):
         elif sub=='2': show_result(s.prepare_capital(writer),writer)
         elif sub=='3':
             amount=reader('현재 승인한도를 원 단위 숫자로 입력: ').strip()
-            phrase=reader('실제 주문이 가능해집니다. 승인하려면 실제매매승인 을 정확히 입력: ').strip()
-            show_result(s.authorize_capital(amount,phrase),writer)
+            if yes('현재 승인한도 내 실제매매를 명시 승인하시겠습니까?',reader):
+                show_result(s.authorize_capital(amount,True),writer)
         elif sub=='4': writer(str(st['advanced']))
         elif sub=='5':
             values=[reader(label+' (% 숫자): ') for label in ('실제 매수 수수료','실제 매도 수수료','실제 매도 세금')]

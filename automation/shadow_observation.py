@@ -32,7 +32,7 @@ class ShadowObserver:
  def __init__(self,cfg,auto,costs,emit,risk=None,limit=32):
   self.cfg=cfg;self.auto=auto;self.detector=PatternDetector(cfg,auto,costs);self.emit=emit;self.risk=risk;self.limit=limit;self.rows={};self.first={};self.last_log={};self.previous={}
   self.capital={};self.epoch=None;self.eval_seconds=2;self.selected_at={};self.latest={};self.detached=set()
-  self.last_tier={};self.observation_seq=0
+  self.last_tier={};self.observation_seq=0;self.detached_at={}
  def event(self,kind,stamp,**data):
   if kind=='SHADOW_EVAL':self.latest[data['symbol']]={'timestamp':stamp.isoformat(),**data}
   data.setdefault('SHADOW_ONLY',True)
@@ -40,11 +40,7 @@ class ShadowObserver:
  def update(self,rows,stamp):
   if isinstance(stamp,str):stamp=datetime.fromisoformat(stamp)
   if self.epoch!=stamp.date():
-   self.detector.reset();self.first={};self.previous={};self.rows={};self.last_log={};self.selected_at={};self.latest={};self.detached=set();self.epoch=stamp.date()
-  for sym in list(self.detached):
-   if not self.detector.observation_fresh(sym,stamp):
-    self.detector.forget(sym);self.detached.discard(sym)
-    self.event('SHADOW_DATA_RESET',stamp,symbol=sym,data_action='RESET_STALE_GAP')
+   self.detector.reset();self.first={};self.previous={};self.rows={};self.last_log={};self.selected_at={};self.latest={};self.detached=set();self.detached_at={};self.epoch=stamp.date()
   eligible=[]
   for row in rows:
    sym=row['code']
@@ -68,11 +64,20 @@ class ShadowObserver:
    return (0 if row.get('status')=='WATCH' else 1 if strong or new_stronger else 2 if held else 3 if sym not in self.rows else 4,-score,sym)
   eligible.sort(key=priority)
   selected={r['code']:r for r in eligible[:self.limit]}
+  for sym in list(self.detached-set(selected)):
+   since=self.detached_at.get(sym,stamp)
+   if (stamp-since).total_seconds()>self.cfg.stale_seconds and not self.detector.observation_fresh(sym,stamp):
+    self.detector.forget(sym);self.detached.discard(sym);self.detached_at.pop(sym,None)
+    self.event('SHADOW_DATA_RESET',stamp,symbol=sym,data_action='RESET_STALE_GAP',observation_gap_seconds=(stamp-since).total_seconds())
   for row in eligible[self.limit:]:self.event('SHADOW_CAPACITY',stamp,symbol=row['code'],reason='DIAGNOSTIC_LIMIT',limit=self.limit)
   for sym,row in selected.items():
    if sym in self.detached:
-    if not self.detector.observation_fresh(sym,stamp):self.detector.forget(sym)
-    self.detached.discard(sym)
+    since=self.detached_at.get(sym,stamp);last=self.detector.last.get(sym)
+    expired=bool(last and last.time.date()!=stamp.date()) or ((stamp-since).total_seconds()>self.cfg.stale_seconds and not self.detector.observation_fresh(sym,stamp))
+    if expired:
+     self.detector.forget(sym)
+     self.event('SHADOW_DATA_RESET',stamp,symbol=sym,data_action='RESET_STALE_GAP',observation_gap_seconds=(stamp-since).total_seconds())
+    self.detached.discard(sym);self.detached_at.pop(sym,None)
    self.selected_at.setdefault(sym,stamp)
    prior=self.previous.get(sym);first_start=self.first[sym].setdefault('first_shadow_at',stamp.isoformat())
    if sym not in self.rows or not prior or (prior.get('source_count'),prior.get('status'))!=(row.get('source_count'),row.get('status')):
@@ -80,7 +85,7 @@ class ShadowObserver:
     self.event('SHADOW_TRANSITION',stamp,symbol=sym,name=row.get('name'),**self.first[sym],from_status=(prior or {}).get('status'),to_status=row.get('status'),source_before=(prior or {}).get('source_count'),source_count=row.get('source_count'),reason=row.get('reason'),data_action='RETAIN_CONTINUOUS' if last and self.detector.continuous_observation else 'RETAIN_FRESH' if fresh else 'NO_DATA' if last is None else 'STALE_PENDING_RESET',live_detector_unchanged=True)
   for sym in self.rows.keys()-selected.keys():
    self.event('SHADOW_ENDED',stamp,symbol=sym,reason='INELIGIBLE_OR_CAPACITY',data_action='RETAIN_UNTIL_STALE_GAP')
-   self.detached.add(sym);self.selected_at.pop(sym,None);self.last_log.pop(sym,None);self.latest.pop(sym,None)
+   self.detached.add(sym);self.detached_at[sym]=stamp;self.selected_at.pop(sym,None);self.last_log.pop(sym,None);self.latest.pop(sym,None)
   self.rows=selected;self.previous.update(selected)
  def tick(self,t,received):
   row=self.rows.get(t.symbol)
@@ -100,18 +105,10 @@ class ShadowObserver:
    if bar['first_second']>self.cfg.stale_seconds:break
    usable.append(bar)
   usable=list(reversed(usable));d=self.detector
-  candidates={'B':d.pullback(usable),'C':d.box(usable),'A':None}
-  prior=d.prior_high.get(t.symbol)
-  if prior and t.price>prior and len(usable)>=2:candidates['A']={'pattern':'A','breakout':prior,'support':min(b['low'] for b in usable[-2:]),'projection':prior+2*(prior-min(b['low'] for b in usable[-2:]))}
-  trials=[]
-  for name in ['A','B','C']:
-   setup=candidates[name];why=[]
-   if setup is None:why=['INSUFFICIENT_USABLE_BARS' if len(usable)<(4 if name=='B' else self.auto.box_min_bars if name=='C' else 2) else 'PATTERN_GEOMETRY_OR_VOLUME_NOT_MET' if name!='A' else 'PRIOR_HIGH_NOT_BROKEN']
-   trial=d.setup_gates(t,view,setup) if setup else {}
-   failed=[k for k,v in trial.items() if v['result']!='PASS'];pre=[k for k in ['warmup','acceleration','liquidity','spread','structure','market_status'] if gates[k]['result']!='PASS']
-   virtual={'limit':floor_tick(min(t.ask,setup['breakout']*(1+self.cfg.max_chase))),'stop':floor_tick(setup['support']*(1-self.cfg.structural_buffer))} if setup else None
-   sizing=self.risk({'symbol':t.symbol,**virtual}) if virtual and self.risk else self.virtual_size(virtual) if virtual else None
-   trials.append({'setup':name,'candidate_generated':bool(setup),'failed_reasons':why+pre+failed,'gates':trial,'virtual_entry':virtual['limit'] if virtual else None,'virtual_invalidation':virtual['stop'] if virtual else None,'invalidation_ticks':(virtual['limit']-virtual['stop'])/tick_size(t.price) if virtual else None,'virtual_risk_quantity':sizing,'risk_basis':'DIAGNOSTIC_SIZING_ONLY_NOT_ORDER_AUTHORIZATION'})
+  # Reuse actual setup reachability; only virtual sizing is added here.
+  trials=[{**trial,'failed_reasons':list(trial['failed_reasons'])} for trial in d.last_eval[t.symbol]['trials']]
+  for trial in trials:
+   if gates['market_status']['result']!='PASS':trial['failed_reasons'].append('MARKET_STATUS_FAIL');trial['entry_ready']=False
   self.observation_seq+=1
   current_tier=calculate_tier(gates,trials,row)
   prior_tier=self.last_tier.get(t.symbol)
@@ -125,6 +122,12 @@ class ShadowObserver:
   signature=repr(([(k,v['result']) for k,v in gates.items()],[(x['setup'],x['candidate_generated'],x['failed_reasons']) for x in trials]))
   previous=self.last_log.get(t.symbol)
   if previous and previous[1]==signature and (received-previous[0]).total_seconds()<10:return
+  # Sizing is a log diagnostic, never a promotion input. Compute only for records actually emitted.
+  for trial in trials:
+   virtual={'limit':trial['virtual_entry'],'stop':trial['virtual_invalidation']} if trial['candidate_generated'] else None
+   sizing=self.risk({'symbol':t.symbol,**virtual}) if virtual and self.risk else self.virtual_size(virtual) if virtual else None
+   trial.update(invalidation_ticks=(virtual['limit']-virtual['stop'])/tick_size(t.price) if virtual else None,
+                virtual_risk_quantity=sizing,risk_basis='DIAGNOSTIC_SIZING_ONLY_NOT_ORDER_AUTHORIZATION')
   self.last_log[t.symbol]=(received,signature)
   self.event('SHADOW_EVAL',received,symbol=t.symbol,name=row.get('name'),**self.first[t.symbol],source_count=row.get('source_count'),discovery_status=row.get('status'),current_price=t.price,usable_completed_bars=len(usable),stored_completed_bars=len(history),gates=gates,setup_trials=trials,virtual_signal=sig,actual_order_permission=False,
     microstructure={'tick_size':tick_size(t.price),'tick_fraction':tick_size(t.price)/t.price,'spread_fraction':(t.ask-t.bid)/t.price,'last_trade_gap_seconds':(t.time-old.time).total_seconds() if old else None,

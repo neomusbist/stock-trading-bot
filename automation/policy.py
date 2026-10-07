@@ -50,13 +50,18 @@ class AutomationConfig:
     horizon_b_minutes: int = 30
     horizon_c_minutes: int = 20
     unrealized_giveback_fraction: float = 0.40
+    after_prep_start: str = '15:40:00'
+    after_market_start: str = '16:00:00'
+    after_entry_cutoff: str = '19:45:00'
+    after_force_flatten_start: str = '19:55:00'
+    after_market_close: str = '20:00:00'
 
     @property
     def capital_limit(self): return self.AUTO_TRADING_CAP_KRW
 
     def validate(self):
         for k,v in asdict(self).items():
-            if k in ('new_entry_cutoff','force_flatten_start'): continue
+            if k in ('new_entry_cutoff','force_flatten_start','after_prep_start','after_market_start','after_entry_cutoff','after_force_flatten_start','after_market_close'): continue
             if isinstance(v,bool): continue
             if not isinstance(v,(int,float)) or not math.isfinite(v) or v<0:
                 raise ValueError(f'{k}: 유효한 0 이상 숫자 필요')
@@ -64,9 +69,12 @@ class AutomationConfig:
             if type(getattr(self,k)) is not int or getattr(self,k)<=0: raise ValueError(f'{k}: 양의 정수 필요')
         if type(self.ALLOW_OVERNIGHT) is not bool or type(self.costs_confirmed) is not bool or type(self.replacement_enabled) is not bool:
             raise ValueError('불리언 설정 오류')
-        for k in ('new_entry_cutoff','force_flatten_start'): datetime.strptime(getattr(self,k),'%H:%M:%S')
+        for k in ('new_entry_cutoff','force_flatten_start','after_prep_start','after_market_start','after_entry_cutoff','after_force_flatten_start','after_market_close'):
+            datetime.strptime(getattr(self,k),'%H:%M:%S')
         if not '09:00:00'<self.new_entry_cutoff<self.force_flatten_start<'15:20:00':
             raise ValueError('신규진입 마감 < 강제청산 시작 < 15:20 필요')
+        if not '15:30:00'<=self.after_prep_start<self.after_market_start<self.after_entry_cutoff<self.after_force_flatten_start<=self.after_market_close<='20:30:00':
+            raise ValueError('AFTER 운영시간 설정 오류: prep < start < cutoff < flatten <= close')
         if type(self.AUTO_TRADING_CAP_KRW) is not int: raise ValueError('승인 한도는 원 단위 정수여야 합니다')
         if self.scan_seconds<15 or self.max_scan_charts>50 or self.min_source_count>5: raise ValueError('레이더 범위 오류')
         for k in ('commission_buy','commission_sell','sell_tax','pullback_max_retrace','pullback_volume_ratio','box_max_range','unrealized_giveback_fraction'):
@@ -129,10 +137,19 @@ class Policy:
         elif command=='RELEASE':
             if symbol not in HARD_LOCKS or confirmation!='RELEASE': raise ValueError('명시적 RELEASE 확인 필요')
             self.state['releases'][symbol]={'time':now().isoformat(),'actor':'USER_COMMAND'}
+        elif command=='RESET_KILL':
+            if self.state.get('mode')!='KILL': raise ValueError('KILL 상태에서만 비상정지를 해제할 수 있습니다.')
+            if confirmation!='RESET KILL': raise ValueError('명시적 RESET KILL 확인 필요')
+            self.state['mode']='STOP'
+            self.state['live_authorized']=False
+            self.state['after_live_authorized']=False
         elif command in MODES:
             if command=='LIVE':
                 if confirmation!='LIVE': raise ValueError('명시적 LIVE 확인 필요')
                 self.state['live_authorized']=True
+            elif command=='KILL':
+                self.state['live_authorized']=False
+                self.state['after_live_authorized']=False
             self.state['mode']=command
         else: raise ValueError('지원하지 않는 명령')
         self.state['revision']+=1

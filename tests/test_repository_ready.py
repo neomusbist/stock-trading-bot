@@ -61,8 +61,8 @@ class RepositoryTests(unittest.TestCase):
     def test_main_cli_afterhours_and_diagnostics_no_network(self):
         import main
         with patch.object(main,'ROOT',self.root),patch.object(main,'load_credentials') as creds,patch.object(main,'Rest') as rest,contextlib.redirect_stdout(io.StringIO()):
-            # 1. after hours main
-            with patch.object(main,'now',return_value=AFTER),patch.object(sys,'argv',['main.py']):
+            # 1. after both REGULAR and AFTER close: no credentials/network
+            with patch.object(main,'now',return_value=AFTER.replace(hour=20,minute=1)),patch.object(sys,'argv',['main.py']):
                 self.assertEqual(main.main(),0)
             # 2. in-session diagnostics
             with patch.object(main,'now',return_value=AFTER.replace(hour=10)),patch.object(sys,'argv',['main.py','--diagnostics']):

@@ -84,20 +84,21 @@ def safe_report(rows,engine):
 def check_connection(cfg):
     """인증/실시간 증거가 충족되면 즉시 종료. Engine/주문 모듈을 실행하지 않는다."""
     from core.realtime import Feed,parse_tick
-    from automation.session import control_supported
-    if not control_supported(now()): raise ValueError('OUT_OF_SUPPORTED_SESSION')
+    from automation.session import control_supported, after_control_supported
+    is_ctrl = control_supported(now()) or (getattr(cfg, 'after_enabled', False) and after_control_supported(now()))
+    if not is_ctrl: raise ValueError('OUT_OF_SUPPORTED_SESSION')
     path=ROOT/'watchlist.json'
     w=json.loads(path.read_text(encoding='utf-8')) if path.exists() else {'items':[]}
     symbols=[r['code'] for r in w['items']]
     # 매매 후보 0개는 정상 NO_TRADE. 연결 진단은 주문 없이 기준종목 체결만 확인한다.
     diagnostic_only=not symbols
     if diagnostic_only: symbols=['005930']
-    rest=Rest(cfg); rest.session_guard=lambda:control_supported(now())
+    rest=Rest(cfg); rest.session_guard=lambda: control_supported(now()) or (getattr(cfg, 'after_enabled', False) and after_control_supported(now()))
     feed=Feed(rest,symbols); counts={'REG':0,'REAL_0B':0,'valid_regular_ticks':0,'invalid_ticks':0,'ERROR':0}
     started=now(); deadline=time.monotonic()+30; feed.start()
     try:
         while time.monotonic()<deadline:
-            if not control_supported(now()): break
+            if not (control_supported(now()) or (getattr(cfg, 'after_enabled', False) and after_control_supported(now()))): break
             try: received,m=feed.q.get(timeout=0.5)
             except queue.Empty: continue
             if m.get('trnm')=='REG' and m.get('return_code') in (0,'0'): counts['REG']+=1
@@ -121,8 +122,8 @@ def check_connection(cfg):
 
 def check_account(cfg):
     """잔고·미체결·체결 조회 필드 검사. 잔고액/종목/계좌번호는 보고서에 저장하지 않는다."""
-    from automation.session import control_supported
-    rest=Rest(cfg); rest.session_guard=lambda:control_supported(now())
+    from automation.session import control_supported, after_control_supported
+    rest=Rest(cfg); rest.session_guard=lambda: control_supported(now()) or (getattr(cfg, 'after_enabled', False) and after_control_supported(now()))
     snapshot=rest.snapshot(); fills=rest.fills()
     result={'checked_at':now().isoformat(),'orders_sent':0,'holding_count':len(snapshot['holdings']),
         'open_order_count':len(snapshot['orders']),'fill_row_count':len(fills),
@@ -254,8 +255,9 @@ def main():
           'failures':len(result.failures),'errors':len(result.errors),'skipped':len(result.skipped),'passed':result.wasSuccessful()})
         return 0 if result.wasSuccessful() else 1
     cfg=load_config(args.config)
-    from automation.session import supported,control_supported
-    if args.diagnostics or args.diagnostic_account or (not control_supported(now()) and not any((args.demo,args.offline,args.check_connection,args.check_account,args.paper_seconds,args.readiness_check,args.collect_only,args.legacy_monitor))):
+    from automation.session import supported,control_supported,after_control_supported
+    is_ctrl = control_supported(now()) or (getattr(cfg, 'after_enabled', False) and after_control_supported(now()))
+    if args.diagnostics or args.diagnostic_account or (not is_ctrl and not any((args.demo,args.offline,args.check_connection,args.check_account,args.paper_seconds,args.readiness_check,args.collect_only,args.legacy_monitor))):
         from local_diagnostics import diagnose,account_diagnostic
         result=diagnose(ROOT,now())
         if args.diagnostic_account:
@@ -265,7 +267,7 @@ def main():
     prerequisites()
     if args.check_connection or args.check_account or args.paper_seconds or args.readiness_check or args.collect_only or args.legacy_monitor:
         from automation.session import supported,assessment
-        if not control_supported(now()):
+        if not is_ctrl:
             result={**assessment(now()),'test':'실제 연결 검사','passed':None,'reason':'INCONCLUSIVE_AFTER_HOURS',
                     'next_step':'다음 실제 개장일 V1.1 운영시간 09:00 이상 15:20 미만에 다시 검사'}
             atomic_json(ROOT/'diagnostic_session_guard.json',result)

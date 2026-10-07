@@ -82,7 +82,7 @@ class GuidedGuiTests(unittest.TestCase):
         self.w.apply_status(state);self.assertEqual(self.w.board.rowCount(),30);self.assertIn('가속',self.w.board.item(0,4).text())
         self.assertEqual(self.w.bot_board.rowCount(),1);self.assertIn('15:10',self.w.bot_board.item(0,7).text())
     def test_stop_flat_kill_buttons_explain_actual_semantics(self):
-        self.assertIn('신규매수',self.w.buttons['stop'].text());self.assertIn('전량청산',self.w.buttons['flat'].text())
+        self.assertIn('신규진입',self.w.buttons['stop'].text());self.assertIn('전량청산',self.w.buttons['flat'].text())
         self.assertIn('보호',self.w.buttons['flat'].toolTip())
     def test_gui_diagnostics_and_candidate_labeling_invariants(self):
         self.w._check_stage('150초 안전검사');self.w.check_started=time.monotonic()-151;self.w._check_elapsed()

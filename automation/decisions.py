@@ -1,9 +1,9 @@
 """events.jsonl에 동일 스키마로 기록하는 작은 어댑터. 새 DB나 매 틱 로그 없음."""
 import json
 import math
-STRATEGY_VERSION='V1.1-policy-20261001'
-BUILD_ID='V1.3-preopen-risk2-20261007'
-STRATEGY_EXPERIMENT='20261007-risk2-daily4-cap20000'  # 위험관리 실험; A/B/C 신호 정의는 동일
+STRATEGY_VERSION='V1.3-setup-specific-acceleration-bc20M-20261007'
+BUILD_ID='V1.3-risk2-watch12-bc20M-opening-20261008'
+STRATEGY_EXPERIMENT='20261007-risk2-daily4-cap20000-watch12-accelA-bc20M'  # 위험2%/일일4% 유지; WATCH12, A 전용 가속, B/C 거래대금20M
 
 def check_experiment_consistency(cfg, build_id=BUILD_ID, experiment=STRATEGY_EXPERIMENT):
     """BUILD_ID 또는 STRATEGY_EXPERIMENT에 risk2/daily4가 적혀 있는데
@@ -38,11 +38,20 @@ def reason_code(reason,position):
     if isinstance(reason,str) and reason.endswith(' 신규 실주문 금지'): return 'MODE_'+reason.split()[0]+'_NO_NEW_ENTRY'
     return reason
 
+def _safe_walk(item,memo):
+    if item is None or type(item) in (str,int,bool):return item
+    if isinstance(item,float):return item if math.isfinite(item) else 'NON_FINITE:'+repr(item)
+    if isinstance(item,(dict,tuple,list)):
+        key=id(item)
+        if key in memo:return memo[key]
+        result={k:_safe_walk(v,memo) for k,v in item.items()} if isinstance(item,dict) else [_safe_walk(v,memo) for v in item]
+        memo[key]=result;return result
+    return item
+
 def safe_values(value):
-    if isinstance(value,float) and not math.isfinite(value): return 'NON_FINITE:'+repr(value)
-    if isinstance(value,dict): return {k:safe_values(v) for k,v in value.items()}
-    if isinstance(value,(tuple,list)): return [safe_values(v) for v in value]
-    return value
+    # Memo belongs to this serialization only; no strategy/safety state cache.
+    return _safe_walk(value,{})
+
 
 def gate(passed,**values):
     return {'result':'UNKNOWN' if passed is None else 'PASS' if passed else 'FAIL','values':safe_values(values)}
@@ -78,7 +87,7 @@ class DecisionLog:
         cost=None
         if entry is not None and qty is not None and current is not None:
             cost=e.buy_fee(entry*qty)+e.sell_fee(current*qty)
-        codes=[k.upper() for k,v in gates.items() if v['result']!='PASS' and k!=reason]
+        codes=[k.upper() for k,v in gates.items() if v['result']!='PASS' and v.get('required',True) and k!=reason]
         e.event(kind,timestamp=e.clock().isoformat(timespec='milliseconds'),strategy_version=STRATEGY_VERSION,
             build_id=BUILD_ID,strategy_experiment=STRATEGY_EXPERIMENT,**risk_identity,symbol=symbol,
             name=sig.get('name') or e.names.get(symbol),setup=sig.get('pattern'),

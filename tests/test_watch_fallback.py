@@ -122,7 +122,7 @@ class WatchFallbackTests(unittest.TestCase):
 
     def test_6_watch_total_never_exceeds_max_watchlist(self):
         """6. WATCH 총 개수는 절대 max_watchlist 초과 금지."""
-        self.assertEqual(Config().max_watchlist, 8)
+        self.assertEqual(Config().max_watchlist, 12)
         self.assertEqual(AutomationConfig().min_source_count, 1)
         radar = self.make_radar(fallback_source1=True)
         for i in range(10):

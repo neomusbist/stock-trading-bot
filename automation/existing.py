@@ -17,6 +17,7 @@ class ExistingExits:
         if symbol not in BREAKEVEN_EXITS and symbol!=TEST_RELEASE_SYMBOL: return 'EXTERNAL_HOLD'
         if signal.get('ownership')!='EXISTING_POLICY': return 'EXTERNAL_INTENT_REQUIRED'
         if signal.get('policy')!=('TEST_CAPITAL_RELEASE' if symbol==TEST_RELEASE_SYMBOL else 'BREAKEVEN_EXIT'): return 'EXTERNAL_POLICY_MISMATCH'
+        if getattr(self, 'current_session', lambda: 'REGULAR')() == 'AFTER': return 'AFTER_SESSION_HOLD'
         if not supported(self.clock()): return 'OUT_OF_SUPPORTED_SESSION'
         if self.market!='3': return 'MARKET_NOT_REGULAR'
         if symbol==TEST_RELEASE_SYMBOL:
@@ -53,6 +54,7 @@ class ExistingExits:
         return not self.external_reason(symbol,qty,limit,signal,transmitting=symbol==TEST_RELEASE_SYMBOL)
 
     def evaluate_existing(self):
+        if getattr(self, 'current_session', lambda: 'REGULAR')() == 'AFTER': return
         from automation.observation_settings import ObservationSettings
         settings=getattr(self,'observation_settings',ObservationSettings())
         if not hasattr(self,'external_eval_cache'):self.external_eval_cache={}

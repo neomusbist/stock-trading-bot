@@ -360,6 +360,9 @@ class SetupReachabilityTests(AuditFixture):
             base=1007;top=1010;price=1011;ask=1011
             seq=[(1000,1010,1005,1000)]*5
         detector.history['999990']=deque([{'time':self.clock[0]-timedelta(minutes=len(seq)-i),'low':low,'high':high,'close':close,'open':close,'volume':vol,'first_second':0} for i,(low,high,close,vol) in enumerate(seq)])
+        # Seed the real observation epoch for these directly seeded completed bars.
+        detector.observation_start['999990']=self.clock[0]-timedelta(minutes=len(seq))
+        detector.observation_session['999990']=(self.clock[0].date(),'REGULAR')
         detector.day_high['999990']=top;detector.prior_high['999990']=top
         detector.buffers['999990']=deque(Tick('999990',self.clock[0]-timedelta(seconds=sec),base,100,1000-sec,base+1,base-1) for sec in range(70,0,-1))
         tick=Tick('999990',self.clock[0],price,100000,200000,ask,price-1)

@@ -163,7 +163,7 @@ class SettingsDialog(QDialog):
         form=QFormLayout(); self.amount=QLineEdit(str(s['cap'])); self.amount.setMaxLength(12)
         form.addRow('새 승인한도 (원)',self.amount); layout.addLayout(form)
         self.change=QPushButton('승인한도 변경'); self.change.clicked.connect(self.change_cap); layout.addWidget(self.change)
-        layout.addWidget(QLabel('평소에는 메인 화면의 자동매매 시작이 검사와 명시 승인 절차를 안내합니다.'))
+        layout.addWidget(QLabel('평소에는 메인 시작 버튼을 한 번 누르면 현재 승인한도로 안전검사와 시작을 진행합니다.'))
         manual=QWidget();manual_layout=QVBoxLayout(manual)
         toggle=QPushButton('고급 수동 준비 / 승인 보기');toggle.setCheckable(True);toggle.toggled.connect(manual.setVisible);layout.addWidget(toggle)
         self.ready=QPushButton('실제매매 준비 검사 (조회만)'); self.ready.clicked.connect(self.prepare); manual_layout.addWidget(self.ready)
@@ -174,7 +174,7 @@ class SettingsDialog(QDialog):
         self.change.setToolTip('감시 중지·봇 보유/미체결/불명확 주문·HALT 없음이 필요합니다.' if not idle else '새 원 단위 한도를 입력하고 변경 확인을 선택하세요.')
         reason='감시·장부 안전상태 확인 필요' if not idle else '운영시간 밖' if not s.get('control_supported',s['supported']) else '비용 설정 미확인' if not s['costs_confirmed'] else '기존 안전조건을 다시 검사합니다.'
         self.ready.setToolTip(reason); self.authorize.setToolTip(reason)
-        layout.addWidget(QLabel('한도 변경 시 실제매매 승인은 해제됩니다. 준비 검사 → 금액·문구 확인 → 별도 시작이 필요합니다.\n실행 중에는 변경할 수 없습니다. 비용 미확인이면 실제매매 승인을 차단합니다.'))
+        layout.addWidget(QLabel('한도 변경 시 실제매매 승인은 해제됩니다. 준비 검사 → 승인한도 확인·승인 버튼 → 별도 시작이 필요합니다.\n실행 중에는 변경할 수 없습니다. 비용 미확인이면 실제매매 승인을 차단합니다.'))
         self.result=QPlainTextEdit(); self.result.setReadOnly(True); layout.addWidget(self.result)
         advanced=QPushButton('고급 설정 보기 (읽기 전용)'); advanced.clicked.connect(lambda:window.details(s.get('advanced',{}),'고급 설정 — 읽기 전용')); layout.addWidget(advanced)
         costs=QPushButton('실제 확인한 비용 입력 (고급 / 감시 중지 필요)'); costs.clicked.connect(self.confirm_costs); layout.addWidget(costs)
@@ -189,8 +189,7 @@ class SettingsDialog(QDialog):
     def approve(self):
         amount,ok=QInputDialog.getText(self,'실제매매 승인','현재 승인한도를 원 단위 숫자로 입력하세요:')
         if not ok: return
-        phrase,ok=QInputDialog.getText(self,'최종 확인','실제 주문이 가능해집니다. 승인하려면 실제매매승인 을 정확히 입력하세요:')
-        if ok: self.window.submit(lambda:self.window.service.authorize_capital(amount.strip(),phrase.strip()),self.output)
+        self.window.submit(lambda:self.window.service.authorize_capital(amount.strip(),True),self.output)
     def confirm_costs(self):
         values=[]
         for label in ('매수 수수료율','매도 수수료율','매도 세금률'):
@@ -227,13 +226,15 @@ class MainWindow(QMainWindow):
         self.check_timer=QTimer(self);self.check_timer.setInterval(250);self.check_timer.timeout.connect(self._check_elapsed)
         split=QSplitter(Qt.Orientation.Horizontal); outer.addWidget(split,1)
         left=QWidget(); controls=QVBoxLayout(left); controls.setContentsMargins(0,0,15,0); self.buttons={}; auxiliary=QGridLayout()
-        for key,label,callback in (('start','자동매매 시작',self.start),('stop','신규매수 중지',lambda:self.send_stop('STOP')),
+        for key,label,callback in (('start','자동매매 시작',self.start),('stop','신규진입 중지',lambda:self.send_stop('STOP')),
             ('flat','봇 보유 전량청산 후 중지',lambda:self.send_stop('STOP_FLAT')),('kill','긴급정지',lambda:self.send_stop('KILL')),
+            ('reset_kill','비상정지 복구',self.reset_kill_action),
+            ('after_live','AFTER LIVE 승인',self.after_live_action),
             ('diagnostic','상태 / 진단',self.diagnostic),('settings','설정 / 승인한도',self.settings),
             ('records','거래기록',lambda:self.tabs.setCurrentIndex(1)),('logs','상세로그',lambda:self.tabs.setCurrentIndex(3))):
-            button=QPushButton(label); button.setMinimumHeight(43 if key in {'start','stop','flat','kill'} else 36); button.setObjectName(key)
+            button=QPushButton(label); button.setMinimumHeight(43 if key in {'start','stop','flat','kill','reset_kill','after_live'} else 36); button.setObjectName(key)
             button.clicked.connect(callback); self.buttons[key]=button
-            if key in {'start','stop','flat','kill'}: controls.addWidget(button)
+            if key in {'start','stop','flat','kill','reset_kill','after_live'}: controls.addWidget(button)
             else:
                 index=('diagnostic','settings','records','logs').index(key); auxiliary.addWidget(button,index//2,index%2)
         controls.addLayout(auxiliary)
@@ -257,7 +258,7 @@ class MainWindow(QMainWindow):
         cockpit_split.addWidget(bot_box)
 
         cand_box=QGroupBox('실시간 감시 후보 종목 (WATCH / SHADOW)'); cand_b_layout=QVBoxLayout(cand_box)
-        self.board=table(['종목','상태','현재가','관측 경과','주요 차단 / 대기 사유']); self.board.setMinimumHeight(160)
+        self.board=table(['종목','상태','현재가','최근 평가','주요 차단 / 대기 사유']); self.board.setMinimumHeight(160)
         cand_b_layout.addWidget(self.board)
         self.candidate_empty_label=QLabel('현재 감시 대상 후보 종목이 없습니다.')
         self.candidate_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter); self.candidate_empty_label.setStyleSheet('color:#64748b;font-size:13px;padding:12px;')
@@ -321,8 +322,10 @@ class MainWindow(QMainWindow):
             'QPushButton {padding:8px;border:1px solid #bdcada;border-radius:5px;background:white;} '
             'QPushButton:hover {background:#e3edf9;} QPushButton:disabled {color:#8995a5;background:#edf0f4;} '
             'QPushButton#start {background:#245ba5;color:white;} QPushButton#start:disabled {background:#b9c3d1;} '
-            'QPushButton#kill {background:#b43838;color:white;} QTableWidget,QPlainTextEdit {background:white;border:1px solid #dae1ec;}')
-        self.buttons['start'].setEnabled(False); self.buttons['stop'].setEnabled(False); self.buttons['flat'].setEnabled(False)
+            'QPushButton#kill {background:#b43838;color:white;} '
+            'QPushButton#reset_kill {background:#d97706;color:white;font-weight:700;} '
+            'QTableWidget,QPlainTextEdit {background:white;border:1px solid #dae1ec;}')
+        self.buttons['start'].setEnabled(False); self.buttons['stop'].setEnabled(False); self.buttons['flat'].setEnabled(False); self.buttons['reset_kill'].hide(); self.buttons['after_live'].hide()
         self.timer=QTimer(self); self.timer.setInterval(1500); self.timer.timeout.connect(self.refresh)
         if auto_refresh: self.timer.start(); self.refresh()
     def _work(self,pool,operation,success,failure):
@@ -348,8 +351,15 @@ class MainWindow(QMainWindow):
         self.clock.setText(s['time'][:19].replace('T',' ')+' / '+s.get('build_id',s['strategy_version']))
         mode=s.get('mode','STOP')
         if mode=='LIVE':
-            m_text='[요청 모드] 실제매매 (LIVE)'
-            m_style='background:#fef3c7;color:#92400e;border:1px solid #fde68a;font-weight:700;padding:4px 10px;border-radius:4px;'
+            if s.get('current_session')=='AFTER' and not s.get('after_live_approved'):
+                m_text='[요청 모드] 실제매매 (LIVE) — AFTER 미승인'
+                m_style='background:#fef3c7;color:#92400e;border:1px solid #fde68a;font-weight:700;padding:4px 10px;border-radius:4px;'
+            elif s.get('current_session')=='AFTER' and s.get('after_live_approved'):
+                m_text='[요청 모드] AFTER 실제매매 (LIVE)'
+                m_style='background:#dcfce7;color:#166534;border:1px solid #86efac;font-weight:700;padding:4px 10px;border-radius:4px;'
+            else:
+                m_text='[요청 모드] 실제매매 (LIVE)'
+                m_style='background:#fef3c7;color:#92400e;border:1px solid #fde68a;font-weight:700;padding:4px 10px;border-radius:4px;'
         elif mode=='ARMED':
             m_text='[요청 모드] 모의/관찰 (ARMED)'
             m_style='background:#dbeafe;color:#1e40af;border:1px solid #bfdbfe;font-weight:700;padding:4px 10px;border-radius:4px;'
@@ -376,14 +386,29 @@ class MainWindow(QMainWindow):
         self.cards['available'].setToolTip('min(실제 주문가능현금, 사용자 승인한도). 과거 조회값이면 현재 매수 가능액을 보장하지 않습니다.')
         self.cards['inventory'].setText(f"{s['position_count']}종목 / {s['pending']}건\n불명확 주문 {s['uncertain']}건")
         block=start_block(s); running=s['process']['running']
-        self.buttons['start'].setEnabled(not block and not self.working); self.buttons['start'].setToolTip(block or '기존 안전 검사 후 별도 감시 프로세스를 시작합니다.')
-        self.buttons['start'].setText('자동매매 시작 (시간 밖)' if not s.get('control_supported',s['supported']) else '사전 준비 / 자동매매 시작' if not s['supported'] else '자동매매 시작')
-        self.buttons['stop'].setEnabled(running)
-        self.buttons['stop'].setToolTip('실행 중인 감시를 정상 중지합니다. 기존 봇 포지션 보호는 종료될 때까지 유지됩니다.' if running else '감시가 중지되어 있습니다.')
-        self.buttons['flat'].setEnabled(bool(running or s['positions'] or s['pending']))
+        if mode=='KILL':
+            self.buttons['start'].setEnabled(False)
+            self.buttons['start'].setToolTip('비상정지(KILL) 상태에서는 시작할 수 없습니다. 비상정지를 먼저 복구하세요.')
+            self.buttons['stop'].setEnabled(False); self.buttons['stop'].setToolTip('비상정지 상태입니다.')
+            self.buttons['flat'].setEnabled(False); self.buttons['flat'].setToolTip('비상정지 상태입니다.')
+            self.buttons['kill'].setEnabled(False); self.buttons['kill'].setToolTip('이미 비상정지(KILL) 상태입니다.')
+            self.buttons['reset_kill'].show(); self.buttons['reset_kill'].setEnabled(not self.working)
+            self.buttons['reset_kill'].setToolTip('비상정지(KILL) 상태를 대기(STOP) 모드로 안전하게 복구합니다.')
+        else:
+            self.buttons['reset_kill'].hide()
+            self.buttons['start'].setEnabled(not block and not self.working); self.buttons['start'].setToolTip(block or '클릭하면 현재 승인한도로 오늘 운용을 승인합니다. 안전검사 후 감시를 시작하며, 한도 0원은 관찰만 합니다.')
+            self.buttons['start'].setText('자동매매 시작 (시간 밖)' if not s.get('control_supported',s['supported']) else '사전 준비 / 자동매매 시작' if not s['supported'] else '자동매매 시작')
+            self.buttons['stop'].setEnabled(running)
+            self.buttons['stop'].setToolTip('신규 진입을 중지하고 기존 봇 포지션 보호만 유지합니다.' if running else '감시가 중지되어 있습니다.')
+            self.buttons['flat'].setEnabled(bool(running or s['positions'] or s['pending']))
+            self.buttons['flat'].setToolTip('봇 포지션 청산 후 중지를 요청합니다. 보호종목은 기존 정책을 유지합니다.' if self.buttons['flat'].isEnabled() else '감시·봇 포지션·미체결이 없습니다. 이 기능도 보호종목과 외부보유 정책을 유지합니다.')
+            self.buttons['kill'].setEnabled(True)
+            self.buttons['kill'].setToolTip('비상 상황 시 신규 주문을 즉시 차단하고 비상정지(KILL) 모드로 전환합니다.')
+        need_after=bool(s.get('current_session')=='AFTER' and s.get('after_supported') and s.get('live_approved') and not s.get('after_live_approved') and mode!='KILL' and not s.get('halt'))
+        self.buttons['after_live'].setVisible(need_after); self.buttons['after_live'].setEnabled(need_after and not self.working)
+        self.buttons['after_live'].setToolTip('AFTER 시장 실제주문을 별도로 승인합니다. 기존 승인한도를 그대로 사용합니다.')
         self.buttons['settings'].setEnabled(not running and not self.working)
         self.buttons['settings'].setToolTip('감시 중에는 설정을 변경할 수 없습니다. 먼저 정상 중지하세요.' if running else '현재 작업 완료 후 사용할 수 있습니다.' if self.working else '명시 확인으로 승인한도를 변경합니다.')
-        self.buttons['flat'].setToolTip('봇 포지션 청산 후 중지를 요청합니다. 보호종목은 기존 정책을 유지합니다.' if self.buttons['flat'].isEnabled() else '감시·봇 포지션·미체결이 없습니다. 이 기능도 보호종목과 외부보유 정책을 유지합니다.')
         policy_names={'005930':'삼성전자','017900':'광전자','052260':'현대바이오랜드'}
         self.protection.setText('\n\n'.join(policy_names.get(r['symbol'],r['symbol'])+' '+r['symbol']+'\n'+r['policy']+
             (f" / 기준 {money(r['breakeven'])}" if r.get('breakeven') else '') for r in s.get('protection_rows',[]) if r['symbol'] in policy_names))
@@ -462,7 +487,9 @@ class MainWindow(QMainWindow):
         permission='실제매매 조건부 ON' if s['trading_on'] else '실제매매 OFF / 관찰 또는 정지'
         guidance=('ARMED 관찰 실행 중입니다. 「신규매수 중지」로 정상 중지 후 「자동매매 시작」에서 검사·명시 승인을 진행하세요.'
             if running and s['mode']=='ARMED' and not s['live_approved'] else
-            '자동매매 시작을 누르면 필요한 조회 안전검사와 명시 승인 절차를 안내합니다.'
+            'AFTER 자동매매를 시작하려면 별도의 AFTER LIVE 승인이 필요합니다. (정규장 LIVE만 승인됨)'
+            if running and s.get('current_session')=='AFTER' and not s.get('after_live_approved') else
+            '시작 버튼 선택으로 현재 승인한도 내 오늘 운용을 승인합니다. 필요한 안전검사를 자동 수행합니다.'
             if not running and s['mode']=='ARMED' and s['cap']>0 and not s['live_approved'] else
             block if not running and block else s.get('last_decision','판단 기록 없음'))
         self.notice.setText('안전검사 진행 중 · '+self.check_stage if self.working and self.check_progress.isVisible() else permission+' · '+guidance)
@@ -499,10 +526,13 @@ class MainWindow(QMainWindow):
         if reason: self.problem(reason); return
         if hasattr(self.service,'prepare_start'):
             self.check_progress.setRange(0,0);self.check_progress.show();self.check_started=None
-            self.submit(lambda:self.service.prepare_start(self.progress_update.emit),self._prepared_start);return
+            # The deliberate start click authorizes only the cap shown at that click.
+            # Backend readiness/hash/account guards still run before authorization/start.
+            clicked_cap=int(self.status['cap'])
+            self.submit(lambda:self.service.prepare_start(self.progress_update.emit),
+                lambda result:self._prepared_start(result,clicked_cap=clicked_cap));return
         real=self.status['live_mode'] and self.status['live_approved']
-        if real and not self.confirm(f"승인한도 {money(self.status['cap'])} 내 실제 주문이 가능해집니다.\n계좌·연결·시장·위험 조건은 기존 엔진이 다시 검사합니다. 시작할까요?",'자동매매 시작'): return
-        self.submit(lambda:self.service.start_user(confirmed=bool(real)))
+        self.submit(lambda:self.service.start_user(confirmed=bool(real)),self._start_finished)
     def _check_stage(self,text):
         self.check_stage=text;self.check_started=time.monotonic()
         self.check_progress.setRange(0,0);self.check_timer.start()
@@ -512,7 +542,7 @@ class MainWindow(QMainWindow):
         elapsed=int(time.monotonic()-self.check_started)
         self.check_progress.setRange(0,0)
         self.notice.setText('안전검사 결과 정리 중 / 증거 확인 '+str(elapsed)+'초 · '+self.check_stage)
-    def _prepared_start(self,result):
+    def _prepared_start(self,result,clicked_cap=None):
         self.check_timer.stop();self.check_progress.hide()
         verdict=result.get('verdict')
         if verdict=='COST_CONFIRMATION_REQUIRED':
@@ -524,23 +554,44 @@ class MainWindow(QMainWindow):
             if self.confirm('증권사에서 실제 확인한 비용입니까?\n입력값 (%): '+', '.join(values),'비용 명시 확인'):
                 self.submit(lambda:self.service.confirm_costs(*values,True),lambda _:self.start())
             return
+        if verdict in {'NEEDS_LIVE_APPROVAL','READY_LIVE'}:
+            if clicked_cap is None or clicked_cap<=0 or result.get('cap')!=clicked_cap:
+                self.problem('시작 버튼 선택 이후 승인한도가 달라졌거나 명시적 시작 선택이 없습니다. 상태를 확인하고 다시 시작 버튼을 누르세요.');return
         if verdict=='NEEDS_LIVE_APPROVAL':
-            amount,ok=QInputDialog.getText(self,'실제매매 승인','준비검사 통과. 현재 승인한도 '+money(result.get('cap'))+'를 원 단위 숫자로 입력하세요:')
-            if not ok:return
-            phrase,ok=QInputDialog.getText(self,'LIVE 최종 명시 승인','실제 주문을 허용하려면 실제매매승인 을 정확히 입력하세요:')
-            if not ok:return
             def approve_start():
-                self.service.authorize_capital(amount.strip(),phrase.strip())
+                self.service.authorize_capital(str(clicked_cap),True)
                 return self.service.start_user(confirmed=True)
-            self.submit(approve_start);return
-        if verdict=='READY_LIVE' and not self.confirm('승인한도 '+money(result.get('cap'))+' 내 실제 자동매매를 시작합니다. 새 계좌 대조 후 조건충족 주문만 전송합니다.','LIVE 시작 확인'):return
+            self.submit(approve_start,self._start_finished);return
         if verdict in {'READY_LIVE','READY_OBSERVE','READY_EXISTING'}:
-            self.submit(lambda:self.service.start_user(confirmed=verdict=='READY_LIVE'));return
-        self.show_result(result)
+            self.submit(lambda:self.service.start_user(confirmed=verdict=='READY_LIVE'),self._start_finished);return
+        self.show_result(result)  # Readiness FAIL/INCONCLUSIVE must not disappear silently.
+    def _start_finished(self,result):
+        if result.get('verdict')=='STARTED':
+            self.notice.setText('감시 시작 요청이 처리되었습니다. 실제 주문권한과 준비 상태는 상단에서 확인하세요.')
+        else:
+            self.show_result(result)  # Failed/inconclusive backend results remain visible.
     def send_stop(self,command):
-        if command=='STOP_FLAT' and not self.confirm('봇 포지션 청산 후 중지를 요청합니다. 삼성전자·광전자는 자동매도하지 않습니다.','청산 후 중지'): return
-        if command=='KILL' and not self.confirm('신규 주문을 차단하고 비상정지 상태로 전환합니다.\n기존 KILL 처리와 보호종목 잠금은 유지됩니다.','비상정지 실행'): return
+        if command=='STOP_FLAT' and not self.confirm('봇 보유 포지션 전량 청산 후 중지를 요청합니다.\n삼성전자·광전자 등 외부보유는 절대 자동매도하지 않습니다.','청산 후 중지'): return
+        if command=='KILL' and not self.confirm(
+            '⚠️ [비상정지(KILL) 경고]\n\n'
+            '모든 신규 주문을 즉시 차단하고 비상정지 상태로 래치합니다.\n'
+            '기존 LIVE / AFTER 승인이 즉시 폐기됩니다.\n'
+            '(봇 보유 포지션은 계좌 대조 후 안전 청산만 허용됩니다)\n\n'
+            '정말 비상정지하시겠습니까?','긴급 정지 실행'): return
         self.submit(lambda:self.service.stop(command),emergency=True)
+    def reset_kill_action(self):
+        if not self.confirm(
+            '현재 비상정지(KILL) 상태를 대기(STOP) 모드로 복구하시겠습니까?\n\n'
+            '• 모든 주문 권한은 OFF(차단) 상태가 유지됩니다.\n'
+            '• LIVE / AFTER 승인은 완전히 해제된 상태로 전환됩니다.\n'
+            '• 실제 주문을 재개하려면 사전 준비검사와 명시 승인이 필요합니다.\n\n'
+            '비상정지를 복구하시겠습니까?','비상정지 복구 확인'): return
+        self.submit(lambda:self.service.reset_kill('RESET KILL'),emergency=True)
+    def after_live_action(self):
+        if not self.status: return
+        cap=int(self.status.get('cap') or 0)
+        if cap<=0: self.problem('승인한도가 0원입니다.'); return
+        self.submit(lambda:self.service.activate_after_live(str(cap),True))
     def details(self,value,title='상태 / 진단'):
         dialog=QDialog(self); dialog.setWindowTitle(title); dialog.resize(850,620); layout=QVBoxLayout(dialog)
         content=QPlainTextEdit(); content.setReadOnly(True); content.setPlainText(json.dumps(redact(value),ensure_ascii=False,indent=2)); layout.addWidget(content)

@@ -24,7 +24,7 @@ class CandidateAudit:
             evaluation=self.evaluations.get(sym); gates=(evaluation or {}).get('gates',{})
             reason=(evaluation or {}).get('primary_reason_code') or row.get('reason') or 'NOT_YET_EVALUATED'
             reasons[reason]+=1
-            failed={k for k,v in gates.items() if v['result']=='FAIL'}
+            failed={k for k,v in gates.items() if v['result']=='FAIL' and v.get('required',True)}
             raw_reason=row.get('reason','')
             if 'liquidity' in failed or '거래대금 부족' in raw_reason: counts['liquidity_fail']+=1
             if 'spread' in failed: counts['spread_fail']+=1
@@ -32,10 +32,10 @@ class CandidateAudit:
             if failed & {'warmup','pattern','breakout','chase','acceleration','economic'}: counts['setup_not_ready']+=1
             sizing=gates.get('risk_quantity',{}).get('values',{})
             if sizing.get('risk_quantity')==0 and sizing.get('risk_per_share',0)>0: counts['risk_zero_qty']+=1
-            if evaluation and gates and all(v['result']=='PASS' for v in gates.values()): counts['final_entry_eligible']+=1
+            if evaluation and gates and all(v['result']=='PASS' for v in gates.values() if v.get('required',True)): counts['final_entry_eligible']+=1
             if evaluation: counts['evaluated']+=1
             if row.get('status')=='WATCH':counts['watch']+=1
-            if (evaluation or {}).get('setup_trials'):counts['setup_candidates']+=1
+            if any(t.get('candidate_generated',bool(t.get('gates'))) for t in (evaluation or {}).get('setup_trials') or []):counts['setup_candidates']+=1
             if 'risk_quantity' in gates:counts['risk_reached']+=1
             candidates.append({'symbol':sym,'name':row.get('name'),'discovery_status':row.get('status'),
                 'current_price':(evaluation or {}).get('current_price',row.get('reference_price')),'source_count':row.get('source_count'),

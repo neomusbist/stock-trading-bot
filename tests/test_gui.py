@@ -82,9 +82,11 @@ class GuiTests(unittest.TestCase):
         self.assertIn('운영시간 밖',self.w.cards['market'].text()); self.assertFalse(self.w.buttons['start'].isEnabled())
         self.assertTrue(self.w.buttons['diagnostic'].isEnabled()); self.assertTrue(self.w.buttons['logs'].isEnabled())
     def test_start_delegates_service(self):
-        self.click('start'); self.wait(lambda:('start',True) in self.s.calls); self.w.confirm.assert_called_once()
-    def test_start_confirmation_cancel_no_call(self):
-        self.w.confirm.return_value=False; self.click('start'); self.assertEqual(self.s.calls,[])
+        self.click('start'); self.wait(lambda:('start',True) in self.s.calls); self.w.confirm.assert_not_called()
+    def test_start_blocked_state_no_call(self):
+        # Start click replaces the obsolete secondary confirmation. Safety blockers remain.
+        self.w.apply_status(synthetic_status(uncertain=1)); self.click('start'); self.assertEqual(self.s.calls,[])
+        self.w.confirm.assert_not_called()
     def test_emergency_buttons_dispatch_commands(self):
         # 1. STOP
         self.w.apply_status(synthetic_status(process={'running':True,'state':'실행 중'}))

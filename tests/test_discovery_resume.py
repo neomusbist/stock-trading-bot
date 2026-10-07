@@ -99,6 +99,8 @@ class DiscoveryResumeTests(fixture.AuditFixture):
         self.e.readiness_reason = ready
 
     def test_source1_compression_with_legacy_min2_competes_for_all_eight_slots(self):
+        # Explicit legacy slot bound; default WATCH 12 is checked independently.
+        self.cfg = replace(self.cfg, max_watchlist=8)
         radar = self.radar()
         incumbents = [self.item(f'10000{i}', 2) for i in range(8)]
         evaluated = []
@@ -274,12 +276,12 @@ class DiscoveryResumeTests(fixture.AuditFixture):
                     self.assertEqual(self.broker.orders, [])
 
     def test_default_and_example_watch_limit_eight_with_safe_examples(self):
-        self.assertEqual(Config().max_watchlist, 8)
+        self.assertEqual(Config().max_watchlist, 12)
         self.assertEqual(AutomationConfig().min_source_count, 1)
         from core.settings import ROOT
         cfg = json.loads((ROOT/'config.example.json').read_text(encoding='utf-8-sig'))
         auto = json.loads((ROOT/'automation.example.json').read_text(encoding='utf-8-sig'))
-        self.assertEqual(cfg['max_watchlist'], 8)
+        self.assertEqual(cfg['max_watchlist'], 12)
         self.assertFalse(cfg['live_mode'])
         self.assertEqual(auto['AUTO_TRADING_CAP_KRW'], 0)
         self.assertFalse(auto['costs_confirmed'])

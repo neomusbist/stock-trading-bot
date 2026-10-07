@@ -26,17 +26,22 @@ def diagnose(root,stamp):
     return result
 
 def redact(value):
-    """응답코드·문구는 보존하되 인증정보 필드는 저장하지 않는다."""
+    """One snapshot-scoped context; no credential/state cache survives this call."""
+    import re
     sensitive={'token','access_token','refresh_token','appkey','secretkey','authorization','password'}
-    if isinstance(value,dict): return {k:('[REDACTED]' if k.lower() in sensitive else redact(v)) for k,v in value.items()}
-    if isinstance(value,list): return [redact(v) for v in value]
-    if isinstance(value,str):
-        import re
-        value=re.sub(r'(?i)Bearer\s+[A-Za-z0-9._-]+','Bearer [REDACTED]',value)
-        for name in ('KIWOOM_APP_KEY','KIWOOM_APP_SECRET'):
-            secret=os.getenv(name,'')
-            if secret: value=value.replace(secret,'[REDACTED]')
-    return value
+    secrets=tuple(secret for name in ('KIWOOM_APP_KEY','KIWOOM_APP_SECRET') if (secret:=os.getenv(name,'')))
+    strings={}
+    def walk(item):
+        if isinstance(item,dict):return {k:('[REDACTED]' if k.lower() in sensitive else walk(v)) for k,v in item.items()}
+        if isinstance(item,list):return [walk(v) for v in item]
+        if isinstance(item,str):
+            if item in strings:return strings[item]
+            result=re.sub(r'(?i)Bearer\s+[A-Za-z0-9._-]+','Bearer [REDACTED]',item)
+            for secret in secrets:result=result.replace(secret,'[REDACTED]')
+            strings[item]=result;return result
+        return item
+    return walk(value)
+
 
 def account_diagnostic(cfg,root,stamp,factory=None):
     from core.broker import Rest,Rejected

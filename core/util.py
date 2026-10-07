@@ -71,6 +71,25 @@ def read_json_retry(path,encoding='utf-8'):
     with _json_locks_guard: lock=_json_locks.setdefault(key,threading.RLock())
     with lock: return _read_json_retry(path,encoding)
 
+_reader_api=None
+_reader_api_lock=threading.Lock()
+
+def windows_reader_api():
+    # Cache only immutable function signatures, never any file content or state.
+    global _reader_api
+    if _reader_api is None:
+        with _reader_api_lock:
+            if _reader_api is None:
+                import ctypes
+                from ctypes import wintypes
+                api=ctypes.WinDLL('kernel32',use_last_error=True)
+                api.CreateFileW.argtypes=[wintypes.LPCWSTR,wintypes.DWORD,wintypes.DWORD,
+                    ctypes.c_void_p,wintypes.DWORD,wintypes.DWORD,wintypes.HANDLE]
+                api.CreateFileW.restype=wintypes.HANDLE
+                api.CloseHandle.argtypes=[wintypes.HANDLE]
+                _reader_api=api
+    return _reader_api
+
 def _read_json_retry(path,encoding):
     for attempt in range(6):
         try:
@@ -79,11 +98,7 @@ def _read_json_retry(path,encoding):
             # the old filename against the writer's atomic replacement.
             import ctypes,msvcrt
             from ctypes import wintypes
-            api=ctypes.WinDLL('kernel32',use_last_error=True)
-            api.CreateFileW.argtypes=[wintypes.LPCWSTR,wintypes.DWORD,wintypes.DWORD,
-                ctypes.c_void_p,wintypes.DWORD,wintypes.DWORD,wintypes.HANDLE]
-            api.CreateFileW.restype=wintypes.HANDLE
-            api.CloseHandle.argtypes=[wintypes.HANDLE]
+            api=windows_reader_api()
             handle=api.CreateFileW(str(Path(path).absolute()),0x80000000,7,None,3,0x80,None)
             if handle==wintypes.HANDLE(-1).value:
                 code=ctypes.get_last_error()

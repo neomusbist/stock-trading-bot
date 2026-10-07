@@ -7,6 +7,7 @@ from core.settings import now
 from core.util import atomic_json, number, code,read_json_retry,exception_details
 from core.strategy import size, protective_stop
 from core.broker import Rejected, AmbiguousOrder
+from core.event_log import append_jsonl,HumanConsole
 
 TERMINAL={'FILLED','CANCELED','REJECTED'}
 
@@ -29,15 +30,83 @@ class Engine:
                 if self.active_orders():
                     raise RuntimeError('전일 미해결 주문 존재: HTS/주문내역 대조 필요')
                 self.s['day']=clock().date().isoformat(); self.s['entries']={}; self.s['daily_loss']=0
-                self.s['orders']={}; self.s['excluded']=[]  # HALT requires explicit safe recovery, even across dates
+                self.s['orders']={}; self.s['entry_lifecycles']={}; self.s['entry_failures']={}; self.s['entry_diagnostics']={}; self.s['excluded']=[]  # HALT requires explicit safe recovery, even across dates
         else:
             self.s={'version':1,'day':clock().date().isoformat(),'config_hash':cfg.fingerprint(),'identity':identity,
                 'positions':{},'orders':{},'entries':{},'daily_loss':0.,'realized':0.,'cash':cfg.paper_cash,
                 'equity':cfg.account_equity,'halt':'','excluded':[],'trades':[],'sequence':0}
+        self.normalize_entry_counts()
+        if broker is not None: broker.submission_observer=self.broker_submission_started
         self.connected=False
         self.account_ok=not cfg.live_mode
         self.last_account=0.
         self.last_checkpoint=0.
+        self.console=HumanConsole()
+        self.save()
+
+    def normalize_entry_counts(self):
+        """Legacy attempts are preserved as evidence; only first-fill lifecycles count."""
+        self.s.setdefault('entry_failures',{})
+        counters=self.s.setdefault('entry_diagnostics',{})
+        for key in ('signal_count','internal_reject_count','broker_submit_count','broker_reject_count','entry_count'): counters.setdefault(key,0)
+        if self.s.get('entry_count_basis')=='FIRST_FILL_V2':
+            self.s.setdefault('entry_lifecycles',{})
+            return
+        old=dict(self.s.get('entries',{})); lifecycles={}
+        for local,o in self.s['orders'].items():
+            if o.get('side')!='BUY': continue
+            if o.get('filled',0)>0:
+                lifecycles[local]=o['symbol']; o['entry_counted']=True
+            elif o.get('status')=='REJECTED':
+                self.s['entry_failures'][o['symbol']]={'local':local,'reason':o.get('failure_reason','LEGACY_UNFILLED_REJECT'),'day':self.s['day']}
+        for sym,p in self.s['positions'].items():
+            if p.get('qty',0)>0 and str(p.get('opened','')).startswith(self.s['day']):
+                local=p.get('trade_id')
+                if not any(value==sym for value in lifecycles.values()):
+                    lifecycles[local or 'RECOVERED-'+sym]=sym
+        counts={}
+        for sym in lifecycles.values(): counts[sym]=counts.get(sym,0)+1
+        self.s['entry_counter_migration']={'at':self.clock().isoformat(),'legacy_attempt_entries':old,'filled_entries':dict(counts)}
+        self.s.update(entries=counts,entry_lifecycles=lifecycles,entry_count_basis='FIRST_FILL_V2')
+        self.s['entry_diagnostics']['entry_count']=sum(counts.values())
+
+    def diagnostic(self,key):
+        counters=self.s.setdefault('entry_diagnostics',{})
+        counters[key]=counters.get(key,0)+1
+
+    def entry_failure(self,symbol):
+        return self.s.get('entry_failures',{}).get(symbol)
+
+    def pending_entry_lifecycles(self):
+        return sum(1 for o in self.active_orders(side='BUY') if not o.get('entry_counted') and not o.get('filled'))
+
+    def entry_slots_available(self):
+        return sum(self.s['entries'].values())+self.pending_entry_lifecycles()<self.c.max_entries_per_day
+
+    def canceled_entry(self,o):
+        if o['side']=='BUY' and not o.get('filled'):
+            self.s['entry_failures'][o['symbol']]={'local':o['local'],'reason':'ZERO_FILL_CANCELED_NO_AUTO_RETRY','day':self.s['day']}
+
+    def broker_submission_started(self,api,body):
+        """Called after the final HTTP guard, immediately before transport."""
+        if api!='kt10000': return
+        intents=[o for o in self.active_orders(code(body['stk_cd']),'BUY') if o['status']=='INTENT']
+        if len(intents)!=1: raise Rejected('전송 계측 의도 불일치')
+        self.mark_broker_submit(intents[0],confirmed_boundary=True)
+
+    def mark_broker_submit(self,o,confirmed_boundary=False):
+        if o['side']=='BUY' and not o.get('broker_submit_counted'):
+            o['broker_submit_counted']=True
+            o['submit_evidence']='HTTP_BOUNDARY' if confirmed_boundary else 'ACCEPTED_OR_EXPLICIT_RESPONSE'
+            self.diagnostic('broker_submit_count'); self.save()
+
+    def reject_order(self,o,reason,broker_response=False):
+        o['status']='REJECTED'; o['failure_reason']=str(reason)
+        if o['side']=='BUY':
+            self.diagnostic('broker_reject_count' if broker_response else 'internal_reject_count')
+            if broker_response: self.mark_broker_submit(o)
+            # Failed symbols remain fail-closed for this day; no retry loop is introduced.
+            self.s.setdefault('entry_failures',{})[o['symbol']]={'local':o['local'],'reason':str(reason),'day':self.s['day']}
         self.save()
 
     def save(self):
@@ -45,10 +114,8 @@ class Engine:
 
     def event(self,kind,**data):
         row={'time':self.clock().isoformat(),'event':kind,**data}
-        with (self.folder/'events.jsonl').open('a',encoding='utf-8') as f:
-            f.write(json.dumps(row,ensure_ascii=False,allow_nan=False)+'\n')
-        if kind not in ('STOP_RAISED',):
-            print(json.dumps(row,ensure_ascii=False))
+        append_jsonl(self.folder/'events.jsonl',row)
+        self.console.emit(row,self.clock().timestamp())
 
     def halt(self,reason):
         if (self.s.get('halt') and self.s['halt']!='데이터/상태 오류: PermissionError'
@@ -101,46 +168,56 @@ class Engine:
 
     def submit(self,side,symbol,qty,limit=0,signal=None):
         self.s['sequence']+=1; local=f'{self.s["day"]}-{self.s["sequence"]}'
+        sess=(signal or {}).get('session') or (self.current_session() if hasattr(self,'current_session') else 'REGULAR')
+        venue=(signal or {}).get('venue') or ('SOR' if sess=='AFTER' else 'KRX')
         o={'local':local,'id':'','symbol':symbol,'side':side,'qty':qty,'limit':limit,'filled':0,'amount':0.,
-           'status':'INTENT','created':self.clock().isoformat(),'signal':signal,'cancel_id':''}
+           'status':'INTENT','created':self.clock().isoformat(),'signal':signal,'cancel_id':'',
+           'session':sess,'venue':venue}
         self.s['orders'][local]=o
         self.save()  # 전송 전에 의도를 저장해 응답 유실 시 중복 주문을 막는다.
         try:
             if self.live_order_allowed(side,symbol,qty,limit,signal):
-                o['id']=self.broker.submit(side,symbol,qty,limit)
+                try:
+                    o['id']=self.broker.submit(side,symbol,qty,limit,venue=venue,session=sess)
+                except TypeError:
+                    o['id']=self.broker.submit(side,symbol,qty,limit)
                 if not o['id']: raise AmbiguousOrder('실제 주문번호 없음: 자동 재전송 금지')
             else:
                 if self.c.live_mode or (signal or {}).get('policy')=='TEST_CAPITAL_RELEASE':
                     raise Rejected('ORDER_BOUNDARY_BLOCKED: 실제 주문 허가 없음')
                 o['id']='PAPER-'+local
+            if not o['id'].startswith('PAPER-'): self.mark_broker_submit(o)
             o['execution']='PAPER' if o['id'].startswith('PAPER-') else 'REAL'
             o['status']='ACCEPTED'; self.save(); self.event('ORDER_ACCEPTED',local=local,side=side,symbol=symbol,qty=qty,execution=o['execution'],order_id=o['id'])
         except Rejected as e:
             o['status']='REJECTED'; o['execution']='BLOCKED' if str(e).startswith('ORDER_BOUNDARY_BLOCKED') else 'BROKER_REJECTED'
-            o['failure_reason']=str(e); self.save(); self.event('ORDER_REJECTED',local=local,reason=str(e),execution=o['execution'])
+            confirmed=getattr(e,'response',None) is not None
+            self.reject_order(o,e,broker_response=confirmed)
+            self.event('ORDER_REJECTED',local=local,reason=str(e),execution=o['execution'],broker_response_confirmed=confirmed,api=getattr(e,'api',None),response=getattr(e,'response',None))
         except Exception as e:
             o['status']='UNKNOWN'; o['execution']='UNKNOWN'; self.save(); self.halt('주문결과 불명확: 자동 재전송 금지, HTS 확인 필요')
             self.event('ORDER_UNKNOWN',local=local,**exception_details(e))
         return o
 
-    def enter(self,signal,tick):
+    def enter(self,signal,tick,*,count_signal=True):
         c=self.c; sym=signal['symbol']
+        if count_signal:self.diagnostic('signal_count')
         if self.clock().date().isoformat()!=self.s['day']:
-            self.halt('거래일 변경: 신규 실행 필요'); return None
+            self.halt('거래일 변경: 신규 실행 필요'); self.diagnostic('internal_reject_count'); return None
         if not self.connected or not self.account_ok or self.s['halt'] or sym in self.s['excluded'] or sym in self.s['positions']:
-            return None
+            self.diagnostic('internal_reject_count'); return None
         if c.live_mode and time.monotonic()-self.last_account>c.reconcile_seconds*3:
-            return None
+            self.diagnostic('internal_reject_count'); return None
         if not self.entry_window():
-            return None
+            self.diagnostic('internal_reject_count'); return None
         if not tick.regular or abs((self.clock()-tick.time).total_seconds())>c.stale_seconds:
-            return None
-        if self.active_orders(sym) or self.s['entries'].get(sym,0)>=c.max_entries_per_symbol or sum(self.s['entries'].values())>=c.max_entries_per_day:
-            return None
-        # 매수 접수만 있어도 자금/위험을 예약한다. 거절도 당일 시도 횟수에 포함한다.
+            self.diagnostic('internal_reject_count'); return None
+        if self.entry_failure(sym) or self.active_orders(sym) or self.s['entries'].get(sym,0)>=c.max_entries_per_symbol or not self.entry_slots_available():
+            self.diagnostic('internal_reject_count'); return None
+        # 접수는 자금/위험을 예약하지만 진입 횟수는 최초 체결 때만 기록한다.
         buys=self.active_orders(side='BUY')
         if len(set(self.s['positions'])|{o['symbol'] for o in buys})>=c.max_positions:
-            return None
+            self.diagnostic('internal_reject_count'); return None
         reserved=sum(o['qty']*o['limit']*(1+c.roundtrip_cost_fraction) for o in buys)
         used_risk=sum(max(0,p['avg']-p['stop']+p['avg']*(c.roundtrip_cost_fraction+c.exit_slippage_fraction))*p['qty'] for p in self.s['positions'].values())
         used_risk+=sum((o['limit']-o['signal']['stop']+o['limit']*(c.roundtrip_cost_fraction+c.exit_slippage_fraction))*(o['qty']-o['filled']) for o in buys)
@@ -148,8 +225,7 @@ class Engine:
         remaining=equity*c.max_daily_loss_fraction-self.s['daily_loss']-used_risk
         qty=self.quantity(signal,equity,self.s['cash']-reserved,remaining)
         if qty<=0:
-            self.event('SIGNAL_BLOCKED',symbol=sym,reason='수량 0 / 계좌 위험 한도'); return None
-        self.s['entries'][sym]=self.s['entries'].get(sym,0)+1
+            self.event('SIGNAL_BLOCKED',symbol=sym,reason='수량 0 / 계좌 위험 한도'); self.diagnostic('internal_reject_count'); return None
         self.event('ENTRY_CANDIDATE',**signal,qty=qty)
         o=self.submit('BUY',sym,qty,signal['limit'],signal)
         if o and not c.live_mode and o['status']=='ACCEPTED':
@@ -176,6 +252,10 @@ class Engine:
                     'exit_requested':False,'exit_reason':'','exit_attempts':0,'qty_blocked':False,'last_tick':self.clock().isoformat()}
                 positions[sym]=p
                 self.position_created(p,o)
+            if o['local'] not in self.s['entry_lifecycles']:
+                self.s['entry_lifecycles'][o['local']]=sym; o['entry_counted']=True
+                self.s['entries'][sym]=self.s['entries'].get(sym,0)+1
+                self.diagnostic('entry_count')
             p['avg']=(p['qty']*p['avg']+delta*price)/(p['qty']+delta); p['qty']+=delta
             p['initial_r']=max(1,p['avg']-p['initial_stop'])
             p['high']=max(p['high'],price); p['low']=min(p['low'],price)
@@ -223,7 +303,7 @@ class Engine:
             total=int(number(v['900']))-int(number(v['902']))
             self.cumulative_fill(known,total,number(v['903']))
         elif v.get('919') not in (None,'','0') or v.get('913')=='거부':
-            known['status']='REJECTED'; self.save()
+            self.reject_order(known,'실시간 거부',broker_response=True)
             self.event('ORDER_REJECTED',local=known['local'],reason='실시간 거부')
 
     def cancel(self,o):
@@ -232,8 +312,13 @@ class Engine:
         o['status']='CANCEL_SENT'; self.save()
         try:
             if self.c.live_mode:
-                o['cancel_id']=self.broker.cancel(o['symbol'],o['id'])
-            else: o['status']='CANCELED'
+                venue=o.get('venue') or 'KRX'
+                try:
+                    o['cancel_id']=self.broker.cancel(o['symbol'],o['id'],venue=venue)
+                except TypeError:
+                    o['cancel_id']=self.broker.cancel(o['symbol'],o['id'])
+            else:
+                o['status']='CANCELED'; self.canceled_entry(o)
             self.save(); self.event('CANCEL_SENT',local=o['local'])
         except Exception:
             o['status']='UNKNOWN'; self.save(); self.halt('취소 결과 불명확: 자동 재전송 금지')
@@ -241,7 +326,7 @@ class Engine:
     def request_exit(self,symbol,reason):
         p=self.s['positions'].get(symbol)
         if p:
-            p['exit_requested']=True; p['exit_reason']=p['exit_reason'] or reason; self.save()
+            p['exit_requested']=True; p['exit_reason']=p.get('exit_reason') or reason; self.save()
         for o in self.active_orders(symbol,'BUY'): self.cancel(o)
 
     def drive_exits(self,prices=None):
@@ -286,7 +371,7 @@ class Engine:
             if (current-datetime.fromisoformat(o['created'])).total_seconds()>self.c.order_timeout_seconds:
                 self.cancel(o)
         for sym,p in list(self.s['positions'].items()):
-            if (current-datetime.fromisoformat(p['last_tick'])).total_seconds()>self.c.position_stale_seconds:
+            if p.get('last_tick') and (current-datetime.fromisoformat(p['last_tick'])).total_seconds()>self.c.position_stale_seconds:
                 self.halt('보유종목 시세 지연: 긴급 청산 요청')
                 self.request_exit(sym,'시세 지연/연결 단절')
         self.drive_exits(prices)
@@ -313,7 +398,7 @@ class Engine:
                 if number(r['cntr_tot_amt'])>0:
                     self.cumulative_fill(o,filled,number(r['cntr_tot_amt']))
             elif o['status']=='CANCEL_SENT':
-                o['status']='CANCELED'
+                o['status']='CANCELED'; self.canceled_entry(o)
             elif o['status'] not in TERMINAL:
                 self.halt('주문 접수 후 체결/취소 상태 미확인')
         for sym,p in self.s['positions'].items():

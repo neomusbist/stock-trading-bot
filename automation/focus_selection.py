@@ -3,6 +3,7 @@
 main thread에 bounded notification을 전달하고, main thread가 WATCH focus를 결정한다.
 """
 import time
+from datetime import datetime
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Set
 
@@ -60,6 +61,16 @@ def calculate_tier(gates: dict, setup_trials: list, row: dict = None) -> int:
     if not gates:
         return TIER_RANK_ONLY
 
+    # An explicitly evaluated B/C uses its existing price gates; acceleration is observational.
+    independent=[t for t in (setup_trials or []) if t.get('setup') in {'B','C'}
+        and t.get('acceleration_required') is False and t.get('candidate_generated') is True]
+    safe_keys=('warmup','spread','structure','market_status')
+    independent=[t for t in independent if t.get('gates',{}).get('liquidity',{}).get('result')=='PASS']
+    if independent and all(gates.get(k,{}).get('result')=='PASS' for k in safe_keys):
+        if any(t.get('entry_ready') is True and t.get('gates') and
+               all(v.get('result')=='PASS' for v in t['gates'].values()) for t in independent):return TIER_SIGNAL_READY
+        return TIER_GEOMETRY_BASE_READY
+
     # 가속 또는 유동성 명시적 FAIL이면 TIER_FRESH_WEAK
     accel = gates.get('acceleration', {}).get('result')
     liq = gates.get('liquidity', {}).get('result')
@@ -89,10 +100,11 @@ def calculate_tier(gates: dict, setup_trials: list, row: dict = None) -> int:
     return TIER_MOMENTUM_BASE_READY
 
 def candidate_priority_tuple(row: dict, tier: int, is_existing: bool = False) -> tuple:
-    """우선순위 튜플: (tier, -effective_score, overhead_share, symbol)
+    """우선순위 튜플: (tier, -effective_score, incumbent_tie, overhead_share, symbol)
     - tier: 0 (SIGNAL_READY) ~ 4 (FRESH_WEAK). 작을수록 우선.
     - effective_score: discovery_score 또는 score.
       단일 틱 flip-flop 방지를 위해 동일 티어 내 기존 WATCH 종목에는 +2.0점 히스테리시스 부여.
+    - incumbent_tie: +2 유지여유와 정확히 동점이면 기존 WATCH를 유지.
     - overhead_share: 매물대 부담. 작을수록 우선.
     - symbol: 동률 시 결정적(deterministic) 정렬.
     """
@@ -100,7 +112,7 @@ def candidate_priority_tuple(row: dict, tier: int, is_existing: bool = False) ->
     score = float(raw_score if raw_score is not None else 0.0)
     effective_score = score + (2.0 if is_existing else 0.0)
     overhead = float(row.get('overhead_share_estimate', 0.0) or 0.0)
-    return (tier, -effective_score, overhead, row.get('code', ''))
+    return (tier, -effective_score, 0 if is_existing else 1, overhead, row.get('code', ''))
 
 def select_focus(
     current_watch: Dict[str, dict],
@@ -152,12 +164,16 @@ def select_focus(
     for r in eligible_candidates:
         sym = r['code']
         r_info = readiness_map.get(sym, {})
+        if clock_iso and r_info.get('timestamp'):
+            try:fresh=0<=(datetime.fromisoformat(clock_iso)-datetime.fromisoformat(r_info['timestamp'])).total_seconds()<=15
+            except (ValueError,TypeError):fresh=False
+            if not fresh:r_info={}
         tier = r_info['tier'] if 'tier' in r_info else calculate_tier(r_info.get('gates', {}), r_info.get('setup_trials', []), r)
         tier_map[sym] = tier
         is_existing = (sym in prev_watch_symbols)
         priority_tuples[sym] = candidate_priority_tuple(r, tier, is_existing=is_existing)
 
-    # 정렬: (tier, -effective_score, overhead, symbol)
+    # 정렬: (tier, -effective_score, incumbent_tie, overhead, symbol)
     eligible_candidates.sort(key=lambda r: priority_tuples[r['code']])
 
     selected_candidates = eligible_candidates[:max_watchlist]
