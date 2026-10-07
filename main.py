@@ -280,6 +280,9 @@ def main():
         if args.check_connection: check_connection(cfg); return 0
         if args.check_account: check_account(cfg); return 0
         if not args.demo and not args.offline and not args.collect_only and not args.legacy_monitor:
+            if cfg.live_mode and not args.operational_pilot:
+                from automation.decisions import check_experiment_consistency
+                check_experiment_consistency(cfg)
             from automation.runner import run
             result=run(cfg,ROOT,args.paper_seconds,readiness_check=args.readiness_check,**({"recover_pilot":True} if args.recover_pilot else {}),**({'operational_pilot':True} if args.operational_pilot else {}))
             print(json.dumps(result,ensure_ascii=False)); return 0 if not (args.paper_seconds or args.readiness_check) or result['passed'] is not False else 1

@@ -37,9 +37,20 @@ def run(root=ROOT,clock=now,supervise=None,token=None,purpose='CONTINUOUS'):
         if not control_supported(clock()): raise ValueError('지원시간 밖: 계속 감시를 시작하지 않습니다.')
         with ProcessLock(root/'runtime/supervisor.lock'),ProcessLock(root/'runtime/process.lock'): pass
         policy=Policy(root/'runtime/automation_policy.json'); initial=policy.mode
+        cfg=load_config(root/'config.json'); auto=load_automation(root/'automation.json')
+        if purpose=='CONTINUOUS' and cfg.live_mode:
+            from automation.decisions import check_experiment_consistency
+            try:
+                check_experiment_consistency(cfg)
+            except ValueError as e:
+                atomic_json(root/'runtime/operator_runner.json',{'pid':os.getpid(),'identity':process_identity(os.getpid()),'token':token,'purpose':purpose,
+                    'started':clock().isoformat(),'initial_mode':initial,'mode':initial,'status':'CRASHED',
+                    'finished':clock().isoformat(),'heartbeat':clock().isoformat(),'exit_code':1,
+                    'monitor_error':str(e),'error_event':'EXPERIMENT_CONSISTENCY_FAILURE'})
+                raise
         record={'pid':os.getpid(),'identity':process_identity(os.getpid()),'token':token,'purpose':purpose,
                 'started':clock().isoformat(),'initial_mode':initial,'mode':initial,'status':'STARTING','heartbeat':clock().isoformat(),
-                'config_hash':load_config(root/'config.json').fingerprint(),'auto_hash':load_automation(root/'automation.json').fingerprint()}
+                'config_hash':cfg.fingerprint(),'auto_hash':auto.fingerprint()}
         path=root/'runtime/operator_runner.json'; atomic_json(path,record)
         done=threading.Event()
         def update():

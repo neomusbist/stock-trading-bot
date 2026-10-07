@@ -278,6 +278,69 @@ class TestV13Risk2Consistency(unittest.TestCase):
             ex_cfg = load_config(repo_example)
             self.assertTrue(check_experiment_consistency(ex_cfg, build_id=BUILD_ID, experiment=STRATEGY_EXPERIMENT))
 
+    def test_i_main_startup_fails_closed_before_runner_on_mismatch(self):
+        """I: main.py 실행 시 mismatched config(live_mode=True, risk_fraction=0.01)이면
+        runner 진입 전에 check_experiment_consistency(cfg)로 ValueError 발생 및 runner 미호출."""
+        import main
+        mismatched_cfg = Config(live_mode=True, risk_fraction=0.01, max_daily_loss_fraction=0.04)
+        
+        with patch.object(main, 'ROOT', self.root), \
+             patch.object(main, 'load_config', return_value=mismatched_cfg), \
+             patch.object(main, 'prerequisites'), \
+             patch.object(main, 'load_credentials'), \
+             patch.object(main, 'now', return_value=self.clock[0]), \
+             patch('automation.runner.run') as mock_run, \
+             patch('sys.argv', ['main.py']):
+            with self.assertRaises(ValueError) as ctx:
+                main.main()
+            self.assertIn("EXPERIMENT_CONSISTENCY_FAILURE", str(ctx.exception))
+            mock_run.assert_not_called()
+
+    def test_j_main_startup_succeeds_on_matching_config(self):
+        """J: main.py 실행 시 matching config(live_mode=True, risk 0.02, daily 0.04)이면
+        정상적으로 runner.run()에 진입."""
+        import main
+        with patch.object(main, 'ROOT', self.root), \
+             patch.object(main, 'load_config', return_value=self.cfg_risk2), \
+             patch.object(main, 'prerequisites'), \
+             patch.object(main, 'load_credentials'), \
+             patch.object(main, 'now', return_value=self.clock[0]), \
+             patch('automation.runner.run', return_value={'passed': True}) as mock_run, \
+             patch('sys.argv', ['main.py']):
+            res = main.main()
+            self.assertEqual(res, 0)
+            mock_run.assert_called_once()
+
+    def test_k_operator_runner_fails_closed_on_mismatch(self):
+        """K: operator_runner 실행 경로에서 mismatched live config 시 fail-closed 및 CRASHED 기록, trading_on=False 확인."""
+        import operator_runner
+        folder = self.root / 'runtime'
+        folder.mkdir(parents=True, exist_ok=True)
+        mismatched_cfg = Config(live_mode=True, risk_fraction=0.01, max_daily_loss_fraction=0.04)
+        atomic_json(self.root / 'config.json', asdict(mismatched_cfg))
+        atomic_json(self.root / 'automation.json', asdict(self.auto_cap20000))
+        atomic_json(self.root / 'runtime/automation_policy.json', {
+            'mode': 'LIVE', 'live_authorized': True, 'releases': {}
+        })
+        
+        # operator_runner.run() 직접 실행 시 CRASHED 기록 및 ValueError
+        with patch.object(operator_runner, 'ROOT', self.root), \
+             patch.object(operator_runner, 'control_supported', return_value=True), \
+             patch.object(operator_runner, 'now', return_value=self.clock[0]):
+            with self.assertRaises(ValueError) as ctx:
+                operator_runner.run(root=self.root, clock=lambda: self.clock[0], purpose='CONTINUOUS')
+            self.assertIn("EXPERIMENT_CONSISTENCY_FAILURE", str(ctx.exception))
+            
+            run_json = json.loads((self.root / 'runtime/operator_runner.json').read_text(encoding='utf-8'))
+            self.assertEqual(run_json['status'], 'CRASHED')
+            self.assertEqual(run_json['error_event'], 'EXPERIMENT_CONSISTENCY_FAILURE')
+
+        # operator_service.public_status() 확인: CRASHED 상태이므로 trading_on=False
+        svc = OperatorService(self.root, clock=lambda: self.clock[0], gateway=Mock())
+        status = svc.public_status()
+        self.assertFalse(status['trading_on'])
+        self.assertFalse(status['process']['running'])
+
 
 if __name__ == '__main__':
     unittest.main()

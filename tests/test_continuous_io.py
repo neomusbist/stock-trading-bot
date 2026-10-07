@@ -105,7 +105,8 @@ operator_runner.run(root,clock,stub,token='offline-heartbeat')
                 status=self.s.public_status(); info=status['process']
                 self.assertTrue(info['running']); self.assertTrue(info['process_heartbeat_fresh'])
                 heartbeats.add(info['heartbeat']); self.assertFalse(status['trading_on'])
-                market.add(read_json(self.root/'runtime/automation-production/heartbeat.json').get('time'))
+                hb_m=read_json(self.root/'runtime/automation-production/heartbeat.json',{})
+                if hb_m.get('time'): market.add(hb_m['time'])
                 self.assertEqual(self.s.start_continuous()['verdict'],'ALREADY_RUNNING'); checks+=1
                 time.sleep(.01)
         finally:
