@@ -5,6 +5,22 @@ STRATEGY_VERSION='V1.1-policy-20261001'
 BUILD_ID='V1.3-preopen-risk2-20261007'
 STRATEGY_EXPERIMENT='20261007-risk2-daily4-cap20000'  # 위험관리 실험; A/B/C 신호 정의는 동일
 
+def check_experiment_consistency(cfg, build_id=BUILD_ID, experiment=STRATEGY_EXPERIMENT):
+    """BUILD_ID 또는 STRATEGY_EXPERIMENT에 risk2/daily4가 적혀 있는데
+    runtime risk_fraction/max_daily_loss_fraction이 0.02/0.04가 아니면 ValueError를 발생시킨다."""
+    mismatches = []
+    if 'risk2' in str(build_id) or 'risk2' in str(experiment):
+        val = getattr(cfg, 'risk_fraction', None)
+        if val is None or abs(float(val) - 0.02) > 1e-6:
+            mismatches.append(f"risk2 declared in {build_id}/{experiment}, but risk_fraction={val} != 0.02")
+    if 'daily4' in str(build_id) or 'daily4' in str(experiment):
+        val = getattr(cfg, 'max_daily_loss_fraction', None)
+        if val is None or abs(float(val) - 0.04) > 1e-6:
+            mismatches.append(f"daily4 declared in {build_id}/{experiment}, but max_daily_loss_fraction={val} != 0.04")
+    if mismatches:
+        raise ValueError("EXPERIMENT_CONSISTENCY_FAILURE: " + "; ".join(mismatches))
+    return True
+
 def reason_code(reason,position):
     exact={'승인 자동매매 자본 0원':'AUTO_CAP_ZERO','기존 보유: 추가매수 금지':'EXTERNAL_HOLD_NO_BUY',
            'LIVE 명시 승인 누락':'LIVE_NOT_AUTHORIZED','live_mode=false':'LIVE_MODE_DISABLED',

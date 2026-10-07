@@ -34,7 +34,7 @@ class TestV13AttributeErrorAndFailClosed(unittest.TestCase):
         self.clock = [datetime(2026, 10, 7, 9, 0, 22, tzinfo=KST)]
         
         # 기본 설정
-        self.cfg = Config(live_mode=True, max_watchlist=5)
+        self.cfg = Config(live_mode=True, max_watchlist=5, risk_fraction=0.02, max_daily_loss_fraction=0.04)
         self.auto = AutomationConfig(AUTO_TRADING_CAP_KRW=20000, costs_confirmed=True)
         atomic_json(self.root / 'config.json', asdict(self.cfg))
         atomic_json(self.root / 'automation.json', asdict(self.auto))
