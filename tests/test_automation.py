@@ -64,13 +64,11 @@ class AutomationTests(unittest.TestCase):
         self.auto=replace(self.auto,AUTO_TRADING_CAP_KRW=0); self.engine=self.make_engine(); self.engine.reconcile(self.snapshot)
         self.engine.connected=True; self.engine.market='3'; self.engine.enter(self.signal(),self.tick())
         self.assertEqual(self.broker.orders,[]); self.assertEqual(self.engine.s['cash'],0)
-    def test_default_armed(self): self.assertEqual(Policy(self.folder/'other.json').mode,'ARMED')
-    def test_armed_generates_no_paper_or_real_order(self):
+    def test_default_armed_and_generates_no_order(self):
+        self.assertEqual(Policy(self.folder/'other.json').mode,'ARMED')
         self.policy.command('ARMED'); self.engine.enter(self.signal(),self.tick()); self.assertFalse(self.engine.s['orders'])
-    def test_locked_gwang_buy_forced(self):
+    def test_hard_locked_symbols_forbid_forced_orders(self):
         self.engine.enter(self.signal('017900'),self.tick(sym='017900')); self.engine.submit('BUY','017900',1,10020,self.signal('017900'))
-        self.assertEqual(self.broker.orders,[])
-    def test_locked_samsung_forced_sell(self):
         self.engine.s['positions']['005930']={'ownership':'BOT','qty':10,'qty_blocked':False}
         self.assertIsNone(self.engine.submit('SELL','005930',10)); self.assertEqual(self.broker.orders,[])
     def test_lock_requires_explicit_release(self):
@@ -87,10 +85,9 @@ class AutomationTests(unittest.TestCase):
         self.snapshot['holdings']={'052260':{'qty':90000,'available':90000,'avg':5822},'005930':{'qty':10000,'available':10000,'avg':60000}}
         self.engine.reconcile(self.snapshot); self.assertEqual(self.engine.risk_equity(),1000000)
         self.assertIsNone(self.engine.submit('SELL','052260',1))
-    def test_ledger_never_increases_when_deposit_or_legacy_sale(self):
+    def test_cash_reconciliation_bounds_available_capital(self):
         self.snapshot['cash']=9000000; self.engine.reconcile(self.snapshot)
         self.assertEqual(self.engine.s['cash'],1000000); self.assertEqual(self.engine.a.capital_limit,1000000)
-    def test_available_capital_min_actual_cash(self):
         self.snapshot['cash']=100; self.engine.reconcile(self.snapshot); self.engine.enter(self.signal(),self.tick())
         self.assertFalse(self.broker.orders)
     def test_no_arbitrary_14_cutoff(self): self.assertIsNotNone(self.engine.enter(self.signal(),self.tick()))
@@ -102,19 +99,20 @@ class AutomationTests(unittest.TestCase):
         self.engine.enter(self.signal(),self.tick()); self.policy.command('STOP'); self.engine.controls()
         self.assertEqual(len(self.broker.cancels),1); count=len(self.broker.orders)
         self.engine.enter(self.signal('999980'),self.tick(sym='999980')); self.assertEqual(len(self.broker.orders),count)
-    def test_stop_protection_still_manages_and_sells_bot(self):
+    def test_stop_and_stop_flat_manage_bot_exits(self):
+        # 1. stop protection still triggers stop loss
         self.buy(); self.policy.command('STOP'); self.engine.controls(); self.engine.on_tick(self.tick(9750))
         self.assertEqual(self.broker.orders[-1][0],'SELL')
-    def test_stop_flat_requests_bot_flat(self):
+        # 2. stop_flat requests immediate flat
+        self.setUp()
         self.buy(); self.policy.command('STOP_FLAT'); self.engine.controls()
         self.assertTrue(self.engine.s['positions'][SYMBOL]['exit_requested']); self.assertEqual(self.broker.orders[-1][0],'SELL')
     def test_kill_waits_fresh_reconcile(self):
         self.buy(); self.policy.command('KILL'); self.engine.controls(); self.assertEqual(len(self.broker.orders),1)
         self.snapshot['holdings']=dict(self.engine.actual); self.engine.reconcile(self.snapshot); self.engine.controls()
         self.assertEqual(self.broker.orders[-1][0],'SELL')
-    def test_disconnected_no_buy(self):
+    def test_connection_and_reconcile_gate_for_entries(self):
         self.engine.disconnect(); self.engine.enter(self.signal(),self.tick()); self.assertFalse(self.broker.orders)
-    def test_reconnect_requires_reconcile(self):
         self.engine.account_ok=False; self.engine.connected=True; self.engine.enter(self.signal(),self.tick()); self.assertFalse(self.broker.orders)
         self.engine.reconcile(self.snapshot); self.assertIsNotNone(self.engine.enter(self.signal(),self.tick()))
     def test_restart_restores_position_and_requires_account(self):
@@ -125,17 +123,17 @@ class AutomationTests(unittest.TestCase):
     def test_quantity_mismatch_blocks_sell(self):
         self.buy(); self.snapshot['holdings']={}; self.engine.reconcile(self.snapshot); self.engine.request_exit(SYMBOL,'forced'); self.engine.drive_exits()
         self.assertEqual(len(self.broker.orders),1)
-    def test_daily_loss_blocks(self):
+    def test_loss_limits_block_entries(self):
         self.engine.s['daily_loss']=self.auto.capital_limit*self.cfg.max_daily_loss_fraction
+        self.engine.enter(self.signal(),self.tick()); self.assertFalse(self.broker.orders)
+        self.engine.s['daily_loss']=0
+        self.engine.s['automation']['consecutive_losses']=self.auto.max_consecutive_losses
         self.engine.enter(self.signal(),self.tick()); self.assertFalse(self.broker.orders)
     def test_symbol_reentry_and_cooldown(self):
         self.buy(); self.engine.s['positions']={}; self.engine.s['automation']['last_exit'][SYMBOL]=self.clock[0].isoformat()
         self.engine.enter(self.signal(),self.tick()); self.assertEqual(len(self.broker.orders),1)
         self.clock[0]+=timedelta(hours=1); self.engine.last_account=time.monotonic()
         self.engine.enter(self.signal(),self.tick()); self.assertEqual(len(self.broker.orders),1)
-    def test_consecutive_losses_block(self):
-        self.engine.s['automation']['consecutive_losses']=self.auto.max_consecutive_losses
-        self.engine.enter(self.signal(),self.tick()); self.assertFalse(self.broker.orders)
     def test_unconfirmed_costs_no_live(self):
         self.auto=replace(self.auto,costs_confirmed=False); self.engine=self.make_engine(); self.engine.reconcile(self.snapshot)
         self.engine.connected=True; self.engine.market='3'; self.engine.enter(self.signal(),self.tick()); self.assertFalse(self.broker.orders)
@@ -202,10 +200,9 @@ class RadarAndPatternTests(unittest.TestCase):
         self.radar.update([self.item()],self.evaluate,START)
         self.assertTrue(self.radar.update([],self.evaluate,START+timedelta(minutes=1))[1])
         self.assertFalse(self.radar.update([],self.evaluate,START+timedelta(minutes=2))[1])
-    def test_single_source_not_buy(self):
+    def test_single_source_or_unknown_structure_not_watched(self):
         item=self.item(); del item['source_details']['ka10029']
         self.assertFalse(self.radar.update([item],self.evaluate,START)[1])
-    def test_unknown_structure_not_watch(self):
         self.assertFalse(self.radar.update([self.item()],lambda x:{'status':'UNKNOWN','reason':'missing'},START)[1])
     def test_pattern_b_pullback_requires_low_volume_and_support(self):
         d=PatternDetector(self.cfg,self.auto,self.costs)

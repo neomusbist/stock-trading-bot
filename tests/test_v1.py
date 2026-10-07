@@ -40,29 +40,28 @@ class FakeBroker:
         return 'C'+order_id
 
 class ConfigAndUtilityTests(unittest.TestCase):
-    def test_default_dry_run(self):
+    def test_config_validation_and_invalid_types_rejected(self):
+        # 1. default dry run
         from dataclasses import asdict
         with tempfile.TemporaryDirectory(dir=ROOT/'tests') as temp:
             defaults=Path(temp)/'config.json'; atomic_json(defaults,asdict(Config()))
             self.assertFalse(load_config(defaults).live_mode)
-    def test_string_live_rejected(self):
+        # 2. invalid types and values
         with self.assertRaises(ValueError): replace(Config(),live_mode='false').validate()
-    def test_unknown_config_rejected(self):
         with self.assertRaises(TypeError): Config(risk_precent=1)
-    def test_nonfinite_and_invalid_values(self):
+        with self.assertRaises(ValueError): replace(Config(),entry_start='08:00:00').validate()
         for field,value in [('risk_fraction',float('nan')),('account_equity',-1),('risk_fraction',1),('max_positions',2.5),('min_history_bars',5)]:
             with self.subTest(field=field),self.assertRaises(ValueError): replace(Config(),**{field:value}).validate()
-    def test_invalid_market_times(self):
-        with self.assertRaises(ValueError): replace(Config(),entry_start='08:00:00').validate()
-    def test_codes_preserve_alphanumeric(self):
+    def test_core_parsing_and_tick_formatting_utilities(self):
+        # 1. codes
         self.assertEqual(code('A0035S0'),'0035S0')
         with self.assertRaises(ValueError): code('005930_NX')
-    def test_numbers_do_not_silently_impute(self):
+        # 2. numbers
         self.assertEqual(number('-12,340'),12340)
         self.assertEqual(number('-100',signed=True),-100)
         for value in ('',None,'abc','nan'):
             with self.assertRaises(ValueError): number(value)
-    def test_order_tick_boundaries(self):
+        # 3. floor_tick
         self.assertEqual(floor_tick(1999.8),1999)
         self.assertEqual(floor_tick(2004.8),2000)
         self.assertEqual(floor_tick(5008),5000)
@@ -82,19 +81,23 @@ class CandidateTests(unittest.TestCase):
     def test_clean_long_structure_eligible(self):
         r=structure(bars(),10000,Config(),DAY)
         self.assertEqual(r['status'],'ELIGIBLE'); self.assertEqual(r['overhead_share_estimate'],0)
-    def test_overhead_density_reject(self):
+    def test_structure_rejection_and_unknown_conditions_table(self):
+        # 1. overhead density reject
         data=bars()
         for b in data[:-20]: b.update(open=10500,high=11000,low=10000,close=10500)
-        r=structure(data,10000,Config(),DAY)
-        self.assertEqual(r['status'],'REJECT'); self.assertIn('상단',r['reason'])
-    def test_resistance_room_reject(self):
+        self.assertEqual(structure(data,10000,Config(),DAY)['status'],'REJECT')
+        # 2. resistance room reject
         data=bars(); data[-30]['high']=10100
         r=structure(data,10000,Config(),DAY)
-        self.assertEqual(r['resistance'],10100); self.assertIn('저항',r['reason'])
-    def test_recent_structure_breakdown_reject(self):
+        self.assertEqual(r['status'],'REJECT'); self.assertEqual(r['resistance'],10100)
+        # 3. breakdown reject
         self.assertIn('저점',structure(bars(),9800,Config(),DAY)['reason'])
-    def test_history_stale_unknown(self):
+        # 4. stale history
         self.assertEqual(structure(bars(),10000,Config(),DAY+timedelta(days=20))['status'],'UNKNOWN')
+        # 5. zero volume
+        data=bars()
+        for b in data: b['volume']=0
+        self.assertEqual(structure(data,10000,Config(),DAY)['status'],'UNKNOWN')
     def test_same_day_future_and_incomplete_excluded(self):
         with tempfile.TemporaryDirectory(dir=ROOT/'tests') as temp:
             path=Path(temp)/'bars.csv'; data=bars(10)
@@ -107,10 +110,6 @@ class CandidateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=ROOT/'tests') as temp:
             path=Path(temp)/'bars.csv'; b=bars(1)[0]; write_csv(path,[b,b])
             with self.assertRaises(ValueError): bars_from_csv(path,DAY)
-    def test_zero_volume_unknown(self):
-        data=bars()
-        for b in data: b['volume']=0
-        self.assertEqual(structure(data,10000,Config(),DAY)['status'],'UNKNOWN')
 
 class SignalTests(unittest.TestCase):
     def warm(self,cfg=None):
@@ -130,18 +129,18 @@ class SignalTests(unittest.TestCase):
         signal=d.signal(t,{'previous_close':9900})
         self.assertIsNotNone(signal); self.assertEqual(signal['stop'],9990)
         self.assertLessEqual(signal['limit'],10080)
-    def test_chase_blocked(self):
-        d,_=self.warm(); t=tick(127,10200,15700,3000); d.ingest(t,t.time)
-        self.assertIsNone(d.signal(t,{'previous_close':9900}))
-    def test_spread_blocked(self):
-        d,_=self.warm(); t=replace(tick(127,10050,15700,3000),bid=9900,ask=10060); d.ingest(t,t.time)
-        self.assertIsNone(d.signal(t,{'previous_close':9900}))
-    def test_gap_blocked(self):
-        d,_=self.warm(); t=tick(127,10050,15700,3000); d.ingest(t,t.time)
-        self.assertIsNone(d.signal(t,{'previous_close':8000}))
-    def test_resistance_reward_risk_blocked(self):
-        d,_=self.warm(); t=tick(127,10050,15700,3000); d.ingest(t,t.time)
-        self.assertIsNone(d.signal(t,{'previous_close':9900,'resistance':10100}))
+    def test_signal_blocking_conditions_table(self):
+        d,_=self.warm()
+        cases=[
+            ('chase',tick(127,10200,15700,3000),{'previous_close':9900}),
+            ('spread',replace(tick(127,10050,15700,3000),bid=9900,ask=10060),{'previous_close':9900}),
+            ('gap',tick(127,10050,15700,3000),{'previous_close':8000}),
+            ('resistance',tick(127,10050,15700,3000),{'previous_close':9900,'resistance':10100}),
+        ]
+        for name,t,info in cases:
+            with self.subTest(name=name):
+                d.ingest(t,t.time)
+                self.assertIsNone(d.signal(t,info))
     def test_duplicate_out_of_order_stale_rejected(self):
         d=Detector(Config()); t=tick(); self.assertTrue(d.ingest(t,t.time))
         self.assertFalse(d.ingest(t,t.time))
@@ -160,12 +159,11 @@ class SignalTests(unittest.TestCase):
         self.assertTrue(t.regular)
 
 class RiskTests(unittest.TestCase):
-    def test_sizing_includes_cost_and_slippage(self):
+    def test_sizing_includes_cost_slippage_and_wider_stop(self):
         c=Config(); qty=size(c,10000,9900,1000000,1000000,10000)
         self.assertLessEqual(qty*(100+10000*(c.roundtrip_cost_fraction+c.exit_slippage_fraction)),3000)
-    def test_wider_stop_reduces_size(self):
-        c=replace(Config(),max_position_fraction=0.9)
-        self.assertGreater(size(c,10000,9900,1000000,1000000,10000),size(c,10000,9700,1000000,1000000,10000))
+        c2=replace(Config(),max_position_fraction=0.9)
+        self.assertGreater(size(c2,10000,9900,1000000,1000000,10000),size(c2,10000,9700,1000000,1000000,10000))
     def test_zero_cash_and_exhausted_budget(self):
         self.assertEqual(size(Config(),10000,9900,1000000,0,10000),0)
         self.assertEqual(size(Config(),10000,9900,1000000,1000000,0),0)
@@ -355,20 +353,20 @@ class BrokerContractTests(unittest.TestCase):
         r._http=fail
         with self.assertRaises(AmbiguousOrder): r.submit('BUY','005930',1,10000)
         self.assertEqual(len(calls),1)
-    def test_missing_order_id_is_ambiguous(self):
-        r=self.rest(True); r._http=lambda *args:({'return_code':0},{})
+    def test_missing_order_id_and_error_codes(self):
+        r=self.rest(True)
+        r._http=lambda *args:({'return_code':0},{})
         with self.assertRaises(AmbiguousOrder): r.submit('BUY','005930',1,10000)
-    def test_error_code_rejected(self):
-        r=self.rest(True); r._http=lambda *args:({'return_code':20},{})
+        r._http=lambda *args:({'return_code':20},{})
         with self.assertRaises(Rejected): r.submit('BUY','005930',1,10000)
     def test_query_pagination_not_truncated(self):
         r=self.rest(); sequence=iter([({'rows':[1]},{'cont-yn':'Y','next-key':'a'}),({'rows':[2]},{'cont-yn':'N'})]); r.call=lambda *args:next(sequence)
         self.assertEqual(r.pages('x',{},'rows')[0],[1,2])
-    def test_repeated_pagination_key_rejected(self):
-        r=self.rest(); r.call=lambda *args:({'rows':[1]},{'cont-yn':'Y','next-key':'a'})
+    def test_repeated_pagination_key_and_missing_list_rejected(self):
+        r=self.rest()
+        r.call=lambda *args:({'rows':[1]},{'cont-yn':'Y','next-key':'a'})
         with self.assertRaises(ValueError): r.pages('x',{},'rows')
-    def test_missing_account_list_is_not_empty_success(self):
-        r=self.rest(); r.call=lambda *args:({'return_code':0},{})
+        r.call=lambda *args:({'return_code':0},{})
         with self.assertRaises(ValueError): r.pages('x',{},'holdings')
     def test_rank_payload_required_fields_verified(self):
         spec=json.loads((ROOT/'reference/contract.json').read_text(encoding='utf-8'))

@@ -38,12 +38,10 @@ class PolicyUpdateTests(unittest.TestCase):
         self.assertFalse(self.broker.orders); self.assertTrue(self.policy.locked('005930'))
         self.assertIsNone(self.engine.submit('SELL','005930',3,100000,{'ownership':'EXISTING_POLICY'}))
 
-    def test_gwang_hard_lock_no_new_buy(self):
+    def test_gwang_hard_lock_no_new_buy_and_no_exit(self):
         self.assertTrue(self.policy.locked('017900'))
         self.engine.enter(self.signal('017900'),self.tick(sym='017900'))
         self.assertFalse(self.broker.orders)
-
-    def test_gwang_hard_lock_even_above_previous_breakeven(self):
         self.holding('017900',bid=13000); cash=self.engine.s['cash']; self.engine.timer()
         self.assertEqual(self.broker.orders,[])
         self.assertFalse(self.engine.s['orders']); self.assertEqual(self.engine.s['cash'],cash)
@@ -58,12 +56,9 @@ class PolicyUpdateTests(unittest.TestCase):
         self.assertEqual(o['status'],'FILLED'); self.assertEqual(self.engine.s['cash'],cash)
         self.assertFalse(self.engine.s['positions']); self.assertFalse(self.engine.s['trades'])
 
-    def test_below_threshold_last_trade_cannot_trigger_exit(self):
+    def test_hyundai_below_threshold_no_sell_and_no_average_down(self):
         self.holding(bid=5830); self.engine.on_tick(self.tick(price=13000,sym='052260')); self.engine.timer()
         self.assertFalse(self.broker.orders)
-
-    def test_hyundai_below5834_no_sell_and_no_average_down(self):
-        self.holding('052260',bid=5830); self.engine.timer()
         self.engine.enter(self.signal('052260'),self.tick(sym='052260'))
         self.assertFalse(self.broker.orders)
 
@@ -73,10 +68,8 @@ class PolicyUpdateTests(unittest.TestCase):
                   'candidate_efficiency':{'decision':'TRADE'},'held':{'support':5000}}
         self.assertIsNone(self.engine.replace_legacy(evidence)); self.assertFalse(self.broker.orders)
 
-    def test_book_cannot_fill_full_size_no_sell(self):
+    def test_insufficient_depth_or_available_no_sell(self):
         self.holding(depth=2); self.engine.timer(); self.assertFalse(self.broker.orders)
-
-    def test_not_all_shares_available_no_sell(self):
         self.holding(available=2); self.engine.timer(); self.assertFalse(self.broker.orders)
 
     def test_missing_or_stale_book_hold(self):
@@ -140,17 +133,18 @@ class PolicyUpdateTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.policy.command('TEST_CAPITAL_RELEASE',TEST_RELEASE_SYMBOL,'TEST_CAPITAL_RELEASE')
         self.engine.reconcile(snap); self.engine.timer(); self.assertEqual(len(self.broker.orders),1)
 
-    def test_test_release_more_than_one_share_not_assumed_test_inventory(self):
+    def test_test_release_disallowed_conditions_table(self):
+        # 1. more than 1 share not assumed test inventory
         self.holding(TEST_RELEASE_SYMBOL,qty=2,bid=2000)
         self.policy.command('TEST_CAPITAL_RELEASE',TEST_RELEASE_SYMBOL,'TEST_CAPITAL_RELEASE')
         self.engine.timer(); self.assertFalse(self.broker.orders)
-
-    def test_test_release_approved_but_off_no_sale(self):
+        # 2. approved but OFF mode no sale
+        self.setUp()
         self.holding(TEST_RELEASE_SYMBOL,qty=1,bid=2000)
         self.policy.command('TEST_CAPITAL_RELEASE',TEST_RELEASE_SYMBOL,'TEST_CAPITAL_RELEASE'); self.policy.command('OFF')
         self.engine.timer(); self.assertFalse(self.broker.orders)
-
-    def test_test_release_crash_reserved_approval_not_reused(self):
+        # 3. crash reserved submitting status not reused
+        self.setUp()
         self.holding(TEST_RELEASE_SYMBOL,qty=1,bid=2000)
         self.policy.command('TEST_CAPITAL_RELEASE',TEST_RELEASE_SYMBOL,'TEST_CAPITAL_RELEASE')
         self.policy.state['test_capital_release']['status']='SUBMITTING'; atomic_json(self.policy.path,self.policy.state)
@@ -163,22 +157,21 @@ class PolicyUpdateTests(unittest.TestCase):
         self.assertFalse(self.engine.session_ending())
         self.clock[0]=self.clock[0].replace(hour=15,minute=10); self.assertTrue(self.engine.session_ending())
 
-    def test_forced_flatten_uses_existing_bot_exit_state_machine(self):
+    def test_session_cutoff_and_forced_flatten_behavior(self):
+        # 1. forced flatten
         self.buy(); self.clock[0]=self.clock[0].replace(hour=15,minute=10)
         p=self.engine.s['positions'][SYMBOL]; p['last_tick']=self.clock[0].isoformat(); self.engine.last_account=time.monotonic()
         self.engine.timer(); self.assertTrue(p['exit_requested']); self.assertEqual(self.broker.orders[-1][0],'SELL')
         self.assertEqual(p['exit_reason'],'당일 청산 시각')
-
-    def test_cutoff_cancels_pending_buy_not_silently_carry(self):
+        # 2. cutoff cancels pending buy
+        self.setUp()
         self.engine.enter(self.signal(),self.tick()); self.clock[0]=self.clock[0].replace(hour=15,minute=5)
         self.engine.timer(); self.assertEqual(len(self.broker.cancels),1)
 
-    def test_allow_overnight_explicit_opt_in_only(self):
+    def test_session_order_config_and_overnight_opt_in(self):
         self.engine.a=replace(self.auto,ALLOW_OVERNIGHT=True)
         self.clock[0]=self.clock[0].replace(hour=15,minute=10)
         self.assertFalse(self.engine.session_ending()); self.assertFalse(self.engine.entry_window())
-
-    def test_session_order_config_validation(self):
         for config in (replace(self.auto,new_entry_cutoff='15:10:00'),replace(self.auto,force_flatten_start='15:20:00'),replace(self.auto,ALLOW_OVERNIGHT=1)):
             with self.assertRaises(ValueError): config.validate()
 
@@ -213,14 +206,13 @@ class PolicyUpdateTests(unittest.TestCase):
         last=[r for r in self.events() if r['event']=='EXIT_EVAL'][-1]
         self.assertEqual(last['primary_reason_code'],'BOT_FILL_COMPLETE'); self.assertIsNotNone(last['net_pnl_completed'])
 
-    def test_external_inventory_over13_requires_policy_review(self):
+    def test_manual_and_external_inventory_protection_table(self):
+        # 1. external inventory over depth limit (qty=14)
         self.holding(qty=14,depth=100); self.engine.timer(); self.assertFalse(self.broker.orders)
-
-    def test_cap0_even_live_confirmed_cannot_sell_existing(self):
+        # 2. cap0 cannot sell existing
         self.holding(); self.engine.a=replace(self.auto,AUTO_TRADING_CAP_KRW=0)
         self.engine.timer(); self.assertFalse(self.broker.orders)
-
-    def test_stop_flat_kill_never_force_sell_manual_inventory(self):
+        # 3. stop/stop_flat/kill never force sell manual inventory
         self.holding(bid=13000)
         for mode in ('STOP','STOP_FLAT','KILL'):
             self.policy.command(mode); self.engine.controls(); self.engine.timer()
@@ -240,14 +232,12 @@ class PolicyUpdateTests(unittest.TestCase):
         state=json.loads(self.engine.path.read_text()); self.assertEqual(state['positions'][SYMBOL]['qty'],qty)
         self.assertEqual(len(self.broker.orders),1)
 
-    def test_unknown_invalidation_and_nonfinite_input_no_order_recorded(self):
+    def test_invalid_inputs_and_bad_symbol_rejected_before_intent(self):
         for value in (None,0,-1,float('nan')):
             sig=self.signal(); sig['stop']=value
             self.assertIsNone(self.engine.enter(sig,self.tick()))
         self.assertFalse(self.broker.orders)
         self.assertTrue(any(r.get('primary_reason_code')=='INVALIDATION_UNKNOWN_OR_INVALID' for r in self.events()))
-
-    def test_bad_symbol_is_rejected_before_intent(self):
         self.engine.enter(self.signal('bad'),self.tick(sym='bad')); self.assertFalse(self.engine.s['orders'])
 
     def test_corrupt_state_is_not_silently_reconstructed(self):
@@ -319,13 +309,11 @@ class PolicyUpdateTests(unittest.TestCase):
         self.engine.enter(self.signal(),self.tick()); self.assertFalse(self.broker.orders)
 
 class MarketAndCapitalTests(unittest.TestCase):
-    def test_official_literal_special_states_and_unknown_are_not_normal(self):
+    def test_stock_status_assessments_table(self):
         for state,reason in (('정리매매','SPECIAL_LIQUIDATION'),('상장폐지절차','SPECIAL_DELISTING'),('거래정지','TRADING_SUSPENDED'),('단일가매매','SPECIAL_NON_CONTINUOUS')):
             result=assess_status({'state':state,'auditInfo':'정상'}); self.assertFalse(result['pass']); self.assertEqual(result['reason_code'],reason)
         for state in (None,'','미확인특수값','999'):
             self.assertIsNone(assess_status({'state':state})['pass'])
-
-    def test_known_margin_state_no_minimum_stock_price_filter(self):
         self.assertTrue(assess_status({'state':'증거금100%','auditInfo':'정상'})['pass'])
         self.assertTrue(assess_status({'state':'증거금20%|담보대출|신용가능','auditInfo':'정상'})['pass'])
         self.assertTrue(assess_status({'state':'관리종목','auditInfo':'투자주의환기종목'})['pass'])
@@ -363,15 +351,10 @@ class MarketAndCapitalTests(unittest.TestCase):
         for hour,minute,second,expected in ((8,59,59,False),(9,0,0,True),(15,19,59,True),(15,20,0,False)):
             self.assertEqual(supported(START.replace(hour=hour,minute=minute,second=second)),expected)
 
-    def test_zero_depth_and_zero_price_quote_cannot_be_invented(self):
+    def test_invalid_quote_depth_and_prices_rejected(self):
         rest=Rest.__new__(Rest); rest.stock_status=Mock(return_value={'pass':True})
-        rest.query=Mock(return_value={'bid_req_base_tm':'144000','buy_fpr_bid':'','buy_fpr_req':'1'})
-        with self.assertRaises(ValueError): rest.existing_book('017900')
-
-    def test_negative_or_fractional_depth_cannot_become_liquidity(self):
-        rest=Rest.__new__(Rest); rest.stock_status=Mock(return_value={'pass':True})
-        for depth in ('-100','1.5'):
-            rest.query=Mock(return_value={'bid_req_base_tm':'144000','buy_fpr_bid':'12140','buy_fpr_req':depth})
+        for bid,depth in (('','1'),('12140','-100'),('12140','1.5')):
+            rest.query=Mock(return_value={'bid_req_base_tm':'144000','buy_fpr_bid':bid,'buy_fpr_req':depth})
             with self.assertRaises(ValueError): rest.existing_book('017900')
 
 if __name__=='__main__': unittest.main()

@@ -77,35 +77,40 @@ class GuiTests(unittest.TestCase):
     def test_armed_observation_not_live(self):
         self.w.apply_status(synthetic_status(mode='ARMED',live_mode=False,live_approved=False,cap=0,available=0,process={'running':True,'state':'실행 중'}))
         self.assertIn('관찰',self.w.cards['operation'].text()); self.assertIn('OFF',self.w.notice.text())
-    def test_outside_hours_disabled(self):
+    def test_outside_hours_ui_state(self):
         self.w.apply_status(synthetic_status(supported=False,time='2026-10-01T18:00:00+09:00'))
         self.assertIn('운영시간 밖',self.w.cards['market'].text()); self.assertFalse(self.w.buttons['start'].isEnabled())
-    def test_outside_hours_diagnostics_and_logs_enabled(self):
-        self.w.apply_status(synthetic_status(supported=False)); self.assertTrue(self.w.buttons['diagnostic'].isEnabled()); self.assertTrue(self.w.buttons['logs'].isEnabled())
+        self.assertTrue(self.w.buttons['diagnostic'].isEnabled()); self.assertTrue(self.w.buttons['logs'].isEnabled())
     def test_start_delegates_service(self):
         self.click('start'); self.wait(lambda:('start',True) in self.s.calls); self.w.confirm.assert_called_once()
     def test_start_confirmation_cancel_no_call(self):
         self.w.confirm.return_value=False; self.click('start'); self.assertEqual(self.s.calls,[])
-    def test_stop_uses_stop(self):
-        self.w.apply_status(synthetic_status(process={'running':True,'state':'실행 중'})); self.click('stop'); self.wait(lambda:'STOP' in self.s.calls)
-    def test_flat_uses_stop_flat(self):
-        self.w.apply_status(synthetic_status(positions=1,position_count=1)); self.click('flat'); self.wait(lambda:'STOP_FLAT' in self.s.calls)
-    def test_kill_uses_kill(self): self.click('kill'); self.wait(lambda:'KILL' in self.s.calls)
-    def test_kill_cancel(self): self.w.confirm.return_value=False; self.click('kill'); self.assertEqual(self.s.calls,[])
-    def test_cap_dynamic(self):
+    def test_emergency_buttons_dispatch_commands(self):
+        # 1. STOP
+        self.w.apply_status(synthetic_status(process={'running':True,'state':'실행 중'}))
+        self.click('stop'); self.wait(lambda:'STOP' in self.s.calls)
+        # 2. STOP_FLAT
+        self.w.apply_status(synthetic_status(positions=1,position_count=1))
+        self.click('flat'); self.wait(lambda:'STOP_FLAT' in self.s.calls)
+        # 3. KILL (with confirm and cancel)
+        self.w.confirm.return_value=False; self.click('kill'); self.assertNotIn('KILL',self.s.calls)
+        self.w.confirm.return_value=True; self.click('kill'); self.wait(lambda:'KILL' in self.s.calls)
+    def test_dynamic_cards_display_updates(self):
+        # 1. Cap & cash dynamic
         self.assertEqual(self.w.cards['cap'].text(),'5,000원'); self.w.apply_status(synthetic_status(cap=10000,available=7500))
         self.assertEqual(self.w.cards['cap'].text(),'10,000원'); self.assertEqual(self.w.cards['available'].text(),'7,500원')
-    def test_cash_dynamic_unknown(self):
+        # 2. Unknown cash
         self.assertEqual(self.w.cards['cash'].text(),'7,500원'); self.w.apply_status(synthetic_status(cash=None,available=None))
         self.assertEqual(self.w.cards['cash'].text(),'미확인'); self.assertEqual(self.w.cards['available'].text(),'미확인')
-    def test_old_cash_not_claimed_current(self): self.assertIn('최근 조회값만 있음',self.w.cards['account'].text())
+        # 3. Old cash
+        self.w.apply_status(synthetic_status())
+        self.assertIn('최근 조회값만 있음',self.w.cards['account'].text())
     def test_halt_reason_and_start_block(self):
         self.w.apply_status(synthetic_status(halt='ACCOUNT_RECONCILE_STALE',halt_info={'occurred_at':'09:20','classification':'MANUAL_REVIEW'}))
         self.assertIn('HALT',self.w.cards['safety'].text()); self.assertIn('ACCOUNT_RECONCILE_STALE',self.w.errors.toPlainText()); self.assertFalse(self.w.buttons['start'].isEnabled())
-    def test_running_disconnected_is_warning(self):
+    def test_running_process_warning_states(self):
         self.w.apply_status(synthetic_status(process={'running':True,'state':'실행 중'}))
         self.assertIn('주의',self.w.cards['safety'].text())
-    def test_running_process_heartbeat_stale_warning_no_restart(self):
         self.w.apply_status(synthetic_status(process={'running':True,'state':'실행 중','managed':True,'process_heartbeat_fresh':False}))
         self.assertIn('프로세스 응답 지연',self.w.cards['safety'].text()); self.assertFalse(self.w.buttons['start'].isEnabled()); self.assertEqual(self.s.calls,[])
     def test_hard_locks_readonly(self):
@@ -119,26 +124,26 @@ class GuiTests(unittest.TestCase):
     def test_trade_paper_and_fill(self): self.assertEqual(self.w.trades.item(0,6).text(),'PAPER'); self.assertEqual(self.w.trades.item(0,7).text(),'FILLED')
     def test_logs_separate_from_decisions(self): self.assertIn('ENTRY_EVAL',self.w.logs.toPlainText()); self.assertEqual(self.w.tabs.count(),4)
     def test_unknown_orders_start_disabled(self): self.w.apply_status(synthetic_status(uncertain=1)); self.assertFalse(self.w.buttons['start'].isEnabled())
-    def test_market_boundary_cutoff(self):
+    def test_market_boundary_start_rules_table(self):
         for stamp,enabled in [('15:04:59',True),('15:05:00',False),('15:10:00',False)]:
             self.w.apply_status(synthetic_status(time='2026-10-01T'+stamp+'+09:00')); self.assertEqual(self.w.buttons['start'].isEnabled(),enabled)
-    def test_after_cutoff_protection_recovery_allowed(self):
         self.w.apply_status(synthetic_status(time='2026-10-01T15:10:00+09:00',positions=1,position_count=1))
         self.assertTrue(self.w.buttons['start'].isEnabled())
-    def test_deadline_1520_no_start(self): self.w.apply_status(synthetic_status(supported=False,time='2026-10-01T15:20:00+09:00')); self.assertFalse(self.w.buttons['start'].isEnabled())
-    def test_windowonly_does_not_stop(self):
+        self.w.apply_status(synthetic_status(supported=False,time='2026-10-01T15:20:00+09:00')); self.assertFalse(self.w.buttons['start'].isEnabled())
+    def test_close_event_choices_table(self):
+        # 1. window only
         self.s.status['process']['running']=True; self.w.close_choice=Mock(return_value='window'); event=QCloseEvent(); self.w.closeEvent(event)
         self.assertTrue(event.isAccepted()); self.assertEqual(self.s.calls,[]); self.w.close_choice.assert_called_once()
-    def test_cancel_close_keeps_window(self):
+        # 2. cancel
         self.s.status['process']['running']=True; self.w.close_choice=Mock(return_value='cancel'); event=QCloseEvent(); self.w.closeEvent(event)
         self.assertFalse(event.isAccepted()); self.assertEqual(self.s.calls,[])
+        # 3. stopped process close
+        self.s.status['process']['running']=False; event=QCloseEvent(); self.w.closeEvent(event); self.assertTrue(event.isAccepted()); self.assertEqual(self.s.calls,[])
     def test_stop_close_waits_existing_protection(self):
         self.s.status['process']['running']=True; self.w.close_choice=Mock(return_value='stop'); event=QCloseEvent(); self.w.closeEvent(event)
         self.wait(lambda:'STOP' in self.s.calls); self.assertFalse(event.isAccepted()); self.assertTrue(self.w.wait_close)
         self.w._read_done(synthetic_status(positions=1)); self.assertFalse(self.w.allow_close)
         self.w._read_done(synthetic_status()); self.assertTrue(self.w.allow_close)
-    def test_stopped_close_no_command(self):
-        event=QCloseEvent(); self.w.closeEvent(event); self.assertTrue(event.isAccepted()); self.assertEqual(self.s.calls,[])
     def test_refresh_service_readonly(self): self.w.refresh(); self.wait(lambda:not self.w.reading); self.assertEqual(self.s.snapshot_calls,1); self.assertEqual(self.s.calls,[])
     def test_refresh_coalesces_requests(self):
         self.s.snapshot=Mock(side_effect=lambda:(time.sleep(.1),synthetic_status())[1]); self.w.refresh(); self.w.refresh(); self.wait(lambda:not self.w.reading)
@@ -171,14 +176,13 @@ class GuiTests(unittest.TestCase):
         self.assertFalse(any('broker' in x or 'engine' in x or 'strategy' in x for x in imports))
         self.assertFalse(any(isinstance(x,ast.Constant) and isinstance(x.value,str) and ('3000' in x.value or '3,000' in x.value or '나인테크' in x.value) for x in ast.walk(tree)))
     def test_state_read_failure_disables_start(self): self.w._read_failed('PermissionError: sample.json'); self.assertFalse(self.w.buttons['start'].isEnabled()); self.assertIn('PermissionError',self.w.notice.text())
-    def test_console_fallback_on_missing_qt(self):
+    def test_console_fallback_on_missing_gui_or_qt(self):
         fallback=Mock(return_value=0)
         def missing(): raise ImportError('synthetic missing Qt')
-        self.assertEqual(gui_launch.launch(gui=missing,console=fallback),0); fallback.assert_called_once()
-    def test_missing_gui_module_actual_import_fallback(self):
-        fallback=Mock(return_value=0)
-        with patch.dict(sys.modules,{'operator_gui':None}): self.assertEqual(gui_launch.launch(console=fallback),0)
-        fallback.assert_called_once()
+        self.assertEqual(gui_launch.launch(gui=missing,console=fallback),0)
+        with patch.dict(sys.modules,{'operator_gui':None}):
+            self.assertEqual(gui_launch.launch(console=fallback),0)
+        self.assertEqual(fallback.call_count,2)
     def test_risk_reason_is_korean_specific(self):
         text=human_decision({'decision':'NO_BUY','primary_reason_code':'NO_BUY_MIN_QTY_ZERO',
             'gates':{'risk_quantity':{'result':'FAIL','values':{'reason_code':'RISK_BUDGET_ZERO_QTY'}}}})
@@ -242,23 +246,23 @@ class UserServiceTests(unittest.TestCase):
     def test_cap_confirmation_stale_rejected(self):
         with self.assertRaises(ValueError): self.s.change_cap('5000',True,expected_cap=123)
         self.assertEqual(self.s.settings()[1].capital_limit,0)
-    def test_cap_blocked_running_lock(self):
+    def test_cap_change_blocked_when_active_or_unsafe_table(self):
+        # 1. running lock
         with ProcessLock(self.root/'runtime/operator_runner.lock'):
             with self.assertRaises(ValueError): self.s.change_cap('5000',True)
-        self.assertEqual(self.s.settings()[1].capital_limit,0)
-    def test_cap_blocked_live_pid_even_without_lock(self):
+        # 2. live pid running
         with patch.object(self.s,'running',return_value=True):
             with self.assertRaises(ValueError): self.s.change_cap('5000',True)
-        self.assertEqual(self.s.settings()[1].capital_limit,0)
-    def test_cap_blocked_positions(self):
+        # 3. positions present
         self.state(positions={'111111':{'qty':1}})
         with self.assertRaises(ValueError): self.s.change_cap('5000',True)
-    def test_cap_blocked_unknown(self):
-        self.state(orders={'x':{'status':'UNKNOWN'}})
+        # 4. unknown orders present
+        self.state(positions={},orders={'x':{'status':'UNKNOWN'}})
         with self.assertRaises(ValueError): self.s.change_cap('5000',True)
-    def test_cap_blocked_halt(self):
-        self.state(halt='ACCOUNT_RECONCILE_STALE')
+        # 5. halt present
+        self.state(orders={},halt='ACCOUNT_RECONCILE_STALE')
         with self.assertRaises(ValueError): self.s.change_cap('5000',True)
+        self.assertEqual(self.s.settings()[1].capital_limit,0)
     def test_cost_not_confirmed_no_network(self):
         self.s.change_cap('5000',True)
         with self.assertRaisesRegex(ValueError,'비용'): self.s.prepare_capital()
@@ -266,28 +270,28 @@ class UserServiceTests(unittest.TestCase):
     def test_capital_ready_generic_cash_min(self):
         result=self.ready(10000); self.assertEqual(result['available'],7500); self.assertEqual(result['cap'],10000)
         self.assertEqual(self.s.settings()[2]['mode'],'ARMED'); self.assertEqual(self.g.orders,[])
-    def test_authorization_does_not_start(self):
+    def test_authorization_and_explicit_start_confirmation(self):
         self.ready(); result=self.s.authorize_capital('5000','실제매매승인')
         cfg,a,p=self.s.settings(); self.assertTrue(cfg.live_mode); self.assertTrue(p['live_authorized']); self.assertEqual(p['mode'],'STOP')
         self.assertEqual(result['cap'],5000); self.assertNotIn(('start',()),self.g.calls)
-    def test_generic_approved_start_existing_runner_path(self):
-        self.ready(); self.s.authorize_capital('5000','실제매매승인'); self.assertEqual(self.s.start_user(True)['verdict'],'STARTED')
-        self.assertIn(('start',()),self.g.calls); self.assertEqual(self.s.settings()[2]['mode'],'LIVE')
-    def test_new_receipt_start_requires_explicit_confirmation(self):
-        self.ready(); self.s.authorize_capital('5000','실제매매승인')
+        # without explicit confirmation
         with self.assertRaises(ValueError): self.s.start_user(False)
         self.assertNotIn(('start',()),self.g.calls)
-    def test_reapproval_retains_valid_prior_generic_basis(self):
+        # with explicit confirmation
+        self.assertEqual(self.s.start_user(True)['verdict'],'STARTED')
+        self.assertIn(('start',()),self.g.calls); self.assertEqual(self.s.settings()[2]['mode'],'LIVE')
+    def test_approval_basis_lifecycle_and_daily_expiry(self):
+        # 1. reapproval retains valid prior generic basis
         self.ready(); self.s.authorize_capital('5000','실제매매승인'); self.s.change_cap('10000',True)
         self.assertEqual(self.s.prepare_capital()['verdict'],'PASS'); self.s.authorize_capital('10000','실제매매승인')
         self.assertEqual(self.s.settings()[1].capital_limit,10000)
+        # 2. existing approved basis allows fresh recheck next day
+        self.clock[0]+=timedelta(days=1)
+        self.s.change_cap('10000',True); self.assertEqual(self.s.prepare_capital()['verdict'],'PASS')
     def test_initial_approval_basis_does_not_last_to_next_day(self):
         self.ready(); self.clock[0]+=timedelta(days=1)
         with self.assertRaises(ValueError): self.s.prepare_capital()
         self.assertFalse(self.s.settings()[0].live_mode)
-    def test_existing_approved_basis_next_day_fresh_recheck(self):
-        self.ready(); self.s.authorize_capital('5000','실제매매승인'); self.clock[0]+=timedelta(days=1)
-        self.s.change_cap('10000',True); self.assertEqual(self.s.prepare_capital()['verdict'],'PASS')
     def test_authorization_halt_added_after_proof_rejected(self):
         self.ready(); self.state(halt='MANUAL_REVIEW')
         with self.assertRaises(ValueError): self.s.authorize_capital('5000','실제매매승인')
@@ -300,26 +304,28 @@ class UserServiceTests(unittest.TestCase):
         with patch('operator_ui_service.atomic_json',side_effect=fail_once):
             with self.assertRaises(PermissionError): self.s.change_cap('5000',True)
         self.assertEqual(self.s.settings(),before)
-    def test_authorization_wrong_confirmation_no_live(self):
+    def test_authorization_invalid_conditions_table(self):
         self.ready()
+        # 1. wrong amount or phrase
         for amount,phrase in [('5001','실제매매승인'),('5000','yes'),('','')]:
             with self.assertRaises(ValueError): self.s.authorize_capital(amount,phrase)
-        self.assertFalse(self.s.settings()[0].live_mode)
-    def test_authorization_expired_no_live(self):
-        self.ready(); self.clock[0]+=timedelta(seconds=61)
+        # 2. expired basis (61s)
+        self.clock[0]+=timedelta(seconds=61)
         with self.assertRaises(ValueError): self.s.authorize_capital('5000','실제매매승인')
-        self.assertFalse(self.s.settings()[0].live_mode)
-    def test_authorization_settings_changed_no_live(self):
-        self.ready(); self.s.change_cap('10000',True)
+        # 3. changed settings
+        self.clock[0]-=timedelta(seconds=61)
+        self.s.change_cap('10000',True)
         with self.assertRaises(ValueError): self.s.authorize_capital('10000','실제매매승인')
-    def test_capital_account_open_orders_blocked(self):
+        self.assertFalse(self.s.settings()[0].live_mode)
+    def test_prepare_capital_prerequisites_table(self):
+        # 1. open orders block
         self.s.confirm_costs('0','0','0',True); self.s.change_cap('5000',True); self.g.open=[{'id':'synthetic'}]
         with self.assertRaises(ValueError): self.s.prepare_capital()
         self.assertEqual(self.g.calls,['snapshot'])
-    def test_missing_initial_proof_blocked(self):
-        self.s.confirm_costs('0','0','0',True); self.s.change_cap('5000',True); (self.root/'runtime/operator_pilot.json').unlink()
+        # 2. missing initial proof blocks
+        self.g.open=[]; (self.root/'runtime/operator_pilot.json').unlink()
         with self.assertRaises(ValueError): self.s.prepare_capital()
-        self.assertEqual(self.g.calls,[])
+        self.assertEqual(self.g.calls,['snapshot'])
     def test_protection_release_blocks_ui(self):
         self.p.command('RELEASE',symbol='005930',confirmation='RELEASE')
         with self.assertRaises(ValueError): self.s.start_user()

@@ -3,7 +3,10 @@ import copy
 import time
 import unittest
 from unittest.mock import Mock,patch
-import test_gui as fixtures
+try:
+    import test_gui as fixtures
+except ImportError:
+    from tests import test_gui as fixtures
 from automation.decisions import BUILD_ID
 from operator_gui import MainWindow
 from operator_ui_service import candidate_wait_reason,board_freshness
@@ -26,10 +29,9 @@ class GuidedServiceTests(unittest.TestCase):
         with patch.object(self.s,'pilot',return_value={'verdict':'INCONCLUSIVE'}),patch.object(self.s,'prepare_capital') as ready:
             result=self.s.prepare_start();self.assertEqual(result['verdict'],'INCONCLUSIVE');ready.assert_not_called()
         self.assertEqual(self.g.orders,[]);self.assertFalse(self.s.settings()[0].live_mode)
-    def test_cap_zero_new_build_proof_ready_for_observation_only(self):
+    def test_cap_zero_and_cost_unconfirmed_block_live_authorization(self):
         self.proof();result=self.s.prepare_start();self.assertEqual(result['verdict'],'READY_OBSERVE')
         self.assertFalse(self.s.settings()[0].live_mode);self.assertEqual(self.g.orders,[])
-    def test_cost_unconfirmed_cannot_authorize_live(self):
         self.s.change_cap('20000',True);self.proof()
         with patch.object(self.s,'pilot') as smoke,patch.object(self.s,'prepare_capital') as ready:
             result=self.s.prepare_start();self.assertEqual(result['verdict'],'COST_CONFIRMATION_REQUIRED');smoke.assert_not_called();ready.assert_not_called()
@@ -49,14 +51,14 @@ class GuidedServiceTests(unittest.TestCase):
         with patch.object(self.s,'pilot') as smoke:
             result=self.s.prepare_start();smoke.assert_not_called();self.assertEqual(result['verdict'],'READY_LIVE')
         self.assertEqual(self.g.orders,[])
-    def test_kill_or_after_hours_cannot_run_automatic_checks(self):
+    def test_stop_kill_after_hours_state_transitions(self):
         for mode,hour in [('KILL',9),('ARMED',20)]:
             self.p.command(mode);self.clock[0]=self.clock[0].replace(hour=hour)
             with patch.object(self.s,'pilot') as smoke:
                 with self.assertRaises(ValueError):self.s.prepare_start()
                 smoke.assert_not_called()
         self.assertEqual(self.g.calls,[])
-    def test_stopped_process_with_live_mode_first_reduces_to_stop(self):
+        self.setUp()
         fixtures.UserServiceTests.ready(self,20000);self.proof();self.s.prepare_capital();self.s.authorize_capital('20000','실제매매승인')
         self.p.command('LIVE',confirmation='LIVE')
         def pilot(*args,**kw):self.proof();return {'verdict':'PASS'}
@@ -73,9 +75,6 @@ class GuidedGuiTests(unittest.TestCase):
         self.w.check_timer.stop();self.w.timer.stop()
         for pool in (self.w.read_pool,self.w.command_pool,self.w.emergency_pool):pool.waitForDone(3000)
         self.w.allow_close=True;self.w.close();self.app.processEvents()
-    def test_150_seconds_is_not_automatic_pass(self):
-        self.w._check_stage('150초 안전검사');self.w.check_started=time.monotonic()-151;self.w._check_elapsed()
-        self.assertIn('결과 정리 중',self.w.notice.text());self.w.show_result.assert_not_called();self.assertEqual(self.s.calls,[])
     def test_candidate_board_thirty_rows_and_bot_explanation(self):
         state=copy.deepcopy(self.s.status)
         state['candidate_board']=[{'symbol':f'{i:06}','name':'합성','state':'SHADOW','source_count':1,'current_price':400,'gates':{'acceleration':{'result':'FAIL'}},'timestamp':state['time']} for i in range(30)]
@@ -85,16 +84,15 @@ class GuidedGuiTests(unittest.TestCase):
     def test_stop_flat_kill_buttons_explain_actual_semantics(self):
         self.assertIn('신규매수',self.w.buttons['stop'].text());self.assertIn('전량청산',self.w.buttons['flat'].text())
         self.assertIn('보호',self.w.buttons['flat'].toolTip())
-    def test_no_geometry_trials_do_not_label_shadow_as_setup(self):
+    def test_gui_diagnostics_and_candidate_labeling_invariants(self):
+        self.w._check_stage('150초 안전검사');self.w.check_started=time.monotonic()-151;self.w._check_elapsed()
+        self.assertIn('결과 정리 중',self.w.notice.text());self.w.show_result.assert_not_called();self.assertEqual(self.s.calls,[])
         state=copy.deepcopy(self.s.status);state['candidate_board']=[{'symbol':'999990','state':'SHADOW','source_count':1,
             'setup_trials':[{'setup':'A','candidate_generated':False,'gates':{}}],'gates':{},'data_fresh':False,'data_note':'틱 판단 대기 / 오래된 기록'}]
         self.w.apply_status(state);self.assertNotIn('SETUP',self.w.board.item(0,1).text());self.assertIn('틱 미확인',self.w.board.item(0,1).text())
-    def test_cost_input_cancel_cannot_prepare_or_authorize(self):
+    def test_dialog_cancellations_prevent_preparation_or_authorization(self):
         with patch('operator_gui.QInputDialog.getText',return_value=('',False)):
             self.w._prepared_start({'verdict':'COST_CONFIRMATION_REQUIRED'})
-        self.assertEqual(self.s.calls,[])
-    def test_automatic_live_prompt_requires_amount_and_phrase(self):
-        with patch('operator_gui.QInputDialog.getText',return_value=('',False)):
             self.w._prepared_start({'verdict':'NEEDS_LIVE_APPROVAL','cap':20000})
         self.assertEqual(self.s.calls,[])
     def test_old_tick_gate_not_presented_as_current(self):

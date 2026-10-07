@@ -109,14 +109,10 @@ class V12ReachabilityTests(unittest.TestCase):
         self.assertEqual(self.broker.orders[-1][1], SYMBOL)
         self.assertGreater(self.broker.orders[-1][2], 0)
 
-    def test_setup_a_synthetic_reachability(self):
-        self._run_synthetic_pattern_to_order('A')
-
-    def test_setup_b_synthetic_reachability(self):
-        self._run_synthetic_pattern_to_order('B')
-
-    def test_setup_c_synthetic_reachability(self):
-        self._run_synthetic_pattern_to_order('C')
+    def test_synthetic_patterns_a_b_c_reachability(self):
+        for pattern in ('A', 'B', 'C'):
+            self.setUp()
+            self._run_synthetic_pattern_to_order(pattern)
 
     def test_strategy_parameter_boundaries_enforced(self):
         detector = PatternDetector(self.cfg, self.auto, self.engine.costs)
@@ -237,7 +233,7 @@ class V12ReachabilityTests(unittest.TestCase):
     # -------------------------------------------------------------------------
     # 4. SessionPlan 단일 기준 및 불변식
     # -------------------------------------------------------------------------
-    def test_session_plan_validation_and_sequence(self):
+    def test_session_plan_invariants_and_windows(self):
         plan = SessionPlan(
             observe_start='09:00:00',
             new_entry_start='09:02:00',
@@ -249,20 +245,12 @@ class V12ReachabilityTests(unittest.TestCase):
         ).validate()
         self.assertEqual(plan.effective_new_entry_end, '14:55:00')
         self.assertTrue(plan.observe_start <= plan.new_entry_start < plan.effective_new_entry_end < plan.force_flatten_start < plan.support_end)
-
-    def test_session_plan_entry_window_and_flatten_window(self):
-        plan = SessionPlan(minimum_remaining_minutes=15).validate()
-        # 14:54:59 진입 가능
         dt_entry = datetime(2026, 10, 6, 14, 54, 59, tzinfo=KST)
         self.assertTrue(plan.is_entry_window(dt_entry))
-        # 14:55:00 신규매수 종료
         dt_cutoff = datetime(2026, 10, 6, 14, 55, 0, tzinfo=KST)
         self.assertFalse(plan.is_entry_window(dt_cutoff))
-        # 15:10:00 강제 청산
         dt_flatten = datetime(2026, 10, 6, 15, 10, 0, tzinfo=KST)
         self.assertTrue(plan.is_flatten_window(dt_flatten))
-
-    def test_session_plan_overnight_forbidden(self):
         with self.assertRaises(AssertionError):
             SessionPlan(allow_overnight=True).validate()
 

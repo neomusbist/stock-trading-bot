@@ -70,8 +70,10 @@ class PreflightTests(unittest.TestCase):
             with self.assertRaisesRegex(Rejected,'HARD_LOCK'):
                 self.engine.order_guard('kt10001',{'stk_cd':symbol,'ord_qty':'1','ord_uv':'9000','reason':reason})
 
-    def test_samsung_all_forced_sell_paths_zero_broker_sells(self): self.forced_lock('005930')
-    def test_gwang_all_forced_sell_paths_zero_broker_sells(self): self.forced_lock('017900')
+    def test_hard_locks_forced_sell_paths_zero_broker_sells(self):
+        for sym in ('005930','017900'):
+            self.setUp()
+            self.forced_lock(sym)
 
     def test_final_static_lock_cannot_be_removed_by_old_release_flag(self):
         for symbol in HARD_LOCKS:
@@ -119,12 +121,16 @@ class PreflightTests(unittest.TestCase):
         for qty,available in ((2,2),(1,0)):
             self.holding(qty,available); self.engine.timer(); self.assertFalse(self.broker.orders)
 
-    def test_release_requires_account_connection_market_and_fresh_book(self):
+    def test_release_prerequisites_and_manual_open_order_blocks(self):
         self.zero_armed(); self.holding(); self.approve()
         for attr,value in (('account_ok',False),('connected',False),('market','2'),('market','UNKNOWN')):
             old=getattr(self.engine,attr); setattr(self.engine,attr,value); self.engine.timer()
             setattr(self.engine,attr,old); self.assertFalse(self.broker.orders)
         self.clock[0]+=timedelta(seconds=6); self.engine.timer(); self.assertFalse(self.broker.orders)
+        self.setUp(); self.zero_armed(); self.holding(); self.approve()
+        self.engine.books['267320']['status']={'pass':None}; self.engine.timer(); self.assertFalse(self.broker.orders)
+        self.engine.books['267320']['status']={'pass':True}; self.engine.external_open_orders=[{'symbol':'267320','id':'MANUAL'}]
+        self.engine.timer(); self.assertFalse(self.broker.orders)
 
     def test_release_outside_session_and_stop_modes_block(self):
         self.zero_armed(); self.holding(); self.approve()
@@ -133,20 +139,12 @@ class PreflightTests(unittest.TestCase):
         self.policy.command('ARMED'); self.clock[0]=self.clock[0].replace(hour=15,minute=20)
         self.engine.timer(); self.assertFalse(self.broker.orders)
 
-    def test_release_unknown_status_and_manual_open_order_block(self):
-        self.zero_armed(); self.holding(); self.approve()
-        self.engine.books['267320']['status']={'pass':None}; self.engine.timer(); self.assertFalse(self.broker.orders)
-        self.engine.books['267320']['status']={'pass':True}; self.engine.external_open_orders=[{'symbol':'267320','id':'MANUAL'}]
-        self.engine.timer(); self.assertFalse(self.broker.orders)
-
-    def test_release_pending_receipt_zero_fill_not_completed(self):
+    def test_release_partial_or_zero_fill_does_not_complete(self):
         o=self.release(); self.engine.cumulative_fill(o,0,0); self.policy.refresh()
         self.assertEqual(o['filled'],0); self.assertEqual(o['status'],'ACCEPTED')
         self.assertEqual(self.policy.state['test_capital_release']['status'],'SUBMITTING')
         self.assertFalse(self.engine.s['automation'].get('capital_refresh_pending',False))
-
-    def test_release_non_integer_partial_one_share_does_not_complete(self):
-        o=self.release(); self.engine.cumulative_fill(o,0.5,1350); self.policy.refresh()
+        self.setUp(); o=self.release(); self.engine.cumulative_fill(o,0.5,1350); self.policy.refresh()
         self.assertEqual(o['filled'],0); self.assertEqual(self.policy.state['test_capital_release']['status'],'SUBMITTING')
         self.assertTrue(self.engine.s['halt']); self.assertEqual(len(self.broker.orders),1)
 
@@ -159,14 +157,12 @@ class PreflightTests(unittest.TestCase):
         restored.cumulative_fill(next(iter(restored.s['orders'].values())),1,2700)
         self.assertEqual(len(restored.s['automation']['external_exit_fills']),1)
 
-    def test_release_timeout_false_mode_no_cancel_permission_or_paper_order(self):
+    def test_release_timeout_and_ambiguous_send_recovery_invariants(self):
         o=self.release(); self.clock[0]+=timedelta(seconds=self.cfg.order_timeout_seconds+1)
         self.engine.timer(); self.assertEqual(o['status'],'ACCEPTED')
         self.assertTrue(o['manual_cancel_required']); self.assertFalse(self.broker.cancels)
         self.assertEqual(len(self.broker.orders),1)
-
-    def test_release_ambiguous_send_never_reuses_approval_after_restart(self):
-        self.zero_armed(); self.holding(); self.approve()
+        self.setUp(); self.zero_armed(); self.holding(); self.approve()
         self.broker.submit=Mock(side_effect=TimeoutError('synthetic lost response'))
         self.engine.timer(); self.engine.timer(); self.assertEqual(self.broker.submit.call_count,1)
         restored=self.make_engine(); restored.connected=True; restored.market='3'
@@ -220,9 +216,10 @@ class PreflightTests(unittest.TestCase):
         self.assertTrue(any(r['event']=='ACCOUNT_CAPITAL_REFRESHED' for r in self.events()))
         return self.engine.s['automation']['capital_snapshot']['auto_available_capital']
 
-    def test_requery_2700_cash_cap0_available0(self): self.assertEqual(self.capital_requery(2700,0),0)
-    def test_requery_2700_cash_cap3000_available2700(self): self.assertEqual(self.capital_requery(2700,3000),2700)
-    def test_requery_5000_cash_cap3000_available3000(self): self.assertEqual(self.capital_requery(5000,3000),3000)
+    def test_capital_requery_budget_matrix(self):
+        for cash,cap,expected in ((2700,0,0),(2700,3000,2700),(5000,3000,3000)):
+            self.setUp()
+            self.assertEqual(self.capital_requery(cash,cap),expected)
 
     def test_pre_fill_or_unknown_start_snapshot_cannot_finish_requery(self):
         o=self.release(); self.engine.cumulative_fill(o,1,2700)
@@ -284,9 +281,10 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(row['gates']['policy']['result'],'FAIL'); self.assertEqual(row['quantity'],0)
         self.assertFalse(self.engine.s['orders']); self.assertFalse(self.engine.s['positions']); self.assertFalse(self.broker.orders)
 
-    def test_zero_armed_A_full_runner_signal_and_log_no_order(self): self.armed_signal('A')
-    def test_zero_armed_B_full_runner_signal_and_log_no_order(self): self.armed_signal('B')
-    def test_zero_armed_C_full_runner_signal_and_log_no_order(self): self.armed_signal('C')
+    def test_zero_armed_A_B_C_full_runner_signal_and_log_no_order(self):
+        for pat in ('A','B','C'):
+            self.setUp()
+            self.armed_signal(pat)
 
     def test_zero_cap_discovery_still_calls_structure_evaluator(self):
         from automation.radar import DynamicRadar

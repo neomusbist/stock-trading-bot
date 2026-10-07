@@ -9,7 +9,7 @@ from core.settings import ROOT,Config,KST
 from core.util import atomic_json
 from automation.policy import AutomationConfig,Policy
 from operator_ui_service import UserOperations,start_block,presentation
-from test_gui import ServiceGateway,synthetic_status,FakeService
+from tests.test_gui import ServiceGateway,synthetic_status,FakeService
 import operator_gui as gui
 from PySide6.QtWidgets import QApplication
 import main
@@ -38,26 +38,23 @@ class CapIncidentTests(unittest.TestCase):
         self.approved_then_changed(); self.p.command('KILL'); self.p.command('STOP')
         self.assertFalse(self.s._approval_basis(*self.s.settings()))
         with self.assertRaises(ValueError): self.s.prepare_capital()
-    def test_incomplete_revision_chain_rejected(self):
+    def test_incomplete_revision_or_changed_safety_config_rejects(self):
         self.approved_then_changed(); self.p.command('STOP'); self.p.command('ARMED')
         p=self.p.refresh(); p['commands'].pop(-2); atomic_json(self.p.path,p)
         self.assertFalse(self.s._approval_basis(*self.s.settings()))
-    def test_changed_safety_config_rejects_qualification(self):
+        self.setUp()
         self.approved_then_changed(); cfg=json.loads((self.root/'config.json').read_text()); cfg['risk_fraction']=.004; atomic_json(self.root/'config.json',cfg)
         self.assertFalse(self.s._approval_basis(*self.s.settings()))
     def test_rejected_initial_pilot_does_not_erase_prior_pass(self):
         self.approved_then_changed(); before=self.s.pilot_proof()
         result=self.s.pilot(); self.assertEqual(result['verdict'],'FAIL'); self.assertEqual(result['phase'],'PREFLIGHT_REJECTED')
         self.assertEqual(self.s.pilot_proof(),before); self.assertEqual(self.s.prepare_capital()['verdict'],'PASS')
-    def test_actual_failed_pilot_cannot_reuse_old_pass(self):
+    def test_failed_or_missing_pilot_proof_returns_empty(self):
         self.s.save_result('pilot',{'verdict':'FAIL','reasons':['synthetic connection failure']})
         self.assertEqual(self.s.pilot_proof(),{})
-    def test_failed_run_then_preflight_rejection_cannot_revive_pass(self):
-        self.s.save_result('pilot',{'verdict':'FAIL','reasons':['actual check failed']})
         self.assertEqual(self.s.pilot()['phase'],'PREFLIGHT_REJECTED')
+        (self.root/'runtime/operator_pilot.json').unlink()
         self.assertEqual(self.s.pilot_proof(),{})
-    def test_missing_pilot_record_not_recovered_implicitly(self):
-        (self.root/'runtime/operator_pilot.json').unlink(); self.assertEqual(self.s.pilot_proof(),{})
     def test_readonly_snapshot_cannot_clear_kill(self):
         self.p.command('KILL'); before=self.p.path.read_bytes(); self.s.snapshot()
         self.assertEqual(self.p.path.read_bytes(),before); self.assertTrue(start_block(self.s.snapshot()))
@@ -96,9 +93,14 @@ class ConnectionProbeTests(unittest.TestCase):
                     with self.assertRaises(RuntimeError): main.check_connection(Config())
                 result=json.loads((root/'connection_check.json').read_text()); engine.assert_not_called(); rest.return_value.buy.assert_not_called(); rest.return_value.sell.assert_not_called(); feed.close.assert_called_once()
                 return result,factory.call_args.args[1]
-    def test_empty_candidates_diagnostic_only_regular_ticks(self):
-        result,symbols=self.run_probe([]); self.assertTrue(result['passed']); self.assertTrue(result['diagnostic_only']); self.assertEqual(symbols,['005930']); self.assertEqual(result['orders_sent'],0)
-    def test_missing_watchlist_uses_readonly_probe(self): self.assertTrue(self.run_probe()[0]['passed'])
-    def test_existing_candidates_preserved(self):
-        result,symbols=self.run_probe([{'code':'111111'}]); self.assertEqual(symbols,['111111']); self.assertFalse(result['diagnostic_only'])
-    def test_missing_reg_ack_still_fails(self): self.assertFalse(self.run_probe([],False)[0]['passed'])
+    def test_connection_probe_watchlist_scenarios_table(self):
+        # 1. empty candidates uses 005930 readonly probe
+        res1,syms1=self.run_probe([])
+        self.assertTrue(res1['passed']); self.assertTrue(res1['diagnostic_only']); self.assertEqual(syms1,['005930']); self.assertEqual(res1['orders_sent'],0)
+        # 2. missing watchlist
+        self.assertTrue(self.run_probe()[0]['passed'])
+        # 3. existing candidates preserved
+        res3,syms3=self.run_probe([{'code':'111111'}])
+        self.assertEqual(syms3,['111111']); self.assertFalse(res3['diagnostic_only'])
+        # 4. missing reg ack fails
+        self.assertFalse(self.run_probe([],False)[0]['passed'])

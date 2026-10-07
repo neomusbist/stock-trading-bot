@@ -139,37 +139,13 @@ class TestV13Risk2Consistency(unittest.TestCase):
         self.assertEqual(info['remaining_daily_risk_krw'], 800.0)
         self.assertEqual(info['approved_cap'], 20000)
 
-    def test_e_config_change_invalidates_daily_preopen_authorization(self):
-        """E: config fingerprint가 변경되면 기존 DAILY_PREOPEN_V13 authorization은 invalid여야 한다."""
-        # 기존 0.01 / 0.01 config_hash로 발행된 영수증 생성
-        old_hash = self.cfg_old.fingerprint()
-        receipt = {
-            'timestamp': self.clock[0].isoformat(),
-            'cap': 20000,
-            'authorization_kind': 'DAILY_PREOPEN_V13',
-            'trading_day': self.clock[0].date().isoformat(),
-            'policy_hash': policy_hash(self.policy),
-            'security_state_hash': digest(security_state(self.root)),
-            'build_id': BUILD_ID,
-            'config_hash': old_hash,
-            'auto_hash': self.auto_cap20000.fingerprint(),
-            'policy_revision': self.policy.state.get('revision', 0)
-        }
-        atomic_json(self.root / 'runtime/operator_user_authorization.json', receipt)
-        
-        # 새 0.02 / 0.04 config로 authorization_valid 검사
-        valid, reasons = authorization_valid(
-            self.root, self.cfg_risk2, self.auto_cap20000, self.policy, self.clock[0]
-        )
-        self.assertFalse(valid, "Authorization must be INVALID when config changes")
-        self.assertIn('LIVE_APPROVAL_SETTINGS_MISMATCH', reasons)
-
-    def test_f_before_reauthorization_trading_on_false_and_no_buy(self):
-        """F: 설정 변경 후 재승인 전에는 trading_on=False이며 BUY가 허용되지 않아야 한다."""
+    def test_trading_on_state_before_and_after_reauthorization(self):
+        """E, F, G: config 변경 시 authorization invalid 및 재승인 전/후 trading_on 상태 전환 검증."""
         folder = self.root / 'runtime/automation-production'
         folder.mkdir(parents=True, exist_ok=True)
-        
-        # 구 승인 영수증
+        cur_pid = os.getpid()
+
+        # 구 0.01 / 0.01 승인 영수증
         atomic_json(self.root / 'runtime/operator_user_authorization.json', {
             'timestamp': self.clock[0].isoformat(),
             'cap': 20000,
@@ -181,9 +157,15 @@ class TestV13Risk2Consistency(unittest.TestCase):
             'config_hash': self.cfg_old.fingerprint(),  # 불일치
             'auto_hash': self.auto_cap20000.fingerprint(),
         })
-        
+
+        # authorization_valid 검사: INVALID 확인
+        valid, reasons = authorization_valid(
+            self.root, self.cfg_risk2, self.auto_cap20000, self.policy, self.clock[0]
+        )
+        self.assertFalse(valid, "Authorization must be INVALID when config changes")
+        self.assertIn('LIVE_APPROVAL_SETTINGS_MISMATCH', reasons)
+
         # 신선한 OPEN_READY heartbeat
-        cur_pid = os.getpid()
         atomic_json(folder / 'heartbeat.json', {
             'time': self.clock[0].isoformat(),
             'mode': 'LIVE',
@@ -195,7 +177,7 @@ class TestV13Risk2Consistency(unittest.TestCase):
             'readiness': {'state': 'OPEN_READY'},
         })
         atomic_json(folder / 'state.json', {'positions': {}, 'orders': {}, 'trades': [], 'halt': '', 'cash': 20000})
-        
+
         ui_service = UserOperations(self.root, clock=lambda: self.clock[0], gateway=Mock())
         with patch.object(ui_service, 'process_info', return_value={
             'running': True, 'managed': True, 'pid': cur_pid, 'identity': process_identity(cur_pid),
@@ -205,12 +187,6 @@ class TestV13Risk2Consistency(unittest.TestCase):
             self.assertFalse(snapshot['daily_authorization_valid'])
             self.assertFalse(snapshot['trading_on'], "trading_on must be False before re-authorization")
 
-    def test_g_after_reauthorization_trading_on_true_with_open_ready(self):
-        """G: 새 config_hash로 명시 재승인된 후에만 OPEN_READY 조건 하에서 trading_on=True가 되어야 한다."""
-        folder = self.root / 'runtime/automation-production'
-        folder.mkdir(parents=True, exist_ok=True)
-        
-        cur_pid = os.getpid()
         # 새 0.02 / 0.04 config_hash로 재승인된 영수증
         atomic_json(self.root / 'runtime/operator_user_authorization.json', {
             'timestamp': self.clock[0].isoformat(),
@@ -223,7 +199,7 @@ class TestV13Risk2Consistency(unittest.TestCase):
             'config_hash': self.cfg_risk2.fingerprint(),  # 일치!
             'auto_hash': self.auto_cap20000.fingerprint(),
         })
-        
+
         atomic_json(folder / 'heartbeat.json', {
             'time': self.clock[0].isoformat(),
             'mode': 'LIVE',
@@ -235,55 +211,47 @@ class TestV13Risk2Consistency(unittest.TestCase):
             'readiness': {'state': 'OPEN_READY'},
             'session': 'SUPPORTED_SESSION',
         })
-        atomic_json(folder / 'state.json', {'positions': {}, 'orders': {}, 'trades': [], 'halt': '', 'cash': 20000})
-        
-        ui_service = UserOperations(self.root, clock=lambda: self.clock[0], gateway=Mock())
+
         with patch.object(ui_service, 'process_info', return_value={
             'running': True, 'managed': True, 'pid': cur_pid, 'identity': process_identity(cur_pid),
             'started': (self.clock[0] - timedelta(minutes=1)).isoformat()
         }):
-            snapshot = ui_service.snapshot()
-            self.assertTrue(snapshot['daily_authorization_valid'])
-            self.assertTrue(snapshot['trading_on'], "trading_on must be True after valid re-authorization")
+            snapshot2 = ui_service.snapshot()
+            self.assertTrue(snapshot2['daily_authorization_valid'])
+            self.assertTrue(snapshot2['trading_on'], "trading_on must be True after valid re-authorization")
 
     def test_h_identity_consistency_check_fails_on_mismatch(self):
         """H: BUILD_ID 또는 STRATEGY_EXPERIMENT에 risk2/daily4가 명시되어 있는데
         runtime risk_fraction/max_daily_loss_fraction이 0.02/0.04가 아니면 FAIL이어야 한다."""
-        # 1. risk_fraction=0.01인 경우 실패
         bad_cfg1 = Config(risk_fraction=0.01, max_daily_loss_fraction=0.04)
         with self.assertRaises(ValueError) as ctx:
             check_experiment_consistency(bad_cfg1, build_id=BUILD_ID, experiment=STRATEGY_EXPERIMENT)
         self.assertIn("risk2", str(ctx.exception))
         self.assertIn("0.01", str(ctx.exception))
-        
-        # 2. max_daily_loss_fraction=0.01인 경우 실패
+
         bad_cfg2 = Config(risk_fraction=0.02, max_daily_loss_fraction=0.01)
         with self.assertRaises(ValueError) as ctx:
             check_experiment_consistency(bad_cfg2, build_id=BUILD_ID, experiment=STRATEGY_EXPERIMENT)
         self.assertIn("daily4", str(ctx.exception))
         self.assertIn("0.01", str(ctx.exception))
-        
-        # 3. 둘 다 0.01인 경우 실패
+
         bad_cfg3 = Config(risk_fraction=0.01, max_daily_loss_fraction=0.01)
         with self.assertRaises(ValueError) as ctx:
             check_experiment_consistency(bad_cfg3, build_id=BUILD_ID, experiment=STRATEGY_EXPERIMENT)
         self.assertIn("risk2", str(ctx.exception))
-        
-        # 4. 올바른 0.02 / 0.04인 경우 통과
+
         self.assertTrue(check_experiment_consistency(self.cfg_risk2, build_id=BUILD_ID, experiment=STRATEGY_EXPERIMENT))
-        
-        # 5. repo의 config.example.json이 check_experiment_consistency를 완벽히 통과하는지 검증
+
         repo_example = Path(__file__).resolve().parents[1] / 'config.example.json'
         if repo_example.exists():
             ex_cfg = load_config(repo_example)
             self.assertTrue(check_experiment_consistency(ex_cfg, build_id=BUILD_ID, experiment=STRATEGY_EXPERIMENT))
 
-    def test_i_main_startup_fails_closed_before_runner_on_mismatch(self):
-        """I: main.py 실행 시 mismatched config(live_mode=True, risk_fraction=0.01)이면
-        runner 진입 전에 check_experiment_consistency(cfg)로 ValueError 발생 및 runner 미호출."""
+    def test_main_startup_consistency_fail_closed_and_success_paths(self):
+        """I, J: main.py 실행 시 mismatched config는 fail closed, matching config는 정상 진입 검증."""
         import main
         mismatched_cfg = Config(live_mode=True, risk_fraction=0.01, max_daily_loss_fraction=0.04)
-        
+
         with patch.object(main, 'ROOT', self.root), \
              patch.object(main, 'load_config', return_value=mismatched_cfg), \
              patch.object(main, 'prerequisites'), \
@@ -296,20 +264,16 @@ class TestV13Risk2Consistency(unittest.TestCase):
             self.assertIn("EXPERIMENT_CONSISTENCY_FAILURE", str(ctx.exception))
             mock_run.assert_not_called()
 
-    def test_j_main_startup_succeeds_on_matching_config(self):
-        """J: main.py 실행 시 matching config(live_mode=True, risk 0.02, daily 0.04)이면
-        정상적으로 runner.run()에 진입."""
-        import main
         with patch.object(main, 'ROOT', self.root), \
              patch.object(main, 'load_config', return_value=self.cfg_risk2), \
              patch.object(main, 'prerequisites'), \
              patch.object(main, 'load_credentials'), \
              patch.object(main, 'now', return_value=self.clock[0]), \
-             patch('automation.runner.run', return_value={'passed': True}) as mock_run, \
+             patch('automation.runner.run', return_value={'passed': True}) as mock_run2, \
              patch('sys.argv', ['main.py']):
             res = main.main()
             self.assertEqual(res, 0)
-            mock_run.assert_called_once()
+            mock_run2.assert_called_once()
 
     def test_k_operator_runner_fails_closed_on_mismatch(self):
         """K: operator_runner 실행 경로에서 mismatched live config 시 fail-closed 및 CRASHED 기록, trading_on=False 확인."""

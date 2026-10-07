@@ -75,27 +75,25 @@ class SubscriptionRefreshTests(unittest.TestCase):
         self.send({'trnm':'REG','return_code':0});self.assertFalse(self.on());self.assertTrue(self.account.request.is_set())
         self.assertIsNone(self.e.enter(self.signal(),self.tick()));self.assertEqual(self.broker.orders,[])
         self.e.reconcile(self.snapshot);self.assertTrue(self.on())
-    def test_new_subscription_rejects_pre_registration_nonregular_and_stale_ticks(self):
+    def test_new_subscription_tick_acceptance_and_registration_invariants(self):
         self.clock=START+timedelta(seconds=2);self.refresh({SYM,OTHER})
         self.assertEqual(self.send(self.frame(self.tick(OTHER,sec=1))),0)
         self.assertEqual(self.send(self.frame(self.tick(OTHER,sec=2,regular=False))),0)
         self.clock=START+timedelta(seconds=20)
         self.assertEqual(self.send(self.frame(self.tick(OTHER,sec=2))),0)
         self.assertIn(OTHER,self.sub.waiting);self.assertNotIn(OTHER,self.d.last);self.assertEqual(self.broker.orders,[])
-    def test_new_subscription_waits_for_accepted_fresh_regular_tick(self):
-        self.clock=START+timedelta(seconds=1);self.refresh({SYM,OTHER})
-        self.send({'trnm':'REG','return_code':0});self.assertIn(OTHER,self.sub.waiting)
-        self.assertEqual(self.send(self.frame(self.tick(OTHER,sec=1))),1)
+        self.clock=START+timedelta(seconds=21);self.send({'trnm':'REG','return_code':0})
+        self.assertIn(OTHER,self.sub.waiting)
+        self.assertEqual(self.send(self.frame(self.tick(OTHER,sec=21))),1)
         self.assertNotIn(OTHER,self.sub.waiting);self.assertEqual(self.broker.orders,[])
     def test_existing_ticks_continue_while_reg_ack_is_pending(self):
         self.send(self.frame(self.tick()));self.clock+=timedelta(seconds=1);self.refresh({SYM,OTHER})
         self.assertTrue(self.sub.refresh_pending);self.assertEqual(self.send(self.frame(self.tick(sec=1))),1)
         self.assertEqual(len(self.d.buffers[SYM]),2);self.assertTrue(self.e.account_ok)
-    def test_reg_rejection_still_halts_new_entry(self):
+    def test_reg_rejection_and_bad_account_halt_or_block_entries(self):
         self.refresh({SYM,OTHER});self.send({'trnm':'REG','return_code':-1})
         self.assertTrue(self.e.s['halt']);self.assertFalse(self.on());self.assertIsNone(self.e.enter(self.signal(),self.tick()))
-    def test_refresh_does_not_make_bad_or_stale_account_valid(self):
-        self.e.account_ok=False;self.refresh({SYM,OTHER});self.send({'trnm':'REG','return_code':0})
+        self.e.s['halt']=False;self.e.account_ok=False;self.refresh({SYM,OTHER});self.send({'trnm':'REG','return_code':0})
         self.assertFalse(self.e.account_ok);self.assertFalse(self.on())
         self.e.account_ok=True;self.e.last_account=time.monotonic()-self.cfg.reconcile_seconds*3-1
         _,gates=self.e.entry_gates(self.signal(),self.tick());self.assertEqual(gates['connection_account']['result'],'FAIL')
@@ -105,12 +103,11 @@ class SubscriptionRefreshTests(unittest.TestCase):
         self.assertIs(bars,self.d.history[SYM]);self.assertIn(SYM,self.sub.waiting)
         self.assertEqual(self.send(self.frame(self.tick(sec=120))),0)
         self.assertEqual(self.send(self.frame(self.tick(sec=121))),1);self.assertNotIn(SYM,self.sub.waiting)
-    def test_stale_rejoin_resets_every_symbol_map(self):
+    def test_stale_rejoin_and_detached_cache_expiration(self):
         self.warm();self.d.last_eval[SYM]={'trials':[1]};self.refresh(set())
         self.clock+=timedelta(seconds=self.cfg.stale_seconds+1);self.refresh({SYM})
         for m in (self.d.buffers,self.d.minutes,self.d.completed,self.d.last,self.d.history,self.d.current,self.d.day_high,self.d.prior_high,self.d.last_eval):self.assertNotIn(SYM,m)
-    def test_detached_cache_expires_even_without_new_subscription_change(self):
-        self.warm();self.refresh(set());self.clock+=timedelta(seconds=self.cfg.stale_seconds+1);self.refresh(set())
+        self.setUp();self.warm();self.refresh(set());self.clock+=timedelta(seconds=self.cfg.stale_seconds+1);self.refresh(set())
         self.assertNotIn(SYM,self.d.last);self.assertNotIn(SYM,self.sub.detached)
     def test_rejoin_next_day_never_uses_previous_day_data(self):
         self.warm();self.refresh(set());self.clock+=timedelta(days=1);self.refresh({SYM});self.assertNotIn(SYM,self.d.history)
@@ -123,24 +120,22 @@ class SubscriptionRefreshTests(unittest.TestCase):
         self.assertEqual(priority,{SYM});self.assertIs(history,self.d.history[SYM]);self.assertEqual(self.d.last[SYM].time,self.clock)
         self.clock+=timedelta(seconds=1);self.assertEqual(self.send(self.frame(self.tick(sec=125))),1)
         self.assertEqual(self.d.last[SYM].time,self.clock);self.assertEqual(self.broker.orders,[])
-    def test_handoff_is_not_blocked_by_unrelated_shadow_backlog(self):
+    def test_handoff_priority_with_unrelated_backlog_and_critical_positions(self):
         for n in range(300):self.feed.observation_q.put((START,self.tick(OTHER,cumulative=n+1)))
         for n in range(100):self.feed.observation_q.put((START,self.tick(cumulative=n+1)))
         with patch('automation.runner.now',return_value=self.clock):
             _,priority=prewarm_handoff(self.e,self.d,self.feed,{SYM,OTHER},{SYM},set(),0,Mock())
         self.assertEqual(priority,{SYM});self.assertIn(SYM,self.feed.priority_symbols);self.assertEqual(self.d.last[SYM].cumulative,100)
         self.assertGreater(self.feed.observation_q.qsize(),0);self.assertEqual(self.broker.orders,[])
-    def test_critical_position_always_stays_priority_during_handoff(self):
         self.e.s['positions'][SYM]={'qty':1};self.feed.observation_q.put((START,self.tick(OTHER)))
         with patch('automation.runner.now',return_value=self.clock):
-            _,priority=prewarm_handoff(self.e,self.d,self.feed,{SYM,OTHER},{SYM},set(),0,Mock())
-        self.assertIn(SYM,priority);self.assertIn(SYM,self.feed.priority_symbols);self.assertEqual(self.broker.orders,[])
-    def test_observation_queue_gap_still_resets_prewarm(self):
+            _,priority2=prewarm_handoff(self.e,self.d,self.feed,{SYM,OTHER},{SYM},set(),0,Mock())
+        self.assertIn(SYM,priority2);self.assertIn(SYM,self.feed.priority_symbols);self.assertEqual(self.broker.orders,[])
+    def test_observation_queue_gap_and_independent_shadow_retention_invariants(self):
         self.warm();self.feed.observation_drops=1
         with patch('automation.runner.now',return_value=self.clock):
             dropped,_=prewarm_handoff(self.e,self.d,self.feed,{SYM},set(),set(),0,Mock())
         self.assertEqual(dropped,1);self.assertNotIn(SYM,self.d.history)
-    def test_independent_shadow_short_exclusion_retains_then_stale_resets(self):
         shadow=ShadowObserver(self.cfg,self.auto,self.e.costs,Mock());shadow.detector.continuous_observation=True
         row={'code':SYM,'status':'REJECT','source_count':1,'reference_price':10000,'affordability':{'entry_eligible':True},'market_status':{'pass':True}}
         shadow.update([row],START);shadow.detector.ingest(self.tick(),START);buf=shadow.detector.buffers[SYM]

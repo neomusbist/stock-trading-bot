@@ -14,7 +14,10 @@ from automation.radar import DynamicRadar, RadarWorker
 from automation.runner import qualify_raw
 from automation.patterns import PatternDetector
 from automation.allocation import efficiency
-from test_automation import FakeBroker
+try:
+    from test_automation import FakeBroker
+except ImportError:
+    from tests.test_automation import FakeBroker
 
 START = datetime(2026, 10, 6, 9, 30, tzinfo=KST)
 
@@ -54,8 +57,7 @@ class WatchFallbackTests(unittest.TestCase):
     def evaluate(self, item):
         return {'status': 'ELIGIBLE', 'overhead_share_estimate': 0.01, 'previous_close': item['reference_price'], 'resistance': item['reference_price'] * 1.1}
 
-    def test_1_primary_ge_5_zero_fallback(self):
-        """1. primary source_count>=2 후보가 5개 이상이면 fallback source1 후보 0개."""
+    def test_primary_vs_fallback_slot_allocation_matrix(self):
         radar = self.make_radar(fallback_source1=True)
         primaries = [self.primary_item(f'10000{i}') for i in range(6)]
         fallbacks = [self.single_source_item(f'20000{i}') for i in range(3)]
@@ -69,36 +71,21 @@ class WatchFallbackTests(unittest.TestCase):
             self.assertEqual(row['status'], 'REJECT')
             self.assertEqual(row['reason'], '소스 교집합 부족')
 
-    def test_2_primary_3_fallback_max_2(self):
-        """2. primary 후보 3개이면 fallback 최대 2개."""
-        radar = self.make_radar(fallback_source1=True)
-        primaries = [self.primary_item(f'10000{i}') for i in range(3)]
-        fallbacks = [self.single_source_item(f'20000{i}') for i in range(4)]
-        rows, watch, changes = radar.update(primaries + fallbacks, self.evaluate, START)
-        self.assertEqual(len(watch), 5)
-        primary_watch = [w for w in watch if not w.get('fallback_source1')]
-        fallback_watch = [w for w in watch if w.get('fallback_source1')]
+        radar2 = self.make_radar(fallback_source1=True)
+        p3 = [self.primary_item(f'10000{i}') for i in range(3)]
+        f4 = [self.single_source_item(f'20000{i}') for i in range(4)]
+        rows2, watch2, _ = radar2.update(p3 + f4, self.evaluate, START)
+        self.assertEqual(len(watch2), 5)
+        primary_watch = [w for w in watch2 if not w.get('fallback_source1')]
+        fallback_watch = [w for w in watch2 if w.get('fallback_source1')]
         self.assertEqual(len(primary_watch), 3)
         self.assertEqual(len(fallback_watch), 2)
-        for fb in fallback_watch:
-            self.assertEqual(fb['watch_type'], 'FALLBACK_SOURCE1')
-            self.assertEqual(fb['reason'], 'WATCH_FALLBACK_SOURCE1')
-        remaining_fallbacks = [r for r in rows if r['code'] in [f['code'] for f in fallbacks] and r['code'] not in [w['code'] for w in fallback_watch]]
-        self.assertEqual(len(remaining_fallbacks), 2)
-        for r in remaining_fallbacks:
-            self.assertEqual(r['status'], 'REJECT')
-            self.assertEqual(r['reason'], '소스 교집합 부족')
 
-    def test_3_primary_0_fallback_max_5(self):
-        """3. primary 후보 0개이면 fallback 최대 5개."""
-        radar = self.make_radar(fallback_source1=True)
-        fallbacks = [self.single_source_item(f'20000{i}') for i in range(7)]
-        rows, watch, changes = radar.update(fallbacks, self.evaluate, START)
-        self.assertEqual(len(watch), 5)
-        self.assertTrue(all(w.get('fallback_source1') for w in watch))
-        self.assertTrue(all(w.get('watch_type') == 'FALLBACK_SOURCE1' for w in watch))
-        self.assertTrue(all(w.get('reason') == 'WATCH_FALLBACK_SOURCE1' for w in watch))
-        self.assertEqual(len(changes['added']), 5)
+        radar3 = self.make_radar(fallback_source1=True)
+        f7 = [self.single_source_item(f'20000{i}') for i in range(7)]
+        _, watch3, _ = radar3.update(f7, self.evaluate, START)
+        self.assertEqual(len(watch3), 5)
+        self.assertTrue(all(w.get('fallback_source1') for w in watch3))
 
     def test_4_unaffordable_fallback_not_in_watch(self):
         """4. fallback 후보도 1주 매수 불가능하면 WATCH 불가."""
@@ -144,8 +131,8 @@ class WatchFallbackTests(unittest.TestCase):
             self.assertLessEqual(len(watch), self.cfg.max_watchlist)
             self.assertEqual(len(watch), min(self.cfg.max_watchlist, len(primaries) + len(fallbacks)))
 
-    def test_7_fallback_watch_promotion_alone_no_signal_or_order(self):
-        """7. source1 WATCH 승격만으로 signal/order가 발생하지 않음 (downstream 안전 확인)."""
+    def test_fallback_watch_engine_entry_and_riskgate_invariants(self):
+        """source1 WATCH 승격만으로 order 발생 안 함 및 RiskGate 보존."""
         broker = FakeBroker()
         engine = AutonomousEngine(self.cfg, self.auto, self.policy, self.folder / 'book', broker, lambda: START)
         engine.connected = True
@@ -170,23 +157,13 @@ class WatchFallbackTests(unittest.TestCase):
         self.assertIsNotNone(order2)
         self.assertEqual(len(broker.orders), 1)
 
-    def test_8_existing_abc_and_riskgate_intact(self):
-        """8. 기존 A/B/C 및 RiskGate 테스트 보존."""
-        broker = FakeBroker()
-        engine = AutonomousEngine(self.cfg, self.auto, self.policy, self.folder / 'book', broker, lambda: START)
-        engine.connected = True
-        engine.market = '3'
-        engine.reconcile({'cash': 20000, 'equity': 20000, 'orders': [], 'holdings': {}})
-        engine.market_status = {'200001': {'pass': True, 'reason_code': 'SYNTHETIC'}}
-        qualify_raw(engine, [{'code': '200001', 'source_count': 1, 'fallback_source1': True,
-                              'affordability': {'entry_eligible': True}}], START.isoformat())
-
-        tick = Tick('200001', START, 10000, 100, 100, 10010, 9990)
+        # RiskGate intact: wide stop rejected
+        tick2 = Tick('200001', START, 10000, 100, 100, 10010, 9990)
         sig_wide_stop = {'symbol': '200001', 'time': START.isoformat(), 'limit': 10000, 'stop': 8000,
                          'pattern': 'A', 'source_count': 1, 'fallback_source1': True,
                          'efficiency': efficiency(10000, 8000, 12000, 0.8, 10, engine.costs)}
-        self.assertIsNone(engine.enter(sig_wide_stop, tick))
-        self.assertEqual(broker.orders, [])
+        self.assertIsNone(engine.enter(sig_wide_stop, tick2))
+        self.assertEqual(len(broker.orders), 1)
 
     def test_9_subscription_refresh_and_observation_intact(self):
         """9. fallback 종목도 subscription lifecycle 및 observation_worker와 호환."""

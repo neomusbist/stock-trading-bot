@@ -21,20 +21,19 @@ class RecoveryTests(unittest.TestCase):
  def test_recovery_pass_preserves_settings_no_live(self):
   before=self.s.settings();result=self.s.recover_pilot(True);self.assertEqual(result['verdict'],'PASS');self.assertEqual(before,self.s.settings());self.assertEqual(result['orders'],0);self.assertEqual(result['cap'],10000);self.assertTrue(self.s._approval_basis(*before));self.assertIn('--recover-pilot',self.calls[-1])
  def test_initial_still_rejects(self):self.assertEqual(self.s.pilot()['phase'],'PREFLIGHT_REJECTED');self.assertEqual(self.calls,[])
- def test_confirmation_required(self):
+ def test_recovery_rejection_conditions(self):
   with self.assertRaises(ValueError):self.s.recover_pilot()
   self.assertEqual(self.calls,[])
- def test_live_rejected(self):
   self.p.command('LIVE',confirmation='LIVE');self.assertEqual(self.s.recover_pilot(True)['verdict'],'FAIL');self.assertEqual(self.calls,[])
- def test_outside_rejected(self):
-  self.time=self.time.replace(hour=20);self.assertEqual(self.s.recover_pilot(True)['verdict'],'FAIL');self.assertEqual(self.calls,[])
- def test_running_rejected(self):
+  self.setUp();self.time=self.time.replace(hour=20);self.assertEqual(self.s.recover_pilot(True)['verdict'],'FAIL');self.assertEqual(self.calls,[])
+  self.setUp()
   with patch.object(self.s,'running',return_value=True):self.assertEqual(self.s.recover_pilot(True)['verdict'],'FAIL')
   self.assertEqual(self.calls,[])
- def test_account_open_rejected(self):
-  self.orders=[{}];self.assertEqual(self.s.recover_pilot(True)['phase'],'PREFLIGHT_REJECTED');self.assertEqual(self.calls,['account'])
+  self.setUp();self.orders=[{}];self.assertEqual(self.s.recover_pilot(True)['phase'],'PREFLIGHT_REJECTED');self.assertEqual(self.calls,['account'])
  def test_changed_settings_not_qualified(self):
   self.s.recover_pilot(True);atomic_json(self.root/'automation.json',asdict(replace(self.s.settings()[1],AUTO_TRADING_CAP_KRW=20000)));self.assertFalse(self.s._approval_basis(*self.s.settings()))
  def test_runner_live_rejected_before_network(self):
   from automation.runner import run
   with self.assertRaises(ValueError):run(replace(Config(),live_mode=True),self.root,150,recover_pilot=True)
+
+if __name__=='__main__':unittest.main()

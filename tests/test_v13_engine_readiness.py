@@ -37,18 +37,19 @@ class V13ReadinessTests(unittest.TestCase):
     def tick(self,stamp=None,regular=True,cumulative=100):
         return Tick(SYM,stamp or self.clock,10000,100,cumulative,10010,9990,regular)
     def ready(self,radar=True):return runner.readiness_snapshot(self.engine,self.counts,radar,self.clock,self.detector)
-    def test_control_0759_boundary(self):
+    def test_session_control_boundaries_and_regular_epoch(self):
         self.assertFalse(control_supported(DAY.replace(hour=7,minute=59,second=59)))
         self.assertTrue(control_supported(DAY.replace(hour=8)))
         self.assertFalse(supported(DAY.replace(hour=8)))
+        self.clock=DAY.replace(hour=8,minute=10);self.assertEqual(self.ready()['regular_epoch'],DAY.isoformat())
+        self.assertEqual(assessment(self.clock)['phase'],'PREOPEN_CONTROL')
     def test_preopen_ignores_regular_tick_and_market_three(self):
         self.clock=DAY.replace(hour=8);self.engine.market='UNKNOWN';self.counts['ticks']=0;self.counts['radar_cycles']=0
         view=self.ready(False);self.assertEqual(view['state'],'PREOPEN_READY');self.assertEqual(view['missing'],[])
         self.assertNotIn('fresh_regular_tick',view['gates']);self.assertTrue(view['market_pending'])
-    def test_preopen_does_not_fake_missing_account(self):
+    def test_preopen_missing_account_and_buy_zero_invariants(self):
         self.clock=DAY.replace(hour=8);self.engine.account_ok=False
         self.assertEqual(self.ready()['state'],'WAITING');self.assertIn('ACCOUNT_FRESH_NOT_READY',self.ready()['missing'])
-    def test_preopen_buy_zero_even_with_live_policy(self):
         self.clock=DAY.replace(hour=8,minute=59,second=59)
         self.assertEqual(self.engine.new_entry_reason(SYM),'OUT_OF_SUPPORTED_SESSION')
         self.assertIsNone(self.engine.submit('BUY',SYM,1,10000,{'stop':9900}));self.assertEqual(self.broker.orders,[])
@@ -62,19 +63,18 @@ class V13ReadinessTests(unittest.TestCase):
         self.assertEqual(view['state'],'OPEN_READY');self.assertEqual(view['missing'],[])
         self.assertEqual(len(self.detector.buffers[SYM]),1);self.assertEqual(self.detector.usable_bars(SYM),[])
         self.assertIsNone(self.detector.signal(self.tick(),{'status':'WATCH'}))
-    def test_missing_tick_has_explicit_reason(self):
+    def test_tick_freshness_and_staleness_reasons(self):
         view=self.ready();self.assertEqual(view['state'],'WAITING');self.assertIn('FRESH_REGULAR_TICK_NOT_READY',view['missing'])
-    def test_old_tick_becomes_stale(self):
         self.detector.ingest(self.tick(),DAY);self.clock+=timedelta(seconds=self.cfg.stale_seconds+1)
         self.assertIn('FRESH_REGULAR_TICK_NOT_READY',self.ready()['missing'])
     def test_preopen_radar_not_valid_open_evidence(self):
         self.engine.last_radar_at=DAY-timedelta(seconds=1);self.detector.ingest(self.tick(),DAY)
         self.assertIn('RADAR_PIPELINE_NOT_READY',self.ready()['missing'])
-    def test_real_disconnect_immediately_revokes_ready(self):
+    def test_disconnect_and_stale_account_revoke_readiness(self):
         self.detector.ingest(self.tick(),DAY);self.assertEqual(self.ready()['state'],'OPEN_READY')
         self.engine.disconnect();self.assertIn('WEBSOCKET_REG_ACK_NOT_READY',self.ready()['missing'])
-    def test_stale_account_blocks_readiness(self):
-        self.detector.ingest(self.tick(),DAY);self.engine.last_account=time.monotonic()-self.cfg.reconcile_seconds*3-1
+        self.engine.connected=True
+        self.engine.last_account=time.monotonic()-self.cfg.reconcile_seconds*3-1
         self.assertIn('ACCOUNT_FRESH_NOT_READY',self.ready()['missing'])
     def test_runtime_callback_is_actual_buy_gate(self):
         self.engine.readiness_reason=lambda:'OPEN_READINESS_FRESH_REGULAR_TICK_NOT_READY'
@@ -95,9 +95,6 @@ class V13ReadinessTests(unittest.TestCase):
         self.clock=DAY.replace(hour=15,minute=10);self.assertTrue(self.engine.session_ending())
         self.assertTrue(control_supported(DAY.replace(hour=15,minute=19,second=59)))
         self.assertFalse(control_supported(DAY.replace(hour=15,minute=20)));self.assertFalse(supported(DAY.replace(hour=15,minute=20)))
-    def test_regular_epoch_is_0900(self):
-        self.clock=DAY.replace(hour=8,minute=10);self.assertEqual(self.ready()['regular_epoch'],DAY.isoformat())
-        self.assertEqual(assessment(self.clock)['phase'],'PREOPEN_CONTROL')
     def test_strategy_buffer_and_minimum_ABC_bars_unchanged(self):
         self.assertEqual(self.cfg.baseline_seconds+self.cfg.acceleration_seconds,70)
         self.assertEqual(self.auto.box_min_bars,5)
@@ -134,12 +131,11 @@ class V13RunnerReadinessLoopTests(unittest.TestCase):
             result=runner.run(Config(),self.root,readiness_check=True)
         self.assertLessEqual(len(calls),3);self.assertEqual(FakeRest.calls,[]);self.assertEqual(result['real_orders_sent'],0)
         return result,feed,account,radar
-    def test_preopen_query_finishes_on_account_and_reg_without_tick(self):
+    def test_runner_readiness_finishes_on_evidence_not_fixed_delay(self):
         result,feed,account,radar=self.run_ready(DAY.replace(hour=8),False)
         self.assertTrue(result['passed']);self.assertEqual(result['readiness']['state'],'PREOPEN_READY');self.assertEqual(result['counts']['ticks'],0)
         feed.start.assert_called_once();account.start.assert_called_once();feed.close.assert_called_once()
-    def test_open_query_finishes_on_first_real_evidence_not_150_seconds(self):
-        result,*_=self.run_ready(DAY,True)
-        self.assertTrue(result['passed']);self.assertEqual(result['readiness']['state'],'OPEN_READY');self.assertEqual(result['counts']['ticks'],1)
+        result2,*_=self.run_ready(DAY,True)
+        self.assertTrue(result2['passed']);self.assertEqual(result2['readiness']['state'],'OPEN_READY');self.assertEqual(result2['counts']['ticks'],1)
 
 if __name__=='__main__':unittest.main()

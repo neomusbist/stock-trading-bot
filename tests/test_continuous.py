@@ -70,28 +70,27 @@ class ContinuousTests(unittest.TestCase):
         self.record(heartbeat=(self.clock[0]-timedelta(minutes=2)).isoformat())
         info=self.s.process_info(); self.assertTrue(info['running']); self.assertFalse(info['process_heartbeat_fresh'])
         self.assertEqual(self.s.start_continuous()['verdict'],'ALREADY_RUNNING'); self.assertEqual(self.gateway.starts,0)
-    def test_dead_pid_ignored_without_clearing_order_ledger(self):
+    def test_stale_and_dead_pid_identities_allow_clean_start(self):
         self.record(pid=2147483000,identity='dead'); self.assertTrue(self.s.process_info()['stale'])
         self.assertEqual(self.s.start_continuous()['verdict'],'STARTED')
-    def test_reused_pid_identity_does_not_attach_wrong_process(self):
         self.record(identity='different-creation-time'); self.assertFalse(self.s.running())
         self.assertTrue(self.s.process_info()['stale']); self.assertEqual(self.s.start_continuous()['verdict'],'STARTED')
-    def test_existing_legacy_runner_lock_blocks_start_even_no_pid(self):
+    def test_process_locks_and_corrupt_metadata_block_launch(self):
+        # 1. legacy runner lock
         with ProcessLock(self.root/'runtime/process.lock'):
             self.assertEqual(self.s.start_continuous()['verdict'],'ALREADY_RUNNING')
-        self.assertEqual(self.gateway.starts,0)
-    def test_launch_lock_and_worker_lock_prevent_duplicate_popen(self):
+        # 2. launch lock and worker lock
         with ProcessLock(self.root/'runtime/operator_launch.lock'),patch('operator_service.subprocess.Popen') as popen:
             with self.assertRaises(RuntimeError): self.s.launch_continuous()
             popen.assert_not_called()
         with ProcessLock(self.root/'runtime/operator_runner.lock'),patch('operator_service.subprocess.Popen') as popen:
             with self.assertRaises(ValueError): self.s.launch_continuous()
             popen.assert_not_called()
-    def test_stopped_record_with_live_lock_still_blocks(self):
+        # 3. live supervisor lock with stopped record
         self.record('STOPPED')
         with ProcessLock(self.root/'runtime/supervisor.lock'):
             self.assertEqual(self.s.start_continuous()['verdict'],'ALREADY_RUNNING')
-    def test_corrupt_process_metadata_refuses_start(self):
+        # 4. corrupt metadata
         (self.root/'runtime/operator_runner.json').write_text('{broken')
         with self.assertRaises(ValueError): self.s.start_continuous()
         self.assertEqual(self.gateway.starts,0)
@@ -181,11 +180,12 @@ class ContinuousTests(unittest.TestCase):
         with self.assertRaises(RuntimeError): operator_runner.run(self.root,lambda:self.clock[0],crash)
         self.assertEqual(self.s.process_info()['status'],'CRASHED'); self.assertFalse(self.s.running())
         self.assertEqual(self.policy.refresh()['mode'],'ARMED')
-    def test_wrapper_default_calls_same_supervisor_not_new_trading_loop(self):
+    def test_wrapper_supervisor_dispatch_and_after_hours_guard(self):
+        # 1. in session: dispatches to supervisor
         with patch('supervisor.main',return_value=0) as original:
             self.assertEqual(operator_runner.run(self.root,lambda:self.clock[0]),0)
             original.assert_called_once_with()
-    def test_wrapper_after_hours_never_calls_supervisor(self):
+        # 2. after hours: never calls supervisor
         supervise=Mock(); self.clock[0]=self.clock[0].replace(hour=20)
         with self.assertRaises(ValueError): operator_runner.run(self.root,lambda:self.clock[0],supervise)
         supervise.assert_not_called()
@@ -193,15 +193,15 @@ class ContinuousTests(unittest.TestCase):
         self.clock[0]=self.clock[0].replace(hour=15,minute=20)
         self.assertTrue(operator_runner.session_end(self.root,lambda:self.clock[0])); self.assertEqual(self.policy.refresh()['mode'],'STOP')
         self.policy.command('KILL'); operator_runner.session_end(self.root,lambda:self.clock[0]); self.assertEqual(self.policy.refresh()['mode'],'KILL')
-    def test_resume_live_requires_confirmation_and_same_settings(self):
+    def test_resume_live_conditions_and_cap_guard(self):
         self.live(); self.record('STOPPED'); self.s.stop('STOP')
         with self.assertRaises(ValueError): self.s.resume_live_continuous(False)
-        self.assertEqual(self.s.resume_live_continuous(True)['verdict'],'STARTED'); self.assertEqual(self.gateway.starts,1)
-    def test_resume_live_changed_cap_blocked_without_auto_increase(self):
-        self.live(); self.record('STOPPED'); self.s.stop('STOP'); _,auto,_=self.s.settings()
+        _,auto,_=self.s.settings()
         atomic_json(self.root/'automation.json',asdict(replace(auto,AUTO_TRADING_CAP_KRW=3000)))
         with self.assertRaises(ValueError): self.s.resume_live_continuous(True)
         self.assertEqual(self.policy.refresh()['mode'],'STOP'); self.assertEqual(self.gateway.starts,0)
+        atomic_json(self.root/'automation.json',asdict(auto))
+        self.assertEqual(self.s.resume_live_continuous(True)['verdict'],'STARTED'); self.assertEqual(self.gateway.starts,1)
     def test_status_separates_mode_process_and_stale_market(self):
         self.s.start_continuous(); st=self.s.public_status(); self.assertEqual(st['mode'],'ARMED'); self.assertTrue(st['process']['running'])
         self.assertFalse(st['trading_on']); out=[]; show_status(st,out.append,details=False)

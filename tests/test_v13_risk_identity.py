@@ -47,7 +47,7 @@ class V13RiskIdentityTests(unittest.TestCase):
         self.assertEqual(self.engine.a.capital_limit, 20000)
         self.assertEqual(self.engine.auto_available_capital(), 20000)
 
-    def test_structural_unit_risk_above200_below400_uses_existing_order_path(self):
+    def test_structural_unit_risk_budget_boundaries(self):
         signal = self.signal()
         details = self.engine.quantity_details(signal,20000,20000,800)
         self.assertGreater(details['risk_per_share'], 200)
@@ -61,14 +61,13 @@ class V13RiskIdentityTests(unittest.TestCase):
         self.assertIsNotNone(order)
         self.assertEqual(order['status'],'ACCEPTED')
         self.assertEqual(self.broker.orders,[('BUY',fixture.SYMBOL,1,10000)])
-
-    def test_structural_unit_risk_above400_still_zero(self):
-        signal = self.signal(stop=9600)
-        details = self.engine.quantity_details(signal,20000,20000,800)
-        self.assertGreater(details['risk_per_share'],400)
-        self.assertEqual(details['quantity'],0)
-        self.assertEqual(details['reason_code'],'RISK_BUDGET_ZERO_QTY')
-        self.assertIsNone(self.engine.enter(signal,self.tick(10000)))
+        self.setUp()
+        signal2 = self.signal(stop=9600)
+        details2 = self.engine.quantity_details(signal2,20000,20000,800)
+        self.assertGreater(details2['risk_per_share'],400)
+        self.assertEqual(details2['quantity'],0)
+        self.assertEqual(details2['reason_code'],'RISK_BUDGET_ZERO_QTY')
+        self.assertIsNone(self.engine.enter(signal2,self.tick(10000)))
         self.assertEqual(self.broker.orders,[])
 
     def test_risk_fraction_changes_quantity_not_structural_invalidation(self):
@@ -99,12 +98,12 @@ class V13RiskIdentityTests(unittest.TestCase):
         self.assertEqual(self.broker.orders[-1][0],'SELL')
         self.assertEqual(sum(1 for o in self.broker.orders if o[0]=='BUY'),1)
 
-    def test_entry_and_risk_gate_logs_carry_experiment_numbers(self):
+    def test_entry_and_risk_gate_logs_carry_experiment_and_budget_invariants(self):
         signal = self.signal()
         qty,gates = self.engine.entry_gates(signal,self.tick(10000))
         self.engine.decisions.emit('ENTRY_EVAL',fixture.SYMBOL,'NO_BUY','SYNTHETIC_ONLY',
             gates,signal=signal,price=10000,extra={'quantity':qty},force=True)
-        row = [row for row in self.events() if row['event']=='ENTRY_EVAL'][-1]
+        row = [r for r in self.events() if r['event']=='ENTRY_EVAL'][-1]
         required = {'risk_fraction':.02,'max_daily_loss_fraction':.04,
                     'allowed_risk_krw':400,'remaining_daily_risk_krw':800}
         for key,value in required.items():
@@ -113,24 +112,24 @@ class V13RiskIdentityTests(unittest.TestCase):
         self.assertEqual(row['build_id'],BUILD_ID)
         self.assertEqual(row['strategy_experiment'],STRATEGY_EXPERIMENT)
 
-    def test_accepted_entry_log_keeps_gate_budget_before_order_reservation(self):
+        self.setUp()
         order=self.engine.enter(self.signal(),self.tick(10000))
         self.assertIsNotNone(order)
         self.assertLess(self.engine.capital_context()['risk_remaining'],800)
-        row=[row for row in self.events() if row['event']=='ENTRY_EVAL'][-1]
-        self.assertEqual(row['decision'],'BUY')
-        self.assertEqual(row['allowed_risk_krw'],400)
-        self.assertEqual(row['remaining_daily_risk_krw'],800)
-        self.assertEqual(row['gates']['risk_quantity']['values']['remaining_daily_risk_krw'],800)
+        row2=[r for r in self.events() if r['event']=='ENTRY_EVAL'][-1]
+        self.assertEqual(row2['decision'],'BUY')
+        self.assertEqual(row2['allowed_risk_krw'],400)
+        self.assertEqual(row2['remaining_daily_risk_krw'],800)
+        self.assertEqual(row2['gates']['risk_quantity']['values']['remaining_daily_risk_krw'],800)
 
-    def test_remaining_daily_budget_not_cap_growth_logged(self):
+        self.setUp()
         self.engine.s['daily_loss']=700
         self.engine.decisions.emit('ENTRY_EVAL',fixture.SYMBOL,'NO_BUY','SYNTHETIC_ONLY',
             {'risk_quantity':gate(False,quantity=0)},signal=self.signal(),price=10000,force=True)
-        row=[row for row in self.events() if row['event']=='ENTRY_EVAL'][-1]
-        self.assertEqual(row['allowed_risk_krw'],400)
-        self.assertEqual(row['remaining_daily_risk_krw'],100)
-        self.assertEqual(row['approved_cap'],20000)
+        row3=[r for r in self.events() if r['event']=='ENTRY_EVAL'][-1]
+        self.assertEqual(row3['allowed_risk_krw'],400)
+        self.assertEqual(row3['remaining_daily_risk_krw'],100)
+        self.assertEqual(row3['approved_cap'],20000)
 
     def test_example_has_explicit_experiment_without_live_or_cap_approval(self):
         config=json.loads((Path(__file__).resolve().parents[1]/'config.example.json').read_text(encoding='utf-8'))

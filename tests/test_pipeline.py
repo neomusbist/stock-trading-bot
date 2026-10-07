@@ -83,16 +83,16 @@ class PipelineTests(unittest.TestCase):
         self.assertFalse(self.e.s['positions']); self.assertEqual(report(self.e.s['trades'])['all']['count'],1)
         self.assertEqual(report(self.e.s['trades'])['completed_trades'][0]['pattern'],pattern)
         self.assertGreater(self.e.s['cash'],1000000)
-    def test_A_tick_to_fill_to_profit_protection(self): self.full_pattern('A')
-    def test_B_tick_to_fill_to_profit_protection(self): self.full_pattern('B')
-    def test_C_tick_to_fill_to_profit_protection(self): self.full_pattern('C')
-    def test_dynamic_subscription_replace_keeps_order_and_market_feed(self):
+    def test_patterns_A_B_C_tick_to_fill_to_profit_protection(self):
+        for pattern in ('A','B','C'):
+            self.setUp()
+            self.full_pattern(pattern)
+    def test_dynamic_subscription_and_ack_invariants(self):
         feed=Feed(Mock(),['999990']); feed.socket=Mock(); feed.logged_in=True
         self.assertTrue(feed.update_symbols(['999980','999990']))
         payload=json.loads(feed.socket.send.call_args.args[0]); self.assertEqual(payload['refresh'],'0')
         self.assertEqual(payload['data'][1]['type'],['00','0s'])
         self.assertFalse(feed.update_symbols(['999980','999990']))
-    def test_subscription_ack_keeps_warmed_bars(self):
         detector=Mock(); self.e.connected=False; self.e.reset_detector=False
         process_message(self.e,detector,{'trnm':'REG','return_code':0},self.clock[0],set(),{},Mock(),{},Mock(),True)
         detector.reset.assert_not_called(); self.assertFalse(self.e.account_ok)
@@ -127,18 +127,16 @@ class PipelineTests(unittest.TestCase):
         for hour,minute,second,expected in ((8,59,59,False),(9,0,0,True),(15,19,59,True),(15,20,0,False),(20,0,0,False)):
             self.assertEqual(supported(START.replace(hour=hour,minute=minute,second=second)),expected)
         self.assertFalse(supported(START.replace(tzinfo=None)))
-    def test_after_hours_regular_flag_cannot_force_buy_or_sell(self):
+    def test_after_hours_guards_block_ingest_and_orders(self):
         self.clock[0]=START.replace(hour=20)
         sig={'symbol':SYMBOL,'limit':10020,'stop':9800,'pattern':'A','efficiency':{'decision':'TRADE'}}
         self.e.enter(sig,Tick(SYMBOL,self.clock[0],10000,100,100,10010,9990))
         self.assertIsNone(self.e.submit('BUY',SYMBOL,1,10020,sig))
         self.e.s['positions'][SYMBOL]={'qty':1,'ownership':'BOT','qty_blocked':False}
         self.assertIsNone(self.e.submit('SELL',SYMBOL,1)); self.assertFalse(self.broker.orders)
-    def test_1520_guard_denies_even_with_saved_order_intent(self):
         self.clock[0]=START.replace(hour=15,minute=20)
         with self.assertRaisesRegex(Rejected,'OUT_OF_SUPPORTED_SESSION'):
             self.e.order_guard('kt10000',{'stk_cd':SYMBOL,'ord_qty':'10','ord_uv':'10020'})
-    def test_after_hours_tick_not_ingested(self):
         d=PatternDetector(self.cfg,self.auto,self.e.costs); stamp=START.replace(hour=20)
         self.assertFalse(d.ingest(Tick(SYMBOL,stamp,10000,100,100,10010,9990),stamp))
     def test_after_hours_diagnostic_never_creates_broker(self):

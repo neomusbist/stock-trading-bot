@@ -26,8 +26,8 @@ from automation.allocation import efficiency
 from automation.radar import DynamicRadar,RadarWorker,observation_structure
 from automation.runner import AccountWorker,ReadOnlyPilotPolicy,process_message,qualify_raw
 from automation.observation_worker import ObservationWorker
-from test_automation import FakeBroker
-from test_v1 import bars
+from tests.test_automation import FakeBroker
+from tests.test_v1 import bars
 
 class AuditFixture(unittest.TestCase):
     def setUp(self):
@@ -122,32 +122,33 @@ class ExitAuditTests(AuditFixture):
     def test_reconciliation_mismatch_blocks_sell_without_discarding_position(self):
         self.buy();self.e.reconcile(self.snap);self.e.request_exit('999990','synthetic');self.e.drive_exits()
         self.assertTrue(self.e.s['positions']['999990']['qty_blocked']);self.assertEqual(self.sells(),[])
-    def test_shadow_signal_and_single_source_blocked_at_engine_boundary(self):
+    def test_shadow_signal_and_source_floor_blocked_at_engine_boundary(self):
         for extra in ({'SHADOW_ONLY':True},{'actual_order_permission':False},{'source_count':1}):
             self.assertIsNone(self.e.enter({**self.signal(),**extra},self.tick()))
+        self.e.a=replace(self.auto,min_source_count=1)
+        self.assertIsNone(self.e.enter({**self.signal(),'source_count':1},self.tick()))
         self.assertEqual(self.broker.orders,[])
     def test_cap_zero_hardlocks_and_stop_keep_meaning(self):
         self.policy.command('STOP');self.assertIsNone(self.e.enter(self.signal(),self.tick()))
         for sym in ('005930','017900'):self.assertIsNone(self.e.submit('SELL',sym,1))
         self.assertEqual(self.broker.orders,[])
-    def test_raw_downgrade_revokes_buy_before_slow_structure_finishes(self):
+    def test_raw_qualification_updates_buy_eligibility(self):
+        # 1. source_count 1 revokes, source_count 2 restores
         qualify_raw(self.e,[{'code':'999990','source_count':1}],self.clock[0].isoformat())
         self.assertIsNone(self.e.enter(self.signal(),self.tick()));self.assertEqual(self.broker.orders,[])
         qualify_raw(self.e,[{'code':'999990','source_count':2}],self.clock[0].isoformat())
         self.assertIsNotNone(self.e.enter(self.signal(),self.tick()))
+        # 2. empty raw revokes
+        self.setUp()
+        qualify_raw(self.e,[],self.clock[0].isoformat())
+        self.assertIsNone(self.e.enter(self.signal(),self.tick()));self.assertEqual(self.broker.orders,[])
     def test_raw_qualification_does_not_block_protective_exit(self):
         self.buy();qualify_raw(self.e,[{'code':'999990','source_count':1}],self.clock[0].isoformat())
         self.e.on_tick(self.tick(975));self.assertEqual(len(self.sells()),1)
-    def test_actual_buy_source_floor_two_even_if_setting_one(self):
-        self.e.a=replace(self.auto,min_source_count=1)
-        self.assertIsNone(self.e.enter({**self.signal(),'source_count':1},self.tick()));self.assertEqual(self.broker.orders,[])
     def test_affordable_one_share_can_still_exceed_risk_budget_with_minimum_stop(self):
         details=self.e.quantity_details({'limit':10000,'stop':9980},20000,20000,200)
         self.assertGreater(details['capital_quantity'],0);self.assertGreater(details['risk_per_share'],60)
         self.assertEqual(details['quantity'],0);self.assertEqual(details['reason_code'],'RISK_BUDGET_ZERO_QTY')
-    def test_empty_latest_raw_result_revokes_all_buy_qualification(self):
-        qualify_raw(self.e,[],self.clock[0].isoformat())
-        self.assertIsNone(self.e.enter(self.signal(),self.tick()));self.assertEqual(self.broker.orders,[])
 
 class ObservationAuditTests(unittest.TestCase):
     def setUp(self):
@@ -162,19 +163,20 @@ class ObservationAuditTests(unittest.TestCase):
         worker=ObservationWorker(self.cfg,self.auto,self.costs,self.root)
         row=self.row();del row['shadow_view'];worker.prepare([row],self.start.isoformat(),{})
         self.assertEqual(worker.state()['symbols'],[])
-    def test_economic_exclusion_never_queries_status_or_daily(self):
+    def test_unaffordable_candidate_skips_queries_and_structure(self):
+        # 1. economic exclusion skips stock_status
         rest=Mock();worker=ObservationWorker(self.cfg,self.auto,self.costs,self.root,rest)
         row=self.row();row['affordability']={'entry_eligible':False,'reason_code':'ONE_SHARE_UNAFFORDABLE'}
         worker.prepare([row],self.start.isoformat(),{});rest.stock_status.assert_not_called();self.assertEqual(worker.state()['symbols'],[])
+        # 2. unaffordable does not reach structure evaluation
+        radar=DynamicRadar(self.cfg,self.auto,Policy(self.root/'policy'));radar.available_capital=1000
+        item={'code':'999990','name':'합성','reference_price':2000,'source_details':{'one':{'observed_rank':1,'values':{}},'two':{'observed_rank':1,'values':{}}}}
+        evaluate=Mock();rows,watch,_=radar.update([item],evaluate,self.start);evaluate.assert_not_called();self.assertEqual(watch,[])
     def test_dynamic_cap_changes_universe_without_hardcoded_price(self):
         policy=Policy(self.root/'policy');radar=DynamicRadar(self.cfg,self.auto,policy)
         radar.capital_context={'effective_auto_cap':5000,'account_fresh':True}
         row={'reference_price':6000};self.assertFalse(radar.affordable(row))
         radar.capital_context['effective_auto_cap']=10000;self.assertTrue(radar.affordable(row))
-    def test_unaffordable_does_not_reach_structure_evaluation(self):
-        radar=DynamicRadar(self.cfg,self.auto,Policy(self.root/'policy'));radar.available_capital=1000
-        item={'code':'999990','name':'합성','reference_price':2000,'source_details':{'one':{'observed_rank':1,'values':{}},'two':{'observed_rank':1,'values':{}}}}
-        evaluate=Mock();rows,watch,_=radar.update([item],evaluate,self.start);evaluate.assert_not_called();self.assertEqual(watch,[])
     def test_single_source_still_not_live_watch(self):
         radar=DynamicRadar(self.cfg,self.auto,Policy(self.root/'policy'));radar.available_capital=20000
         item={'code':'999990','name':'합성','reference_price':1000,'source_details':{'one':{'observed_rank':1,'values':{}}}}
@@ -187,33 +189,29 @@ class ObservationAuditTests(unittest.TestCase):
         row.update(first_raw_at=self.start.isoformat(),first_raw_price=990,reference_price=1000)
         worker.observer.update([row],self.start+timedelta(seconds=4))
         self.assertEqual(worker.observer.first['999990']['first_raw_price'],990)
-    def test_new_candidate_replaces_old_at_capacity_not_lexicographic(self):
+    def test_observer_capacity_and_tenure_table(self):
         worker=ObservationWorker(self.cfg,self.auto,self.costs,self.root,limit=2)
         worker.observer.update([self.row('000010'),self.row('000020')],self.start)
-        worker.observer.update([self.row('000010'),self.row('000020'),self.row('999990')],self.start+timedelta(seconds=361))
-        self.assertIn('999990',worker.observer.rows);self.assertEqual(len(worker.observer.rows),2)
-    def test_capacity_preserves_warmup_but_accepts_stronger_new_discovery(self):
-        worker=ObservationWorker(self.cfg,self.auto,self.costs,self.root,limit=2)
-        worker.observer.update([self.row('000010'),self.row('000020')],self.start)
-        weak=self.row('999990');worker.observer.update([self.row('000010'),self.row('000020'),weak],self.start+timedelta(seconds=30))
-        self.assertNotIn('999990',worker.observer.rows)
-        strong=self.row('999990',2);worker.observer.update([self.row('000010'),self.row('000020'),strong],self.start+timedelta(seconds=31))
-        self.assertIn('999990',worker.observer.rows)
-    def test_capacity_tenure_covers_box_warmup_not_only_a(self):
-        worker=ObservationWorker(self.cfg,self.auto,self.costs,self.root,limit=2)
-        worker.observer.update([self.row('000010'),self.row('000020')],self.start)
+        # 1. tenure covers box warmup
         worker.observer.update([self.row('000010'),self.row('000020'),self.row('999990')],self.start+timedelta(seconds=300))
         self.assertNotIn('999990',worker.observer.rows)
-    def test_continuous_sparse_fresh_trades_keep_observation_history(self):
+        # 2. replaces old after tenure (361s)
+        worker.observer.update([self.row('000010'),self.row('000020'),self.row('999990')],self.start+timedelta(seconds=361))
+        self.assertIn('999990',worker.observer.rows);self.assertEqual(len(worker.observer.rows),2)
+        # 3. strong discovery replaces despite warmup
+        worker2=ObservationWorker(self.cfg,self.auto,self.costs,self.root,limit=2)
+        worker2.observer.update([self.row('000010'),self.row('000020')],self.start)
+        strong=self.row('999990',2);worker2.observer.update([self.row('000010'),self.row('000020'),strong],self.start+timedelta(seconds=31))
+        self.assertIn('999990',worker2.observer.rows)
+    def test_continuous_observation_tick_handling(self):
         detector=PatternDetector(self.cfg,self.auto,self.costs);detector.continuous_observation=True
         for sec in range(0,181,10):
             tick=Tick('999990',self.start+timedelta(seconds=sec),1000,100,100+sec,1001,999);self.assertTrue(detector.ingest(tick,tick.time))
         self.assertEqual(len(detector.history['999990']),3)
+        # delayed tick rejected
+        delayed=Tick('999990',self.start,1000,100,100,1001,999)
+        self.assertFalse(detector.ingest(delayed,self.start+timedelta(seconds=10)))
         detector.reset();self.assertEqual(detector.history,{})
-    def test_delayed_tick_still_rejected_even_in_continuous_mode(self):
-        detector=PatternDetector(self.cfg,self.auto,self.costs);detector.continuous_observation=True
-        tick=Tick('999990',self.start,1000,100,100,1001,999)
-        self.assertFalse(detector.ingest(tick,self.start+timedelta(seconds=10)))
     def test_warmup_counts_usable_bars_and_geometry_before_acceleration(self):
         detector=PatternDetector(self.cfg,self.auto,self.costs)
         detector.history['999990']=deque([{'time':self.start,'first_second':30,'low':990,'high':1000,'close':995,'volume':100}]*5)
@@ -231,17 +229,17 @@ class ObservationAuditTests(unittest.TestCase):
         setup={'pattern':'A','projection':8700};self.assertEqual(detector.target(tick,{'resistance':8370},setup,8480),8700)
         setup['pattern']='B';self.assertEqual(detector.target(tick,{'resistance':8370},setup,8480),8370)
         setup['pattern']='C';self.assertEqual(detector.target(tick,{'resistance':8550},setup,8480),8550)
-    def test_diagnostic_feed_does_not_fill_priority_queue_or_overflow_halt(self):
+    def test_diagnostic_feed_isolation_and_queue_overflow_guard(self):
         feed=Feed(Mock(),[]);sink=Mock();feed.configure_observation({'999990'},{'000010'},sink)
+        feed.observation_q=queue.Queue(maxsize=1)
         frame={'trnm':'REAL','data':[{'type':'0B','item':'000010','values':{'20':'110000','10':'400','15':'100','13':'100','27':'401','28':'399','290':'2'}}]}
-        with patch('core.realtime.now',return_value=self.start):feed.emit(frame)
-        self.assertTrue(feed.q.empty());self.assertEqual(feed.observation_q.qsize(),1);sink.assert_called_once();self.assertFalse(feed.overflow.is_set())
-        feed.emit({'trnm':'REAL','data':[{'type':'00','values':{}}]});self.assertEqual(feed.q.qsize(),1)
-    def test_diagnostic_queue_overflow_does_not_overflow_real_queue(self):
-        feed=Feed(Mock(),[]);feed.observation_q=queue.Queue(maxsize=1);feed.configure_observation(set(),{'000010'},None)
-        frame={'trnm':'REAL','data':[{'type':'0B','item':'000010','values':{'20':'110000','10':'400','15':'100','13':'100','27':'401','28':'399','290':'2'}}]}
-        with patch('core.realtime.now',return_value=self.start):feed.emit(frame);feed.emit(frame)
-        self.assertEqual(feed.observation_drops,1);self.assertFalse(feed.overflow.is_set())
+        with patch('core.realtime.now',return_value=self.start):
+            feed.emit(frame)
+            self.assertTrue(feed.q.empty());self.assertEqual(feed.observation_q.qsize(),1);sink.assert_called_once();self.assertFalse(feed.overflow.is_set())
+            # second frame overflows observation_q without overflowing priority queue
+            feed.emit(frame)
+            self.assertEqual(feed.observation_drops,1);self.assertFalse(feed.overflow.is_set())
+            feed.emit({'trnm':'REAL','data':[{'type':'00','values':{}}]});self.assertEqual(feed.q.qsize(),1)
     def test_virtual_worker_never_receives_engine_or_broker(self):
         worker=ObservationWorker(self.cfg,self.auto,self.costs,self.root)
         for attr in ('engine','broker','enter','submit_order'):self.assertFalse(hasattr(worker,attr))
@@ -309,17 +307,17 @@ class ObservationAuditTests(unittest.TestCase):
         with patch('automation.runner.time.monotonic',side_effect=lambda:clock[0]):worker.run()
         self.assertEqual(rest.snapshot.call_count,8);self.assertEqual(rest.existing_book.call_count,2)
         worker.external_prices['052260']=5835;self.assertTrue(worker.book_due('052260',clock[0]))
-    def test_diagnostic_http_defers_without_reserving_order_slot(self):
-        with patch.dict('os.environ',{'KIWOOM_APP_KEY':'synthetic-key','KIWOOM_APP_SECRET':'synthetic-secret'}):rest=Rest(self.cfg,opener=Mock())
-        rest.diagnostic_only=True;rest.auth_session['next_call']=time.monotonic()+2;before=rest.auth_session['next_call']
-        with self.assertRaises(Rejected):rest._http('/query',{}, {})
-        self.assertEqual(rest.auth_session['next_call'],before);rest.opener.assert_not_called()
-    def test_diagnostic_client_cannot_call_any_mutation_even_live_cfg(self):
-        with patch.dict('os.environ',{'KIWOOM_APP_KEY':'synthetic-key','KIWOOM_APP_SECRET':'synthetic-secret'}):rest=Rest(replace(self.cfg,live_mode=True),opener=Mock())
+    def test_diagnostic_client_blocks_mutations_and_defers_http(self):
+        with patch.dict('os.environ',{'KIWOOM_APP_KEY':'synthetic-key','KIWOOM_APP_SECRET':'synthetic-secret'}):
+            rest=Rest(replace(self.cfg,live_mode=True),opener=Mock())
         rest.diagnostic_only=True
+        # 1. mutations blocked
         for api in ('kt10000','kt10001','kt10003'):
             with self.assertRaises(Rejected):rest.call(api,'/api/dostk/ordr',{'stk_cd':'999990','ord_qty':'1'},mutation=True)
-        rest.opener.assert_not_called()
+        # 2. http defers without reserving order slot
+        rest.auth_session['next_call']=time.monotonic()+2;before=rest.auth_session['next_call']
+        with self.assertRaises(Rejected):rest._http('/query',{}, {})
+        self.assertEqual(rest.auth_session['next_call'],before);rest.opener.assert_not_called()
     def test_readonly_pilot_does_not_edit_policy_or_grant_live(self):
         policy=Policy(self.root/'policy');policy.command('LIVE',confirmation='LIVE');before=policy.path.read_bytes()
         isolated=ReadOnlyPilotPolicy(policy);self.assertEqual(isolated.mode,'ARMED');self.assertFalse(isolated.state['live_authorized'])
@@ -332,13 +330,12 @@ class ObservationAuditTests(unittest.TestCase):
              patch('automation.runner.run',return_value={'passed':True}) as run,patch('sys.argv',['main.py','--paper-seconds','150','--recover-pilot','--operational-pilot']):
             self.assertEqual(main.main(),0)
         self.assertTrue(run.call_args.kwargs['operational_pilot']);self.assertTrue(run.call_args.kwargs['recover_pilot'])
-    def test_external_far_book_low_frequency_near_threshold_immediate(self):
+    def test_external_book_query_due_boundaries(self):
         worker=AccountWorker(Mock(),5);worker.external_prices={'052260':5300};worker.book_queries={'052260':100}
         self.assertFalse(worker.book_due('052260',110));self.assertTrue(worker.book_due('052260',130))
         worker.external_prices['052260']=5830;self.assertTrue(worker.book_due('052260',110))
-    def test_external_unknown_price_not_deprioritized(self):
-        worker=AccountWorker(Mock(),5);worker.book_queries={'052260':100}
-        self.assertTrue(worker.book_due('052260',105))
+        worker2=AccountWorker(Mock(),5);worker2.book_queries={'052260':100}
+        self.assertTrue(worker2.book_due('052260',105))
     def test_new_strong_observation_displaces_weak_multi_source_watch(self):
         radar=DynamicRadar(replace(self.cfg,max_watchlist=1),self.auto,Policy(self.root/'policy'));radar.available_capital=20000
         rows=[]
@@ -367,9 +364,11 @@ class SetupReachabilityTests(AuditFixture):
         tick=Tick('999990',self.clock[0],price,100000,200000,ask,price-1)
         watch={'code':'999990','name':'합성','status':'WATCH','source_count':2,'source_details':{'one':{},'two':{}},'market_status':{'pass':True},'resistance':2000}
         return detector,tick,watch
-    def test_setup_a_reaches_real_order_path_synthetic_only(self):self.route('A')
-    def test_setup_b_reaches_real_order_path_synthetic_only(self):self.route('B')
-    def test_setup_c_reaches_real_order_path_synthetic_only(self):self.route('C')
+    def test_setups_reach_real_order_path_synthetic_only(self):
+        for pattern in ('A','B','C'):
+            with self.subTest(pattern=pattern):
+                self.setUp()
+                self.route(pattern)
     def route(self,pattern):
         detector,tick,watch=self.build(pattern)
         history=bars()

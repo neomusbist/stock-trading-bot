@@ -32,9 +32,11 @@ class RepositoryTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup); self.root=Path(self.temp.name)
         for name in ('config.example.json','automation.example.json'):
             (self.root/name).write_bytes((ROOT/name).read_bytes())
-    def test_example_live_false(self): self.assertFalse(load_config(self.root/'config.json').live_mode)
-    def test_example_cap_zero(self): self.assertEqual(load_automation(self.root/'automation.json').capital_limit,0)
-    def test_example_costs_unconfirmed(self): self.assertFalse(load_automation(self.root/'automation.json').costs_confirmed)
+    def test_example_configs_safe_defaults(self):
+        self.assertFalse(load_config(self.root/'config.json').live_mode)
+        auto=load_automation(self.root/'automation.json')
+        self.assertEqual(auto.capital_limit,0)
+        self.assertFalse(auto.costs_confirmed)
     def test_missing_policy_status_armed_no_live(self):
         s=OperatorService(self.root,clock=lambda:AFTER).public_status()
         self.assertEqual(s['mode'],'ARMED'); self.assertFalse(s['live_approved']); self.assertFalse(s['trading_on']); self.assertFalse((self.root/'runtime/automation_policy.json').exists())
@@ -56,20 +58,20 @@ class RepositoryTests(unittest.TestCase):
     def test_afterhours_then_nextday_no_time_halt(self):
         diagnose(self.root,AFTER); r=diagnose(self.root,datetime(2026,10,2,9,10,tzinfo=KST))
         self.assertEqual(r['reason_code'],'LOCAL_DIAGNOSTICS'); self.assertFalse(r['halt_present']); self.assertFalse((self.root/'runtime/automation_policy.json').exists())
-    def test_main_afterhours_no_credentials_or_rest(self):
+    def test_main_cli_afterhours_and_diagnostics_no_network(self):
         import main
-        with patch.object(main,'ROOT',self.root),patch.object(main,'now',return_value=AFTER),patch.object(sys,'argv',['main.py']),patch.object(main,'load_credentials') as creds,patch.object(main,'Rest') as rest,contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(main.main(),0); creds.assert_not_called(); rest.assert_not_called()
-    def test_main_diagnostics_in_session_no_network(self):
-        import main
-        with patch.object(main,'ROOT',self.root),patch.object(main,'now',return_value=AFTER.replace(hour=10)),patch.object(sys,'argv',['main.py','--diagnostics']),patch.object(main,'load_credentials') as creds,patch.object(main,'Rest') as rest,contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(main.main(),0); creds.assert_not_called(); rest.assert_not_called()
-    def test_clone_does_not_load_legacy_env(self):
+        with patch.object(main,'ROOT',self.root),patch.object(main,'load_credentials') as creds,patch.object(main,'Rest') as rest,contextlib.redirect_stdout(io.StringIO()):
+            # 1. after hours main
+            with patch.object(main,'now',return_value=AFTER),patch.object(sys,'argv',['main.py']):
+                self.assertEqual(main.main(),0)
+            # 2. in-session diagnostics
+            with patch.object(main,'now',return_value=AFTER.replace(hour=10)),patch.object(sys,'argv',['main.py','--diagnostics']):
+                self.assertEqual(main.main(),0)
+            creds.assert_not_called(); rest.assert_not_called()
+    def test_credentials_isolated_and_no_legacy_env(self):
         import main
         with patch.object(main,'ROOT',self.root),patch.object(Path,'home',side_effect=AssertionError('legacy fallback forbidden')):
             main.load_credentials()
-    def test_setup_clone_does_not_load_legacy_env(self):
-        import main
         tool('setup_local').setup(self.root)
         with patch.object(main,'ROOT',self.root),patch.object(Path,'home',side_effect=AssertionError('explicit credentials required')):
             main.load_credentials()
@@ -89,7 +91,7 @@ class RepositoryTests(unittest.TestCase):
             r=account_diagnostic(replace(Config(),live_mode=True),self.root,AFTER)
             self.assertEqual(r['message'],'READ_ONLY_DIAGNOSTIC_API_DENIED'); send.assert_not_called()
     def test_clone_cap0_order0(self):
-        from test_automation import FakeBroker
+        from tests.test_automation import FakeBroker
         clock=AFTER.replace(hour=10); broker=FakeBroker(); policy=Policy(self.root/'runtime/automation_policy.json')
         with contextlib.redirect_stdout(io.StringIO()):
             e=AutonomousEngine(load_config(self.root/'config.json'),load_automation(self.root/'automation.json'),policy,self.root/'book',broker,lambda:clock)
@@ -98,7 +100,7 @@ class RepositoryTests(unittest.TestCase):
             e.enter(sig,Tick('999990',clock,2000,100,100,2001,1999))
         self.assertEqual(broker.orders,[]); self.assertFalse(e.s['positions']); self.assertEqual(e.auto_available_capital(),0)
     def test_1600_buy_block_no_halt_then_nextday(self):
-        from test_automation import FakeBroker
+        from tests.test_automation import FakeBroker
         clock=[AFTER]; broker=FakeBroker(); policy=Policy(self.root/'runtime/policy.json')
         with contextlib.redirect_stdout(io.StringIO()):
             e=AutonomousEngine(Config(),AutomationConfig(),policy,self.root/'book',broker,lambda:clock[0])
@@ -107,17 +109,22 @@ class RepositoryTests(unittest.TestCase):
         self.assertTrue(any(r.get('primary_reason_code')=='NO_BUY_OUTSIDE_SESSION' for r in rows)); self.assertFalse(e.s['halt']); self.assertEqual(broker.orders,[])
         clock[0]=datetime(2026,10,2,9,10,tzinfo=KST); self.assertNotEqual(e.new_entry_reason('999990'),'OUT_OF_SUPPORTED_SESSION'); self.assertFalse(e.s['halt'])
     def test_hard_locks_preserved(self): self.assertEqual(HARD_LOCKS,{'005930','017900'})
-    def test_guard_local_config_rejected(self): self.assertIn('LOCAL_OR_UNREVIEWED_FILE',guard.inspect('config.json',b'{}'))
-    def test_guard_runtime_rejected(self): self.assertTrue(guard.inspect('runtime/events.jsonl',b'{}'))
-    def test_guard_placeholder_allowed(self): self.assertFalse(guard.inspect('.env.example',b'KIWOOM_APP_KEY=YOUR_APP_KEY\nKIWOOM_APP_SECRET=YOUR_APP_SECRET'))
-    def test_guard_secret_literal_rejected(self):
-        raw=('KIWOOM_APP_KEY='+('z'*32)).encode(); self.assertIn('CREDENTIAL_LITERAL',guard.inspect('main.py',raw))
-    def test_guard_bearer_rejected(self): self.assertIn('BEARER_LITERAL',guard.inspect('README.md',('Bearer '+('a'*32)).encode()))
-    def test_guard_github_token_rejected(self): self.assertIn('GITHUB_TOKEN',guard.inspect('README.md',('gh'+'p_'+('x'*32)).encode()))
-    def test_guard_personal_path_rejected(self): self.assertIn('PERSONAL_WINDOWS_PATH',guard.inspect('README.md',b'C:/'+b'Users/person/Desktop/file'))
-    def test_guard_unsafe_example_rejected(self): self.assertIn('UNSAFE_EXAMPLE_LIVE',guard.inspect('config.example.json',b'{"live_mode":true}'))
-    def test_guard_binary_rejected(self): self.assertIn('BINARY_FILE',guard.inspect('README.md',b'\x00secret'))
-    def test_guard_original_spec_rejected(self): self.assertTrue(guard.inspect('reference/contract.json',b'{"api":{"meta":{}}}'))
+    def test_repo_guard_inspect_patterns_table(self):
+        self.assertFalse(guard.inspect('.env.example',b'KIWOOM_APP_KEY=YOUR_APP_KEY\nKIWOOM_APP_SECRET=YOUR_APP_SECRET'))
+        self.assertTrue(guard.inspect('runtime/events.jsonl',b'{}'))
+        self.assertTrue(guard.inspect('reference/contract.json',b'{"api":{"meta":{}}}'))
+        cases=[
+            ('config.json',b'{}','LOCAL_OR_UNREVIEWED_FILE'),
+            ('main.py',('KIWOOM_APP_KEY='+('z'*32)).encode(),'CREDENTIAL_LITERAL'),
+            ('README.md',('Bearer '+('a'*32)).encode(),'BEARER_LITERAL'),
+            ('README.md',('gh'+'p_'+('x'*32)).encode(),'GITHUB_TOKEN'),
+            ('README.md',b'C:/'+b'Users/person/Desktop/file','PERSONAL_WINDOWS_PATH'),
+            ('config.example.json',b'{"live_mode":true}','UNSAFE_EXAMPLE_LIVE'),
+            ('README.md',b'\x00secret','BINARY_FILE'),
+        ]
+        for path,raw,expected in cases:
+            with self.subTest(path=path):
+                self.assertIn(expected,guard.inspect(path,raw))
     def test_staged_scan_checks_index_not_worktree(self):
         subprocess.run(['git','init','-q',str(self.root)],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         path=self.root/'README.md'; path.write_text('Bearer '+('x'*32),encoding='utf-8')

@@ -33,13 +33,14 @@ class CapitalRetirementTests(unittest.TestCase):
         self.engine=self.make_engine(); self.engine.reconcile(self.snapshot); self.engine.connected=True; self.engine.market='3'
     def quantities(self,sig=None):
         return self.engine.quantity_details(sig or self.small_signal(),self.engine.risk_equity(),self.engine.s['cash'],60)
-    def test_actual3420_cap3000_effective3000(self):
+    def test_capital_cap_and_cash_boundaries(self):
+        # 1. actual cash (3420) > cap (3000) -> effective 3000
         self.assertEqual(self.engine.auto_available_capital(),3000); self.assertEqual(self.engine.watch_budget(),3000)
-    def test_actual2000_cap3000_effective2000(self):
+        # 2. actual cash (2000) < cap (3000) -> effective 2000
         self.engine.reconcile({**self.snapshot,'cash':2000})
         self.assertEqual(self.engine.auto_available_capital(),2000); self.assertEqual(self.engine.watch_budget(),2000)
         self.assertEqual(self.quantities()['capital_quantity'],0)
-    def test_actual10000_never_increases_approved_cap(self):
+        # 3. deposit/cash increase (10000) never increases approved cap
         self.engine.reconcile({**self.snapshot,'cash':10000})
         self.assertEqual(self.engine.auto_available_capital(),3000); self.assertEqual(self.engine.a.capital_limit,3000)
         self.assertEqual(self.engine.s['automation']['approved_cap'],3000)
@@ -56,20 +57,64 @@ class CapitalRetirementTests(unittest.TestCase):
         self.risk_permits(); sizing=self.quantities(); self.assertEqual(sizing['quantity'],1)
         o=self.engine.enter(self.small_signal(),self.tick(2500))
         self.assertEqual(o['status'],'ACCEPTED'); self.assertEqual(self.broker.orders,[('BUY',f.SYMBOL,1,2500)])
+    def test_foreign_intent_and_unknown_and_halt_isolate_and_block_new_entries(self):
+        # 1. Baseline: 발주 중인 자기 자신의 INTENT는 허용되고 체결 주문 발송
+        self.risk_permits()
+        o = self.engine.enter(self.small_signal('999980'), self.tick(2500, '999980'))
+        self.assertIsNotNone(o)
+        self.assertEqual(o['status'], 'ACCEPTED')
+        self.assertEqual(len(self.broker.orders), 1)
+
+        # 2. 다른 종목의 INTENT가 남아있으면 신규 BUY 차단 (Fail-Closed, 0 additional broker calls)
+        self.engine = self.make_engine()
+        self.engine.reconcile(self.snapshot); self.engine.connected = True; self.engine.market = '3'
+        self.engine.s['orders']['foreign_intent'] = {
+            'local': 'foreign_intent', 'id': '', 'symbol': '005930', 'side': 'BUY',
+            'qty': 1, 'limit': 2500, 'filled': 0, 'amount': 0., 'status': 'INTENT',
+            'created': self.clock[0].isoformat(), 'signal': self.small_signal('005930'), 'cancel_id': ''
+        }
+        broker_count_before = len(self.broker.orders)
+        o_intent_blocked = self.engine.enter(self.small_signal('999990'), self.tick(2500, '999990'))
+        self.assertIsNone(o_intent_blocked)
+        self.assertEqual(len(self.broker.orders), broker_count_before)
+
+        # 3. 다른 종목의 UNKNOWN이 남아있으면 신규 BUY 차단 (Fail-Closed, 0 additional broker calls)
+        self.engine = self.make_engine()
+        self.engine.reconcile(self.snapshot); self.engine.connected = True; self.engine.market = '3'
+        self.engine.s['orders']['foreign_unknown'] = {
+            'local': 'foreign_unknown', 'id': 'REAL-UNK', 'symbol': '005930', 'side': 'BUY',
+            'qty': 1, 'limit': 2500, 'filled': 0, 'amount': 0., 'status': 'UNKNOWN',
+            'created': self.clock[0].isoformat(), 'signal': self.small_signal('005930'), 'cancel_id': ''
+        }
+        broker_count_before = len(self.broker.orders)
+        o_unknown_blocked = self.engine.enter(self.small_signal('999990'), self.tick(2500, '999990'))
+        self.assertIsNone(o_unknown_blocked)
+        self.assertEqual(len(self.broker.orders), broker_count_before)
+
+        # 4. HALT 존재 시 신규 BUY 차단 (Fail-Closed, 0 additional broker calls)
+        self.engine = self.make_engine()
+        self.engine.reconcile(self.snapshot); self.engine.connected = True; self.engine.market = '3'
+        self.engine.halt('MANUAL_HALT_TEST')
+        broker_count_before = len(self.broker.orders)
+        o_halt_blocked = self.engine.enter(self.small_signal('999990'), self.tick(2500, '999990'))
+        self.assertIsNone(o_halt_blocked)
+        self.assertEqual(len(self.broker.orders), broker_count_before)
     def test_2500_current_risk_rejects_with_precise_reason(self):
         s=self.quantities(); self.assertEqual(s['capital_quantity'],1); self.assertEqual(s['risk_quantity'],0)
         self.assertEqual(s['reason_code'],'RISK_BUDGET_ZERO_QTY'); self.assertEqual(s['risk_budget'],9)
         self.engine.enter(self.small_signal(),self.tick(2500)); self.assertEqual(self.broker.orders,[])
         events=[json.loads(x) for x in (self.engine.folder/'events.jsonl').read_text(encoding='utf-8').splitlines()]
         self.assertEqual([x for x in events if x['event']=='ENTRY_EVAL'][-1]['primary_reason_code'],'RISK_BUDGET_ZERO_QTY')
-    def test_far_invalidation_still_zero_with_affordable_price(self):
-        self.risk_permits(); s=self.quantities(self.small_signal(stop=2400))
-        self.assertEqual(s['capital_quantity'],1); self.assertEqual(s['quantity'],0); self.assertEqual(s['reason_code'],'RISK_BUDGET_ZERO_QTY')
-    def test_3100_one_share_unaffordable(self):
-        self.risk_permits(); s=self.quantities(self.small_signal(entry=3100,stop=3090))
-        self.assertEqual(s['quantity'],0); self.assertEqual(s['reason_code'],'ONE_SHARE_UNAFFORDABLE')
-    def test_buy_cost_prevents_exact3000_share(self):
+    def test_single_share_affordability_and_risk_boundaries(self):
+        self.risk_permits()
+        # 1. 1원 부족: 3000원 진입 시 수수료로 인해 cap 3000원 초과 -> capital_quantity 0
         self.assertEqual(self.quantities(self.small_signal(entry=3000,stop=2990))['capital_quantity'],0)
+        # 2. 가격 초과: 3100원 진입 -> ONE_SHARE_UNAFFORDABLE
+        s=self.quantities(self.small_signal(entry=3100,stop=3090))
+        self.assertEqual(s['quantity'],0); self.assertEqual(s['reason_code'],'ONE_SHARE_UNAFFORDABLE')
+        # 3. 손절폭 과대: 2500원 가격은 가능하나 손절 2400원(폭 100원) -> RISK_BUDGET_ZERO_QTY
+        s2=self.quantities(self.small_signal(stop=2400))
+        self.assertEqual(s2['capital_quantity'],1); self.assertEqual(s2['quantity'],0); self.assertEqual(s2['reason_code'],'RISK_BUDGET_ZERO_QTY')
     def test_pending_buy_reserves_single_slot_and_total_cap(self):
         self.risk_permits(); self.engine.enter(self.small_signal(),self.tick(2500))
         self.engine.enter(self.small_signal('999980'),self.tick(2500,'999980'))

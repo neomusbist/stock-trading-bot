@@ -33,10 +33,9 @@ class HaltTests(unittest.TestCase):
         self.fault(); self.assertTrue(self.engine.s['halt']); self.assertTrue(self.engine.s['halt_info']['active'])
     def test_armed_command_alone_never_clears_halt(self):
         self.fault(); self.policy.command('ARMED'); self.assertFalse(self.engine.recover_io_halt()); self.assertTrue(self.engine.s['halt'])
-    def test_unknown_order_and_mismatch_halts_never_auto_clear(self):
+    def test_dangerous_halts_never_auto_clear_or_downgrade(self):
         for reason in ('주문결과 불명확: 자동 재전송 금지, HTS 확인 필요','관리 잔고와 실제 잔고 불일치: 자동 매도 보류 필요','주문번호 없는 전송 의도: HTS 수동 대조 필요'):
             self.engine.halt(reason); self.fresh(); self.assertFalse(self.engine.recover_io_halt()); self.assertEqual(self.engine.s['halt'],reason)
-    def test_io_cannot_downgrade_dangerous_halt(self):
         self.engine.halt('주문번호 없는 전송 의도: HTS 수동 대조 필요'); self.fault(); self.fresh()
         self.assertEqual(self.engine.s['halt_info']['classification'],'MANUAL_REVIEW'); self.assertFalse(self.engine.recover_io_halt())
     def test_old_query_connection_loss_and_account_orders_block_recovery(self):
@@ -52,12 +51,11 @@ class HaltTests(unittest.TestCase):
     def test_legacy_reason_only_halt_needs_manual_review(self):
         self.engine.s['halt']='데이터/상태 오류: PermissionError'; self.engine.s.pop('halt_info',None); self.fresh()
         self.assertFalse(self.engine.recover_io_halt()); self.assertTrue(self.engine.s['halt'])
-    def test_storage_failure_does_not_clear_halt(self):
+    def test_storage_failure_and_unknown_path_never_auto_recover(self):
         self.fault(); self.fresh()
         with patch.object(self.engine,'save',side_effect=PermissionError('still locked')):
             with self.assertRaises(PermissionError): self.engine.recover_io_halt()
         self.assertTrue(self.engine.s['halt'])
-    def test_unknown_failure_path_never_auto_recovers(self):
         self.fault(); self.engine.s['halt_info']['exception']={}; self.fresh()
         self.assertFalse(self.engine.recover_io_halt()); self.assertTrue(self.engine.s['halt'])
         self.assertEqual(self.engine.s['halt_info']['classification'],'MANUAL_REVIEW')
@@ -103,15 +101,14 @@ class ReleaseTests(unittest.TestCase):
     zero_armed=pf.PreflightTests.zero_armed
     holding=pf.PreflightTests.holding
     approve=pf.PreflightTests.approve
-    def test_blocked_release_no_paper_submission(self):
+    def test_blocked_release_and_five_second_boundary_guards(self):
         self.zero_armed(); self.holding(); self.approve()
         with patch.object(self.engine,'live_order_allowed',return_value=False): self.engine.timer()
         order=list(self.engine.s['orders'].values())[0]
         self.assertEqual(order['execution'],'BLOCKED'); self.assertEqual(order['status'],'REJECTED'); self.assertEqual(self.broker.orders,[])
         self.assertEqual(self.policy.refresh()['test_capital_release']['status'],'SUBMITTING')
         self.engine.timer(); self.assertEqual(self.broker.orders,[])
-    def test_release_book_five_seconds_boundary_preserved(self):
-        self.zero_armed(); self.holding(); self.approve(); self.clock[0]+=timedelta(seconds=5.001)
+        self.setUp(); self.zero_armed(); self.holding(); self.approve(); self.clock[0]+=timedelta(seconds=5.001)
         self.engine.timer(); self.assertEqual(self.broker.orders,[])
 
 class OperatorDiagnosticsTests(unittest.TestCase):
@@ -120,13 +117,12 @@ class OperatorDiagnosticsTests(unittest.TestCase):
     save_auto=ui.OperatorInterfaceTests.save_auto
     pilot_proof=ui.OperatorInterfaceTests.pilot_proof
     ready=ui.OperatorInterfaceTests.ready
-    def test_yes_case_insensitive_exact_and_live_confirmation_separate(self):
+    def test_operator_confirmation_and_preflight_expiration_invariants(self):
         for word in ('yes','YES','Yes'): self.assertTrue(yes('',lambda _:word))
         for word in ('예','','y','실제매매시작'): self.assertFalse(yes('',lambda _:word))
         self.ready()
         with self.assertRaises(ValueError): self.s.activate_live('3000','yes',start=False)
-    def test_expired_live_preflight_detected_before_amount_prompt(self):
-        self.ready(); self.assertEqual(self.s.live_ready_seconds(),60)
+        self.setUp(); self.ready(); self.assertEqual(self.s.live_ready_seconds(),60)
         def reader(prompt):
             self.clock[0]+=timedelta(seconds=61); return 'yes'
         with patch.object(self.s,'prepare_live',return_value={'verdict':'PASS'}):
@@ -139,7 +135,7 @@ class OperatorDiagnosticsTests(unittest.TestCase):
         status=self.s.public_status(); output=[]; show_status(status,output.append,details=False)
         self.assertIn('HALT: 주문결과 불명확',''.join(output)); self.assertEqual(status['order_loop'],'NOT RUNNING')
         self.assertEqual(status['current_error'],'주문결과 불명확'); self.assertFalse(status['trading_on'])
-    def test_unsubmitted_release_fails_fast_and_retains_approval(self):
+    def test_unsubmitted_release_fail_fast_and_startup_hold_detection(self):
         self.pilot_proof(); self.gateway.start=lambda _:None; elapsed=[0]
         self.s.monotonic=lambda:elapsed[0]
         def sleep(n): elapsed[0]+=n
@@ -147,8 +143,7 @@ class OperatorDiagnosticsTests(unittest.TestCase):
         result=self.s.release(True)
         self.assertEqual(result['verdict'],'FAIL'); self.assertLess(elapsed[0],180)
         self.assertEqual(result['order_status'],'NOT_SUBMITTED'); self.assertEqual(self.policy.refresh()['test_capital_release']['status'],'APPROVED')
-    def test_release_startup_hold_reason_seen_before_launch_returns(self):
-        self.pilot_proof(); elapsed=[0]; self.s.monotonic=lambda:elapsed[0]
+        self.setUp(); self.pilot_proof(); elapsed=[0]; self.s.monotonic=lambda:elapsed[0]
         self.s.sleep=lambda n:elapsed.__setitem__(0,elapsed[0]+n)
         def start(_):
             stamp=self.clock[0]+timedelta(seconds=1); self.clock[0]+=timedelta(seconds=2)

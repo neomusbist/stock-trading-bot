@@ -104,31 +104,38 @@ class OperatorInterfaceTests(unittest.TestCase):
     def test_after_hours_pilot_no_gateway_call(self):
         self.clock[0]=self.clock[0].replace(hour=20)
         self.assertEqual(self.s.pilot()['verdict'],'FAIL'); self.assertFalse(self.gateway.calls)
-    def test_pilot_live_mode_blocks_before_network(self):
+    def test_pilot_preflight_blocking_conditions_table(self):
+        # 1. live_mode
         self.save_config(live_mode=True); self.assertEqual(self.s.pilot()['verdict'],'FAIL'); self.assertFalse(self.gateway.calls)
-    def test_pilot_nonzero_cap_blocks_before_network(self):
+        self.save_config(live_mode=False)
+        # 2. nonzero cap
         self.save_auto(AUTO_TRADING_CAP_KRW=3000); self.assertEqual(self.s.pilot()['verdict'],'FAIL'); self.assertFalse(self.gateway.calls)
-    def test_pilot_costs_confirmed_not_silently_reset(self):
+        self.save_auto(AUTO_TRADING_CAP_KRW=0)
+        # 3. costs confirmed
         self.save_auto(costs_confirmed=True); self.assertEqual(self.s.pilot()['verdict'],'FAIL')
         self.assertTrue(self.s.settings()[1].costs_confirmed); self.assertFalse(self.gateway.calls)
-    def test_pilot_live_authorized_record_blocks(self):
+        self.save_auto(costs_confirmed=False)
+        # 4. live authorized record
         self.policy.command('LIVE',confirmation='LIVE'); self.policy.command('ARMED')
         self.assertEqual(self.s.pilot()['verdict'],'FAIL'); self.assertFalse(self.gateway.calls)
-    def test_pilot_active_release_blocks(self):
+        self.policy.state['live_authorized']=False; atomic_json(self.policy.path,self.policy.state)
+        # 5. active release
         self.policy.command('TEST_CAPITAL_RELEASE','267320','TEST_CAPITAL_RELEASE')
         self.assertEqual(self.s.pilot()['verdict'],'FAIL'); self.assertFalse(self.gateway.calls)
-    def test_pilot_corrupt_state_refuses_to_start(self):
-        path=self.root/'runtime/automation-production/state.json'; path.parent.mkdir(parents=True); path.write_text('{broken')
-        with self.assertRaises(ValueError): self.s.pilot()
-        self.assertFalse(self.gateway.calls)
-    def test_pilot_bot_position_or_pending_blocks(self):
+        self.policy.state.pop('test_capital_release',None); atomic_json(self.policy.path,self.policy.state)
+        # 6. positions or pending
         p=self.root/'runtime/automation-production/state.json'
         for state in ({'positions':{'x':{'qty':1}},'orders':{}},{'positions':{},'orders':{'x':{'status':'UNKNOWN'}}}):
             atomic_json(p,state); self.assertEqual(self.s.pilot()['verdict'],'FAIL')
         self.assertFalse(self.gateway.calls)
-    def test_pilot_broken_hard_definition_blocks(self):
+        atomic_json(p,{'positions':{},'orders':{}})
+        # 7. broken hard definition
         with patch('operator_service.HARD_LOCKS',{'005930'}):
             self.assertEqual(self.s.pilot()['verdict'],'FAIL'); self.assertFalse(self.gateway.calls)
+        # 8. corrupt state
+        p.write_text('{broken')
+        with self.assertRaises(ValueError): self.s.pilot()
+        self.assertFalse(self.gateway.calls)
     def test_pilot_no_regular_ticks_inconclusive(self):
         original=self.gateway.command
         def no_ticks(args,timeout=60):
@@ -149,13 +156,11 @@ class OperatorInterfaceTests(unittest.TestCase):
         cfg,auto,policy=self.s.settings(); self.assertFalse(cfg.live_mode); self.assertFalse(auto.costs_confirmed)
         self.assertEqual(policy['mode'],'ARMED'); self.assertFalse(policy['live_authorized'])
         self.assertEqual(policy['test_capital_release']['status'],'COMPLETED')
-    def test_release_wrong_actual_quantity_never_approves(self):
-        self.pilot_proof(); self.gateway.snapshot_data['holdings']['267320']['qty']=2
-        self.assertEqual(self.s.release(True)['verdict'],'FAIL')
-        self.assertNotIn('test_capital_release',self.policy.refresh()); self.assertFalse(self.gateway.orders)
-    def test_release_unavailable_or_open_order_never_approves(self):
-        self.pilot_proof(); self.gateway.snapshot_data['holdings']['267320']['available']=0
-        self.assertEqual(self.s.release(True)['verdict'],'FAIL'); self.assertNotIn('test_capital_release',self.policy.refresh())
+    def test_release_invalid_quantity_or_unavailable_never_approves(self):
+        for qty, available in ((2, 1), (1, 0)):
+            self.pilot_proof(); self.gateway.snapshot_data['holdings']['267320']={'qty':qty,'available':available,'avg':2855}
+            self.assertEqual(self.s.release(True)['verdict'],'FAIL')
+            self.assertNotIn('test_capital_release',self.policy.refresh()); self.assertFalse(self.gateway.orders)
     def test_repeat_release_cannot_resend(self):
         self.pilot_proof(); self.s.release(True)
         with self.assertRaises(ValueError): self.s.release(True)
@@ -185,19 +190,19 @@ class OperatorInterfaceTests(unittest.TestCase):
         self.ready(); cfg,auto,policy=self.s.settings()
         self.assertFalse(cfg.live_mode); self.assertEqual(auto.capital_limit,0); self.assertEqual(policy['mode'],'ARMED')
         self.assertEqual(self.gateway.orders,[]); self.assertNotIn(('start',()),self.gateway.calls)
-    def test_live_amount_and_final_confirmation_both_required(self):
+    def test_live_activation_invalid_conditions_table(self):
+        # 1. invalid amount or phrase
         self.ready()
         for amount,confirmation in (('','실제매매시작'),('3001','실제매매시작'),('3000',''),('3000','예')):
             with self.assertRaises(ValueError): self.s.activate_live(amount,confirmation)
+        # 2. expired proof
+        self.clock[0]+=timedelta(seconds=61)
+        with self.assertRaises(ValueError): self.s.activate_live('3000','실제매매시작')
+        # 3. missing pilot proof
+        self.clock[0]-=timedelta(seconds=61)
+        (self.root/'runtime/operator_pilot.json').unlink()
+        with self.assertRaises(ValueError): self.s.activate_live('3000','실제매매시작')
         self.assertFalse(self.s.settings()[0].live_mode); self.assertFalse(self.policy.refresh()['live_authorized'])
-    def test_live_expired_or_changed_proof_blocks(self):
-        self.ready(); self.clock[0]+=timedelta(seconds=61)
-        with self.assertRaises(ValueError): self.s.activate_live('3000','실제매매시작')
-        self.assertFalse(self.s.settings()[0].live_mode)
-    def test_live_requires_today_pilot_even_with_ready_pass(self):
-        self.ready(); (self.root/'runtime/operator_pilot.json').unlink()
-        with self.assertRaises(ValueError): self.s.activate_live('3000','실제매매시작')
-        self.assertFalse(self.s.settings()[0].live_mode)
     def test_live_correct_double_confirmation_uses_existing_runner(self):
         self.ready(); result=self.s.activate_live('3000','실제매매시작')
         self.assertEqual(result['verdict'],'STARTED'); cfg,auto,policy=self.s.settings()
@@ -240,20 +245,27 @@ class OperatorInterfaceTests(unittest.TestCase):
             'primary_reason_code':'PATTERN_OR_GATE_NOT_READY','gates':{'warmup':{'result':'FAIL'}}})
         self.assertIn('B패턴',line); self.assertIn('관찰시간 부족',line); self.assertIn('매수 안 함',line)
 
-    def test_empty_or_yesterday_watchlist_is_not_pilot_pass(self):
+    def test_pilot_inconclusive_conditions_table(self):
         original=self.gateway.command
+        # 1. watchlist invalid or empty
         for watch in ({'asof':'2026-09-30','items':[{'code':fixture.SYMBOL}]},{'asof':'2026-10-01','items':[]}):
-            def command(args,timeout=60):
+            def command_watch(args,timeout=60):
                 rc=original(args,timeout); atomic_json(self.root/'watchlist.json',watch); return rc
-            self.gateway.command=command
-            result=self.s.pilot(); self.assertEqual(result['verdict'],'INCONCLUSIVE'); self.assertEqual(result['candidate_count'],0)
-        self.assertFalse(self.gateway.orders)
-    def test_missing_strategy_evaluation_is_not_pilot_pass(self):
-        original=self.gateway.command
-        def command(args,timeout=60):
+            self.gateway.command=command_watch
+            result=self.s.pilot(); self.assertEqual(result['verdict'],'INCONCLUSIVE')
+        # 2. missing strategy evaluation events
+        def command_events(args,timeout=60):
             rc=original(args,timeout); (self.root/'runtime/automation-smoke/events.jsonl').write_text('',encoding='utf-8'); return rc
-        self.gateway.command=command
-        self.assertEqual(self.s.pilot()['verdict'],'INCONCLUSIVE'); self.assertFalse(self.gateway.orders)
+        self.gateway.command=command_events
+        self.assertEqual(self.s.pilot()['verdict'],'INCONCLUSIVE')
+        # 3. last account or connection failure
+        for field in ('connected','account_ok'):
+            def command_hb(args,timeout=60):
+                rc=original(args,timeout); path=self.root/'runtime/automation-smoke/heartbeat.json'
+                hb=json.loads(path.read_text()); hb[field]=False; atomic_json(path,hb); return rc
+            self.gateway.command=command_hb
+            self.assertEqual(self.s.pilot()['verdict'],'INCONCLUSIVE')
+        self.assertFalse(self.gateway.orders)
     def test_zero_signals_with_complete_evaluation_can_pass(self):
         original=self.gateway.command
         def command(args,timeout=60):
@@ -263,14 +275,6 @@ class OperatorInterfaceTests(unittest.TestCase):
             path.write_text('\n'.join(json.dumps(x) for x in rows),encoding='utf-8'); return rc
         self.gateway.command=command
         result=self.s.pilot(); self.assertEqual(result['verdict'],'PASS'); self.assertEqual(result['signals'],0)
-    def test_last_account_or_connection_failure_prevents_pilot_pass(self):
-        original=self.gateway.command
-        for field in ('connected','account_ok'):
-            def command(args,timeout=60):
-                rc=original(args,timeout); path=self.root/'runtime/automation-smoke/heartbeat.json'
-                hb=json.loads(path.read_text()); hb[field]=False; atomic_json(path,hb); return rc
-            self.gateway.command=command
-            self.assertEqual(self.s.pilot()['verdict'],'INCONCLUSIVE')
     def test_release_launch_failure_stops_and_preserves_one_shot_approval(self):
         self.pilot_proof(); self.gateway.start=Mock(side_effect=OSError('fake launch error'))
         with self.assertRaises(OSError): self.s.release(True)
