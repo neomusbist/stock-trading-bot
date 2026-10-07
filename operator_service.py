@@ -162,10 +162,14 @@ class OperatorService:
         if age(other.get('timestamp'),self.clock())<age(saved.get('timestamp'),self.clock()):
             saved={'timestamp':other['timestamp'],'actual_orderable_cash':other['cash']}
         cash=saved.get('actual_orderable_cash'); process=self.process_info()
-        fresh=age(hb.get('time'),self.clock())<=10 and process['running']
+        hb_pid=hb.get('pid')
+        worker_alive=bool(process_identity(hb_pid)==hb.get('identity')) if (hb_pid and process.get('managed')) else True
+        alert=read_json(self.root/'runtime/supervisor_alert.json',{})
+        supervisor_restarting=bool(alert and alert.get('exit_code') and age(alert.get('time'),self.clock())<=alert.get('retry_seconds',30)+5)
+        fresh=age(hb.get('time'),self.clock())<=10 and process['running'] and worker_alive and not hb.get('fatal') and not supervisor_restarting
         if process.get('managed'): fresh=fresh and in_window(hb.get('time'),datetime.fromisoformat(process['started']),self.clock())
         events=tail_events(folder/'events.jsonl'); decisions=[x for x in events if x.get('decision')][-10:]
-        errors=[x for x in events if x.get('error') or x.get('event') in {'ENTRY_HALTED','ORDER_UNKNOWN','ORDER_REJECTED','RUNTIME_ERROR'}]
+        errors=[x for x in events if x.get('error') or x.get('event') in {'ENTRY_HALTED','ORDER_UNKNOWN','ORDER_REJECTED','RUNTIME_ERROR','WORKER_FATAL'}]
         if state.get('halt'): last_error=state['halt']
         elif errors: last_error=str(errors[-1].get('return_msg') or errors[-1].get('reason') or errors[-1].get('error') or errors[-1]['event'])
         else: last_error='기록 없음 (정상 연결을 뜻하지 않음)'
@@ -192,7 +196,7 @@ class OperatorService:
             'halt':state.get('halt') or '', 'halt_info':state.get('halt_info',{}),
             'order_loop':'RUNNING' if process['running'] else 'NOT RUNNING',
             'process':process,'live_configured':bool(configured),
-            'trading_on':bool(configured and fresh and hb.get('connected') and hb.get('account_ok') and not state.get('halt') and not counts['uncertain'] and supported(self.clock())),
+            'trading_on':bool(configured and fresh and hb.get('connected') and hb.get('account_ok') and (hb.get('readiness',{}).get('state')=='OPEN_READY' if 'readiness' in hb else True) and not state.get('halt') and not counts['uncertain'] and supported(self.clock())),
             'candidate_count':len(watch.get('items',[])) if fresh and watch.get('asof')==self.clock().date().isoformat() else 0,
             'position_count':sum(len(s['positions']) for _,s in self.states()),
             'last_decision':(('최근 기록: ' if fresh else '과거 기록: ')+str((decisions[-1].get('timestamp') or decisions[-1].get('time') or '')[:10])+' '+decision_line(decisions[-1])) if decisions else '아직 판단 기록 없음',

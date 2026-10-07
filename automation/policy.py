@@ -32,6 +32,7 @@ class AutomationConfig:
     rank_decay_cycles: int = 2
     max_scan_charts: int = 20
     min_source_count: int = 2
+    fallback_source1: bool = True
     weakening_drop_points: float = 2.0
     cooldown_seconds: int = 900
     max_consecutive_losses: int = 3

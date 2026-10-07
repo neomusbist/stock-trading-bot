@@ -1,6 +1,8 @@
 """일봉/계좌 조회는 별도 스레드, 주문/체결/보호 상태는 주 스레드 하나에서 변경한다."""
 import copy
+import os
 from contextlib import nullcontext
+from operator_process import process_identity
 import json
 import queue
 import threading
@@ -512,7 +514,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         current_watch=lookup,
                         candidates=rows,
                         readiness_map=readiness,
-                        max_watchlist=auto.max_watchlist,
+                        max_watchlist=effective.max_watchlist,
                         fallback_source1=auto.fallback_source1,
                         clock_iso=now().isoformat()
                     )
@@ -598,6 +600,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 if time.monotonic()-last_heartbeat>=1:
                     atomic_json(folder/'heartbeat.json',{'time':now().isoformat(),'mode':policy.mode,'market':engine.market,
                         'session':assessment(now())['classification'],'readiness':ready,'build_id':BUILD_ID,'strategy_experiment':STRATEGY_EXPERIMENT,
+                        'pid':os.getpid(),'identity':process_identity(os.getpid()),
                         'account_ok':engine.account_ok,'radar_ok':radar_ok,'connected':engine.connected,
                         'subscription_refresh_pending':subscriptions.refresh_pending,'subscription_tick_waiting':sorted(subscriptions.waiting),
                         'available_capital':min(engine.available_cash,auto.capital_limit),'approved_cap':auto.capital_limit,
@@ -623,6 +626,18 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
             summary=engine.candidate_audit.summary(now().isoformat(),engine.capital_context())
             atomic_json(root/'runtime/candidate_summary.json',summary); engine.event('CANDIDATE_CYCLE_SUMMARY',**summary)
         engine.save(); reporter.submit(rows,engine.s); reporter.close()
+        try:
+            atomic_json(folder/'heartbeat.json',{'time':now().isoformat(),'mode':policy.mode,'market':getattr(engine,'market','3'),
+                'session':'OUT_OF_SESSION' if not in_session else 'WORKER_TERMINATED',
+                'readiness':{'state':'STOPPED','gates':{},'missing':['WORKER_TERMINATED']},
+                'build_id':BUILD_ID,'strategy_experiment':STRATEGY_EXPERIMENT,
+                'pid':os.getpid(),'identity':process_identity(os.getpid()),
+                'account_ok':False,'radar_ok':False,'connected':False,'fatal':fatal,
+                'subscription_refresh_pending':False,'subscription_tick_waiting':[],
+                'available_capital':0,'approved_cap':auto.capital_limit,
+                'bot_cash':engine.s.get('cash',0.),'positions':len(engine.s['positions']),'pending':len(engine.active_orders()),
+                'strategy':'STOPPED','counts':counts})
+        except Exception: pass
         result={'started':started.isoformat(),'finished':now().isoformat(),'mode':policy.mode,'approved_cap':auto.capital_limit,
                 'counts':counts,'remaining_positions':len(engine.s['positions']),'remaining_orders':len(engine.active_orders()),
                 'readiness':readiness_snapshot(engine,counts,radar_ok,now(),detector),'build_id':BUILD_ID,'strategy_experiment':STRATEGY_EXPERIMENT,

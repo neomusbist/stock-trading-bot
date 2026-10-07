@@ -315,7 +315,7 @@ class UserOperations(OperatorService):
         valid,missing=authorization_valid(self.root,cfg,auto,policy,self.clock())
         s['daily_authorization_valid']=valid;s['authorization_missing']=missing
         s['readiness']=hb.get('readiness',{})
-        if not valid or hb.get('readiness',{}).get('state')!='OPEN_READY':s['trading_on']=False
+        if not valid or hb.get('readiness',{}).get('state')!='OPEN_READY' or hb.get('fatal') or not s.get('trading_on'):s['trading_on']=False
         s['guided_start']=True;s['build_id']=BUILD_ID
         s['decision_rows']=[r for r in s['decision_rows'] if r.get('primary_reason_code')!='ONE_SHARE_UNAFFORDABLE' and r.get('state')!='EXTERNAL_POLICY_HOLD']
         shadow=read_json(self.root/'runtime/shadow_snapshot.json',{})
