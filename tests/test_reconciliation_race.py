@@ -39,8 +39,11 @@ class ReconciliationRaceTests(unittest.TestCase):
     def create_position(self, sym='069540', qty=2, price=4960.0, limit=4965, stop=4905):
         sig = {'symbol': sym, 'stop': stop, 'limit': limit, 'ownership': 'BOT', 'pattern': 'A'}
         self.engine.entry_intent = sig
+        # The final BUY guard now needs a current quote even in this offline fixture.
+        self.engine.entry_tick=Tick(sym,self.clock[0],price,100,1000,limit,price)
         o = self.engine.submit('BUY', sym, qty, limit, signal=sig)
         self.engine.entry_intent = None
+        self.engine.entry_tick = None
         self.assertIsNotNone(o)
         self.assertEqual(o['status'], 'ACCEPTED')
         self.engine.cumulative_fill(o, qty, price * qty)

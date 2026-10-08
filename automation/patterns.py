@@ -300,6 +300,8 @@ class PatternDetector(Detector):
             return {'symbol':t.symbol,'time':t.time.isoformat(),'limit':limit,'stop':stop,**setup,
                 'evaluation_gates':gates,'setup_trials':trials,'acceleration_required':name=='A',
                 'market_context':context,'discovery_context':watch.get('discovery_context'),
+                'decision_bar_snapshot':[{**{k:b.get(k) for k in ('open','high','low','close','volume')},
+                    'time':b['time'].isoformat()} for b in bars[-12:]],
                 'target':target,'target_basis':'과거 저항으로 제한한 관측 패턴 폭 연장 가설; 고정 익절선 아님',
                 'turnover':turnover,'turnover_ratio':ratio,'gain':gain,
                 'efficiency':score,'source_count':watch.get('source_count',len(watch.get('source_details',{}))),'source_details':watch.get('source_details',{}),'source_deltas':watch.get('source_deltas',{}),

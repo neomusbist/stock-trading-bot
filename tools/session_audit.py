@@ -73,7 +73,10 @@ def audit(root, day):
             if kind=='ENTRY_EVAL':
                 for key,value in gate_map.items(): gates[f'{key}:{value.get("result")}']+=1
                 trials=event.get('setup_trials') or []
-                for trial in trials: setup_patterns[trial.get('setup','UNKNOWN')]+=1
+                for trial in trials:
+                    pattern=trial.get('setup','UNKNOWN');setup_patterns[pattern]+=1
+                    if trial.get('evaluated'):stages['setup_'+pattern+'_evaluated']+=1
+                    if trial.get('entry_ready'):stages['setup_'+pattern+'_entry_ready']+=1
                 if trials: stages['setup_trial_evaluations']+=1;unique['setup_trials'].add(sym)
                 if event.get('signal_detected') or event.get('entry_price') and gate_map.get('risk_quantity'):
                     stages['signal_evaluations']+=1
@@ -83,7 +86,7 @@ def audit(root, day):
                     unique['risk'].add(sym)
                     risk_records.append({k:event.get(k) for k in ('timestamp','symbol','name','setup','entry_price','invalidation','gates','primary_reason_code')})
                     if gate_map['risk_quantity'].get('values',{}).get('risk_quantity')==0: stages['risk_zero_evaluations']+=1;unique['risk_zero'].add(sym)
-                if gate_map and all(v.get('result')=='PASS' for v in gate_map.values()) and 'risk_quantity' in gate_map:
+                if gate_map and all(v.get('result')=='PASS' for v in gate_map.values() if v.get('required',True)) and 'risk_quantity' in gate_map:
                     stages['final_order_eligible_evaluations']+=1;unique['final_order_eligible'].add(sym)
                 if sym in cases and ('warmup' in gate_map or trials or 'risk_quantity' in gate_map):
                     item={k:event.get(k) for k in ('timestamp','current_price','primary_reason_code','gates','setup_trials','signal_detected')}

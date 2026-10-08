@@ -1,3 +1,13 @@
+# 10/08 거래 후 안정화: 개발 검증 상태
+
+별도 fix/weekend-stabilization-20261008 분기, 운영본 미배포. 시작 기준797 PASS, 기능 수정 후830 PASS/0FAIL/0ERROR/0SKIP, syntax98 정상, 실제 network0/orders0/program-start0. 기존 검사 삭제/skip 없음. 신규33개 포함.
+
+마지막 주문근거 기록(완성봉 snapshot 및 전송 직전 receiver evidence) 추가는 대상25 PASS. 마지막 코드 기준 전체 regression4는 아직 실행 전이며 이 문서는 최종 배포 완료 보고가 아님. 25개 대상 검사는 전체에 포함되므로 합산하지 않는다. B 종가 impulse 확인은 전략 정의 변경이므로 STRATEGY_VERSION을 구분한다. A/C 및 위험/청산 수식 변경 없음.
+
+BUILD V1.3-risk2-watch12-bc20M-stabilization-20261008 / STRATEGY V1.3-b-confirmed-impulse-bc20M-20261008. 실제 API 응답/원시 과거 틱 완전 replay/장시간 CPU/새 전략 기대값 미검증. 인계문서의 최신 10/08 안정화 절차부터 이어간다.
+
+## 아래는 이전 검증의 역사 기록
+
 # 10/08 심야 2차 최종 검증
 
 BUILD `V1.3-risk2-watch12-bc20M-opening-20261008` / STRATEGY_VERSION 및 risk 실험 식별자 동일. 기존715 + 신규15 = **730 PASS / 0 FAIL / 0 ERROR / 0 SKIP**, 71.47초. targeted38개는 전체에 중복 포함되므로 합산하지 않음. 새 build 기대값만 최신화하고 기존 검사 assertion은 유지.

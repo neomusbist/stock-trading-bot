@@ -320,7 +320,9 @@ class RunnerTests(unittest.TestCase):
                     self.handlers['on_message'](self,json.dumps(msg))
                 feed.stop.set()
         with patch.object(websocket,'WebSocketApp',FakeSocket): feed.run()
-        self.assertEqual([x['trnm'] for x in sent],['LOGIN','REG','PING'])
+        self.assertEqual([x['trnm'] for x in sent],['LOGIN','REG','REG','PING'])
+        self.assertEqual(sent[1]['grp_no'],'1');self.assertEqual(sent[2]['grp_no'],'2')
+        self.assertEqual(sent[2]['data'],[{'item':['001','101'],'type':['0J']}])
         self.assertEqual(feed.q.get_nowait()[1]['trnm'],'REG')
 
 

@@ -132,6 +132,14 @@ def context_description(row):
     if discovery.get('first_raw_at'):values.append('최초 발견 '+discovery['first_raw_at'][11:19])
     return ' / '.join(values)
 
+SETUP_WAIT_REASONS.update({'IMPULSE_CLOSE_PROGRESS_INSUFFICIENT':'완성봉 종가 상승 근거 부족 (아래꼬리만으로 상승 인정 안 함)',
+                         'PULLBACK_VOLUME_FAIL':'눌림 거래량 조건 미충족','PULLBACK_INVALIDATION_FAIL':'눌림이 최초 상승 기준 이탈'})
+UI_REASONS.update({'ENTRY_MARKET_DATA_UNAVAILABLE':'주문 직전 최신 체결 시세 미확인',
+                  'ENTRY_MARKET_DATA_STALE':'주문 직전 체결 시세 지연','ENTRY_SPREAD_CHANGED':'주문 직전 호가 간격 초과',
+                  'ENTRY_QUOTE_ABOVE_LIMIT':'현재 매도호가가 승인된 주문가 초과','ENTRY_CHASE_CHANGED':'주문 직전 추격 범위 초과',
+                  'ENTRY_DEPTH_UNAVAILABLE':'주문 직전 호가 잔량 미확인','ENTRY_DEPTH_STALE':'주문 직전 호가 잔량 지연',
+                  'ENTRY_DEPTH_INSUFFICIENT':'실제 위험수량 대비 최우선 호가 잔량 부족'})
+
 def human_blocker_reason(row):
     """후보 종목의 주요 차단/대기 사유를 사람이 읽기 쉬운 한국어로 반환."""
     gates = row.get('gates') or row.get('gate_results') or {}

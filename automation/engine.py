@@ -262,13 +262,22 @@ class AutonomousEngine(ExistingExits,Engine):
             'risk_quantity':gate(qty>0,**sizing,equity=equity,remaining_risk=remaining,reserved_cash=reserved,book_cash=self.s['cash'],actual_cash=self.available_cash,entry=signal['limit'],stop=signal['stop'],risk_fraction=self.c.risk_fraction,max_daily_loss_fraction=self.c.max_daily_loss_fraction,allowed_risk_krw=equity*self.c.risk_fraction,remaining_daily_risk_krw=max(0,remaining)),
             'efficiency':gate(signal.get('efficiency',{}).get('decision')=='TRADE',efficiency=signal.get('efficiency'))}
 
-    def entry_market_reason(self,signal,quantity,fallback=None):
+    def entry_market_reason(self,signal,quantity,fallback=None,phase='PRE_INTENT'):
         """No I/O: recheck latest receiver state immediately before a BUY leaves the process."""
         provider=getattr(self,'entry_quote_provider',None)
         if provider and not signal.get('symbol'):return 'ENTRY_MARKET_DATA_UNAVAILABLE'
         tick,book=provider(signal['symbol']) if provider else (fallback,{})
+        signal['entry_execution_evidence']={'checked_at':self.clock().isoformat(),'phase':phase,
+            'receiver_provider':bool(provider),'tick_available':tick is not None,'quantity':quantity,
+            'limit':signal.get('limit'),'book_time':book.get('time'),
+            'book_bid':book.get('best_bid'),'book_ask':book.get('best_ask'),
+            'book_bid_qty':book.get('bid_qty'),'book_ask_qty':book.get('ask_qty')}
         if tick is None:return 'ENTRY_MARKET_DATA_UNAVAILABLE'
         age=(self.clock()-tick.time).total_seconds()
+        signal['entry_execution_evidence'].update(tick_time=tick.time.isoformat(),tick_age_seconds=age,
+            price=tick.price,bid=tick.bid,ask=tick.ask,regular=tick.regular,
+            tick_venue=getattr(tick,'venue',None),tick_depth_source=getattr(tick,'depth_source',None),
+            spread=(tick.ask-tick.bid)/tick.price if tick.price>0 else None)
         if not tick.regular or not 0<=age<=self.c.stale_seconds:return 'ENTRY_MARKET_DATA_STALE'
         breakout=signal.get('evaluation_gates',{}).get('breakout',{}).get('values',{}).get('breakout')
         # Legacy core synthetic signals have no geometry. The real runner always
@@ -316,7 +325,7 @@ class AutonomousEngine(ExistingExits,Engine):
         qty,gates=self.entry_gates(signal,tick)
         reason=self.new_entry_reason(signal['symbol'])
         market_reason=self.entry_market_reason(signal,qty,tick)
-        gates['latest_market']=gate(not market_reason,reason=market_reason,quantity=qty,quantity_scope='ACTUAL_RISK_SIZED')
+        gates['latest_market']=gate(not market_reason,reason=market_reason,quantity=qty,quantity_scope='ACTUAL_RISK_SIZED',evidence=signal.get('entry_execution_evidence'))
         reason=reason or market_reason
         if gates['breakout_quote']['result']=='FAIL': reason=reason or 'BREAKOUT_QUOTE_NOT_CONFIRMED'
         if signal.get('efficiency',{}).get('decision')!='TRADE': reason=reason or '비용 포함 효율 부족/UNKNOWN'
@@ -462,13 +471,13 @@ class AutonomousEngine(ExistingExits,Engine):
             if self.s.get('halt'):
                 raise Rejected(f'HALT 상태: 신규 매수 차단 ({self.s["halt"]})')
             signal=intents[0].get('signal') or {}
+            if signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or signal.get('diagnostic_only') is True or ('source_count' in signal and signal['source_count']<max(2,self.a.min_source_count) and not signal.get('fallback_source1')):raise Rejected('OBSERVATION_NOT_BUY_PERMISSION')
             breakout=signal.get('evaluation_gates',{}).get('breakout',{}).get('values',{}).get('breakout')
             if breakout is not None and limit<=breakout:raise Rejected('BREAKOUT_QUOTE_NOT_CONFIRMED')
-            market_reason=self.entry_market_reason(signal,qty,getattr(self,'entry_tick',None))
+            market_reason=self.entry_market_reason(signal,qty,getattr(self,'entry_tick',None),phase='PRE_HTTP')
             if market_reason:
                 error=Rejected(market_reason);error.retryable_market_recheck=True
                 raise error
-            if signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or signal.get('diagnostic_only') is True or ('source_count' in signal and signal['source_count']<max(2,self.a.min_source_count) and not signal.get('fallback_source1')):raise Rejected('OBSERVATION_NOT_BUY_PERMISSION')
             self._guard_intent=intents[0]
             try:reason=self.new_entry_reason(sym)
             finally:self._guard_intent=None
@@ -562,7 +571,7 @@ class AutonomousEngine(ExistingExits,Engine):
         giveback=floor_tick(p['avg']+(high-p['avg'])*(1-self.a.unrealized_giveback_fraction)) if active else None
         if active:stop=max(stop,giveback)
         stop=max(p['stop'],stop)
-        p['protection_evidence']={'checked_at':self.clock().isoformat(),'initial_invalidation':p['initial_stop'],
+        p['protection_evidence']={'checked_at':self.clock().isoformat(),'initial_invalidation':p.get('initial_stop'),
             'initial_price_risk':p['initial_r'],'price':price,'high':high,'activation_r':self.c.protect_at_r,
             'profit_protection_active':active,'core_stop':core_stop,
             'unrealized_giveback_fraction':self.a.unrealized_giveback_fraction,'giveback_stop':giveback,

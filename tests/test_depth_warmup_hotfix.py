@@ -58,13 +58,14 @@ class DepthWarmupTests(unittest.TestCase):
             item['_book']=parse_book(self.book(ask=price+1,bid=price,aq=planned,bq=planned),BASE)
             t=parse_tick(item,BASE);gate=self.d.base_gates(t,self.watch)['liquidity']
             with self.subTest(planned=planned):
-                self.assertEqual(gate['result'],'PASS');self.assertEqual(gate['values']['planned_qty'],planned)
+                self.assertEqual(gate['result'],'PASS');self.assertEqual(gate['values']['planned_qty'],1) # observation minimum; actual quantity rechecked at BUY boundary
     def test_known_small_or_zero_best_depth_still_fails_not_total_substitution(self):
         for ask_qty in [0,1]:
             item=self.trade(price=7990,ask=8000,bid=7990)
             item['_book']=parse_book(self.book(ask=8000,bid=7990,aq=ask_qty,bq=100),BASE)
             gate=self.d.base_gates(parse_tick(item,BASE),self.watch)['liquidity']
-            self.assertEqual(gate['result'],'FAIL');self.assertEqual(gate['values']['data_status'],'AVAILABLE')
+            self.assertEqual(gate['result'],'FAIL' if ask_qty==0 else 'PASS');self.assertEqual(gate['values']['data_status'],'AVAILABLE')
+            self.assertEqual(gate['values']['quantity_scope'],'MINIMUM_OBSERVATION_ONLY')
     def test_explicit_zero_or_missing_depth_never_borrows_watch_snapshot_quantity(self):
         watch={**self.watch,'ask_qty':9999,'bid_qty':9999}
         for available,expected in [(True,'FAIL'),(False,'UNKNOWN')]:

@@ -93,6 +93,16 @@ class FinalBuyEvidenceTests(unittest.TestCase):
         order=self.e.enter(self.signal,self.tick)
         self.assertEqual(order['status'],'ACCEPTED');self.assertEqual(order['qty'],qty)
         self.assertEqual(order['signal']['planned_qty'],qty)
+        evidence=order['signal']['entry_execution_evidence']
+        self.assertEqual(evidence['phase'],'PRE_HTTP');self.assertEqual(evidence['quantity'],qty)
+        self.assertEqual(evidence['price'],6340);self.assertEqual(evidence['book_ask_qty'],100)
+    def test_one_to_six_shares_are_checked_against_the_actual_boundary_quantity(self):
+        for quantity in range(1,7):
+            with self.subTest(quantity=quantity):
+                self.ready(depth=quantity)
+                self.assertIsNone(self.e.entry_market_reason(self.signal,quantity))
+                self.feed.orderbooks['999990']['ask_qty']=quantity-1
+                self.assertEqual(self.e.entry_market_reason(self.signal,quantity),'ENTRY_DEPTH_BELOW_ACTUAL_QUANTITY')
     def test_latest_tick_retracted_breakout_even_if_original_signal_was_good(self):
         self.ready();self.feed.latest_ticks['999990']=replace(self.tick,price=6310,ask=6320,bid=6310)
         self.assertIsNone(self.e.enter(self.signal,self.tick));self.assertEqual(self.b.orders,[])
@@ -104,6 +114,8 @@ class FinalBuyEvidenceTests(unittest.TestCase):
         self.b.submit=delayed
         order=self.e.enter(self.signal,self.tick)
         self.assertEqual(order['status'],'REJECTED');self.assertEqual(self.b.orders,[])
+        evidence=order['signal']['entry_execution_evidence']
+        self.assertEqual(evidence['phase'],'PRE_HTTP');self.assertEqual(evidence['price'],6310)
     def test_disconnect_erases_receiver_entry_evidence(self):
         self.ready();self.feed.emit({'trnm':'DISCONNECTED'})
         self.assertIsNone(self.e.enter(self.signal,self.tick));self.assertEqual(self.b.orders,[])

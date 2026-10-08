@@ -321,6 +321,7 @@ class AfterMarketTests(unittest.TestCase):
         """관측 단계에서도 0주 잔량은 FAIL. actual qty 부족은 별도 경계 회귀 검사."""
         self.clock = datetime(2026, 10, 7, 16, 10, 0, tzinfo=KST)
         t = self.tick(10000, ask_qty=0, bid_qty=5)
+        t = replace(t,depth_available=True) # known zero is distinct from missing depth
         gates = self.d.base_gates(t, self.watch)
         self.assertEqual(gates['liquidity']['result'], 'FAIL')
 

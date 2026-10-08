@@ -42,6 +42,20 @@ class ReportingTests(unittest.TestCase):
         self.assertIn('종목 5분 상승',text);self.assertIn('시장 하락',text);self.assertIn('장중 발견 후보',text)
 
 class CompleteEvidenceTests(unittest.TestCase):
+    def test_signal_records_only_completed_decision_bars_for_later_audit(self):
+        from datetime import datetime,timedelta
+        from tests import test_audit_followup as setup_fixture
+        f=setup_fixture.AuditFixture();f.setUp();self.addCleanup(f.doCleanups)
+        for name in ('A','B','C'):
+            with self.subTest(setup=name):
+                detector,tick,watch=setup_fixture.SetupReachabilityTests.build(f,name)
+                detector.ingest(tick,tick.time);signal=detector.signal(tick,watch)
+                self.assertIsNotNone(signal)
+                saved=signal['decision_bar_snapshot'];self.assertLessEqual(len(saved),12)
+                self.assertGreaterEqual(len(saved),{'A':2,'B':4,'C':5}[name])
+                self.assertTrue(all(datetime.fromisoformat(b['time'])+timedelta(minutes=1)<=tick.time for b in saved))
+                self.assertTrue(all('close' in b and 'volume' in b for b in saved))
+
     def test_rotation_does_not_omit_earlier_candidates_or_orders(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);runtime=root/'runtime';(runtime/'archive').mkdir(parents=True)
@@ -51,9 +65,14 @@ class CompleteEvidenceTests(unittest.TestCase):
             (runtime/'radar_history.jsonl').write_text(json.dumps(later)+'\n')
             events=runtime/'automation-production';(events/'archive').mkdir(parents=True)
             (events/'archive/events.jsonl.001').write_text(json.dumps({'event':'ORDER_ACCEPTED','time':earlier['time'],'symbol':'999990','execution':'REAL'})+'\n')
+            (events/'events.jsonl').write_text(json.dumps({'event':'ENTRY_EVAL','time':later['time'],'symbol':'999990',
+                'gates':{'acceleration':{'result':'FAIL','required':False},'risk_quantity':{'result':'PASS','values':{'risk_quantity':1}}},
+                'setup_trials':[{'setup':'B','evaluated':True,'entry_ready':True}]})+'\n')
             result=audit(root,'2026-10-08')
             self.assertEqual(result['counts']['cycles'],2);self.assertEqual(result['counts']['real_orders_accepted'],1)
             self.assertEqual(result['unique_raw'],1)
+            self.assertEqual(result['counts']['final_order_eligible_evaluations'],1)
+            self.assertEqual(result['counts']['setup_B_entry_ready'],1)
     def test_after_enabled_production_reconciliation_queries_both_exchanges(self):
         rest=object.__new__(Rest);rest.cfg=replace(Config(),after_enabled=True,broker_environment='production')
         rest.pages=Mock(return_value=([],{}))
