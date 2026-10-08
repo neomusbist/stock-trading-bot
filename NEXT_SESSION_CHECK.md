@@ -2,7 +2,7 @@
 
 현재 후보 코드는 별도 fix/weekend-stabilization-20261008 분기의 안정화 BUILD다. 운영본에 아직 배포하지 않았으며 아래 예전 max_entries3/cap20000 절차를 최신 운영값으로 적용하지 않는다. 현재 승인자본은 실제 사용자 승인값과 실제 현금으로 동적으로 산정한다. 장중 제거한 일/종목/연속손실 횟수 제한 패치를 보존한다. risk2/daily4/maxposition1은 유지.
 
-1. 최신 V1.3_HANDOFF_20261007.md 마지막 체크포인트와 최종 regression4 결과를 읽는다. 새 BUILD에는 새 당일 hash 결합 명시 승인이 필요하며 과거 receipt를 복사하지 않는다.
+1. 최신 V1.3_HANDOFF_20261007.md 마지막 체크포인트와 최종 regression5 결과를 읽는다. 새 BUILD에는 새 당일 hash 결합 명시 승인이 필요하며 과거 receipt를 복사하지 않는다.
 2. 실제 주문이 차단된 상태에서 ka10004 SOR/NXT 원본시각/호가 필드 및 0J 별도 ACK를 확인한다. 불능을 PASS로 위조하지 않는다. KRX/NXT 보유 합계가 실제 계좌와 중복 없이 일치하는지도 확인한다.
 3. 운영 종료/봇 보유/미체결/UNKNOWN/기존 HALT 원인을 대조한 뒤 변경 코드만 백업·배포하고 운영 config/runtime/account/approval/log hash를 비교한다. 기존 HALT를 파일 편집으로 임의 삭제하지 않는다.
 4. GUI는 08시 이후 사용자가 준비/시작 승인. 09시 readiness와 전략 warmup70초/A2B4C5는 별도. 전송 직전 fresh quote/돌파/chase/실제 수량 depth를 검증한다.

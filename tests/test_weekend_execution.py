@@ -93,9 +93,11 @@ class FinalBuyEvidenceTests(unittest.TestCase):
         order=self.e.enter(self.signal,self.tick)
         self.assertEqual(order['status'],'ACCEPTED');self.assertEqual(order['qty'],qty)
         self.assertEqual(order['signal']['planned_qty'],qty)
-        evidence=order['signal']['entry_execution_evidence']
+        rows=[json.loads(line) for line in (self.e.folder/'events.jsonl').read_text(encoding='utf-8').splitlines()]
+        evidence=next(r['evidence'] for r in reversed(rows) if r.get('event')=='ENTRY_EXECUTION_RECHECK')
         self.assertEqual(evidence['phase'],'PRE_HTTP');self.assertEqual(evidence['quantity'],qty)
         self.assertEqual(evidence['price'],6340);self.assertEqual(evidence['book_ask_qty'],100)
+        self.assertEqual(order['signal']['entry_execution_evidence']['phase'],'PRE_INTENT')
     def test_one_to_six_shares_are_checked_against_the_actual_boundary_quantity(self):
         for quantity in range(1,7):
             with self.subTest(quantity=quantity):
@@ -114,7 +116,8 @@ class FinalBuyEvidenceTests(unittest.TestCase):
         self.b.submit=delayed
         order=self.e.enter(self.signal,self.tick)
         self.assertEqual(order['status'],'REJECTED');self.assertEqual(self.b.orders,[])
-        evidence=order['signal']['entry_execution_evidence']
+        rows=[json.loads(line) for line in (self.e.folder/'events.jsonl').read_text(encoding='utf-8').splitlines()]
+        evidence=next(r['evidence'] for r in reversed(rows) if r.get('event')=='ENTRY_EXECUTION_RECHECK')
         self.assertEqual(evidence['phase'],'PRE_HTTP');self.assertEqual(evidence['price'],6310)
     def test_disconnect_erases_receiver_entry_evidence(self):
         self.ready();self.feed.emit({'trnm':'DISCONNECTED'})

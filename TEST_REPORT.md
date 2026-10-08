@@ -1,3 +1,7 @@
+# 최종 코드 검증 진행상태 (10/08 안정화)
+
+830 PASS였던 기준에 주문근거 기록을 추가한 후 regression4에서 자기 INTENT 저장값 일치 회귀3건을 발견했다. PRE_HTTP 진단을 별도 이벤트로 분리하여 기존 authorization exact match를 유지했다. 관련 대상52 PASS/0FAIL/0ERROR/0SKIP, 실제 network0. 최종 full regression5 결과를 확인하기 전 배포 완료로 취급하지 않는다. 초기 실패는 보존한다.
+
 # 10/08 거래 후 안정화: 개발 검증 상태
 
 별도 fix/weekend-stabilization-20261008 분기, 운영본 미배포. 시작 기준797 PASS, 기능 수정 후830 PASS/0FAIL/0ERROR/0SKIP, syntax98 정상, 실제 network0/orders0/program-start0. 기존 검사 삭제/skip 없음. 신규33개 포함.

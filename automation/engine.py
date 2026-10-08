@@ -267,14 +267,18 @@ class AutonomousEngine(ExistingExits,Engine):
         provider=getattr(self,'entry_quote_provider',None)
         if provider and not signal.get('symbol'):return 'ENTRY_MARKET_DATA_UNAVAILABLE'
         tick,book=provider(signal['symbol']) if provider else (fallback,{})
-        signal['entry_execution_evidence']={'checked_at':self.clock().isoformat(),'phase':phase,
+        evidence={'checked_at':self.clock().isoformat(),'phase':phase,
             'receiver_provider':bool(provider),'tick_available':tick is not None,'quantity':quantity,
             'limit':signal.get('limit'),'book_time':book.get('time'),
             'book_bid':book.get('best_bid'),'book_ask':book.get('best_ask'),
             'book_bid_qty':book.get('bid_qty'),'book_ask_qty':book.get('ask_qty')}
+        self.latest_entry_execution_evidence=evidence
+        # The saved INTENT must remain exactly equal to the in-memory record
+        # during authorization. Final boundary evidence belongs in an event.
+        if phase=='PRE_INTENT':signal['entry_execution_evidence']=evidence
         if tick is None:return 'ENTRY_MARKET_DATA_UNAVAILABLE'
         age=(self.clock()-tick.time).total_seconds()
-        signal['entry_execution_evidence'].update(tick_time=tick.time.isoformat(),tick_age_seconds=age,
+        evidence.update(tick_time=tick.time.isoformat(),tick_age_seconds=age,
             price=tick.price,bid=tick.bid,ask=tick.ask,regular=tick.regular,
             tick_venue=getattr(tick,'venue',None),tick_depth_source=getattr(tick,'depth_source',None),
             spread=(tick.ask-tick.bid)/tick.price if tick.price>0 else None)
@@ -475,6 +479,8 @@ class AutonomousEngine(ExistingExits,Engine):
             breakout=signal.get('evaluation_gates',{}).get('breakout',{}).get('values',{}).get('breakout')
             if breakout is not None and limit<=breakout:raise Rejected('BREAKOUT_QUOTE_NOT_CONFIRMED')
             market_reason=self.entry_market_reason(signal,qty,getattr(self,'entry_tick',None),phase='PRE_HTTP')
+            self.event('ENTRY_EXECUTION_RECHECK',symbol=sym,local=intents[0]['local'],
+                reason=market_reason,evidence=dict(self.latest_entry_execution_evidence))
             if market_reason:
                 error=Rejected(market_reason);error.retryable_market_recheck=True
                 raise error
