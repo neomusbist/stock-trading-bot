@@ -1,3 +1,16 @@
+# 2026-10-08 안정화: 최종 오프라인 검증 완료 / 운영 미배포
+
+최종 코드 기준 전체 regression6: **833 PASS / 0 FAIL / 0 ERROR / 0 SKIP**. 시작 보존 기준 797개 + 신규 36개. syntax 98개 정상. 실제 네트워크 시도 0 / 실제 주문 0 / 운영 프로그램 시작 0. 관련 대상 63 PASS는 전체에 포함되므로 합산하지 않는다. 마지막 전체 실행 약 148.30초. 초기 실패·오류 및 수정 근거는 아래 역사 기록과 개발 검증 산출물에 보존했다. 삭제/skip한 기존 검사는 없다.
+
+주요 안전 검증: persisted INTENT와 승인 exact equality 유지, PRE_HTTP evidence는 별도 이벤트로 기록; A/C 및 위험·기존 청산 수식 유지; B의 첫 완성봉 시가→impulse 완성 종가 상승 확인으로 wick-only 오인 차단과 정상 첫 봉 상승 보존; 실제 risk-sized quantity depth / freshness / source 및 SHADOW 격리 / UNKNOWN·HALT·HARD_LOCK / lifecycle·다음날 시작 회귀 통과. 테스트 PASS는 실제 API 응답·실제 체결·전략 기대값의 입증이 아니다.
+
+BUILD_ID=V1.3-risk2-watch12-bc20M-stabilization-20261008
+STRATEGY_VERSION=V1.3-b-confirmed-impulse-bc20M-20261008
+STRATEGY_EXPERIMENT=20261007-risk2-daily4-dynamiccap-watch12-accelA-bc20M-bclose20261008
+risk_fraction=.02 / max_daily_loss_fraction=.04 / WATCH12 / max_positions1 / 동적 승인 cap. B 허용 형상이 달라졌으므로 전략 버전을 구분한다. 일/종목/연속손실 횟수 제한 제거의 기존 장중 패치는 보존.
+
+별도 fix/weekend-stabilization-20261008 분기에서만 검증했다. 기존 main 및 운영본 소스·config·runtime·계좌·승인·거래로그를 쓰지 않았고, merge/push/배포/프로세스 재시작/대신 LIVE 승인도 하지 않았다. 실제 응답 검증, exit 정책 비교, 장시간 부하 및 종료 후 배포 인수검사는 미완료다. 아래 진행중 표현은 과거 체크포인트 기록이며 최신 판정은 이 절이다.
+
 # 마지막 형상 감사 후 검증 상태
 
 full regression5: 831 PASS/0FAIL/0ERROR/0SKIP. 첫 완성봉 몸통 내 정상 상승을 B impulse에서 버리지 않도록 기준을 첫 완성봉 시가→impulse 완성 종가로 정리했다. 기존 .008 유지. 신규 positive/negative2개 포함 관련63 PASS. 마지막 full regression6 결과 전 배포 완료로 표시하지 않는다.
