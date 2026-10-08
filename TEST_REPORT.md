@@ -9,6 +9,8 @@ STRATEGY_VERSION=V1.3-b-confirmed-impulse-bc20M-20261008
 STRATEGY_EXPERIMENT=20261007-risk2-daily4-dynamiccap-watch12-accelA-bc20M-bclose20261008
 risk_fraction=.02 / max_daily_loss_fraction=.04 / WATCH12 / max_positions1 / 동적 승인 cap. B 허용 형상이 달라졌으므로 전략 버전을 구분한다. 일/종목/연속손실 횟수 제한 제거의 기존 장중 패치는 보존.
 
+날짜 한정 거래7개의 순손익 합은 -1828.162원이며 장부의 과거 포함 누적 -1771.15원과 구분했다. 저장 집계 원본은 올바르며 문서의 혼동을 수정했다. 소스/검사 결과에 변경 없음.
+
 별도 fix/weekend-stabilization-20261008 분기에서만 검증했다. 기존 main 및 운영본 소스·config·runtime·계좌·승인·거래로그를 쓰지 않았고, merge/push/배포/프로세스 재시작/대신 LIVE 승인도 하지 않았다. 실제 응답 검증, exit 정책 비교, 장시간 부하 및 종료 후 배포 인수검사는 미완료다. 아래 진행중 표현은 과거 체크포인트 기록이며 최신 판정은 이 절이다.
 
 # 마지막 형상 감사 후 검증 상태
