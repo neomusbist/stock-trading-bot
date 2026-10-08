@@ -106,8 +106,13 @@ class Engine:
         if o['side']=='BUY':
             self.diagnostic('broker_reject_count' if broker_response else 'internal_reject_count')
             if broker_response: self.mark_broker_submit(o)
-            # Failed symbols remain fail-closed for this day; no retry loop is introduced.
-            self.s.setdefault('entry_failures',{})[o['symbol']]={'local':o['local'],'reason':str(reason),'day':self.s['day']}
+            # Only a proven pre-transport quote recheck is transient. Broker rejections,
+            # ambiguity and zero-fill cancellations keep the existing fail-closed latch.
+            transient=(not broker_response and not o.get('broker_submit_counted')
+                       and getattr(reason,'retryable_market_recheck',False) is True)
+            o['fresh_signal_required']=transient
+            if not transient:
+                self.s.setdefault('entry_failures',{})[o['symbol']]={'local':o['local'],'reason':str(reason),'day':self.s['day']}
         self.save()
 
     def save(self):

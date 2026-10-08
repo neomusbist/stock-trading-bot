@@ -80,20 +80,34 @@ class PatternDetector(Detector):
         return True
 
     def pullback(self,bars):
-        if len(bars)<4: return None
+        return self.pullback_analysis(bars)[0]
+
+    def pullback_analysis(self,bars):
+        if len(bars)<4:return None,'INSUFFICIENT_USABLE_BARS',{}
         seq=bars[-12:]; peak_i=max(range(1,len(seq)-1),key=lambda i:seq[i]['high'])
         impulse=seq[:peak_i+1]; pull=seq[peak_i+1:]
-        if not pull: return None
+        if not pull:return None,'NO_CONTROLLED_PULLBACK',{}
         peak=seq[peak_i]['high']; base=min(b['low'] for b in impulse); low=min(b['low'] for b in pull)
         rise=peak-base
-        if rise/base<self.a.pullback_min_rise or not 0<peak-low<=rise*self.a.pullback_max_retrace: return None
+        # An isolated opening/downward wick must not manufacture an upward impulse.
+        # Use the existing minimum rise, now confirmed by completed closes as well.
+        first_close=impulse[0]['close'];peak_close=impulse[-1]['close']
+        close_progress=peak_close/first_close-1 if first_close>0 else None
+        evidence={'impulse_first_close':first_close,'impulse_peak_close':peak_close,
+                  'impulse_close_progress':close_progress,'minimum_rise':self.a.pullback_min_rise,
+                  'wick_based_rise':rise,'impulse_base':base,'impulse_peak':peak}
+        if close_progress is None or close_progress<self.a.pullback_min_rise:
+            return None,'IMPULSE_CLOSE_PROGRESS_INSUFFICIENT',evidence
+        if base<=0 or rise/base<self.a.pullback_min_rise or not 0<peak-low<=rise*self.a.pullback_max_retrace:
+            return None,'NO_CONTROLLED_PULLBACK',evidence
         impulse_volume=sum(b['volume'] for b in impulse)/len(impulse)
         pull_volume=sum(b['volume'] for b in pull)/len(pull)
-        if impulse_volume<=0 or pull_volume>impulse_volume*self.a.pullback_volume_ratio: return None
-        if pull[-1]['close']<low or low<=base: return None
+        if impulse_volume<=0 or pull_volume>impulse_volume*self.a.pullback_volume_ratio:return None,'PULLBACK_VOLUME_FAIL',evidence
+        if low<=base:return None,'PULLBACK_INVALIDATION_FAIL',evidence
         rebreakout = min(peak, max(b['high'] for b in pull[-2:])) if len(pull) >= 2 else peak
         return {'pattern':'B','breakout':rebreakout,'peak':peak,'support':low,'projection':peak+rise,
-                'pullback_volume_ratio':pull_volume/impulse_volume,'retrace':(peak-low)/rise}
+                'pullback_volume_ratio':pull_volume/impulse_volume,'retrace':(peak-low)/rise,
+                **evidence},None,evidence
 
     @observation_locked
     def usable_bars(self,symbol,after_only=False):
@@ -196,6 +210,7 @@ class PatternDetector(Detector):
         gates=self.base_gates(t,watch) if gates is None else gates
         bars=self.usable_bars(t.symbol,after_only=is_after) if _bars is None else _bars
         setups={s['pattern']:s for s in self.candidates(t,bars,is_after=is_after)}
+        _,b_reason,b_evidence=self.pullback_analysis(bars)
         trials=[]
         for name in ('A','B','C'):
             setup=setups.get(name)
@@ -205,7 +220,7 @@ class PatternDetector(Detector):
             if not setup:
                 why.append('INSUFFICIENT_USABLE_BARS' if len(bars)<required else
                            'PRIOR_HIGH_NOT_BROKEN' if name=='A' else
-                           'NO_CONTROLLED_PULLBACK' if name=='B' else 'BOX_NOT_FORMED')
+                           b_reason if name=='B' else 'BOX_NOT_FORMED')
             price_gates=self.setup_gates(t,watch,setup,bars=bars) if setup else {}
             # Market-status authorization remains at the unchanged engine/order boundary.
             common={k:gates[k] for k in ('warmup','spread','structure')}
@@ -235,6 +250,7 @@ class PatternDetector(Detector):
                 'acceleration_required':name=='A','acceleration_observation':gates['acceleration'],
                 'failed_reasons':why,'primary_reason_code':why[0] if why else 'SETUP_PRICE_GATES_PASS',
                 'gates':trial_gates,'setup_geometry':setup,
+                'impulse_evidence':b_evidence if name=='B' else None,
                 'entry_ready':bool(setup and not why),
                 'price_action':{'condition':'CONTROLLED_PULLBACK' if name=='B' else 'INTRADAY_BOX' if name=='C' else 'PRIOR_HIGH_BREAKOUT',
                     'formed':bool(setup),'breakout':price_gates.get('breakout',gate(False,reason='GEOMETRY_ABSENT'))},
@@ -246,6 +262,10 @@ class PatternDetector(Detector):
         # One evaluation owns its window and bars. Never cache live safety inputs across ticks.
         gates,bars,fast_count,base_count=self._base_evaluation(t,watch)
         trials=self.setup_trials(t,watch,gates,_bars=bars)
+        from automation.market_context import symbol_context
+        context=symbol_context(bars,t,watch.get('index_context'))
+        context['indices']=watch.get('market_environment',{})
+        for trial in trials:trial['context']=context
         self.last_eval[t.symbol]={'time':t.time,'cumulative':t.cumulative,'gates':gates,'trials':trials}
         self._eval_keys[t.symbol]=self._evaluation_key(t,watch)
         is_after=after_supported(t.time)
@@ -274,9 +294,12 @@ class PatternDetector(Detector):
             gates['acceleration']={**gates['acceleration'],'required':name=='A','scope':'ENTRY_GATE' if name=='A' else 'OBSERVATION_ONLY'}
             gates['pattern']=gate(True,setup=name,acceleration_required=name=='A')
             venue=watch.get('venue') or (getattr(c,'after_default_venue','SOR') if is_after else 'KRX')
-            planned_qty=max(1,int(20000//t.price)) if t.price>0 else 1
+            # Observation can establish only a one-share depth prerequisite.
+            # Engine sizing and the final order boundary validate the actual quantity.
+            planned_qty=1
             return {'symbol':t.symbol,'time':t.time.isoformat(),'limit':limit,'stop':stop,**setup,
                 'evaluation_gates':gates,'setup_trials':trials,'acceleration_required':name=='A',
+                'market_context':context,'discovery_context':watch.get('discovery_context'),
                 'target':target,'target_basis':'과거 저항으로 제한한 관측 패턴 폭 연장 가설; 고정 익절선 아님',
                 'turnover':turnover,'turnover_ratio':ratio,'gain':gain,
                 'efficiency':score,'source_count':watch.get('source_count',len(watch.get('source_details',{}))),'source_details':watch.get('source_details',{}),'source_deltas':watch.get('source_deltas',{}),
@@ -284,7 +307,7 @@ class PatternDetector(Detector):
                 'structure':{k:watch.get(k) for k in ('long_position','overhead_share_estimate','resistance','recent_support')},
                 'risk_per_share':score['risk_per_share'],'market_state':'3',
                 'session':'AFTER' if is_after else 'REGULAR','venue':venue,
-                'planned_qty':planned_qty if is_after else None,'liquidity_mode':'depth' if is_after else 'turnover'}
+                'planned_qty':None,'liquidity_mode':'depth' if is_after else 'turnover'}
         return None
 
     @observation_locked
@@ -368,7 +391,7 @@ class PatternDetector(Detector):
         accel_pass=None if ratio is None or gain is None else ratio>=min_ratio and gain>=min_gain
         accel_gate=gate(accel_pass,ratio=ratio,min_ratio=min_ratio,gain=gain,min_gain=min_gain,session='AFTER' if is_after else 'REGULAR')
         if is_after:
-            planned_qty=max(1,int(20000//t.price)) if t.price>0 else 1
+            planned_qty=1
             available=getattr(t,'depth_available',None)
             ask_qty=getattr(t,'ask_qty',0)
             bid_qty=getattr(t,'bid_qty',0)
@@ -378,6 +401,7 @@ class PatternDetector(Detector):
                 available=ask_qty>0 and bid_qty>0
             depth_pass=bool(ask_qty>=planned_qty and bid_qty>=planned_qty and ask_qty>0 and bid_qty>0 and spread is not None and spread<=c.max_spread) if available else None
             liq_gate=gate(depth_pass,mode='depth',planned_qty=planned_qty,ask_qty=ask_qty,bid_qty=bid_qty,
+                quantity_scope='MINIMUM_OBSERVATION_ONLY',actual_quantity_check='ENGINE_AND_ORDER_BOUNDARY',
                 depth_available=available,data_status='AVAILABLE' if available else 'DATA_UNAVAILABLE',
                 depth_source=getattr(t,'depth_source','UNKNOWN'),book_time=t.book_time.isoformat() if getattr(t,'book_time',None) else None,
                 window_turnover=amount,min_turnover=0)

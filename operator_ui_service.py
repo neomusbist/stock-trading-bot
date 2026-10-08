@@ -120,6 +120,18 @@ def setup_wait_summary(row):
     return ' | '.join(parts)
 
 
+def context_description(row):
+    context=row.get('market_context') or next((t.get('context') for t in row.get('setup_trials') or [] if t.get('context')),{}) or {}
+    discovery=row.get('discovery_context') or {}
+    if not context and not discovery:return ''
+    labels={'UP':'상승','DOWN':'하락','MIXED':'혼조','UNKNOWN':'미확인'}
+    values=['진단: 종목 5분 '+labels.get(context.get('trend_5m',{}).get('status'),'미확인'),
+            '15분 '+labels.get(context.get('trend_15m',{}).get('status'),'미확인'),
+            '시장 '+labels.get(context.get('market_regime'),'미확인')]
+    if discovery:values.append('장전 준비 후보' if discovery.get('preopen_prepared') else '장중 발견 후보')
+    if discovery.get('first_raw_at'):values.append('최초 발견 '+discovery['first_raw_at'][11:19])
+    return ' / '.join(values)
+
 def human_blocker_reason(row):
     """후보 종목의 주요 차단/대기 사유를 사람이 읽기 쉬운 한국어로 반환."""
     gates = row.get('gates') or row.get('gate_results') or {}
@@ -402,8 +414,9 @@ class UserOperations(OperatorService):
                 'MFE':p.get('high',p['avg'])-p['avg'],'MAE':p['avg']-p.get('low',p['avg']),
                 'risk':max(0,p['avg']-p['stop']+p['avg']*auto.commission_buy+p['stop']*(auto.commission_sell+auto.sell_tax+cfg.exit_slippage_fraction))*p['qty'],
                 'exit_mode':'수량 확인 필요 / 자동청산 보류' if p.get('qty_blocked') else '청산 대기' if p.get('exit_requested') else '구조 / 수익 보호',
+                'protection_evidence':p.get('protection_evidence'),'data_health':p.get('data_health'),
                 'hold_reason':'장부·실계좌 수량 불일치. HTS에서 보유·미체결 확인 필요' if p.get('qty_blocked') else p.get('exit_reason') if p.get('exit_requested') else '현재 보호선 위; 강제청산 시각 전',
-                'next_exit':f"체결가/매수호가 ≤ {p['stop']} 또는 15:10 / 시세단절 / 중단 청산 요청"})
+                'next_exit':f"체결가 ≤ {p['stop']} / 호가 비상선 이탈 / {auto.after_force_flatten_start if p.get('signal',{}).get('session')=='AFTER' else auto.force_flatten_start} 강제청산 / 시세 재확인 실패 / 중단 청산 요청"})
         s['active_error']=s['current_error'] not in {'현재 오류 미확인 / 과거 기록은 상세보기','기록 없음 (정상 연결을 뜻하지 않음)'}
         s['protection_rows']=[{'symbol':sym,'policy':'HARD_LOCK / 자동매매 금지' if sym in HARD_LOCKS else p,
              'breakeven':BREAKEVEN_EXITS.get(sym)} for sym,p in EXISTING_POLICIES.items()]

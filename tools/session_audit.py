@@ -9,6 +9,12 @@ CASES = ('금호전기', '우리로', '와이어블', '빛샘전자', '대한광
          '이루온', '한국파마', '윈팩', '다산네트웍스', '에이스테크', '솔루엠')
 
 def records(path):
+    # Lossless rotation must not turn an all-day audit into a last-file-only audit.
+    files=sorted((path.parent/'archive').glob(path.name+'.*'))+[path]
+    for file in files:
+        yield from file_records(file)
+
+def file_records(path):
     if not path.exists(): return
     # 실행 중인 로그도 최초 파일 길이까지만 읽는다. writer/파일 잠금을 사용하지 않는다.
     size = path.stat().st_size
@@ -54,7 +60,9 @@ def audit(root, day):
         for kind in ('added','removed'):
             for sym in payload.get('changes',{}).get(kind,[]): changes.append({'timestamp':stamp,'symbol':sym,'change':kind})
     external=[]; event_counts=Counter(); setup_patterns=Counter(); risk_symbols=set(); order_events=[];risk_records=[];environments={}
-    for path in sorted((root/'runtime').glob('automation-*/events.jsonl')):
+    for folder in sorted((root/'runtime').glob('automation-*')):
+        if not folder.is_dir():continue
+        path=folder/'events.jsonl'
         for event in records(path):
             stamp=event.get('timestamp') or event.get('time','')
             if stamp[:10]!=day: continue

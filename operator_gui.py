@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QLabel,QPushButt
     QTableWidgetItem,QHeaderView,QPlainTextEdit,QMessageBox,QDialog,QLineEdit,QFormLayout,QInputDialog,QProgressBar,QMenu)
 from operator_ui_service import (UserOperations, CANDIDATE_FIELDS, GATE_NAMES, money, presentation,
     start_block, human_decision, result_text, candidate_display, candidate_wait_reason,
-    format_observation_age, human_blocker_reason, extract_important_events)
+    format_observation_age, human_blocker_reason, extract_important_events, context_description)
 from operator_service import decision_line, read_json
 from local_diagnostics import redact
 
@@ -457,6 +457,8 @@ class MainWindow(QMainWindow):
             price_val=money(row.get('current_price'))
             age_val=format_observation_age(row.get('timestamp'),clock=snap_dt,is_stale=(row.get('data_fresh') is False))
             blocker_val=human_blocker_reason(row)
+            context_val=context_description(row)
+            if context_val:blocker_val+=" | "+context_val
             if row.get('data_fresh') is False and row.get('data_note'):
                 blocker_val=f"{row.get('data_note')}; {blocker_val}"
             items.append([sym_name,state,price_val,age_val,blocker_val])

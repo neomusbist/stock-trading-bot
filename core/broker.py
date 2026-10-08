@@ -146,7 +146,9 @@ class Rest:
     def snapshot(self):
         holdings,summary=self.pages('kt00018',{'qry_tp':'2','dmst_stex_tp':'KRX'},'acnt_evlt_remn_indv_tot')
         cash=self.query('kt00001',{'qry_tp':'2'})
-        orders,_=self.pages('ka10075',{'all_stk_tp':'0','trde_tp':'0','stk_cd':'','stex_tp':'1'},'oso')
+        # Production with AFTER enabled must see foreign/self NXT as well as KRX orders.
+        exchange='0' if getattr(self.cfg,'after_enabled',False) is True and self.cfg.broker_environment=='production' else '1'
+        orders,_=self.pages('ka10075',{'all_stk_tp':'0','trde_tp':'0','stk_cd':'','stex_tp':exchange},'oso')
         balances={}
         for h in holdings:
             symbol=code(h['stk_cd'])
@@ -159,7 +161,8 @@ class Rest:
                 'equity':number(summary['prsm_dpst_aset_amt'],signed=True)}
 
     def fills(self):
-        return self.pages('ka10076',{'stk_cd':'','qry_tp':'0','sell_tp':'0','ord_no':'','stex_tp':'1'},'cntr')[0]
+        exchange='0' if getattr(self.cfg,'after_enabled',False) is True and self.cfg.broker_environment=='production' else '1'
+        return self.pages('ka10076',{'stk_cd':'','qry_tp':'0','sell_tp':'0','ord_no':'','stex_tp':exchange},'cntr')[0]
 
     def stock_status(self,symbol):
         from automation.market_status import assess_status
@@ -180,6 +183,30 @@ class Rest:
         return {'time':quoted.isoformat(),'bid':number(raw['buy_fpr_bid']),'bid_qty':int(qty),
                 'regular':True,'status':status,'source':'ka10004',
                 'raw':{k:raw[k] for k in ('bid_req_base_tm','buy_fpr_bid','buy_fpr_req')}}
+
+    def position_book(self,symbol,session,venue):
+        """Read-only ka10004, using the held position's exchange, never a KRX substitute.
+
+        Official Kiwoom example: KRX code, NXT code_NX, SOR code_AL.
+        The exchange quote timestamp is evidence; HTTP receipt time is not freshness.
+        """
+        if session not in {'REGULAR','AFTER'} or venue not in {'KRX','NXT','SOR'}:
+            raise ValueError('Position quote session/exchange required')
+        symbol=code(symbol)
+        if session=='AFTER' and venue=='KRX':
+            raise Rejected('AFTER_POSITION_QUOTE_VENUE_UNAVAILABLE')
+        request_symbol=symbol+{'KRX':'','NXT':'_NX','SOR':'_AL'}[venue]
+        raw=self.query('ka10004',{'stk_cd':request_symbol},path='/api/dostk/mrkcond')
+        received=now()
+        quoted=datetime.combine(received.date(),datetime.strptime(raw['bid_req_base_tm'],'%H%M%S').time(),tzinfo=received.tzinfo)
+        values={k:number(raw[k],signed=True) for k in ('buy_fpr_bid','sel_fpr_bid','buy_fpr_req','sel_fpr_req')}
+        bid=abs(values['buy_fpr_bid']);ask=abs(values['sel_fpr_bid'])
+        if not 0<bid<=ask or any(values[k]<0 or not values[k].is_integer() for k in ('buy_fpr_req','sel_fpr_req')):
+            raise ValueError('Invalid position quote price/depth')
+        return {'time':quoted.isoformat(),'received_at':received.isoformat(),'bid':bid,'best_bid':bid,'best_ask':ask,
+                'bid_qty':int(values['buy_fpr_req']),'ask_qty':int(values['sel_fpr_req']),
+                'regular':session=='REGULAR','session':session,'venue':venue,'requested_symbol':request_symbol,
+                'source':'ka10004','depth_available':True}
 
     def submit(self,side,symbol,qty,limit=0,venue='KRX',session='REGULAR'):
         if type(qty) is not int or qty<=0:

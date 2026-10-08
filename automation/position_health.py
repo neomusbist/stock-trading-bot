@@ -9,9 +9,24 @@ class PositionDataHealth:
         self.engine=engine;self.feed=feed;self.account=account;self.subscriptions=subscriptions
         if not isinstance(getattr(account,'position_symbols',None),(set,frozenset)):
             account.position_symbols=frozenset()
+        if not isinstance(getattr(account,'position_context',None),dict):account.position_context={}
+        self.probes={}
         self.waiting={};self.logged={};self.quotes={}
         engine.position_health=self
         engine.position_data_stale=self.should_exit
+        if callable(getattr(feed,'entry_snapshot',None)):engine.entry_quote_provider=self.entry_snapshot
+        if callable(getattr(feed,'context_snapshot',None)):engine.market_context_provider=self.market_context
+
+    def market_context(self,stamp):
+        # Diagnostic adapters must never interrupt account/order processing.
+        try:
+            result=self.feed.context_snapshot(stamp)
+            if isinstance(result,dict):return result
+        except (AttributeError,TypeError,ValueError):pass
+        return {'status':'UNKNOWN','reason':'INDEX_CONTEXT_UNAVAILABLE'}
+
+    def entry_snapshot(self,symbol):
+        return self.feed.entry_snapshot(symbol)
 
     @staticmethod
     def age(stamp,current):
@@ -24,9 +39,20 @@ class PositionDataHealth:
 
     def prune(self):
         held=set(self.engine.s['positions'])
-        for mapping in (self.waiting,self.quotes,self.logged):
+        for mapping in (self.waiting,self.quotes,self.logged,self.probes):
             for symbol in set(mapping)-held:mapping.pop(symbol,None)
         self.account.position_symbols=frozenset(set(self.account.position_symbols)&held)
+        self.account.position_context={s:v for s,v in self.account.position_context.items() if s in held}
+
+    def probe_results(self,snapshot,current):
+        for symbol,book in snapshot.get('books',{}).items():
+            if symbol in self.waiting:
+                self.probes[symbol]={'result_at':current.isoformat(),'result':'QUOTE_RECEIVED',
+                    'quote_time':book.get('time'),'venue':book.get('venue'),'source':book.get('source')}
+        for symbol,error in snapshot.get('book_errors',{}).items():
+            if symbol in self.waiting:
+                self.probes[symbol]={'result_at':current.isoformat(),'result':'PROBE_FAILED',
+                    'error':error.get('error'),'api':error.get('api')}
 
     def accept_book(self,symbol,book,current,source='0D'):
         e=self.engine;p=e.s['positions'].get(symbol)
@@ -35,8 +61,13 @@ class PositionDataHealth:
         bid=book.get('best_bid',book.get('bid',0));ask=book.get('best_ask')
         if age is None or age>e.c.position_stale_seconds or not isinstance(bid,(int,float)) or not math.isfinite(bid) or bid<=0:return False
         if source=='0D' and (not isinstance(ask,(int,float)) or not math.isfinite(ask) or ask<bid):return False
-        # The existing REST book route is KRX only. Never substitute it for AFTER.
-        if source=='ka10004' and (e.current_session()!='REGULAR' or not book.get('regular') or book.get('status',{}).get('pass') is False):return False
+        if source=='ka10004':
+            if e.current_session()=='AFTER':
+                venue=(p.get('signal') or {}).get('venue') or p.get('venue') or e.after_default_venue
+                if (book.get('session')!='AFTER' or book.get('venue')!=venue or venue not in {'NXT','SOR'}
+                        or not '16:00:00'<=book.get('time','')[11:19]<'20:00:00'
+                        or not isinstance(ask,(int,float)) or not math.isfinite(ask) or ask<bid):return False
+            elif e.current_session()!='REGULAR' or not book.get('regular') or book.get('status',{}).get('pass') is False:return False
         prior=self.quotes.get(symbol)
         if prior and self.age(prior['time'],current) is not None and self.age(prior['time'],current)<age:return False
         self.quotes[symbol]={'time':book['time'],'bid':bid,'ask':ask,'source':source}
@@ -83,10 +114,16 @@ class PositionDataHealth:
             exit_now=elapsed>=grace
             reason='POSITION_DATA_UNVERIFIED_TIMEOUT' if exit_now else 'POSITION_QUOTE_RECHECK_PENDING'
             evidence.update(recheck_seconds=elapsed,recheck_deadline_seconds=grace)
-            if e.current_session()=='REGULAR':
-                requested=symbol not in self.account.position_symbols
-                self.account.position_symbols=frozenset(set(self.account.position_symbols)|{symbol})
-                if requested:self.account.request.set()
+            requested=symbol not in self.account.position_symbols
+            self.account.position_symbols=frozenset(set(self.account.position_symbols)|{symbol})
+            if e.current_session()=='AFTER':
+                venue=(position.get('signal') or {}).get('venue') or position.get('venue') or e.after_default_venue
+                self.account.position_context={**self.account.position_context,symbol:{'session':'AFTER','venue':venue}}
+            if requested:
+                self.probes[symbol]={'requested_at':current.isoformat(),'result':'REQUESTED',
+                    'session':e.current_session(),'venue':self.account.position_context.get(symbol,{}).get('venue','KRX')}
+                self.account.request.set()
+        evidence['probe']=dict(self.probes.get(symbol,{}))
         evidence.update(reason_code=reason,ws_fresh=ws_fresh,account_fresh=account_fresh,emergency_exit=exit_now)
         position['data_health']=evidence
         key=(reason,exit_now)

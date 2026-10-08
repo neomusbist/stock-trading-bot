@@ -171,6 +171,8 @@ class RadarWorker:
         self.thread=threading.Thread(target=self.run,name='rank-radar',daemon=True)
         self.timings={'status_ms':0.,'history_ms':0.,'structure_ms':0.};self.cycle_samples=[]
         self.observation_sink=None;self.observation_allowed=True
+        from automation.market_context import DiscoveryContext
+        self.discovery_context=DiscoveryContext(limit=self.observation_settings.max_raw_symbols*2)
 
     def get_cached_metadata(self,symbol):
         day=now().date()
@@ -225,6 +227,7 @@ class RadarWorker:
                 prior_profile=dict(getattr(self.rest,'profile',{}))
                 if self.refresh_account: self.refresh_account()
                 self.fetched=0; self.status_fetched=0; fetch_started=time.perf_counter();items=collect(self.rest)
+                items=self.discovery_context.update(items,now())
                 rank_ms=(time.perf_counter()-fetch_started)*1000
                 self.radar.available_capital=self.available_capital
                 self.radar.capital_context=dict(self.capital_context)

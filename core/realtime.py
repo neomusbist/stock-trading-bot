@@ -57,6 +57,9 @@ class Feed:
         self.observation_symbols=frozenset(); self.priority_symbols=None; self.observation_sink=None
         self.observation_q=queue.Queue(maxsize=8192);self.observation_drops=0
         self.orderbooks={}
+        self.latest_ticks={}
+        from automation.market_context import IndexContext
+        self.index_context=IndexContext()
         self.last_message_at=None
         self.thread=threading.Thread(target=self.run,name='Kiwoom-feed',daemon=True)
 
@@ -64,22 +67,42 @@ class Feed:
         received=now()
         if event.get('trnm') not in {'ERROR','DISCONNECTED'}:self.last_message_at=received
         with self.subscription_lock:
-            if event.get('trnm') in {'ERROR','DISCONNECTED'}:self.orderbooks.clear()
+            if event.get('trnm')=='REG' and str(event.get('grp_no'))=='2':
+                if event.get('return_code') not in (None,0,'0'):self.index_context.clear()
+                return  # Diagnostic ACK is never an order/market subscription ACK.
+            if event.get('trnm') in {'ERROR','DISCONNECTED'}:
+                self.orderbooks.clear();self.latest_ticks.clear()
+                self.index_context.clear()
             if event.get('trnm')=='REAL':
                 for item in event.get('data',[]):
                     itype=item.get('type'); raw_item=item.get('item')
+                    if itype=='0J':
+                        v=item.get('values',{})
+                        try:
+                            stamp=datetime.combine(received.date(),datetime.strptime(v['20'],'%H%M%S').time(),tzinfo=KST)
+                            self.index_context.ingest(raw_item,stamp,v.get('10'),received,v.get('12'))
+                        except (ValueError,KeyError):pass
+                        continue
                     sym=code(raw_item) if raw_item else None
                     if sym and itype=='0D':
                         self.orderbooks[sym]=parse_book(item,received)
                         item['_book']=self.orderbooks[sym]
                     elif sym and itype=='0B':
                         item['_book']=self.orderbooks.get(sym)
+                        try:
+                            tick=parse_tick(item,received,book=item['_book'],book_stale_seconds=getattr(self.rest.cfg,'stale_seconds',5))
+                            item['_observation_tick']=(received,tick)
+                            prior=self.latest_ticks.get(sym)
+                            if sym in self.symbols and (prior is None or tick.time>=prior.time):self.latest_ticks[sym]=tick
+                        except (ValueError,KeyError):pass
             if self.priority_symbols is not None and event.get('trnm')=='REAL':
                 priority=[]
                 for item in event.get('data',[]):
+                    if item.get('type')=='0J':continue  # Already consumed; do not load the order/position queue.
                     if item.get('type')=='0B' and item.get('item') in self.observation_symbols:
                         try:
-                            tick=parse_tick(item,received,book=item.get('_book') or self.orderbooks.get(code(item.get('item',''))),book_stale_seconds=getattr(self.rest.cfg,'stale_seconds',5))
+                            parsed=item.get('_observation_tick')
+                            tick=parsed[1] if parsed else parse_tick(item,received,book=item.get('_book') or self.orderbooks.get(code(item.get('item',''))),book_stale_seconds=getattr(self.rest.cfg,'stale_seconds',5))
                             # Frozen value for the same received frame, shared by observation and main.
                             item['_observation_tick']=(received,tick)
                             if self.observation_sink:self.observation_sink(tick,received)
@@ -88,6 +111,10 @@ class Feed:
                     if item.get('type')!='0B' or item.get('item') in self.priority_symbols:priority.append(item)
                 if not priority:return
                 event={**event,'data':priority}
+            elif event.get('trnm')=='REAL':
+                data=[item for item in event.get('data',[]) if item.get('type')!='0J']
+                if not data:return
+                event={**event,'data':data}
         try: self.q.put_nowait((received,event))
         except queue.Full: self.overflow.set()
 
@@ -100,11 +127,21 @@ class Feed:
             updated=list(dict.fromkeys(symbols))
             if updated==self.symbols: return False
             self.symbols=updated
+            for mapping in (self.latest_ticks,self.orderbooks):
+                for symbol in set(mapping)-set(updated):mapping.pop(symbol,None)
             if self.socket and self.logged_in:
                 # refresh=0 그룹을 완전히 교체하며 주문/장상태 구독은 항상 다시 포함한다.
                 self.socket.send(json.dumps({'trnm':'REG','grp_no':'1','refresh':'0','data':[
                     {'item':self.symbols,'type':['0B','0D']},{'item':[''],'type':['00','0s']}]}))
             return True
+
+    def entry_snapshot(self,symbol):
+        """Receiver-owned latest frame, read without network calls or engine mutation."""
+        with self.subscription_lock:
+            return self.latest_ticks.get(symbol),dict(self.orderbooks.get(symbol,{}) or {})
+
+    def context_snapshot(self,stamp):
+        with self.subscription_lock:return self.index_context.snapshot(stamp)
 
     def run(self):
         import websocket
@@ -129,6 +166,9 @@ class Feed:
                             self.logged_in=True
                             ws.send(json.dumps({'trnm':'REG','grp_no':'1','refresh':'0','data':[
                                 {'item':self.symbols,'type':['0B','0D']},{'item':[''],'type':['00','0s']}]}))
+                            # Independent diagnostic group; WATCH churn never refreshes indices.
+                            ws.send(json.dumps({'trnm':'REG','grp_no':'2','refresh':'0',
+                                'data':[{'item':['001','101'],'type':['0J']}]}))
                         else: self.emit(m)
                     except Exception:
                         self.emit({'trnm':'ERROR','reason':'실시간 메시지 형식 오류'}); ws.close()

@@ -45,6 +45,7 @@ class AccountWorker:
         self.stop=threading.Event(); self.request=threading.Event()
         self.external_symbols=set();self.external_prices={};self.last_book={};self.book_queries={}
         self.position_symbols=frozenset()
+        self.position_context={}
         self.observation_settings=ObservationSettings()
         self.thread=threading.Thread(target=self.run,name='account-reader',daemon=True)
     def book_due(self,symbol,stamp=None):
@@ -63,12 +64,14 @@ class AccountWorker:
                 snapshot['book_errors']={}
                 book_started=time.perf_counter();book_calls=0
                 for sym in sorted((set(self.external_symbols)|set(self.position_symbols))&set(snapshot['holdings'])):
-                    due=self.book_due(sym)
+                    context=self.position_context.get(sym)
+                    due=self.book_due(sym) or sym in self.position_symbols
                     if not due:
                         if sym in self.last_book:snapshot['books'][sym]=dict(self.last_book[sym])
                         continue
                     try:
-                        snapshot['books'][sym]=self.rest.existing_book(sym);self.last_book[sym]=dict(snapshot['books'][sym])
+                        snapshot['books'][sym]=(self.rest.position_book(sym,**context) if context else self.rest.existing_book(sym))
+                        self.last_book[sym]=dict(snapshot['books'][sym])
                         self.book_queries[sym]=time.monotonic();book_calls+=1
                     except (Rejected,ValueError,KeyError,RuntimeError,OSError) as e:
                         snapshot['book_errors'][sym]=error_record(e)  # 오류 원문 보존; 누락 호가는 HOLD
@@ -391,6 +394,12 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
             if protected and health is not None:health.trade_seen(t.symbol)
             watch=lookup.get(t.symbol)
             if not watch or not radar_ok or not engine.connected: continue
+            context_provider=getattr(engine,'market_context_provider',None)
+            if context_provider:
+                indices=context_provider(t.time)
+                market_name=(watch.get('market_status',{}).get('raw') or {}).get('marketName')
+                benchmark='KOSDAQ' if market_name in {'코스닥','KOSDAQ'} else 'KOSPI' if market_name in {'코스피','KOSPI','거래소'} else None
+                watch={**watch,'index_context':indices.get(benchmark) if benchmark else None,'market_environment':indices}
             evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,getattr(engine,'_last_eval_frame',None))
     return accepted
 
@@ -558,6 +567,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         engine.account_ok=False; engine.event('ACCOUNT_UNAVAILABLE',error='조회 지연')
                     else:
                         for sym,error in result['snapshot'].get('book_errors',{}).items(): engine.event('EXISTING_BOOK_UNAVAILABLE',symbol=sym,**error)
+                        position_health.probe_results(result['snapshot'],now())
                         engine.reconcile(result['snapshot'],result['fills']); counts['account_checks']+=1; account_generation+=1
                         for sym,book in result['snapshot'].get('books',{}).items():
                             position_health.accept_book(sym,book,now(),source='ka10004')
@@ -728,6 +738,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         elif '08:00:00'<=t_now<'09:00:00': hb_session='PREOPEN'
                         else: hb_session='CLOSED'
                     atomic_json(folder/'heartbeat.json',{'time':now().isoformat(),'mode':policy.mode,'market':engine.market,
+                        'market_environment':position_health.market_context(now()),
                         'session':hb_session,'market_phase':phase_str,'venue':getattr(engine,'after_default_venue','SOR') if sess_name=='AFTER' else 'KRX',
                         'session_classification':assessment(now())['classification'],'readiness':ready,'build_id':BUILD_ID,'strategy_experiment':STRATEGY_EXPERIMENT,
                         'pid':os.getpid(),'identity':process_identity(os.getpid()),

@@ -7,7 +7,7 @@ from pathlib import Path
 from core.engine import Engine, TERMINAL
 from core.broker import Rejected
 from core.settings import KST
-from core.util import code, floor_tick,read_json_retry,atomic_json
+from core.util import code, floor_tick,tick_size,read_json_retry,atomic_json
 from automation.capital import Costs, initial_allocation, owned_equity
 from automation.policy import LEGACY_SYMBOL,BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL,HARD_LOCKS,legacy_test_release_enabled
 from automation.session import supported, SessionPlan, AfterSessionPlan, after_supported, after_entry_supported, current_session
@@ -262,6 +262,38 @@ class AutonomousEngine(ExistingExits,Engine):
             'risk_quantity':gate(qty>0,**sizing,equity=equity,remaining_risk=remaining,reserved_cash=reserved,book_cash=self.s['cash'],actual_cash=self.available_cash,entry=signal['limit'],stop=signal['stop'],risk_fraction=self.c.risk_fraction,max_daily_loss_fraction=self.c.max_daily_loss_fraction,allowed_risk_krw=equity*self.c.risk_fraction,remaining_daily_risk_krw=max(0,remaining)),
             'efficiency':gate(signal.get('efficiency',{}).get('decision')=='TRADE',efficiency=signal.get('efficiency'))}
 
+    def entry_market_reason(self,signal,quantity,fallback=None):
+        """No I/O: recheck latest receiver state immediately before a BUY leaves the process."""
+        provider=getattr(self,'entry_quote_provider',None)
+        if provider and not signal.get('symbol'):return 'ENTRY_MARKET_DATA_UNAVAILABLE'
+        tick,book=provider(signal['symbol']) if provider else (fallback,{})
+        if tick is None:return 'ENTRY_MARKET_DATA_UNAVAILABLE'
+        age=(self.clock()-tick.time).total_seconds()
+        if not tick.regular or not 0<=age<=self.c.stale_seconds:return 'ENTRY_MARKET_DATA_STALE'
+        breakout=signal.get('evaluation_gates',{}).get('breakout',{}).get('values',{}).get('breakout')
+        # Legacy core synthetic signals have no geometry. The real runner always
+        # supplies a provider; all production A/B/C signals also carry breakout.
+        if provider or breakout is not None:
+            if not 0<tick.bid<=tick.ask or tick.price<=0 or (tick.ask-tick.bid)/tick.price>self.c.max_spread:return 'ENTRY_SPREAD_CHANGED'
+            if signal['limit']<tick.ask:return 'ENTRY_QUOTE_ABOVE_LIMIT'
+        if breakout is not None:
+            if tick.price<=breakout or tick.ask<=breakout or signal['limit']<=breakout:return 'BREAKOUT_QUOTE_NOT_CONFIRMED'
+            if max(tick.price,signal['limit'])/breakout-1>self.c.max_chase:return 'ENTRY_CHASE_CHANGED'
+        if self.current_session()=='AFTER':
+            if book:
+                try:book_age=(self.clock()-datetime.fromisoformat(book['time'])).total_seconds()
+                except (KeyError,ValueError,TypeError):return 'ENTRY_DEPTH_UNAVAILABLE'
+                if not 0<=book_age<=self.c.stale_seconds or not book.get('depth_available'):return 'ENTRY_DEPTH_UNAVAILABLE'
+                if book.get('best_bid')!=tick.bid or book.get('best_ask')!=tick.ask:return 'ENTRY_DEPTH_PRICE_MISMATCH'
+                ask_qty=book.get('ask_qty',0);bid_qty=book.get('bid_qty',0)
+            else:
+                if getattr(tick,'depth_available',None) is False:return 'ENTRY_DEPTH_UNAVAILABLE'
+                stamp=getattr(tick,'book_time',None)
+                if stamp is not None and not 0<=(self.clock()-stamp).total_seconds()<=self.c.stale_seconds:return 'ENTRY_DEPTH_UNAVAILABLE'
+                ask_qty=tick.ask_qty;bid_qty=tick.bid_qty
+            if min(ask_qty,bid_qty)<max(1,quantity):return 'ENTRY_DEPTH_BELOW_ACTUAL_QUANTITY'
+        return None
+
     def enter(self,signal,tick):
         if signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or signal.get('diagnostic_only') is True or ('source_count' in signal and signal['source_count']<max(2,self.a.min_source_count) and not signal.get('fallback_source1')):
             self.decisions.emit('ENTRY_EVAL',tick.symbol,'NO_BUY','OBSERVATION_NOT_BUY_PERMISSION',signal=signal,price=tick.price);return None
@@ -283,6 +315,9 @@ class AutonomousEngine(ExistingExits,Engine):
         signal=apply_empirical(signal,self.s['trades'],self.a)
         qty,gates=self.entry_gates(signal,tick)
         reason=self.new_entry_reason(signal['symbol'])
+        market_reason=self.entry_market_reason(signal,qty,tick)
+        gates['latest_market']=gate(not market_reason,reason=market_reason,quantity=qty,quantity_scope='ACTUAL_RISK_SIZED')
+        reason=reason or market_reason
         if gates['breakout_quote']['result']=='FAIL': reason=reason or 'BREAKOUT_QUOTE_NOT_CONFIRMED'
         if signal.get('efficiency',{}).get('decision')!='TRADE': reason=reason or '비용 포함 효율 부족/UNKNOWN'
         if reason:
@@ -302,6 +337,10 @@ class AutonomousEngine(ExistingExits,Engine):
                 'daily_attempt':sum(self.s['entries'].values())+1,'symbol_attempt':self.s['entries'].get(signal['symbol'],0)+1,
                 'order_sent_at':self.clock().isoformat(),
                 'session':sess,'venue':venue}
+        signal.update(entry_build_id=BUILD_ID,entry_strategy_version=STRATEGY_VERSION,
+                      entry_strategy_experiment=STRATEGY_EXPERIMENT)
+        signal['planned_qty']=qty
+        self.entry_tick=tick
         self.s['automation']['strategy']='ENTER'
         self.entry_intent=signal
         try:
@@ -311,7 +350,7 @@ class AutonomousEngine(ExistingExits,Engine):
                 'ENTRY_INTENT_ACCEPTED' if o and o['status'] in {'ACCEPTED','FILLED'} else (gates['risk_quantity']['values']['reason_code'] if failed and failed[0]=='risk_quantity' else failed[0] if failed else 'ORDER_NOT_ACCEPTED'),
                 gates,signal=signal,price=tick.price,extra={'quantity':qty},force=bool(o))
             return o
-        finally: self.entry_intent=None
+        finally: self.entry_intent=None;self.entry_tick=None
 
     def submit(self,side,symbol,qty,limit=0,signal=None):
         # 강제로 생성한 주문도 같은 경계를 통과하며 ARMED에는 모의체결도 만들지 않는다.
@@ -425,6 +464,10 @@ class AutonomousEngine(ExistingExits,Engine):
             signal=intents[0].get('signal') or {}
             breakout=signal.get('evaluation_gates',{}).get('breakout',{}).get('values',{}).get('breakout')
             if breakout is not None and limit<=breakout:raise Rejected('BREAKOUT_QUOTE_NOT_CONFIRMED')
+            market_reason=self.entry_market_reason(signal,qty,getattr(self,'entry_tick',None))
+            if market_reason:
+                error=Rejected(market_reason);error.retryable_market_recheck=True
+                raise error
             if signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or signal.get('diagnostic_only') is True or ('source_count' in signal and signal['source_count']<max(2,self.a.min_source_count) and not signal.get('fallback_source1')):raise Rejected('OBSERVATION_NOT_BUY_PERMISSION')
             self._guard_intent=intents[0]
             try:reason=self.new_entry_reason(sym)
@@ -497,7 +540,11 @@ class AutonomousEngine(ExistingExits,Engine):
         band=next((label for upper,label in ((500,'0~500'),(1000,'500~1000'),(3000,'1000~3000'),
                    (10000,'3000~10000'),(30000,'10000~30000')) if price<upper),'30000 이상')
         buy_commission=self.buy_fee(trade['entry']*trade['qty']); sell_commission=trade['exit']*trade['qty']*self.a.commission_sell
-        trade.update(strategy_version=STRATEGY_VERSION,name=p['signal'].get('name') or self.names.get(trade['symbol']),setup=p['pattern'],
+        trade.update(strategy_version=p['signal'].get('entry_strategy_version','UNKNOWN_LEGACY_ENTRY'),
+            entry_build_id=p['signal'].get('entry_build_id'),exit_build_id=BUILD_ID,
+            exit_strategy_version=STRATEGY_VERSION,entry_strategy_experiment=p['signal'].get('entry_strategy_experiment'),
+            protection_evidence=p.get('protection_evidence'),data_health=p.get('data_health'),
+            name=p['signal'].get('name') or self.names.get(trade['symbol']),setup=p['pattern'],
             candidate_detected_at=p['signal'].get('candidate_detected_at'),signal_at=p['signal'].get('time'),
             order_sent_at=p['signal'].get('order_sent_at'),first_fill_at=p.get('first_fill_at'),last_fill_at=self.clock().isoformat(),
             entry_price=trade['entry'],entry_value=trade['entry']*trade['qty'],initial_invalidation=p['initial_stop'],
@@ -511,10 +558,17 @@ class AutonomousEngine(ExistingExits,Engine):
 
     def protection(self,p,price,completed_low):
         high,stop=super().protection(p,price,completed_low)
-        if high-p['avg']>=self.c.protect_at_r*p['initial_r']:
-            stop=max(stop,floor_tick(p['avg']+(high-p['avg'])*(1-self.a.unrealized_giveback_fraction)))
+        core_stop=stop;active=high-p['avg']>=self.c.protect_at_r*p['initial_r']
+        giveback=floor_tick(p['avg']+(high-p['avg'])*(1-self.a.unrealized_giveback_fraction)) if active else None
+        if active:stop=max(stop,giveback)
         stop=max(p['stop'],stop)
-        if stop>p['stop']: p.setdefault('stop_history',[]).append({'time':self.clock().isoformat(),'stop':stop})
+        p['protection_evidence']={'checked_at':self.clock().isoformat(),'initial_invalidation':p['initial_stop'],
+            'initial_price_risk':p['initial_r'],'price':price,'high':high,'activation_r':self.c.protect_at_r,
+            'profit_protection_active':active,'core_stop':core_stop,
+            'unrealized_giveback_fraction':self.a.unrealized_giveback_fraction,'giveback_stop':giveback,
+            'prior_stop':p['stop'],'effective_stop':stop,'completed_low':completed_low,
+            'emergency_bid_line':min(stop-tick_size(stop),floor_tick(stop*(1-self.c.structural_buffer)))}
+        if stop>p['stop']:p.setdefault('stop_history',[]).append({'time':self.clock().isoformat(),'stop':stop,'evidence':dict(p['protection_evidence'])})
         return high,stop
 
     def request_exit(self,symbol,reason):

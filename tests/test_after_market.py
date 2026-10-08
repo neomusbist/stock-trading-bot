@@ -311,16 +311,16 @@ class AfterMarketTests(unittest.TestCase):
     # =========================================================================
 
     def test_e1_depth_mode_passes_when_book_sufficient(self):
-        """20,000원 자본 기준 매수 수량(2주)에 대해 호가잔량이 충분하면 PASS."""
+        """관측 단계 최소 1주 잔량; 실제 위험수량은 engine/order boundary에서 검사."""
         self.clock = datetime(2026, 10, 7, 16, 10, 0, tzinfo=KST)
         t = self.tick(10000, ask_qty=5, bid_qty=5)
         gates = self.d.base_gates(t, self.watch)
         self.assertEqual(gates['liquidity']['result'], 'PASS')
 
     def test_e2_depth_mode_fails_when_book_insufficient(self):
-        """호가잔량이 2주 미만(예: ask_qty=1 또는 0)이면 유동성 FAIL."""
+        """관측 단계에서도 0주 잔량은 FAIL. actual qty 부족은 별도 경계 회귀 검사."""
         self.clock = datetime(2026, 10, 7, 16, 10, 0, tzinfo=KST)
-        t = self.tick(10000, ask_qty=1, bid_qty=5)
+        t = self.tick(10000, ask_qty=0, bid_qty=5)
         gates = self.d.base_gates(t, self.watch)
         self.assertEqual(gates['liquidity']['result'], 'FAIL')
 

@@ -1,9 +1,9 @@
 """events.jsonl에 동일 스키마로 기록하는 작은 어댑터. 새 DB나 매 틱 로그 없음."""
 import json
 import math
-STRATEGY_VERSION='V1.3-setup-specific-acceleration-bc20M-20261007'
-BUILD_ID='V1.3-risk2-watch12-bc20M-opening-20261008'
-STRATEGY_EXPERIMENT='20261007-risk2-daily4-cap20000-watch12-accelA-bc20M'  # 위험2%/일일4% 유지; WATCH12, A 전용 가속, B/C 거래대금20M
+STRATEGY_VERSION='V1.3-b-confirmed-impulse-bc20M-20261008'
+BUILD_ID='V1.3-risk2-watch12-bc20M-stabilization-20261008'
+STRATEGY_EXPERIMENT='20261007-risk2-daily4-dynamiccap-watch12-accelA-bc20M-bclose20261008'
 
 def check_experiment_consistency(cfg, build_id=BUILD_ID, experiment=STRATEGY_EXPERIMENT):
     """BUILD_ID 또는 STRATEGY_EXPERIMENT에 risk2/daily4가 적혀 있는데
@@ -93,10 +93,13 @@ class DecisionLog:
             name=sig.get('name') or e.names.get(symbol),setup=sig.get('pattern'),
             signal_detected=bool(sig.get('pattern') and sig.get('time')),signal_at=sig.get('time'),
             price_structure=sig.get('structure'),setup_trials=sig.get('setup_trials',extra.get('setup_trials')),state=state,decision=decision,primary_reason_code=reason,
+            market_context=sig.get('market_context') or next((t.get('context') for t in extra.get('setup_trials',[]) or [] if t.get('context')),None),
+            discovery_context=sig.get('discovery_context'),
             additional_reason_codes=codes,gates=gates,current_price=current,entry_price=entry,
             invalidation=p.get('initial_stop',sig.get('stop')),protection=p.get('stop'),quantity=qty,
             invalidation_price=p.get('initial_stop',sig.get('stop')),protection_price=p.get('stop'),
             highest_price=p.get('high'),lowest_price=p.get('low'),
+            protection_evidence=p.get('protection_evidence'),data_health=p.get('data_health'),
             actual_orderable_cash=e.available_cash,approved_cap=e.a.capital_limit,effective_auto_cap=e.auto_available_capital(),calculated_available_capital=e.watch_budget(),
             MFE=p.get('high')-entry if p.get('high') is not None and entry is not None else None,
             MAE=entry-p.get('low') if p.get('low') is not None and entry is not None else None,
