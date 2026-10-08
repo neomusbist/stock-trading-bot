@@ -92,8 +92,12 @@ class PatternDetector(Detector):
         # An isolated opening/downward wick must not manufacture an upward impulse.
         # Use the existing minimum rise, now confirmed by completed closes as well.
         first_close=impulse[0]['close'];peak_close=impulse[-1]['close']
-        close_progress=peak_close/first_close-1 if first_close>0 else None
+        # A genuine rise can be contained in the first fully observed candle.
+        # Confirm from its open, rather than discarding that candle's real body.
+        start_price=impulse[0].get('open',first_close)
+        close_progress=peak_close/start_price-1 if start_price>0 else None
         evidence={'impulse_first_close':first_close,'impulse_peak_close':peak_close,
+                  'impulse_start_price':start_price,'impulse_start_basis':'FIRST_COMPLETE_OPEN' if 'open' in impulse[0] else 'FIRST_CLOSE_FALLBACK',
                   'impulse_close_progress':close_progress,'minimum_rise':self.a.pullback_min_rise,
                   'wick_based_rise':rise,'impulse_base':base,'impulse_peak':peak}
         if close_progress is None or close_progress<self.a.pullback_min_rise:

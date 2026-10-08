@@ -1,3 +1,7 @@
+# 마지막 형상 감사 후 검증 상태
+
+full regression5: 831 PASS/0FAIL/0ERROR/0SKIP. 첫 완성봉 몸통 내 정상 상승을 B impulse에서 버리지 않도록 기준을 첫 완성봉 시가→impulse 완성 종가로 정리했다. 기존 .008 유지. 신규 positive/negative2개 포함 관련63 PASS. 마지막 full regression6 결과 전 배포 완료로 표시하지 않는다.
+
 # 최종 코드 검증 진행상태 (10/08 안정화)
 
 830 PASS였던 기준에 주문근거 기록을 추가한 후 regression4에서 자기 INTENT 저장값 일치 회귀3건을 발견했다. PRE_HTTP 진단을 별도 이벤트로 분리하여 기존 authorization exact match를 유지했다. 관련 대상52 PASS/0FAIL/0ERROR/0SKIP, 실제 network0. 최종 full regression5 결과를 확인하기 전 배포 완료로 취급하지 않는다. 초기 실패는 보존한다.

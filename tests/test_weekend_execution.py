@@ -166,6 +166,26 @@ class WickImpulseTests(unittest.TestCase):
         s=d.pullback(bars);self.assertIsNotNone(s)
         self.assertEqual((s['breakout'],s['support'],s['projection']),(10180,10100,10400))
         self.assertEqual(d.a.pullback_min_rise,.008)
+    def test_real_rise_inside_first_complete_impulse_bar_is_not_discarded(self):
+        d=self.detector()
+        bars=[{'open':10000,'low':9900,'high':10110,'close':10100,'volume':2000},
+              {'open':10100,'low':10090,'high':10120,'close':10110,'volume':1000},
+              {'open':10100,'low':10070,'high':10100,'close':10080,'volume':200},
+              {'open':10080,'low':10070,'high':10090,'close':10085,'volume':100}]
+        setup,reason,evidence=d.pullback_analysis(bars)
+        self.assertIsNotNone(setup);self.assertIsNone(reason)
+        self.assertEqual(evidence['impulse_start_basis'],'FIRST_COMPLETE_OPEN')
+        self.assertGreaterEqual(evidence['impulse_close_progress'],.008)
+        self.assertLess(evidence['impulse_peak_close']/evidence['impulse_first_close']-1,.008)
+    def test_down_wick_with_flat_completed_bodies_still_fails_with_real_open_fields(self):
+        d=self.detector()
+        bars=[{'open':6330,'low':6100,'high':6330,'close':6330,'volume':10000},
+              {'open':6330,'low':6310,'high':6340,'close':6330,'volume':3000},
+              {'open':6320,'low':6300,'high':6320,'close':6310,'volume':200},
+              {'open':6310,'low':6300,'high':6320,'close':6320,'volume':100}]
+        setup,reason,evidence=d.pullback_analysis(bars)
+        self.assertIsNone(setup);self.assertEqual(reason,'IMPULSE_CLOSE_PROGRESS_INSUFFICIENT')
+        self.assertEqual(evidence['impulse_close_progress'],0)
     def test_declining_closes_do_not_create_up_impulse_from_extreme_wick(self):
         d=self.detector()
         bars=[{'low':6100,'high':6330,'close':6330,'volume':1000},
