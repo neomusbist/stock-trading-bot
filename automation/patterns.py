@@ -2,11 +2,20 @@
 from datetime import timedelta
 from collections import deque
 from dataclasses import replace
+from copy import deepcopy
+from functools import wraps
+from threading import RLock
 from core.strategy import Detector
 from core.util import floor_tick,tick_size
 from automation.allocation import efficiency
 from automation.session import supported, after_supported
 from automation.decisions import gate
+
+def observation_locked(method):
+    @wraps(method)
+    def call(self,*args,**kwargs):
+        with self._state_lock:return method(self,*args,**kwargs)
+    return call
 
 class PatternDetector(Detector):
     def __init__(self,cfg,auto,costs):
@@ -19,7 +28,9 @@ class PatternDetector(Detector):
         self.continuous_observation=False
         self.last_gap_reason={}
         self.observation_start={}; self.observation_session={}
+        self._state_lock=RLock()
 
+    @observation_locked
     def reset(self):
         super().reset(); self.history.clear(); self.current.clear(); self.day_high.clear(); self.prior_high.clear()
         self.after_day_high.clear(); self.after_prior_high.clear()
@@ -27,6 +38,7 @@ class PatternDetector(Detector):
         self._eval_keys.clear()
         self.observation_start.clear(); self.observation_session.clear()
 
+    @observation_locked
     def ingest(self,t,received):
         if (not supported(t.time) and not after_supported(t.time)) or (not supported(received) and not after_supported(received)): return False
         old=self.last.get(t.symbol)
@@ -53,9 +65,11 @@ class PatternDetector(Detector):
                 self.last_gap_reason[t.symbol]='MISSING_MINUTE'
             b=None
         if b is None:
-            gap_reason=None if t.time.second<=self.cfg.stale_seconds else 'FIRST_TRADE_AFTER_5S_COVERAGE_UNKNOWN'
+            start=self.observation_start.get(t.symbol)
+            was_observing = start is not None and start <= minute
+            gap_reason=None if (was_observing or t.time.second<=self.cfg.stale_seconds) else 'FIRST_TRADE_AFTER_5S_COVERAGE_UNKNOWN'
             b={'time':minute,'open':t.price,'high':t.price,'low':t.price,'close':t.price,'volume':0,
-               'first_second':t.time.second,'last_second':t.time.second,
+               'first_second':0 if was_observing else t.time.second,'last_second':t.time.second,
                'first_trade_time':t.time.isoformat(),'last_trade_time':t.time.isoformat(),
                'tick_count':0,'coverage_start':minute.isoformat(),
                'coverage_end':(minute+timedelta(seconds=60)).isoformat(),
@@ -77,18 +91,21 @@ class PatternDetector(Detector):
         pull_volume=sum(b['volume'] for b in pull)/len(pull)
         if impulse_volume<=0 or pull_volume>impulse_volume*self.a.pullback_volume_ratio: return None
         if pull[-1]['close']<low or low<=base: return None
-        return {'pattern':'B','breakout':peak,'support':low,'projection':peak+rise,
+        rebreakout = min(peak, max(b['high'] for b in pull[-2:])) if len(pull) >= 2 else peak
+        return {'pattern':'B','breakout':rebreakout,'peak':peak,'support':low,'projection':peak+rise,
                 'pullback_volume_ratio':pull_volume/impulse_volume,'retrace':(peak-low)/rise}
 
+    @observation_locked
     def usable_bars(self,symbol,after_only=False):
         valid=[]
         for bar in reversed(self.history.get(symbol,())):
-            if bar['first_second']>self.cfg.stale_seconds:break
+            if bar.get('gap_reason') is not None or bar['first_second']>self.cfg.stale_seconds:break
             if after_only and bar['time'].strftime('%H:%M:%S')<'15:40:00':
                 break
             valid.append(bar)
         return list(reversed(valid))
 
+    @observation_locked
     def quality_summary(self,symbol,after_only=False):
         history=list(self.history.get(symbol,[]))
         if after_only:
@@ -111,20 +128,53 @@ class PatternDetector(Detector):
             'data_quality_status':'DATA_QUALITY_CHANGE_UNVERIFIED'
         }
 
+    @observation_locked
     def observation_fresh(self,symbol,stamp):
         last=self.last.get(symbol)
         return bool(last and last.time.date()==stamp.date() and
                     0<=(stamp-last.time).total_seconds()<=self.cfg.stale_seconds)
 
+    @observation_locked
     def forget(self,symbol):
         for mapping in (self.buffers,self.minutes,self.completed,self.last,self.history,self.current,self.day_high,self.prior_high,self.after_day_high,self.after_prior_high,self.last_eval,self.observation_start,self.observation_session):mapping.pop(symbol,None)
         self._eval_keys.pop(symbol,None)
+
+    def handoff_from(self,source,symbol):
+        if source is None or source is self:return False
+        names=('history','buffers','current','minutes','completed','observation_start',
+               'observation_session','day_high','prior_high','after_day_high',
+               'after_prior_high','last','last_gap_reason')
+        # Never hold both detector locks: promotion and demotion can run concurrently.
+        with source._state_lock:
+            if not any(symbol in getattr(source,key) for key in ('observation_start','history','buffers')):return False
+            snapshot={key:(deque(source.buffers[symbol]) if key=='buffers' else
+                           source.last[symbol] if key=='last' else deepcopy(getattr(source,key)[symbol]))
+                      for key in names if symbol in getattr(source,key)}
+        with self._state_lock:
+            src_last=snapshot.get('last');tgt_last=self.last.get(symbol)
+            if tgt_last and (src_last is None or (src_last.time,src_last.cumulative)<(tgt_last.time,tgt_last.cumulative)):return False
+            src_bars=len(snapshot.get('history',()))
+            tgt_bars=len(self.history.get(symbol,()))
+            if tgt_bars>src_bars and src_last and self.observation_fresh(symbol,src_last.time):return False
+            src_start=snapshot.get('observation_start');tgt_start=self.observation_start.get(symbol)
+            if (src_last and self.observation_fresh(symbol,src_last.time) and src_start and tgt_start
+                    and self.observation_session.get(symbol)==snapshot.get('observation_session')
+                    and tgt_start<src_start and tgt_bars>=src_bars):return False
+            # Copy the original time-bounded deque. A 300-tick count cap truncates
+            # the 70-second baseline precisely when a candidate becomes busy.
+            for key in names:
+                mapping=getattr(self,key)
+                if key in snapshot:mapping[symbol]=snapshot[key]
+                else:mapping.pop(symbol,None)
+            self.last_eval.pop(symbol,None);self._eval_keys.pop(symbol,None)
+            return True
 
     def candidates(self,t,bars,is_after=False):
         setups=[self.pullback(bars),self.box(bars)]
         prior=(self.after_prior_high if is_after else self.prior_high).get(t.symbol)
         if prior and t.price>prior and len(bars)>=2:
-            support=min(b['low'] for b in bars[-2:])
+            lookback=min(len(bars),4 if len(bars)>=4 else 3 if len(bars)>=3 else 2)
+            support=min(b['low'] for b in bars[-lookback:])
             setups.append({'pattern':'A','breakout':prior,'support':support,'projection':prior+2*(prior-support)})
         return [s for s in setups if s]
 
@@ -156,7 +206,7 @@ class PatternDetector(Detector):
                 why.append('INSUFFICIENT_USABLE_BARS' if len(bars)<required else
                            'PRIOR_HIGH_NOT_BROKEN' if name=='A' else
                            'NO_CONTROLLED_PULLBACK' if name=='B' else 'BOX_NOT_FORMED')
-            price_gates=self.setup_gates(t,watch,setup) if setup else {}
+            price_gates=self.setup_gates(t,watch,setup,bars=bars) if setup else {}
             # Market-status authorization remains at the unchanged engine/order boundary.
             common={k:gates[k] for k in ('warmup','spread','structure')}
             if is_after:
@@ -166,7 +216,16 @@ class PatternDetector(Detector):
                 amount=gates['liquidity']['values']['window_turnover']
                 common['liquidity']=gate(amount>=threshold,window_turnover=amount,min_turnover=threshold,setup=name)
             trial_gates={**common,**price_gates}
-            if name=='A':trial_gates['acceleration']=gates['acceleration']
+            if name=='A':
+                trial_gates['acceleration']=gates['acceleration']
+                if bars and len(bars)>=2:
+                    swing_low=min(b['low'] for b in bars)
+                    extension=(t.price-swing_low)/swing_low if swing_low>0 else 0
+                    if extension>0.07:
+                        ratio=gates['acceleration']['values'].get('ratio')
+                        min_ratio=gates['acceleration']['values'].get('min_ratio',self.cfg.min_turnover_ratio)
+                        if ratio is not None and ratio<min_ratio*1.2:
+                            trial_gates['acceleration']=gate(False,reason='LATE_STAGE_ACCELERATION_INSUFFICIENT',ratio=ratio,required_ratio=min_ratio*1.2)
             failed=[k for k,v in trial_gates.items() if v['result']!='PASS']
             why.extend('ACCELERATION_FAIL' if k=='acceleration' else
                        'NO_REBREAKOUT' if k=='breakout' and name=='B' else
@@ -182,6 +241,7 @@ class PatternDetector(Detector):
                 'virtual_entry':virtual.get('entry'),'virtual_invalidation':virtual.get('stop')})
         return trials
 
+    @observation_locked
     def signal(self,t,watch):
         # One evaluation owns its window and bars. Never cache live safety inputs across ticks.
         gates,bars,fast_count,base_count=self._base_evaluation(t,watch)
@@ -227,10 +287,22 @@ class PatternDetector(Detector):
                 'planned_qty':planned_qty if is_after else None,'liquidity_mode':'depth' if is_after else 'turnover'}
         return None
 
+    @observation_locked
     def evaluation_gates(self,t,watch):
         last=self.last_eval.get(t.symbol,{})
         if last and self._eval_keys.get(t.symbol)==self._evaluation_key(t,watch): return last['gates']
         return self.base_gates(t,watch)
+
+    @observation_locked
+    def evaluation_snapshot(self,t,watch):
+        """Own one diagnostic result across concurrent history handoffs.
+
+        The caller writes logs outside the detector lock. No file I/O or
+        broker operation may run while acquiring an observation snapshot.
+        """
+        signal=self.signal(t,watch)
+        result=self.last_eval[t.symbol]
+        return signal,deepcopy(result['gates']),deepcopy(result['trials']),deepcopy(list(self.history.get(t.symbol,())))
 
     @staticmethod
     def _evaluation_key(t,watch):
@@ -239,17 +311,29 @@ class PatternDetector(Detector):
                 repr(watch.get('market_status',{})),watch.get('resistance_room_pass'),
                 len(watch.get('source_details',{})),watch.get('ask_qty'),watch.get('bid_qty'))
 
-    def setup_gates(self,t,watch,setup):
-        c=self.cfg; breakout=setup['breakout']; stop=floor_tick(setup['support']*(1-c.structural_buffer))
+    def setup_gates(self,t,watch,setup,bars=None):
+        c=self.cfg; breakout=setup['breakout']
+        if setup['pattern']=='B' and t.price>=setup.get('peak',breakout):
+            breakout=setup['peak']
+        stop=floor_tick(setup['support']*(1-c.structural_buffer))
         limit=floor_tick(min(t.ask,breakout*(1+c.max_chase))); resistance=watch.get('resistance')
         target=self.target(t,watch,setup,limit)
         distance=(limit-stop)/limit if limit>0 else None
         rr=(target-limit)/(limit-stop) if limit>stop else None
         horizon=getattr(self.a,'horizon_'+setup['pattern'].lower()+'_minutes')
         score=efficiency(limit,stop,target,min(1.,0.4+0.1*len(watch.get('source_details',{}))),horizon,self.costs,self.a.min_efficiency_score)
-        return {'breakout':gate(t.price>breakout,price=t.price,breakout=breakout,setup=setup['pattern']),
+        invalidation_pass=bool(distance is not None and 0<stop<limit and c.min_stop_fraction<=distance<=c.max_stop_fraction)
+        if bars and setup['pattern']=='A' and invalidation_pass:
+            swing_low=min(b['low'] for b in bars)
+            extension=(t.price-swing_low)/swing_low if swing_low>0 else 0
+            if extension>0.07:
+                avg_span=sum(b['high']-b['low'] for b in bars[-min(len(bars),4):])/min(len(bars),4)
+                if (limit-stop)<avg_span*1.1:
+                    invalidation_pass=False
+        return {'breakout':gate(t.price>breakout and limit>breakout,price=t.price,breakout=breakout,setup=setup['pattern'],
+                ask=t.ask,entry=limit,reason='BREAKOUT_QUOTE_NOT_CONFIRMED' if t.price>breakout and limit<=breakout else None),
             'chase':gate(t.ask/breakout-1<=c.max_chase,chase=t.ask/breakout-1,max_chase=c.max_chase,ask=t.ask),
-            'invalidation':gate(None if distance is None else 0<stop<limit and c.min_stop_fraction<=distance<=c.max_stop_fraction,
+            'invalidation':gate(invalidation_pass if distance is not None else None,
                 entry=limit,stop=stop,distance_pct=distance,min_pct=c.min_stop_fraction,max_pct=c.max_stop_fraction),
             'risk_reward':gate(None if rr is None else rr>=c.min_reward_risk,calculated_rr=rr,required_rr=c.min_reward_risk,target=target),
             'resistance':gate(watch.get('status') in {'ELIGIBLE','WATCH','RESERVE'} and (setup['pattern']!='B' or watch.get('resistance_room_pass') is not False),resistance_room_pass=watch.get('resistance_room_pass'),resistance=resistance,
@@ -257,6 +341,7 @@ class PatternDetector(Detector):
             'order_price':gate(limit>=t.ask,limit=limit,ask=t.ask),
             'economic':gate(score['decision']=='TRADE',score=score,tick_size=tick_size(t.price),tick_cost_fraction=tick_size(t.price)/t.price)}
 
+    @observation_locked
     def base_gates(self,t,watch):
         return self._base_evaluation(t,watch)[0]
 

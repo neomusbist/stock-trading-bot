@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from core.settings import now
-from core.util import atomic_json, number, code,read_json_retry,exception_details
+from core.util import atomic_json, number, code,read_json_retry,exception_details,floor_tick,tick_size
 from core.strategy import size, protective_stop
 from core.broker import Rejected, AmbiguousOrder
 from core.event_log import append_jsonl,HumanConsole
@@ -81,7 +81,8 @@ class Engine:
         return sum(1 for o in self.active_orders(side='BUY') if not o.get('entry_counted') and not o.get('filled'))
 
     def entry_slots_available(self):
-        return sum(self.s['entries'].values())+self.pending_entry_lifecycles()<self.c.max_entries_per_day
+        limit=self.c.max_entries_per_day
+        return limit is None or sum(self.s['entries'].values())+self.pending_entry_lifecycles()<limit
 
     def canceled_entry(self,o):
         if o['side']=='BUY' and not o.get('filled'):
@@ -212,7 +213,7 @@ class Engine:
             self.diagnostic('internal_reject_count'); return None
         if not tick.regular or abs((self.clock()-tick.time).total_seconds())>c.stale_seconds:
             self.diagnostic('internal_reject_count'); return None
-        if self.entry_failure(sym) or self.active_orders(sym) or self.s['entries'].get(sym,0)>=c.max_entries_per_symbol or not self.entry_slots_available():
+        if self.entry_failure(sym) or self.active_orders(sym) or (c.max_entries_per_symbol is not None and self.s['entries'].get(sym,0)>=c.max_entries_per_symbol) or not self.entry_slots_available():
             self.diagnostic('internal_reject_count'); return None
         # 접수는 자금/위험을 예약하지만 진입 횟수는 최초 체결 때만 기록한다.
         buys=self.active_orders(side='BUY')
@@ -358,9 +359,16 @@ class Engine:
         if p['stop']>previous or time.monotonic()-self.last_checkpoint>=1:
             self.save(); self.last_checkpoint=time.monotonic()
         if p['stop']>previous: self.event('STOP_RAISED',symbol=t.symbol,stop=p['stop'])
-        if min(t.price,t.bid if t.bid>0 else t.price)<=p['stop']:
-            self.request_exit(t.symbol,'구조/이익보호선 이탈')
+        emergency_bid_stop = min(p['stop'] - tick_size(p['stop']), floor_tick(p['stop'] * (1 - self.c.structural_buffer)))
+        if t.price <= p['stop']:
+            self.request_exit(t.symbol, '구조/이익보호선 이탈')
+        elif t.bid > 0 and t.bid <= emergency_bid_stop:
+            self.request_exit(t.symbol, '호가 급락/유동성 붕괴')
         self.drive_exits({t.symbol:t.bid or t.price})
+
+    def position_data_stale(self,symbol,position,current):
+        # V1 fallback; the continuous runner supplies its quote/transport watchdog.
+        return True
 
     def timer(self,prices=None):
         current=self.clock()
@@ -371,7 +379,8 @@ class Engine:
             if (current-datetime.fromisoformat(o['created'])).total_seconds()>self.c.order_timeout_seconds:
                 self.cancel(o)
         for sym,p in list(self.s['positions'].items()):
-            if p.get('last_tick') and (current-datetime.fromisoformat(p['last_tick'])).total_seconds()>self.c.position_stale_seconds:
+            if (p.get('last_tick') and (current-datetime.fromisoformat(p['last_tick'])).total_seconds()>self.c.position_stale_seconds
+                    and self.position_data_stale(sym,p,current)):
                 self.halt('보유종목 시세 지연: 긴급 청산 요청')
                 self.request_exit(sym,'시세 지연/연결 단절')
         self.drive_exits(prices)
@@ -400,6 +409,21 @@ class Engine:
             elif o['status']=='CANCEL_SENT':
                 o['status']='CANCELED'; self.canceled_entry(o)
             elif o['status'] not in TERMINAL:
+                started=snapshot.get('query_started_at'); created=o.get('created')
+                if started and created:
+                    try:
+                        t_started=datetime.fromisoformat(started); t_created=datetime.fromisoformat(created)
+                        if t_started.tzinfo is not None and t_created.tzinfo is None: t_created=t_created.replace(tzinfo=t_started.tzinfo)
+                        elif t_started.tzinfo is None and t_created.tzinfo is not None: t_started=t_started.replace(tzinfo=t_created.tzinfo)
+                        if t_started<=t_created: continue
+                    except (ValueError,TypeError): pass
+                if created:
+                    try:
+                        t_created=datetime.fromisoformat(created); c_now=self.clock()
+                        if t_created.tzinfo is not None and c_now.tzinfo is None: t_created=t_created.replace(tzinfo=None)
+                        elif t_created.tzinfo is None and c_now.tzinfo is not None: t_created=t_created.replace(tzinfo=c_now.tzinfo)
+                        if (c_now-t_created).total_seconds()<=max(self.c.order_timeout_seconds,10): continue
+                    except (ValueError,TypeError): pass
                 self.halt('주문 접수 후 체결/취소 상태 미확인')
         for sym,p in self.s['positions'].items():
             b=balances.get(sym)

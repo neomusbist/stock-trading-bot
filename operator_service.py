@@ -167,8 +167,11 @@ class OperatorService:
         if type(cash) not in (float,int) or not math.isfinite(cash) or cash<0: raise ValueError('주문가능현금 응답이 유효하지 않습니다.')
         atomic_json(self.root/'runtime/operator_account.json',{'timestamp':self.clock().isoformat(),'cash':cash,
             'holding_count':len(snapshot['holdings']),'open_order_count':len(snapshot['orders'])})
-    def public_status(self,*,recent_events=None):
-        cfg,auto,policy=self.settings(); folder,state,hb=self.latest(); counts=self.state_counts()
+    def public_status(self,*,recent_events=None,source=None,settings=None):
+        # Reuse only within this one read-only snapshot; never cache safety across refreshes.
+        cfg,auto,policy=self.settings() if settings is None else settings
+        folder,state,hb=self.latest() if source is None else source
+        counts=self.state_counts()
         ledger=state.get('automation',{}); saved=ledger.get('capital_snapshot',{})
         other=read_json(self.root/'runtime/operator_account.json',{})
         if age(other.get('timestamp'),self.clock())<age(saved.get('timestamp'),self.clock()):
@@ -457,13 +460,25 @@ class OperatorService:
         if confirmed is not True: raise ValueError('기존 승인 LIVE 재개 확인이 필요합니다.')
         with self.idle(),ProcessLock(self.root/'runtime/control.lock'):
             cfg,auto,data=self.settings(); counts=self.state_counts(); previous=read_json(self.root/'runtime/operator_runner.json',{})
-            if not (supported(self.clock()) and data['mode']=='STOP' and data.get('live_authorized') and cfg.live_mode
+            stamp=self.clock()
+            after_resume=bool(cfg.after_enabled and after_control_supported(stamp))
+            if after_resume:
+                from automation.readiness import authorization_valid
+                valid,reasons=authorization_valid(self.root,cfg,auto,data,stamp)
+                if not data.get('after_live_authorized') or not valid:
+                    raise ValueError('기존 AFTER 승인/당일 설정 확인 필요: '+', '.join(reasons or ['AFTER_LIVE_NOT_AUTHORIZED']))
+            if not ((supported(stamp) or after_resume) and data['mode']=='STOP' and data.get('live_authorized') and cfg.live_mode
                     and auto.capital_limit>0 and auto.costs_confirmed and not counts['positions'] and not counts['pending']
+                    and not counts['uncertain']
                     and previous.get('initial_mode')=='LIVE' and self.resume_config_matches(cfg,auto,previous)
                     and previous.get('auto_hash')==auto.fingerprint() and self.hard_locks_ok()):
                 raise ValueError('기존 LIVE 승인/설정/장부가 달라 재개하지 않습니다. 상세 상태를 확인하세요.')
             Policy(self.root/'runtime/automation_policy.json').command('LIVE',confirmation='LIVE')
-        try: return self.start_continuous(confirm_live=True)
+        try:
+            result=self.start_continuous(confirm_live=True)
+            if result.get('verdict') not in {'STARTED','ALREADY_RUNNING'}:
+                raise ValueError('기존 승인 감시 재개 실패: '+', '.join(result.get('reasons',[])))
+            return result
         except Exception:
             self.stop('STOP'); raise
     def resume_config_matches(self,cfg,auto,previous):

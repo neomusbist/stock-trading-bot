@@ -144,6 +144,8 @@ def table(headers):
     return w
 
 def rows_to_table(widget,rows):
+    values=tuple(tuple('미확인' if v is None else str(v) for v in row) for row in rows)
+    if getattr(widget,'_rendered_values',None)==values and widget.rowCount()==len(values):return
     scroll=widget.verticalScrollBar().value()
     widget.setRowCount(len(rows))
     for i,row in enumerate(rows):
@@ -151,6 +153,7 @@ def rows_to_table(widget,rows):
             item=QTableWidgetItem('미확인' if value is None else str(value)); item.setToolTip(item.text())
             widget.setItem(i,j,item)
     widget.verticalScrollBar().setValue(scroll)
+    widget._rendered_values=values
 
 def full_stamp(row): return row.get('timestamp') or row.get('time') or row.get('closed') or row.get('opened') or '시각 미확인'
 
@@ -327,6 +330,7 @@ class MainWindow(QMainWindow):
             'QTableWidget,QPlainTextEdit {background:white;border:1px solid #dae1ec;}')
         self.buttons['start'].setEnabled(False); self.buttons['stop'].setEnabled(False); self.buttons['flat'].setEnabled(False); self.buttons['reset_kill'].hide(); self.buttons['after_live'].hide()
         self.timer=QTimer(self); self.timer.setInterval(1500); self.timer.timeout.connect(self.refresh)
+        self.tabs.currentChanged.connect(lambda _: self.apply_status(self.status) if self.status else None)
         if auto_refresh: self.timer.start(); self.refresh()
     def _work(self,pool,operation,success,failure):
         job=Work(operation); self.jobs.add(job)
@@ -477,7 +481,11 @@ class MainWindow(QMainWindow):
             trades.append([full_stamp(r),r.get('symbol'),'SELL',r.get('qty'),r.get('exit'),r.get('reason'),r.get('execution'),
                 '청산 기록',r.get('net_pnl',r.get('pnl_estimate')),r.get('strategy_version')])
         rows_to_table(self.trades,list(reversed(trades[-100:])))
-        self.logs.setPlainText('\n'.join(json.dumps(r,ensure_ascii=False) for r in s.get('log_rows',[])))
+        # Populate once for diagnostics/export compatibility. Afterwards render the large
+        # JSON view only while visible; current safety cards and backend checks still refresh.
+        if not getattr(self,'_logs_rendered',False) or self.tabs.currentIndex()==3:
+            self.logs.setPlainText('\n'.join(json.dumps(r,ensure_ascii=False) for r in s.get('log_rows',[])))
+            self._logs_rendered=True
         info=s.get('halt_info',{})
         recover='기존 엔진의 조건부 I/O 복구 대상 (GUI에서 해제하지 않음)' if info.get('classification')=='RECOVERABLE_IO' else '자동복구 불가 / 수동 확인 필요' if info.get('classification')=='MANUAL_REVIEW' else '미확인 — GUI에서 자동 해제하지 않음'
         self.errors.setPlainText('현재 HALT: '+(s.get('halt') or '없음')+'\n발생시각: '+str(info.get('occurred_at') or '기록 없음')+

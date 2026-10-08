@@ -44,6 +44,7 @@ class AccountWorker:
         self.rest=rest; self.interval=interval; self.need_fills=False; self.q=queue.Queue(maxsize=2)
         self.stop=threading.Event(); self.request=threading.Event()
         self.external_symbols=set();self.external_prices={};self.last_book={};self.book_queries={}
+        self.position_symbols=frozenset()
         self.observation_settings=ObservationSettings()
         self.thread=threading.Thread(target=self.run,name='account-reader',daemon=True)
     def book_due(self,symbol,stamp=None):
@@ -61,7 +62,7 @@ class AccountWorker:
                 snapshot['books']={}
                 snapshot['book_errors']={}
                 book_started=time.perf_counter();book_calls=0
-                for sym in sorted(set(self.external_symbols)&set(snapshot['holdings'])):
+                for sym in sorted((set(self.external_symbols)|set(self.position_symbols))&set(snapshot['holdings'])):
                     due=self.book_due(sym)
                     if not due:
                         if sym in self.last_book:snapshot['books'][sym]=dict(self.last_book[sym])
@@ -190,15 +191,24 @@ class SubscriptionState:
     def accepted(self,symbol):
         self.waiting.pop(symbol,None)
 
-def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,drops,sink=None):
-    """구독 라우팅 경계에서 승격 종목의 기존 예열 큐만 인계한다. 주문은 하지 않는다."""
+def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,drops,sink=None,shadow_detector=None):
+    """구독 라우팅 경계에서 승격 종목의 기존 예열 큐와 관찰 상태를 인계한다. 주문은 하지 않는다."""
     priority=set(real_symbols)
+    if shadow_detector is None and hasattr(sink,'__self__'):
+        worker = getattr(sink, '__self__', None)
+        shadow_detector = getattr(getattr(worker, 'observer', None), 'detector', None)
     if not isinstance(getattr(feed,'observation_q',None),queue.Queue):
         if hasattr(feed,'configure_observation'):feed.configure_observation(priority,observed,sink)
         return drops,priority
     critical=set(engine.s['positions'])|{o['symbol'] for o in engine.active_orders()}
     critical.update(set(engine.s['automation']['existing'])&set(BREAKEVEN_EXITS))
     promotions=(priority-set(prior_priority))&observed-critical
+    demotions=(set(prior_priority)-priority)&observed-critical
+    if shadow_detector:
+        for sym in promotions:
+            detector.handoff_from(shadow_detector, sym)
+        for sym in demotions:
+            shadow_detector.handoff_from(detector, sym)
     promoted=[]
     # emit도 같은 lock을 쓰므로 인계 경계 이후의 새 WATCH 틱은 REAL 큐로 간다.
     with getattr(feed,'subscription_lock',nullcontext()):
@@ -344,8 +354,12 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
         kind=item.get('type')
         if kind=='00':
             engine.on_order_event(item['values']); account.need_fills=bool(engine.active_orders()); account.request.set()
-        elif kind=='0D' and item.get('item') in symbols and after_supported(received):
+        elif kind=='0D' and item.get('item') in symbols:
             book=item.get('_book') or {}
+            health=getattr(engine,'position_health',None)
+            if health is not None and book:
+                health.accept_book(item['item'],book,engine.clock())
+            if not after_supported(received):continue
             sym=item['item']; last_log=getattr(engine,'_depth_log_at',{}).get(sym)
             if book and (last_log is None or (received-last_log).total_seconds()>=5):
                 if not hasattr(engine,'_depth_log_at'):engine._depth_log_at={}
@@ -357,12 +371,24 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
             t=parsed[1] if isinstance(parsed,tuple) and len(parsed)==2 and parsed[0]==received and isinstance(parsed[1],Tick) else parse_tick(item,received,book_stale_seconds=engine.c.stale_seconds)
             if t.symbol not in symbols:continue
             if subscriptions is not None and not subscriptions.tick_ready(t,received):continue
-            if not detector.ingest(t,now()):continue
+            # Exit protection must not depend on entry detector acceptance (volume/history/warmup).
+            state=getattr(engine,'s',{})
+            positions=state.get('positions',{}) if isinstance(state,dict) else {}
+            protected=t.symbol in positions and t.regular and 0<=(engine.clock()-t.time).total_seconds()<=engine.c.stale_seconds
+            if not detector.ingest(t,now()):
+                if protected and t.price>0:
+                    prices[t.symbol]=t.bid or t.price
+                    engine.on_tick(t)  # no fabricated/old completed bar on a rejected observation
+                    health=getattr(engine,'position_health',None)
+                    if health is not None:health.trade_seen(t.symbol)
+                continue
             if subscriptions is not None:subscriptions.accepted(t.symbol)
             accepted+=1; prices[t.symbol]=t.bid or t.price;engine.last_regular_tick_at=t.time
             if engine.market=='UNKNOWN': engine.market='3'
             finished=list(detector.completed.get(t.symbol,[]))
             engine.on_tick(t,finished[-1]['low'] if finished else None)
+            health=getattr(engine,'position_health',None)
+            if protected and health is not None:health.trade_seen(t.symbol)
             watch=lookup.get(t.symbol)
             if not watch or not radar_ok or not engine.connected: continue
             evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,getattr(engine,'_last_eval_frame',None))
@@ -459,6 +485,8 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     symbols=set(engine.s['positions'])|{o['symbol'] for o in engine.active_orders()}
     subscriptions=SubscriptionState(symbols); priority_symbols=set(symbols)
     radar,account,feed=clients()
+    from automation.position_health import PositionDataHealth
+    position_health=PositionDataHealth(engine,feed,account,subscriptions)
     radar.refresh_account=account.request.set
     account.need_fills=bool(engine.active_orders())
     reporter=Reporter(root)
@@ -502,6 +530,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         engine.event('POSITION_REMAINS_AFTER_SESSION',reason_code='OVERNIGHT_RISK',positions={s:p['qty'] for s,p in engine.s['positions'].items()},pending=len(engine.active_orders()))
                 if in_session and not data_active:
                     if ever_started: radar,account,feed=clients(); radar.refresh_account=account.request.set
+                    position_health.feed=feed;position_health.account=account
                     account.need_fills=bool(engine.active_orders()); radar.extra_symbols=set(engine.s['positions'])
                     radar.start(); account.start(); feed.start(); data_active=True; ever_started=True
                     engine.reset_detector=True
@@ -530,6 +559,8 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     else:
                         for sym,error in result['snapshot'].get('book_errors',{}).items(): engine.event('EXISTING_BOOK_UNAVAILABLE',symbol=sym,**error)
                         engine.reconcile(result['snapshot'],result['fills']); counts['account_checks']+=1; account_generation+=1
+                        for sym,book in result['snapshot'].get('books',{}).items():
+                            position_health.accept_book(sym,book,now(),source='ka10004')
                         engine.event('ACCOUNT_LATENCY',**result['snapshot'].get('performance',{}))
                         external=set(engine.s['automation']['existing'])&(set(BREAKEVEN_EXITS)|({TEST_RELEASE_SYMBOL} if legacy_test_release_enabled() else set()))
                         account.external_symbols=external
@@ -650,10 +681,12 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 try:
                     if not in_session: raise queue.Empty
                     received,message=feed.q.get(timeout=.25)
+                    engine.event_loop_lag=max(0,(now()-received).total_seconds())
                     if message.get('trnm')=='REG' and message.get('return_code') in (0,'0'): counts['subscription_acks']+=1
                     counts['ticks']+=process_message(engine,detector,message,received,real_symbols,lookup,radar,prices,account,radar_ok and not smoke_ended,subscriptions)
                 except queue.Empty:
                     if not in_session: time.sleep(.25)
+                position_health.prune()
                 engine.timer(prices)
                 if isinstance(getattr(account,'external_prices',None),dict):
                     prior=account.external_prices;account.external_prices=dict(prices)

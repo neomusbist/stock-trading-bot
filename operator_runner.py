@@ -18,6 +18,20 @@ def session_end(root,clock):
     if control_supported(clock()) or after_ok: return False
     with ProcessLock(root/'runtime/control.lock'):
         policy=Policy(root/'runtime/automation_policy.json')
+        # Hold an already authorized LIVE runner through the regular/AFTER gap.
+        # The engine closes session clients and its order guard remains OFF.
+        # Explicit STOP/KILL and invalid/expired approvals never auto-resume.
+        stamp=clock();t_str=stamp.strftime('%H:%M:%S')
+        if (cfg.after_enabled and '15:20:00'<=t_str<'15:40:00' and policy.mode=='LIVE'
+                and policy.state.get('live_authorized') and policy.state.get('after_live_authorized')):
+            from operator_service import OperatorService
+            from automation.readiness import authorization_valid
+            auto=load_automation(root/'automation.json')
+            valid,reasons=authorization_valid(root,cfg,auto,policy.state,stamp)
+            counts=OperatorService(root,clock=clock).state_counts()
+            # Only the known support-window gap may be missing; all identity,
+            # approval and ledger checks still apply. No fake approval is saved.
+            if reasons==['OUTSIDE_PREOPEN_CONTROL'] and not any(counts.values()):return False
         if policy.mode in {'ARMED','LIVE'}: policy.command('STOP')
     return True
 

@@ -3,6 +3,7 @@ import json
 import queue
 import threading
 import time
+from copy import deepcopy
 from collections import OrderedDict
 from dataclasses import replace
 from datetime import datetime
@@ -97,13 +98,25 @@ class ObservationWorker:
             while len(self.daily_cache)>2*self.observer.limit:self.daily_cache.popitem(last=False)
         else:self.daily_cache.pop(symbol,None)
         return bars
-    def prepare(self,rows,stamp,capital,allow_metadata=True,publish=True):
+    def prepare(self,rows,stamp,capital,allow_metadata=True,publish=True,progress=None):
         started=time.perf_counter(); clock=datetime.fromisoformat(stamp) if isinstance(stamp,str) else stamp
         eligible=[r for r in rows if r.get('affordability',{}).get('entry_eligible') is True
             and r['code'] not in HARD_LOCKS and r['code'] not in BREAKEVEN_EXITS and r['code']!=TEST_RELEASE_SYMBOL]
         # 미관찰 종목도 순서대로 확인하고 WATCH 관찰은 유지한다.
         eligible.sort(key=lambda r:(r.get('status')!='WATCH',r['code'] in self.metadata,
             -r.get('discovery_score',0),r['code']))
+        def admit(row,saved):
+            # Admission collects observations only. Missing daily structure stays
+            # UNKNOWN; this does not make a raw candidate eligible for an order.
+            row['shadow_view']={**row.get('shadow_view',{'status':'UNKNOWN'}),'market_status':saved['status']}
+        # Publish already verified candidates before unrelated REST/chart calls.
+        for row in eligible:
+            saved=self.metadata.get(row['code'])
+            if row.get('market_status'):
+                saved={**(saved or {}),'checked':clock,'status':row['market_status']};self.metadata[row['code']]=saved
+            if saved and 0<=(clock-saved['checked']).total_seconds()<=self.settings.metadata_ttl_seconds:
+                admit(row,saved)
+        if progress:progress(deepcopy(rows),clock,dict(capital))
         attempts=0;chart_attempted=False
         for row in eligible:
             sym=row['code']; saved=self.metadata.get(sym)
@@ -119,6 +132,8 @@ class ObservationWorker:
                 except Exception as error:
                     self.event('SHADOW_METADATA_ERROR',timestamp=clock.isoformat(),symbol=sym,SHADOW_ONLY=True,**exception_details(error));continue
             if saved['status'].get('pass') is not True:continue
+            admit(row,saved)
+            if progress:progress(deepcopy(rows),clock,dict(capital))
             path=self.root/'data/raw'/f'{sym}_daily.csv'
             try:
                 bars=self.daily_bars(sym,path,clock.date())
@@ -156,7 +171,8 @@ class ObservationWorker:
             try:
                 try:item=self.updates.get(timeout=.1)
                 except queue.Empty:continue
-                ready=self.prepare(*item,publish=False)
+                ready=self.prepare(*item,publish=False,
+                    progress=lambda rows,stamp,capital:self.latest_put(self.prepared,(rows,stamp,capital)))
                 if not self.stop.is_set():self.latest_put(self.prepared,ready)
             except Exception as error:self.record_error(error)
     def run(self):

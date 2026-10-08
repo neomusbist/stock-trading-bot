@@ -57,10 +57,12 @@ class Feed:
         self.observation_symbols=frozenset(); self.priority_symbols=None; self.observation_sink=None
         self.observation_q=queue.Queue(maxsize=8192);self.observation_drops=0
         self.orderbooks={}
+        self.last_message_at=None
         self.thread=threading.Thread(target=self.run,name='Kiwoom-feed',daemon=True)
 
     def emit(self,event):
         received=now()
+        if event.get('trnm') not in {'ERROR','DISCONNECTED'}:self.last_message_at=received
         with self.subscription_lock:
             if event.get('trnm') in {'ERROR','DISCONNECTED'}:self.orderbooks.clear()
             if event.get('trnm')=='REAL':
@@ -119,7 +121,8 @@ class Feed:
                 def on_message(ws,raw):
                     try:
                         m=json.loads(raw)
-                        if m.get('trnm')=='PING': ws.send(raw); return
+                        if m.get('trnm')=='PING':
+                            self.last_message_at=now(); ws.send(raw); return
                         if m.get('trnm')=='LOGIN':
                             if m.get('return_code') not in (0,'0'):
                                 self.emit({'trnm':'ERROR','reason':'로그인 실패'}); ws.close(); return

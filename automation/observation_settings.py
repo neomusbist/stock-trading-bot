@@ -12,7 +12,11 @@ class ObservationSettings:
     far_book_seconds:int=30
     near_threshold_fraction:float=.03
     far_evaluation_seconds:int=5
+    rank_limit_multiplier:int=1
+    max_raw_symbols:int=300
     def validate(self):
+        if type(self.rank_limit_multiplier) is not int or self.rank_limit_multiplier not in (1,2):raise ValueError('랭킹 범위 배수는 1 또는 2')
+        if type(self.max_raw_symbols) is not int or not 100<=self.max_raw_symbols<=300:raise ValueError('원시 후보 한도는 100~300')
         if type(self.max_symbols) is not int or not 1<=self.max_symbols<=64:raise ValueError('관찰 최대종목수는 1~64')
         if type(self.metadata_budget) is not int or not 1<=self.metadata_budget<=8:raise ValueError('진단 조회 예산은 1~8')
         if not 30<=self.metadata_ttl_seconds<=300 or not .5<=self.evaluation_seconds<=10:raise ValueError('관찰 신선도/평가 주기 범위 확인 필요')

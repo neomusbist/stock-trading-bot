@@ -22,8 +22,8 @@ class Config:
     max_daily_loss_fraction: float = 0.01
     max_position_fraction: float = 0.20
     max_positions: int = 2
-    max_entries_per_symbol: int = 1
-    max_entries_per_day: int = 3
+    max_entries_per_symbol: int | None = 1  # null: 횟수만 해제. 보유/미체결/실패 주문 경계는 유지.
+    max_entries_per_day: int | None = 3  # null: 일일 횟수 제한 없음. 손실/수량/현금 한도는 별도 유지.
     history_bars: int = 750
     min_history_bars: int = 500
     max_history_age_days: int = 7
@@ -85,6 +85,8 @@ class Config:
                 if (k.endswith('_fraction') or k in ('max_chase','max_gap','max_spread','overhead_band','max_overhead_share','min_resistance_room','max_recent_range','min_price_gain','after_a_min_gain','structural_buffer')) and v >= 1:
                     raise ValueError(f'{k}: 1 미만이어야 함')
         for k in ('max_positions','max_entries_per_symbol','max_entries_per_day','history_bars','min_history_bars','max_history_age_days','max_watchlist','acceleration_seconds','baseline_seconds','breakout_seconds','stale_seconds','position_stale_seconds','order_timeout_seconds','reconcile_seconds','max_exit_attempts'):
+            if k in ('max_entries_per_day','max_entries_per_symbol') and getattr(self,k) is None:
+                continue
             if type(getattr(self,k)) is not int:
                 raise ValueError(f'{k}: 정수 필요')
         for k in ('entry_start','entry_end','flatten_time'):
@@ -95,7 +97,7 @@ class Config:
             raise ValueError('일봉 수 설정 오류')
         if self.min_stop_fraction >= self.max_stop_fraction or self.risk_fraction > self.max_daily_loss_fraction:
             raise ValueError('위험 한도 설정 오류')
-        if self.max_positions > 10 or self.max_watchlist > 20:
+        if self.max_positions > 10 or self.max_watchlist > 32:
             raise ValueError('V1 구독/포지션 한도 초과')
         return self
 

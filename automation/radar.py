@@ -12,6 +12,7 @@ from core.settings import now
 from core.util import code, number, atomic_json, write_csv
 from core.broker import Rejected
 from automation.policy import BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL,legacy_test_release_enabled
+from automation.observation_settings import ObservationSettings,load_observation
 
 FIELDS=('flu_rt','cntr_str','now_trde_qty','pred_trde_qty','exp_cntr_qty','trde_prica','bigd_rank','now_rank','base_comp_chgr')
 
@@ -29,8 +30,17 @@ def ordinary(symbol,name):
 
 def collect(rest):
     result={}
+    settings=getattr(rest,'radar_observation_settings',None)
+    if not isinstance(settings,ObservationSettings):settings=ObservationSettings()
     for api,key,limit,payload in RANKS:
-        rows,_=rest.pages(api,payload,key,path='/api/dostk/stkinfo' if api=='ka00198' else '/api/dostk/rkinfo',limit=limit)
+        path='/api/dostk/stkinfo' if api=='ka00198' else '/api/dostk/rkinfo'
+        if settings.rank_limit_multiplier>1:
+            # Wider discovery uses only the already returned first page; no pagination burst.
+            data=rest.query(api,payload,path=path)
+            if not isinstance(data.get(key),list):raise ValueError(f'{api}: {key} 필드 없음/형식 오류')
+            rows=data[key][:min(100,limit*settings.rank_limit_multiplier)]
+        else:
+            rows,_=rest.pages(api,payload,key,path=path,limit=limit)
         for rank,r in enumerate(rows,1):
             sym=code(r['stk_cd']); name=r['stk_nm']
             if not ordinary(sym,name): continue
@@ -51,7 +61,10 @@ def collect(rest):
                 except (KeyError,ValueError): pass
             # 최초 발견 가격은 이후 소스의 더 늦은 현재가로 덮어쓰지 않는다.
             item.setdefault('first_raw_price',item['reference_price'])
-    return list(result.values())
+    rows=list(result.values())
+    if len(rows)>settings.max_raw_symbols:
+        rows.sort(key=lambda x:(-len(x['source_details']),min(d['observed_rank'] for d in x['source_details'].values()),x['code']))
+    return rows[:settings.max_raw_symbols]
 
 class DynamicRadar:
     def __init__(self,cfg,auto,policy,fallback_source1=False):
@@ -148,6 +161,8 @@ class DynamicRadar:
 class RadarWorker:
     def __init__(self,cfg,auto,policy,rest,root,fallback_source1=True):
         self.cfg=cfg; self.a=auto; self.rest=rest; self.root=Path(root); self.radar=DynamicRadar(cfg,auto,policy,fallback_source1=fallback_source1)
+        self.observation_settings=load_observation(root)
+        rest.radar_observation_settings=self.observation_settings
         self.q=queue.Queue(maxsize=2); self.stop=threading.Event(); self.request=threading.Event(); self.cache={}; self.fetched=0
         self.extra_symbols=set()
         self.status_priority_symbols=frozenset()  # Actual main-thread WATCH, including fast promotions.
@@ -240,7 +255,9 @@ class RadarWorker:
                         'api_wait_ms':getattr(self.rest,'profile',{}).get('api_wait_ms',0)-prior_profile.get('api_wait_ms',0),
                         'http_ms':getattr(self.rest,'profile',{}).get('http_ms',0)-prior_profile.get('http_ms',0),
                         'status_calls':self.status_fetched,'daily_fetches':self.fetched,'scan_wait_seconds':self.a.scan_seconds},
-                    'raw_definition':{'sources':[r[0] for r in RANKS],'basis':'5개 ranking 합집합; 일반주 명칭/종목코드 검사 후 고유종목','hts_0168_equivalence':False}}
+                    'raw_definition':{'sources':[r[0] for r in RANKS],'basis':'5개 ranking 합집합; 일반주 명칭/종목코드 검사 후 고유종목','hts_0168_equivalence':False,
+                        'rank_limit_multiplier':self.observation_settings.rank_limit_multiplier,'max_raw_symbols':self.observation_settings.max_raw_symbols,
+                        'expanded_first_page_only':self.observation_settings.rank_limit_multiplier>1}}
                 atomic_json(self.root/'runtime/radar_latest.json',payload)
                 write_csv(self.root/'candidate_audit.csv',rows)
                 write_csv(self.root/'symbols_today.csv',watch)

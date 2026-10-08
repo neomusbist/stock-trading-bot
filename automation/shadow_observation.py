@@ -51,7 +51,12 @@ class ShadowObserver:
    if row.get('source_count',0)>=1 and row.get('shadow_view',row).get('market_status',{}).get('pass') is True:eligible.append(row)
   # 가장 긴 C 형상의 완성봉 준비시간을 확보한다. 더 강한 새 발견/WATCH는 먼저 수용한다.
   residence_seconds=max(180,(max(4,self.auto.box_min_bars)+1)*60)
-  resident_scores=[r.get('discovery_score',r.get('source_count',0)*10) for r in self.rows.values() if r.get('status')!='WATCH']
+  def watch_priority(row):
+   # RAW is an interim discovery phase, not an explicit focus demotion.
+   # Only committed WATCH/RESERVE/SHADOW rows change the remembered role.
+   prior=self.previous.get(row['code'],{})
+   return row.get('status')=='WATCH' or row.get('status')=='RAW' and prior.get('status')=='WATCH'
+  resident_scores=[r.get('discovery_score',r.get('source_count',0)*10) for r in self.rows.values() if not watch_priority(r)]
   weakest=min(resident_scores,default=float('inf'))
   def priority(row):
    sym=row['code'];score=row.get('discovery_score',row.get('source_count',0)*10)
@@ -61,7 +66,7 @@ class ShadowObserver:
    try:fresh=0<=(stamp-datetime.fromisoformat(self.latest[sym]['timestamp'])).total_seconds()<=15
    except (KeyError,ValueError):fresh=False
    strong=fresh and all(gates.get(k,{}).get('result')=='PASS' for k in ('acceleration','liquidity'))
-   return (0 if row.get('status')=='WATCH' else 1 if strong or new_stronger else 2 if held else 3 if sym not in self.rows else 4,-score,sym)
+   return (0 if watch_priority(row) else 1 if strong or new_stronger else 2 if held else 3 if sym not in self.rows else 4,-score,sym)
   eligible.sort(key=priority)
   selected={r['code']:r for r in eligible[:self.limit]}
   for sym in list(self.detached-set(selected)):
@@ -86,7 +91,10 @@ class ShadowObserver:
   for sym in self.rows.keys()-selected.keys():
    self.event('SHADOW_ENDED',stamp,symbol=sym,reason='INELIGIBLE_OR_CAPACITY',data_action='RETAIN_UNTIL_STALE_GAP')
    self.detached.add(sym);self.detached_at[sym]=stamp;self.selected_at.pop(sym,None);self.last_log.pop(sym,None);self.latest.pop(sym,None)
-  self.rows=selected;self.previous.update(selected)
+  self.rows=selected
+  # Preserve the committed role through RAW cycles, but not through a real demotion.
+  for sym,row in selected.items():
+   if row.get('status')!='RAW' or sym not in self.previous:self.previous[sym]=row
  def tick(self,t,received):
   row=self.rows.get(t.symbol)
   if not row:return
@@ -97,16 +105,15 @@ class ShadowObserver:
   previous=self.last_log.get(t.symbol)
   if previous and (received-previous[0]).total_seconds()<self.eval_seconds:return
   view=make_evaluation_view(row)
-  sig=self.detector.signal(t,view);gates=self.detector.evaluation_gates(t,view)
+  sig,gates,trials,history=self.detector.evaluation_snapshot(t,view)
   if sig:
    sig['SHADOW_ONLY']=True;sig['actual_order_permission']=False;sig['diagnostic_only']=True
-  history=list(self.detector.history.get(t.symbol,[]));usable=[]
+  usable=[]
   for bar in reversed(history):
    if bar['first_second']>self.cfg.stale_seconds:break
    usable.append(bar)
-  usable=list(reversed(usable));d=self.detector
+  usable=list(reversed(usable))
   # Reuse actual setup reachability; only virtual sizing is added here.
-  trials=[{**trial,'failed_reasons':list(trial['failed_reasons'])} for trial in d.last_eval[t.symbol]['trials']]
   for trial in trials:
    if gates['market_status']['result']!='PASS':trial['failed_reasons'].append('MARKET_STATUS_FAIL');trial['entry_ready']=False
   self.observation_seq+=1

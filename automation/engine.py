@@ -162,6 +162,9 @@ class AutonomousEngine(ExistingExits,Engine):
 
     def new_entry_reason(self,symbol):
         self.policy.refresh()
+        health=getattr(self,'position_health',None)
+        if health is not None:health.prune()
+        if health is not None and health.waiting:return 'POSITION_DATA_RECHECK_PENDING'
         if not self.is_supported_now(): return 'OUT_OF_SUPPORTED_SESSION'
         if symbol in HARD_LOCKS or self.policy.locked(symbol): return 'HARD_LOCK'
         if symbol in BREAKEVEN_EXITS or (symbol==TEST_RELEASE_SYMBOL and legacy_test_release_enabled()): return 'EXISTING_POLICY_NO_BUY'
@@ -210,7 +213,7 @@ class AutonomousEngine(ExistingExits,Engine):
         if not self.policy.state.get('live_authorized') and sess=='REGULAR': return 'LIVE 명시 승인 누락'
         if not self.c.live_mode and not self.shadow: return 'live_mode=false'
         if not self.a.costs_confirmed: return '거래비용 설정 미확인'
-        if self.s['automation']['consecutive_losses']>=self.a.max_consecutive_losses: return '연속손실 한도'
+        if self.a.max_consecutive_losses is not None and self.s['automation']['consecutive_losses']>=self.a.max_consecutive_losses: return '연속손실 한도'
         last=self.s['automation']['last_exit'].get(symbol)
         if last and (self.clock()-datetime.fromisoformat(last)).total_seconds()<self.a.cooldown_seconds: return 'COOLDOWN'
         return ''
@@ -246,13 +249,16 @@ class AutonomousEngine(ExistingExits,Engine):
         remaining=equity*self.c.max_daily_loss_fraction-self.s['daily_loss']-used
         sizing=self.quantity_details(signal,equity,self.s['cash']-reserved,remaining); qty=sizing['quantity']
         reason=self.new_entry_reason(sym)
+        breakout=signal.get('evaluation_gates',{}).get('breakout',{}).get('values',{}).get('breakout')
         return qty,{**signal.get('evaluation_gates',{}),
+            'breakout_quote':gate(breakout is None or (tick.price>breakout and tick.ask>breakout and signal['limit']>breakout),
+                breakout=breakout,price=tick.price,ask=tick.ask,entry=signal['limit']),
             'policy':gate(not reason,reason=reason,mode=self.policy.mode,live_mode=self.c.live_mode,approved_cap=self.a.capital_limit,costs_confirmed=self.a.costs_confirmed),
             'market_status':gate(self.market_status.get(sym,{}).get('pass'),status=self.market_status.get(sym)),
             'session':gate(self.entry_window(),time=self.clock().strftime('%H:%M:%S'),cutoff=getattr(self.a,'after_entry_cutoff','19:45:00') if self.current_session()=='AFTER' else self.a.new_entry_cutoff,market=self.market),
             'connection_account':gate(self.connected and self.account_ok and not self.s['halt'] and (not self.c.live_mode or time.monotonic()-self.last_account<=self.c.reconcile_seconds*3),connected=self.connected,account_ok=self.account_ok,halt=self.s['halt'],account_age=time.monotonic()-self.last_account),
             'tick':gate(tick.regular and abs((self.clock()-tick.time).total_seconds())<=self.c.stale_seconds,lag=(self.clock()-tick.time).total_seconds(),regular=tick.regular,stale_limit=self.c.stale_seconds),
-            'repeat_slots':gate(not self.entry_failure(sym) and not self.active_orders(sym) and sym not in self.s['positions'] and sym not in self.s['excluded'] and self.s['entries'].get(sym,0)<self.c.max_entries_per_symbol and self.entry_slots_available() and len(set(self.s['positions'])|{o['symbol'] for o in buys})<self.c.max_positions,entries=self.s['entries'].get(sym,0),daily_entries=sum(self.s['entries'].values()),reserved_entry_slots=self.pending_entry_lifecycles(),entry_count_basis=self.s.get('entry_count_basis'),failure_latch=self.entry_failure(sym),slots=len(set(self.s['positions'])|{o['symbol'] for o in buys})),
+            'repeat_slots':gate(not self.entry_failure(sym) and not self.active_orders(sym) and sym not in self.s['positions'] and sym not in self.s['excluded'] and (self.c.max_entries_per_symbol is None or self.s['entries'].get(sym,0)<self.c.max_entries_per_symbol) and self.entry_slots_available() and len(set(self.s['positions'])|{o['symbol'] for o in buys})<self.c.max_positions,entries=self.s['entries'].get(sym,0),symbol_entry_limit=self.c.max_entries_per_symbol,consecutive_losses=self.s['automation']['consecutive_losses'],consecutive_loss_limit=self.a.max_consecutive_losses,daily_entries=sum(self.s['entries'].values()),daily_entry_limit=self.c.max_entries_per_day,daily_entry_limit_enabled=self.c.max_entries_per_day is not None,daily_entry_limit_pass=self.entry_slots_available(),reserved_entry_slots=self.pending_entry_lifecycles(),entry_count_basis=self.s.get('entry_count_basis'),failure_latch=self.entry_failure(sym),slots=len(set(self.s['positions'])|{o['symbol'] for o in buys})),
             'risk_quantity':gate(qty>0,**sizing,equity=equity,remaining_risk=remaining,reserved_cash=reserved,book_cash=self.s['cash'],actual_cash=self.available_cash,entry=signal['limit'],stop=signal['stop'],risk_fraction=self.c.risk_fraction,max_daily_loss_fraction=self.c.max_daily_loss_fraction,allowed_risk_krw=equity*self.c.risk_fraction,remaining_daily_risk_krw=max(0,remaining)),
             'efficiency':gate(signal.get('efficiency',{}).get('decision')=='TRADE',efficiency=signal.get('efficiency'))}
 
@@ -277,6 +283,7 @@ class AutonomousEngine(ExistingExits,Engine):
         signal=apply_empirical(signal,self.s['trades'],self.a)
         qty,gates=self.entry_gates(signal,tick)
         reason=self.new_entry_reason(signal['symbol'])
+        if gates['breakout_quote']['result']=='FAIL': reason=reason or 'BREAKOUT_QUOTE_NOT_CONFIRMED'
         if signal.get('efficiency',{}).get('decision')!='TRADE': reason=reason or '비용 포함 효율 부족/UNKNOWN'
         if reason:
             self.decisions.emit('ENTRY_EVAL',tick.symbol,'NO_BUY',reason,gates,signal=signal,price=tick.price,extra={'quantity':qty})
@@ -416,6 +423,8 @@ class AutonomousEngine(ExistingExits,Engine):
             if self.s.get('halt'):
                 raise Rejected(f'HALT 상태: 신규 매수 차단 ({self.s["halt"]})')
             signal=intents[0].get('signal') or {}
+            breakout=signal.get('evaluation_gates',{}).get('breakout',{}).get('values',{}).get('breakout')
+            if breakout is not None and limit<=breakout:raise Rejected('BREAKOUT_QUOTE_NOT_CONFIRMED')
             if signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or signal.get('diagnostic_only') is True or ('source_count' in signal and signal['source_count']<max(2,self.a.min_source_count) and not signal.get('fallback_source1')):raise Rejected('OBSERVATION_NOT_BUY_PERMISSION')
             self._guard_intent=intents[0]
             try:reason=self.new_entry_reason(sym)
@@ -733,7 +742,8 @@ class AutonomousEngine(ExistingExits,Engine):
         requested=p.get('exit_requested',False)
         gates={'exit_requested':gate(requested,reason=p.get('exit_reason'),time=self.clock().strftime('%H:%M:%S'),flatten=self.a.force_flatten_start,allow_overnight=self.a.ALLOW_OVERNIGHT),
                'exit_safe':gate(allowed,qty=p['qty'],qty_blocked=p.get('qty_blocked'),market=self.market,account_ok=self.account_ok),
-               'pending':gate(not self.active_orders(sym),count=len(self.active_orders(sym)))}
+               'pending':gate(not self.active_orders(sym),count=len(self.active_orders(sym))),
+               'market_data_health':gate(not p.get('data_health',{}).get('emergency_exit',False),**p.get('data_health',{}))}
         self.decisions.emit('EXIT_EVAL' if requested else 'POSITION_EVAL',sym,
             'SELL' if requested and allowed else 'HOLD',p.get('exit_reason') if requested else 'PROTECTION_INTACT',gates,position=p,price=price)
 

@@ -348,7 +348,8 @@ class UserOperations(OperatorService):
     """기존 서비스 상속: 시작/STOP/진단과 별도 명시 자본 승인을 연결한다."""
     def snapshot(self):
         folder,state,hb=self.latest(); recent_events=tail_events(folder/'events.jsonl')
-        s=self.public_status(recent_events=recent_events); cfg,auto,policy=self.settings()
+        cfg,auto,policy=self.settings()
+        s=self.public_status(recent_events=recent_events,source=(folder,state,hb),settings=(cfg,auto,policy))
         rows=recent_events[-250:]
         cash_fresh=age(s['cash_time'],self.clock())<=cfg.reconcile_seconds*3
         market_fresh=(s['process']['running'] and 0<=age(hb.get('time'),self.clock())<=10
