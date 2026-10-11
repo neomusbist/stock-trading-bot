@@ -8,16 +8,23 @@ from core.settings import ROOT, KST, now
 from core.strategy import Tick
 from core.util import number, code
 
+def stream_symbol(value):
+    """Exchange suffixes are accepted only at the read-only stream boundary."""
+    if isinstance(value,str) and value.endswith(('_NX','_AL')):
+        return code(value[:-3])
+    return code(value)
+
 def parse_book(item,received):
     """0D: best prices 41/51, best quantities 61/71, totals 121/125.
     0C provides prices 27/28 only; absent depth is not zero liquidity.
     """
     v=item.get('values',{})
     available=all(v.get(k) not in (None,'') for k in ('41','51','61','71'))
+    quote_time=datetime.combine(received.date(),datetime.strptime(v['21'],'%H%M%S').time(),tzinfo=KST) if v.get('21') else received
     result={'best_ask':number(v.get('41') or 0),'best_bid':number(v.get('51') or 0),
             'ask_qty':int(number(v.get('61') or 0)),'bid_qty':int(number(v.get('71') or 0)),
             'total_ask_qty':int(number(v.get('121') or 0)),'total_bid_qty':int(number(v.get('125') or 0)),
-            'time':received.isoformat(),'source':'0D',
+            'time':quote_time.isoformat(),'received_at':received.isoformat(),'source':'0D',
             'raw_fields':{k:v.get(k) for k in ('21','41','51','61','71','121','125')}}
     result['depth_available']=bool(available and 0<result['best_bid']<=result['best_ask'])
     return result
@@ -45,12 +52,12 @@ def parse_tick(item,received,book=None,book_stale_seconds=5):
         if depth_available:
             ask_qty=int(book['ask_qty']);bid_qty=int(book['bid_qty'])
     venue=v.get('9081') or 'KRX'
-    return Tick(code(item['item']),dt,number(v['10']),int(number(v['15'])),int(number(v['13'])),
+    return Tick(stream_symbol(item['item']),dt,number(v['10']),int(number(v['15'])),int(number(v['13'])),
         ask,bid,v.get('290')=='2',ask_qty=ask_qty,bid_qty=bid_qty,venue=venue,
         depth_available=depth_available,book_time=depth_time,depth_source=depth_source)
 
 class Feed:
-    def __init__(self,rest,symbols):
+    def __init__(self,rest,symbols,index_subscription_enabled=False):
         self.rest=rest; self.symbols=list(dict.fromkeys(symbols)); self.q=queue.Queue(maxsize=100000)
         self.stop=threading.Event(); self.overflow=threading.Event(); self.socket=None
         self.logged_in=False; self.subscription_lock=threading.RLock()
@@ -61,7 +68,18 @@ class Feed:
         from automation.market_context import IndexContext
         self.index_context=IndexContext()
         self.last_message_at=None
+        # Production REG ACKs omit grp_no. Keep the optional index subscription
+        # off until its ACK can be distinguished from the trading subscription.
+        self.index_subscription_enabled=index_subscription_enabled
+        self.wire_symbols=self.subscription_items(self.symbols)
         self.thread=threading.Thread(target=self.run,name='Kiwoom-feed',daemon=True)
+
+    def subscription_items(self,symbols):
+        stamp=now().astimezone(KST).strftime('%H:%M:%S')
+        after=getattr(self.rest.cfg,'after_enabled',False) is True and '15:40:00'<=stamp<'20:00:00'
+        venue=getattr(self.rest.cfg,'after_default_venue','SOR') if after else 'KRX'
+        suffix={'NXT':'_NX','SOR':'_AL'}.get(venue,'')
+        return [code(symbol)+suffix for symbol in symbols]
 
     def emit(self,event):
         received=now()
@@ -74,6 +92,7 @@ class Feed:
                 self.orderbooks.clear();self.latest_ticks.clear()
                 self.index_context.clear()
             if event.get('trnm')=='REAL':
+                accepted_items=[]
                 for item in event.get('data',[]):
                     itype=item.get('type'); raw_item=item.get('item')
                     if itype=='0J':
@@ -83,7 +102,13 @@ class Feed:
                             self.index_context.ingest(raw_item,stamp,v.get('10'),received,v.get('12'))
                         except (ValueError,KeyError):pass
                         continue
-                    sym=code(raw_item) if raw_item else None
+                    sym=stream_symbol(raw_item) if raw_item else None
+                    if sym and itype in {'0B','0D'}:
+                        if sym in self.symbols and raw_item not in self.wire_symbols:
+                            continue  # Queued frames from the prior exchange cannot refresh the new stream.
+                        item['_subscription_item']=raw_item
+                        item['item']=sym
+                    accepted_items.append(item)
                     if sym and itype=='0D':
                         self.orderbooks[sym]=parse_book(item,received)
                         item['_book']=self.orderbooks[sym]
@@ -95,6 +120,7 @@ class Feed:
                             prior=self.latest_ticks.get(sym)
                             if sym in self.symbols and (prior is None or tick.time>=prior.time):self.latest_ticks[sym]=tick
                         except (ValueError,KeyError):pass
+                event={**event,'data':accepted_items}
             if self.priority_symbols is not None and event.get('trnm')=='REAL':
                 priority=[]
                 for item in event.get('data',[]):
@@ -125,14 +151,18 @@ class Feed:
     def update_symbols(self,symbols):
         with self.subscription_lock:
             updated=list(dict.fromkeys(symbols))
-            if updated==self.symbols: return False
+            wire=self.subscription_items(updated)
+            if updated==self.symbols and wire==self.wire_symbols: return False
+            venue_changed=self.subscription_items(self.symbols)!=self.wire_symbols
             self.symbols=updated
+            self.wire_symbols=wire
+            if venue_changed:self.latest_ticks.clear();self.orderbooks.clear()
             for mapping in (self.latest_ticks,self.orderbooks):
                 for symbol in set(mapping)-set(updated):mapping.pop(symbol,None)
             if self.socket and self.logged_in:
                 # refresh=0 그룹을 완전히 교체하며 주문/장상태 구독은 항상 다시 포함한다.
                 self.socket.send(json.dumps({'trnm':'REG','grp_no':'1','refresh':'0','data':[
-                    {'item':self.symbols,'type':['0B','0D']},{'item':[''],'type':['00','0s']}]}))
+                    {'item':self.wire_symbols,'type':['0B','0D']},{'item':[''],'type':['00','0s']}]}))
             return True
 
     def entry_snapshot(self,symbol):
@@ -164,11 +194,13 @@ class Feed:
                             if m.get('return_code') not in (0,'0'):
                                 self.emit({'trnm':'ERROR','reason':'로그인 실패'}); ws.close(); return
                             self.logged_in=True
+                            self.wire_symbols=self.subscription_items(self.symbols)
                             ws.send(json.dumps({'trnm':'REG','grp_no':'1','refresh':'0','data':[
-                                {'item':self.symbols,'type':['0B','0D']},{'item':[''],'type':['00','0s']}]}))
+                                {'item':self.wire_symbols,'type':['0B','0D']},{'item':[''],'type':['00','0s']}]}))
                             # Independent diagnostic group; WATCH churn never refreshes indices.
-                            ws.send(json.dumps({'trnm':'REG','grp_no':'2','refresh':'0',
-                                'data':[{'item':['001','101'],'type':['0J']}]}))
+                            if self.index_subscription_enabled:
+                                ws.send(json.dumps({'trnm':'REG','grp_no':'2','refresh':'0',
+                                    'data':[{'item':['001','101'],'type':['0J']}]}))
                         else: self.emit(m)
                     except Exception:
                         self.emit({'trnm':'ERROR','reason':'실시간 메시지 형식 오류'}); ws.close()

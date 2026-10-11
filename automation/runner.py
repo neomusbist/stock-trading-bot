@@ -162,7 +162,14 @@ class SubscriptionState:
                 detector.forget(sym); self.detached.discard(sym);self.detached_at.pop(sym,None)
                 engine.event('OBSERVATION_RELEASED',symbol=sym,data_action='RESET_STALE_GAP',
                              subscription_gap_seconds=gap)
-        if desired==self.symbols:return False
+        if desired==self.symbols:
+            if feed.update_symbols(sorted(desired)) is not True:return False
+            # Same observation universe, new exchange stream: preserve bars but
+            # require a fresh post-subscription tick before any entry.
+            self.waiting.update({sym:stamp for sym in desired});self.refresh_pending=True
+            engine.event('SUBSCRIPTION_REFRESH',added=[],removed=[],reason_code='EXCHANGE_STREAM_CHANGED',
+                         connected=engine.connected,account_ok=engine.account_ok)
+            return True
         added=desired-self.symbols; removed=self.symbols-desired
         for sym in removed:
             self.waiting.pop(sym,None)

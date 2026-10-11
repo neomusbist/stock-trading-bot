@@ -2,7 +2,7 @@
 import json
 import math
 STRATEGY_VERSION='V1.3-b-confirmed-impulse-bc20M-20261008'
-BUILD_ID='V1.3-risk2-watch12-bc20M-stabilization-20261008'
+BUILD_ID='V1.3-risk2-watch12-bc20M-stabilization-20261012'
 STRATEGY_EXPERIMENT='20261007-risk2-daily4-dynamiccap-watch12-accelA-bc20M-bclose20261008'
 
 def check_experiment_consistency(cfg, build_id=BUILD_ID, experiment=STRATEGY_EXPERIMENT):

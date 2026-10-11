@@ -309,7 +309,7 @@ class RunnerTests(unittest.TestCase):
         import websocket
         from core.realtime import Feed
         rest=type('R',(),{'cfg':Config(),'get_token':lambda self:'FAKE'})()
-        feed=Feed(rest,['005930']); sent=[]
+        feed=Feed(rest,['005930'],index_subscription_enabled=True); sent=[]
         class FakeSocket:
             def __init__(self,url,**handlers): self.handlers=handlers
             def send(self,s): sent.append(json.loads(s))
