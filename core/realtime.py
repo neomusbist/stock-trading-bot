@@ -44,8 +44,12 @@ def parse_tick(item,received,book=None,book_stale_seconds=5):
     elif book:
         try:depth_time=datetime.fromisoformat(book['time'])
         except (KeyError,TypeError,ValueError):depth_time=None
+        try:book_received=datetime.fromisoformat(book.get('received_at',book['time']))
+        except (KeyError,TypeError,ValueError):book_received=None
         fresh=bool(depth_time and depth_time.tzinfo and depth_time.date()==received.date()
-                   and 0<=(received-depth_time).total_seconds()<=book_stale_seconds)
+                   and 0<=(received-depth_time).total_seconds()<=book_stale_seconds
+                   and book_received and book_received.tzinfo and book_received.date()==received.date()
+                   and 0<=(received-book_received).total_seconds()<=book_stale_seconds)
         matched=book.get('best_ask')==ask and book.get('best_bid')==bid
         depth_available=bool(fresh and matched and book.get('depth_available'))
         depth_source='0D' if depth_available else 'BOOK_STALE' if not fresh else 'BOOK_PRICE_MISMATCH' if not matched else 'DATA_UNAVAILABLE'
@@ -76,8 +80,9 @@ class Feed:
 
     def subscription_items(self,symbols):
         stamp=now().astimezone(KST).strftime('%H:%M:%S')
-        after=getattr(self.rest.cfg,'after_enabled',False) is True and '15:40:00'<=stamp<'20:00:00'
-        venue=getattr(self.rest.cfg,'after_default_venue','SOR') if after else 'KRX'
+        cfg=getattr(self.rest,'cfg',None)
+        after=getattr(cfg,'after_enabled',False) is True and '15:40:00'<=stamp<'20:00:00'
+        venue=getattr(cfg,'after_default_venue','SOR') if after else 'KRX'
         suffix={'NXT':'_NX','SOR':'_AL'}.get(venue,'')
         return [code(symbol)+suffix for symbol in symbols]
 
@@ -164,6 +169,12 @@ class Feed:
                 self.socket.send(json.dumps({'trnm':'REG','grp_no':'1','refresh':'0','data':[
                     {'item':self.wire_symbols,'type':['0B','0D']},{'item':[''],'type':['00','0s']}]}))
             return True
+
+    def refresh_exchange(self):
+        """No role/list changes: refresh only an actual exchange phase change."""
+        with self.subscription_lock:
+            if self.subscription_items(self.symbols)==self.wire_symbols:return False
+            return self.update_symbols(self.symbols)
 
     def entry_snapshot(self,symbol):
         """Receiver-owned latest frame, read without network calls or engine mutation."""
