@@ -270,8 +270,10 @@ def apply_focus_selection(engine,lookup,by_symbol,selection):
         row=by_symbol.get(sym)
         if row is None:continue
         source1=row.get('source_count',0)==1
+        from automation.entry_timing import watch_started
+        first_watch=watch_started(row,lookup.get(sym),selection.focus_epoch)
         lookup[sym]={**row,'status':'WATCH','fallback_source1':source1,
-                     'watch_type':'FALLBACK_SOURCE1' if source1 else 'PRIMARY'}
+                     'watch_type':'FALLBACK_SOURCE1' if source1 else 'PRIMARY','first_watch_at':first_watch}
         if sym in engine.source_qualification:
             engine.source_qualification[sym]['fallback_source1']=source1
 
@@ -290,8 +292,10 @@ def resolve_radar_focus(engine,lookup,rows,rank_watch,readiness,cfg,auto,stamp):
     apply_focus_selection(engine,lookup,pool,selection)
     for sym in selection.next_watch:
         row=pool[sym];source1=row.get('source_count',0)==1
+        from automation.entry_timing import watch_started
+        first_watch=watch_started(row,lookup.get(sym),stamp)
         lookup[sym]={**row,'status':'WATCH','fallback_source1':source1,
-                     'watch_type':'FALLBACK_SOURCE1' if source1 else 'PRIMARY'}
+                     'watch_type':'FALLBACK_SOURCE1' if source1 else 'PRIMARY','first_watch_at':first_watch}
         if sym in engine.source_qualification:engine.source_qualification[sym]['fallback_source1']=source1
     return selection
 
@@ -332,7 +336,8 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
             gates,price=t.price,extra={'failed_gates':failed,'signal_detected':False,'setup_trials':detector.last_eval.get(t.symbol,{}).get('trials',[])})
         return None
     sig['name']=watch.get('name')
-    sig['candidate_detected_at']=watch.get('observed_at')
+    from automation.entry_timing import annotate_signal
+    annotate_signal(engine,detector,watch,sig)
     sig['fallback_source1']=bool(watch.get('fallback_source1'))
     bars=radar.cache.get((t.time.date(),t.symbol))
     if not bars:
@@ -352,7 +357,7 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
             extra={'signal_detected':False,'setup_trials':detector.last_eval.get(t.symbol,{}).get('trials',[])})
         return None
     sig['name']=watch.get('name')
-    sig['candidate_detected_at']=watch.get('observed_at')
+    annotate_signal(engine,detector,watch,sig)
     sig['fallback_source1']=bool(watch.get('fallback_source1'))
     for sym,p in (list(engine.s['positions'].items()) if engine.a.replacement_enabled else []):
         if sym==t.symbol or p.get('exit_requested'): continue
@@ -426,7 +431,7 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
                     prices[t.symbol]=t.bid or t.price
                     engine.on_tick(t)  # no fabricated/old completed bar on a rejected observation
                     health=getattr(engine,'position_health',None)
-                    if health is not None:health.trade_seen(t.symbol)
+                    if health is not None:health.trade_seen(t.symbol,t)
                 continue
             if subscriptions is not None:subscriptions.accepted(t.symbol)
             accepted+=1; prices[t.symbol]=t.bid or t.price;engine.last_regular_tick_at=t.time
@@ -436,7 +441,7 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
                 for bar in finished[-3:]:engine.observe_protection_bar(t.symbol,bar)
             engine.on_tick(t,finished[-1]['low'] if finished else None)
             health=getattr(engine,'position_health',None)
-            if protected and health is not None:health.trade_seen(t.symbol)
+            if protected and health is not None:health.trade_seen(t.symbol,t)
             watch=lookup.get(t.symbol)
             if not watch or not radar_ok or not engine.connected: continue
             context_provider=getattr(engine,'market_context_provider',None)

@@ -2,6 +2,7 @@
 import math
 from datetime import datetime,timedelta
 from automation.allocation import efficiency
+from automation.trade_quality import complete_sequence
 
 def confirmed_overhead(bars,asof,entry):
     """A local peak needs both neighboring complete, consecutive minute bars."""
@@ -11,7 +12,10 @@ def confirmed_overhead(bars,asof,entry):
             stamp=bar['time']
             if isinstance(stamp,str):stamp=datetime.fromisoformat(stamp)
             high=float(bar['high'])
-            if stamp.date()!=asof.date() or stamp+timedelta(minutes=1)>asof:continue
+            if (stamp.tzinfo is None or asof.tzinfo is None or stamp.second or stamp.microsecond
+                    or stamp.date()!=asof.date() or stamp+timedelta(minutes=1)>asof
+                    or bar.get('gap_reason') or bar.get('first_second',0)>5):continue
+            if all(k in bar for k in ('open','high','low','close')) and not complete_sequence([bar],asof,1):continue
             if not math.isfinite(high) or high<=0:continue
             complete.append((stamp,high))
         except (KeyError,TypeError,ValueError):continue
@@ -20,7 +24,16 @@ def confirmed_overhead(bars,asof,entry):
     for left,center,right in zip(complete,complete[1:],complete[2:]):
         if center[0]-left[0]!=timedelta(minutes=1) or right[0]-center[0]!=timedelta(minutes=1):continue
         if center[1]>entry and center[1]>=left[1] and center[1]>=right[1] and center[1]>min(left[1],right[1]):
-            peaks.append({'price':center[1],'time':center[0].isoformat(),'confirmed_at':(right[0]+timedelta(minutes=1)).isoformat()})
+            confirmed=right[0]+timedelta(minutes=1)
+            # Later completed closes, still at or before asof, can retire an old
+            # resistance. High wicks or the current live tick cannot retire it.
+            cleared=False
+            for bar in bars or []:
+                try:
+                    valid=complete_sequence([bar],asof,1)
+                    if valid and valid[0]['time']>=confirmed and valid[0]['close']>center[1]:cleared=True;break
+                except (KeyError,TypeError,ValueError):continue
+            if not cleared:peaks.append({'price':center[1],'time':center[0].isoformat(),'confirmed_at':confirmed.isoformat()})
     return min(peaks,key=lambda p:p['price']) if peaks else None
 
 def review_entry_context(signal,costs,minimum_rr,minimum_efficiency):

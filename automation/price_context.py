@@ -42,15 +42,24 @@ class PriceContext:
     def record(self,symbol,bar,asof,stale_seconds=5):
         if self.day!=asof.date():self.rows.clear();self.day=asof.date()
         stamp=bar.get('time')
-        if (not stamp or stamp.date()!=asof.date() or stamp+timedelta(minutes=1)>asof
+        if (not isinstance(stamp,datetime) or stamp.tzinfo is None or asof.tzinfo is None
+                or stamp.second or stamp.microsecond or stamp.date()!=asof.date() or stamp+timedelta(minutes=1)>asof
                 or bar.get('gap_reason') or bar.get('first_second',0)>stale_seconds):return False
-        if any(not isinstance(bar.get(k),(int,float)) or not math.isfinite(bar[k]) or bar[k]<=0
+        if any(type(bar.get(k)) not in (int,float) or not math.isfinite(bar[k]) or bar[k]<=0
                for k in ('open','high','low','close')):return False
+        if not bar['low']<=min(bar['open'],bar['close'])<=max(bar['open'],bar['close'])<=bar['high']:return False
         row=self.rows.setdefault(symbol,{'bars':deque(maxlen=30),'peaks':deque(maxlen=128),
             'first_observed_at':stamp.isoformat(),'last_complete_at':None})
         if row['bars'] and stamp<=row['bars'][-1]['time']:return False
         row['bars'].append({k:deepcopy(bar[k]) for k in ('time','open','high','low','close')})
         row['last_complete_at']=(stamp+timedelta(minutes=1)).isoformat()
+        # Retain the reference and its clearance evidence. A completed close over
+        # an already confirmed peak retires that resistance; a later pullback
+        # below it cannot revive the old pivot without a newly formed peak.
+        for peak in row['peaks']:
+            if (not peak.get('cleared_at') and bar['close']>peak['price']
+                    and stamp.isoformat()>=peak['confirmed_at']):
+                peak.update(cleared_at=row['last_complete_at'],cleared_by_close=bar['close'])
         if len(row['bars'])>=3:
             trio=list(row['bars'])[-3:]
             peak=confirmed_overhead(trio,asof,0)
@@ -61,10 +70,13 @@ class PriceContext:
 
     def snapshot(self,symbol,tick,entry):
         row=self.rows.get(symbol) if self.day==tick.time.date() else None
-        peaks=[p for p in row['peaks'] if p['price']>entry and p['confirmed_at']<=tick.time.isoformat()] if row else []
+        peaks=[p for p in row['peaks'] if p['price']>entry and p['confirmed_at']<=tick.time.isoformat()
+            and (not p.get('cleared_at') or p['cleared_at']>tick.time.isoformat())] if row else []
         peak=min(peaks,key=lambda p:p['price']) if peaks else None
         return {'asof':tick.time.isoformat(),'nearest_confirmed_peak':deepcopy(peak),
-            'known_peak_count':len(peaks),'first_observed_at':row['first_observed_at'] if row else None,
+            'known_peak_count':len(peaks),
+            'cleared_peak_count':sum(bool(p.get('cleared_at') and p['cleared_at']<=tick.time.isoformat()) for p in row['peaks']) if row else 0,
+            'first_observed_at':row['first_observed_at'] if row else None,
             'last_complete_at':row['last_complete_at'] if row else None,
             'coverage':'OBSERVED_BOUNDED_HISTORY_ONLY','missing_earlier_history':'UNKNOWN',
             'trend_5m':trend_window(row['bars'] if row else [],tick,5),
@@ -79,7 +91,25 @@ class PriceContext:
         if dst is None:self.rows[symbol]=deepcopy(src)
         else:
             bars={b['time']:b for b in list(dst['bars'])+list(src['bars'])}
-            peaks={p['time']:p for p in list(dst['peaks'])+list(src['peaks'])}
+            peaks={}
+            for p in list(dst['peaks'])+list(src['peaks']):
+                prior=peaks.get(p['time'])
+                # Role handoff may carry an older pre-clearance copy.
+                if prior and prior.get('cleared_at') and not p.get('cleared_at'):continue
+                if (prior and prior.get('cleared_at') and p.get('cleared_at')
+                        and prior['cleared_at']<=p['cleared_at']):continue
+                peaks[p['time']]=deepcopy(p)
+            # A reset source may know a later completed close without carrying
+            # the destination's older peak. Apply those closes before trimming
+            # the merged history; a handoff must not leave cleared resistance.
+            for peak in peaks.values():
+                for key in sorted(bars):
+                    bar=bars[key]
+                    cleared=(key+timedelta(minutes=1)).isoformat()
+                    if (key>=datetime.fromisoformat(peak['confirmed_at']) and bar['close']>peak['price']
+                            and (not peak.get('cleared_at') or cleared<peak['cleared_at'])):
+                        peak.update(cleared_at=cleared,cleared_by_close=bar['close'])
+                        break
             dst['bars']=deque([bars[k] for k in sorted(bars)][-30:],maxlen=30)
             dst['peaks']=deque([peaks[k] for k in sorted(peaks)][-128:],maxlen=128)
             dst['first_observed_at']=min(dst['first_observed_at'],src['first_observed_at'])
