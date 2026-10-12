@@ -2,8 +2,8 @@
 import json
 import math
 STRATEGY_VERSION='V1.3-confirmed-intraday-room-20261012'
-BUILD_ID='V1.3-risk2-watch12-bc20M-entrycontext-20261012'
-STRATEGY_EXPERIMENT='20261007-risk2-daily4-dynamiccap-watch12-accelA-bc20M-bclose20261008-dailyoverride20261012-context-optin'
+BUILD_ID='V1.3-risk2-watch12-bc20M-quoteconfirm-20261012'
+STRATEGY_EXPERIMENT='20261007-risk2-daily4-dynamiccap-watch12-accelA-bc20M-bclose20261008-dailyoverride20261012-context-optin-matched-rest-hold'
 
 def check_experiment_consistency(cfg, build_id=BUILD_ID, experiment=STRATEGY_EXPERIMENT):
     """BUILD_ID 또는 STRATEGY_EXPERIMENT에 risk2/daily4가 적혀 있는데
@@ -99,6 +99,7 @@ class DecisionLog:
             market_context=sig.get('market_context') or next((t.get('context') for t in extra.get('setup_trials',[]) or [] if t.get('context')),None),
             discovery_context=sig.get('discovery_context'),
             entry_context_enabled=e.a.entry_context_enabled,price_context=sig.get('price_context'),
+            stable_position_book_confirmation=e.a.stable_position_book_confirmation,
             additional_reason_codes=codes,gates=gates,current_price=current,entry_price=entry,
             invalidation=p.get('initial_stop',sig.get('stop')),protection=p.get('stop'),quantity=qty,
             invalidation_price=p.get('initial_stop',sig.get('stop')),protection_price=p.get('stop'),

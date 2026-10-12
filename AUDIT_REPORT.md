@@ -1,5 +1,11 @@
 # 최신 감사: 2026-10-12 연속 운용과 진입 지연
 
+## 19:50 배포 인수 확인 및 quiet-book 추가 보완
+
+운영 entrycontext BUILD f41f98e는19:30:42 배포/코드9개SHA/compile/import/공식flat recovery를 완료했다. 보존: 계좌·주문·당일손실·예외예산·기존영수증. LIVE 승인/START/실주문0. 추가flag는 entry_context_enabled=true만이다. 사용자 화면 TypeError는 구GUI cached AutomationConfig가 새 설정을 읽은 문제였다. 구창 정상종료 및 창 없는 GUI 프로세스 정리 후 운영GUI 재열기19:50:09 확인: entrycontext BUILD/STOP/OFF/로컬 상태 정상/시작가능, TypeError 없음. 실제 GUI 재열기를 배포 완료 조건에 포함한다.
+
+추가 DEV quoteconfirm BUILD는3개 운영소스+새 기본OFF flag, 보유종목 standing-book REST cross-check를 추가한다. 원래 quote timestamp 보존, 새 HTTP receipt 별도, 정상WS/account/subscription·해당 거래소 route·원래0D timestamp 및 best prices/positive quantities exact match가 모두 필요하다. confirmation expiry/실패와 진짜disconnect emergency는 유지, 신규매수/봉/워밍업/보호선은 확장하지 않는다. 핵심105 및 전체928 PASS/FAIL0/ERROR0/SKIP0/syntax113/network0/orders0. 신규9, 기존919 유지. 실제 당시 REST full depth 미저장으로 과거 손실 방지효과 확정 불가. quote age를 receipt age로 단순 대체하지 않았다. 운영반영/ON 승인 전 개발본에만 존재한다.
+
 ## 19:27 최종 추가검증 / 승인된 배포와 데이터청산 복구
 
 사용자가 배포 및 entry_context ON 실험을 승인했다.19:21:24 정상STOP 완료, 봇보유·미체결·UNKNOWN0. 기존 공식 복구에 없는 데이터 비상청산 HALT는 사고 이후의 해당 BOT 청산기록과 전량FILLED SELL을 추가로 요구하는 수동복구 경로로 지원했다. 기존 STOP/idle·신규15초이내실계좌·계좌identity·외부보호잔고·미체결·UNKNOWN 조건은 유지하며 자동해제하지 않는다. 일일위험 또는 다른HALT는 해제하지 않는다. 코드추가 automation/recovery.py 및 신규4개테스트. 최종919 PASS/FAIL0/ERROR0/SKIP0/syntax112, 실제network/orders/program-start0. 대상46 PASS. 앞선915와 이후복구4개를 구분한다.

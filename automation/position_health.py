@@ -59,7 +59,7 @@ class PositionDataHealth:
         if not p or p.get('ownership','BOT')!='BOT':return False
         age=self.age(book.get('time'),current)
         bid=book.get('best_bid',book.get('bid',0));ask=book.get('best_ask')
-        if age is None or age>e.c.position_stale_seconds or not isinstance(bid,(int,float)) or not math.isfinite(bid) or bid<=0:return False
+        if age is None or not isinstance(bid,(int,float)) or not math.isfinite(bid) or bid<=0:return False
         if source=='0D' and (not isinstance(ask,(int,float)) or not math.isfinite(ask) or ask<bid):return False
         if source=='ka10004':
             if e.current_session()=='AFTER':
@@ -68,9 +68,14 @@ class PositionDataHealth:
                         or not '16:00:00'<=book.get('time','')[11:19]<'20:00:00'
                         or not isinstance(ask,(int,float)) or not math.isfinite(ask) or ask<bid):return False
             elif e.current_session()!='REGULAR' or not book.get('regular') or book.get('status',{}).get('pass') is False:return False
+        confirmed=False
+        if age>e.c.position_stale_seconds:
+            confirmed=source=='ka10004' and self.confirm_unchanged_book(symbol,book,current)
+            if not confirmed:return False
         prior=self.quotes.get(symbol)
         if prior and self.age(prior['time'],current) is not None and self.age(prior['time'],current)<age:return False
         self.quotes[symbol]={'time':book['time'],'bid':bid,'ask':ask,'source':source}
+        if confirmed:self.quotes[symbol].update(snapshot_confirmed_at=book['received_at'],confirmation='MATCHED_STANDING_BOOK')
         p['last_quote']=dict(self.quotes[symbol]);e.prices[symbol]=bid
         self.waiting.pop(symbol,None)
         self.account.position_symbols=frozenset(set(self.account.position_symbols)-{symbol})
@@ -79,6 +84,28 @@ class PositionDataHealth:
         if bid<=emergency:
             e.request_exit(symbol,'호가 급락/유동성 붕괴')
         return True
+
+    def confirm_unchanged_book(self,symbol,book,current):
+        """Confirm a standing book via a NEW read, not by relabeling its quote timestamp.
+
+        This is position management only. Entry freshness still uses the original
+        market timestamp and cannot consume this separate confirmation.
+        """
+        e=self.engine
+        if not getattr(e.a,'stable_position_book_confirmation',False):return False
+        received_age=self.age(book.get('received_at'),current)
+        ws_age=self.age(self.feed.last_message_at,current)
+        if (received_age is None or received_age>e.c.position_stale_seconds or not e.connected or not e.account_ok
+                or ws_age is None or ws_age>max(e.c.position_stale_seconds*2,e.c.reconcile_seconds*3)
+                or time.monotonic()-e.last_account>e.c.reconcile_seconds*3
+                or symbol not in self.subscriptions.symbols or symbol in self.subscriptions.waiting):return False
+        if book.get('source')!='ka10004' or book.get('requested_symbol')!=symbol+{'KRX':'','NXT':'_NX','SOR':'_AL'}.get(book.get('venue'),'INVALID'):return False
+        with self.feed.subscription_lock:prior=dict(self.feed.orderbooks.get(symbol,{}) or {})
+        if prior.get('time')!=book.get('time'):return False
+        for key in ('best_bid','best_ask','bid_qty','ask_qty'):
+            value=book.get(key)
+            if not isinstance(value,(int,float)) or not math.isfinite(value) or value<=0 or value!=prior.get(key):return False
+        return bool(prior.get('depth_available'))
 
     def trade_seen(self,symbol):
         self.waiting.pop(symbol,None)
@@ -91,6 +118,7 @@ class PositionDataHealth:
         if book:self.accept_book(symbol,book,current)
         quote=self.quotes.get(symbol,{})
         quote_age=self.age(quote.get('time'),current)
+        confirmation_age=self.age(quote.get('snapshot_confirmed_at'),current)
         ws_age=self.age(self.feed.last_message_at,current)
         account_age=time.monotonic()-e.last_account
         subscribed=symbol in self.subscriptions.symbols and symbol not in self.subscriptions.waiting
@@ -99,12 +127,16 @@ class PositionDataHealth:
         evidence={'checked_at':current.isoformat(),'last_tick_age':self.age(position.get('last_tick'),current),'quote_age':quote_age,
                   'quote_source':quote.get('source'),'ws_heartbeat_age':ws_age,'connected':e.connected,
                   'account_age':account_age,'account_ok':e.account_ok,'subscription_state':'ACTIVE' if subscribed else 'PENDING_OR_ABSENT',
-                  'event_loop_lag':getattr(e,'event_loop_lag',None)}
+                  'event_loop_lag':getattr(e,'event_loop_lag',None),
+                  'snapshot_confirmation_age':confirmation_age,'snapshot_confirmation':quote.get('confirmation')}
         # A real disconnect must not be excused by a previously cached book.
         if not e.connected:
             reason='GLOBAL_DISCONNECTED';exit_now=True
         elif quote_age is not None and quote_age<=e.c.position_stale_seconds and ws_fresh and subscribed:
             reason='TRADE_QUIET_QUOTE_FRESH';exit_now=False;self.waiting.pop(symbol,None)
+        elif (quote.get('confirmation')=='MATCHED_STANDING_BOOK' and confirmation_age is not None
+                and confirmation_age<=e.c.position_stale_seconds and ws_fresh and account_fresh and subscribed):
+            reason='TRADE_QUIET_REST_BOOK_CONFIRMED';exit_now=False;self.waiting.pop(symbol,None)
         else:
             first=self.waiting.setdefault(symbol,current)
             grace=max(e.c.position_stale_seconds,e.c.reconcile_seconds*3)
