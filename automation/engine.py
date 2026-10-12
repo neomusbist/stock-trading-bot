@@ -272,6 +272,14 @@ class AutonomousEngine(ExistingExits,Engine):
 
     def entry_market_reason(self,signal,quantity,fallback=None,phase='PRE_INTENT'):
         """No I/O: recheck latest receiver state immediately before a BUY leaves the process."""
+        if self.a.confirmed_box_direction and signal.get('pattern')=='C':
+            from automation.trade_quality import box_direction
+            try:
+                passed,evidence=box_direction(signal.get('decision_bar_snapshot'),datetime.fromisoformat(signal['time']),self.a.box_min_bars)
+                proof=signal.get('evaluation_gates',{}).get('box_direction',{})
+                if passed is not True or proof!={'result':'PASS','values':{'enabled':True,**evidence}}:
+                    return 'BOX_DIRECTION_PROOF_MISSING_OR_INVALID'
+            except (KeyError,TypeError,ValueError):return 'BOX_DIRECTION_PROOF_MISSING_OR_INVALID'
         if self.a.entry_context_enabled and signal.get('pattern') in {'A','B','C'}:
             proof=signal.get('evaluation_gates',{}).get('entry_context',{})
             values=proof.get('values',{})
@@ -590,7 +598,34 @@ class AutonomousEngine(ExistingExits,Engine):
             intraday_trade_sequence=p['signal'].get('daily_attempt'),same_symbol_attempt=p['signal'].get('symbol_attempt'))
         return trade
 
+    def observe_protection_bar(self,symbol,bar):
+        """Keep at most three real completed post-entry bars in the existing position journal."""
+        if not self.a.confirmed_structure_protection:return
+        p=self.s['positions'].get(symbol)
+        if not p:return
+        from automation.trade_quality import complete_sequence
+        valid=complete_sequence([bar],self.clock(),1)
+        if not valid:return
+        try:opened=datetime.fromisoformat(p['opened'])
+        except (KeyError,TypeError,ValueError):return
+        b=valid[0]
+        if b['time']<opened:return
+        stamp=b['time'].isoformat()
+        previous=p.get('protection_bars',[])
+        if previous and stamp<=previous[-1]['time']:return
+        p['protection_bars']=(previous+[{**b,'time':stamp}])[-3:]
+        self.save()
+
     def protection(self,p,price,completed_low):
+        if self.a.confirmed_structure_protection:
+            from automation.trade_quality import confirmed_protection
+            high,stop,evidence=confirmed_protection(self.c,self.a,p,price,self.clock())
+            evidence['effective_stop']=stop
+            p['protection_evidence']=evidence
+            if stop>p['stop']:
+                p['confirmed_protection_low']=evidence['pivot_low']
+                p.setdefault('stop_history',[]).append({'time':self.clock().isoformat(),'stop':stop,'evidence':dict(evidence)})
+            return high,stop
         high,stop=super().protection(p,price,completed_low)
         core_stop=stop;active=high-p['avg']>=self.c.protect_at_r*p['initial_r']
         giveback=floor_tick(p['avg']+(high-p['avg'])*(1-self.a.unrealized_giveback_fraction)) if active else None

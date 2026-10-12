@@ -34,8 +34,8 @@ class V13RiskIdentityTests(unittest.TestCase):
                 (self.engine.folder/'events.jsonl').read_text(encoding='utf-8').splitlines()]
 
     def test_identity_separates_signal_rules_and_risk_experiment(self):
-        self.assertEqual(BUILD_ID, 'V1.3-risk2-watch12-bc20M-quoteconfirm-20261012')
-        self.assertEqual(STRATEGY_VERSION, 'V1.3-confirmed-intraday-room-20261012')
+        self.assertEqual(BUILD_ID, 'V1.3-risk2-watch12-bc20M-tradequality-20261012')
+        self.assertEqual(STRATEGY_VERSION, 'V1.3-confirmed-box-swing-protection-20261012')
         self.assertIn('risk2', STRATEGY_EXPERIMENT)
         self.assertIn('daily4', STRATEGY_EXPERIMENT)
         self.assertIn('20261007', STRATEGY_EXPERIMENT)

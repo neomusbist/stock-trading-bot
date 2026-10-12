@@ -303,6 +303,7 @@ class PatternDetector(Detector):
             score=price_gates['economic']['values']['score']
             gates.update({key:price_gates[key] for key in ('breakout','chase','invalidation','risk_reward','resistance','order_price','economic')})
             if 'entry_context' in price_gates:gates['entry_context']=price_gates['entry_context']
+            if 'box_direction' in price_gates:gates['box_direction']=price_gates['box_direction']
             gates['liquidity']=trial['gates']['liquidity']
             gates['acceleration']={**gates['acceleration'],'required':name=='A','scope':'ENTRY_GATE' if name=='A' else 'OBSERVATION_ONLY'}
             gates['pattern']=gate(True,setup=name,acceleration_required=name=='A')
@@ -387,6 +388,10 @@ class PatternDetector(Detector):
             result['entry_context']=gate(rr is not None and rr>=c.min_reward_risk,
                 enabled=True,reason='CONFIRMED_INTRADAY_RESISTANCE_RR' if peak and (rr is None or rr<c.min_reward_risk) else None,
                 original_target=original_target,target=target,required_rr=c.min_reward_risk,calculated_rr=rr,**references)
+        if self.a.confirmed_box_direction and setup['pattern']=='C':
+            from automation.trade_quality import box_direction
+            passed,evidence=box_direction(bars,t.time,self.a.box_min_bars)
+            result['box_direction']=gate(passed,enabled=True,**evidence)
         return result
 
     @observation_locked

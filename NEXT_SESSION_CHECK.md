@@ -1,5 +1,17 @@
 # 다음 운용 전 현재 기준
 
+## 2026-10-12 20:46 최신 우선 사항
+
+운영본은 `V1.3-risk2-watch12-bc20M-entrycontext-20261012`, STOP/OFF, 로컬 장부의 봇보유·미체결·UNKNOWN0, HALT 없음. 이것은 현재 실계좌 재조회 결과와 구분한다. 새 개발 후보 tradequality는 자동 LIVE에 올리지 않는다. quoteconfirm 단독3파일 배포안은 더 넓은 정책 변경안과 합치기 전에 사용자 승인을 다시 확인해야 한다.
+
+개발 후보의 confirmed_box_direction / confirmed_structure_protection / stable_position_book_confirmation은 기본 false. 승인된 선택만 ON으로 반영하고 다른 설정, 주문 장부와 영수증은 보존한다. 수익보호 변경은 이익반납 확대 가능성이 있으며 수익성 미검증이다. 적용 전 최종 전체 PASS·fresh 실계좌 대조·idle·백업·파일SHA 일치가 필요하다. 새 GUI를 닫았다가 재열어 실제 BUILD와 설정 스키마를 확인한다. 새 BUILD 당일 LIVE는 사용자가 직접 승인한다.
+
+10/12 한정 위험예산 예외는10/13 KST에 자동 만료되어 기본 일일4%로 돌아가야 한다. 오늘 손실을 오늘 중 지우거나 내일 예외로 연장하지 않는다. 승인자본81,300원·거래당2%·WATCH12·동시1·일/종목/연속손실 횟수 null을 확인한다. 기존 same-symbol cooldown900초는 이번 품질 실험에서 변경하지 않는다. 기존 일봉/돌파/비용/주문 안전조건을 추가 승인 없이 완화하지 않는다.
+
+진입 시간 감사에서 candidate_detected_at은 최신 radar cycle일 수 있다. 최초 발견을 증명하는 RAW/WATCH/실제수신 기록과 구분한다. 5/15분 시장상태가 UNKNOWN이면 사후 차트를 붙여 당시 알았던 것으로 만들지 않는다. 새 C방향 gate는 시장 전체 국면 판정이나 초기 급등 전략의 완성을 뜻하지 않는다.
+
+## 아래는 이전 인계 기록
+
 현재 후보 코드는 별도 fix/weekend-stabilization-20261008 분기의 안정화 BUILD다. 운영본에 아직 배포하지 않았으며 아래 예전 max_entries3/cap20000 절차를 최신 운영값으로 적용하지 않는다. 현재 승인자본은 실제 사용자 승인값과 실제 현금으로 동적으로 산정한다. 장중 제거한 일/종목/연속손실 횟수 제한 패치를 보존한다. risk2/daily4/maxposition1은 유지.
 
 1. 최신 V1.3_HANDOFF_20261007.md 마지막 체크포인트와 최종 regression6 결과(833 PASS/0FAIL/0ERROR/0SKIP, syntax98, network0)를 읽는다. 새 BUILD에는 새 당일 hash 결합 명시 승인이 필요하며 과거 receipt를 복사하지 않는다.

@@ -1,3 +1,15 @@
+# 2026-10-12 20:48 tradequality 개발 검증
+
+BUILD `V1.3-risk2-watch12-bc20M-tradequality-20261012` / STRATEGY `V1.3-confirmed-box-swing-protection-20261012`.
+기존928 + 신규21 = **949 PASS / FAIL0 / ERROR0 / SKIP0**, syntax115 / errors0, 104.97초.
+핵심114개는 전체에 포함되며 합산하지 않는다. 네트워크0 / 실제주문0 / 운영 프로그램 시작 false. 독립 소스 개발본·가짜 브로커·임시 장부·오프스크린 Qt 사용. 기본 OFF 두 전략 flag 및 기존 quiet-book flag는 승인 전 운영 ON으로 바꾸지 않는다.
+
+새 검사는 C 하락하는 좁은 범위 차단과 실제 flat box 주문경계, 증거 누락/변조/미래/공백봉, A/B 및 비활성 C 호환, RR/Economic/risk 기존 차단, WATCH 준비순위 및 한국어 사유, 진입 후 확인된 higher-low만 stop 상향, 기존 stop 절대 하향 금지, 비용상 수익이 아닌 stop 거부, 초기 무효화/호가급락/STOP_FLAT/마감 청산, 장부·동일설정 재시작 및 새 flag ON 상태5회 연속 거래 후 정상대기 복귀를 검증한다.
+
+처음 새 검사에서 STOP_FLAT 후 controls를 호출하지 않은 fixture와, SIGNAL_READY fixture의 entry_ready 누락을 수정했다. 기존 stop/주문/위험 규칙과 assertion을 완화하지 않았다. 최종114/949는 이 수정 후 결과이다. 기능검사 통과는 전략 수익성 검증을 뜻하지 않는다. 실제8개 pre-entry snapshot 조건 replay에서 방향만1건 차단, 기존저항/비용과 결합6건(기존손실4/수익2) 차단. 실제 전체 post-entry 봉 미저장으로 새 exit 결과는 UNKNOWN, 대체 체결/손익을 만들지 않았다.
+
+## 아래는 이전 검증 기록
+
 # 2026-10-08 안정화: 최종 오프라인 검증 완료 / 운영 미배포
 
 최종 코드 기준 전체 regression6: **833 PASS / 0 FAIL / 0 ERROR / 0 SKIP**. 시작 보존 기준 797개 + 신규 36개. syntax 98개 정상. 실제 네트워크 시도 0 / 실제 주문 0 / 운영 프로그램 시작 0. 관련 대상 63 PASS는 전체에 포함되므로 합산하지 않는다. 마지막 전체 실행 약 148.30초. 초기 실패·오류 및 수정 근거는 아래 역사 기록과 개발 검증 산출물에 보존했다. 삭제/skip한 기존 검사는 없다.
