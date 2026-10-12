@@ -4,6 +4,7 @@ import math
 import os
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -113,7 +114,8 @@ class Gateway:
     def recovery_snapshot(self):
         # Only account reads; no order submission/cancellation API is exposed.
         # recover_halt holds idle runner locks before calling this method.
-        if self.service.running():raise ValueError('ACCOUNT_PROBE_REQUIRES_STOPPED_RUNNER')
+        if getattr(self.service,'_idle_thread',None)!=threading.get_ident():
+            raise ValueError('ACCOUNT_PROBE_REQUIRES_STOPPED_RUNNER_IDLE_LOCK')
         import main
         from core.broker import Rest
         cfg=load_config(self.service.root/'config.json')
@@ -127,7 +129,7 @@ class Gateway:
 
 class OperatorService:
     def __init__(self,root=ROOT,clock=now,gateway=None,sleep=time.sleep,monotonic=time.monotonic):
-        self.root=Path(root); self.clock=clock; self.sleep=sleep; self.monotonic=monotonic; self.child=None
+        self.root=Path(root); self.clock=clock; self.sleep=sleep; self.monotonic=monotonic; self.child=None; self._idle_thread=None
         self.gateway=gateway or Gateway(self)
     def settings(self):
         return load_config(self.root/'config.json'),load_automation(self.root/'automation.json'),read_json(self.root/'runtime/automation_policy.json',
@@ -151,7 +153,9 @@ class OperatorService:
     @contextmanager
     def idle(self):
         with ProcessLock(self.root/'runtime/supervisor.lock'),ProcessLock(self.root/'runtime/process.lock'),ProcessLock(self.root/'runtime/operator_runner.lock'):
-            yield
+            self._idle_thread=threading.get_ident()
+            try:yield
+            finally:self._idle_thread=None
     def running(self):
         return self.process_info()['running']
     def process_info(self):

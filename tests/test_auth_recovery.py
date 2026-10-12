@@ -1,10 +1,12 @@
 """No network: invalid-token recovery is for reads, never order retransmission."""
-import contextlib,os,threading,unittest
+import contextlib,os,threading,unittest,tempfile
+from pathlib import Path
+from types import SimpleNamespace
 from datetime import timedelta
 from unittest.mock import Mock,patch
 from core.broker import Rest,Rejected
 from core.settings import Config,now
-from operator_service import Gateway
+from operator_service import Gateway,OperatorService
 
 BAD={'return_code':3,'return_msg':'인증에 실패했습니다[8005:Token이 유효하지 않습니다]'}
 GOOD={'return_code':0,'value':'read-only'}
@@ -75,5 +77,23 @@ class AuthenticationRecoveryTests(unittest.TestCase):
         def read():self.assertTrue(locked);return GOOD
         with patch.object(gateway,'_snapshot_stopped',side_effect=read):self.assertEqual(gateway.snapshot(),GOOD)
         self.assertEqual(locked,[])
+    def test_official_recovery_reads_under_own_idle_lock_not_false_running(self):
+        with tempfile.TemporaryDirectory() as folder:
+            service=OperatorService(Path(folder));gateway=Gateway(service)
+            rest=Mock();rest.identity='FAKE-IDENTITY';rest.snapshot.return_value={'orders':[],'holdings':{},'cash':0}
+            with patch('operator_service.load_config',return_value=Config()),patch('main.load_credentials'),patch('core.broker.Rest',return_value=rest):
+                with service.idle():
+                    self.assertTrue(service.running())  # busy sees our own OS locks.
+                    result=gateway.recovery_snapshot()
+                    self.assertEqual(result['account_identity'],'FAKE-IDENTITY')
+                    errors=[]
+                    def other_thread():
+                        try:gateway.recovery_snapshot()
+                        except ValueError as e:errors.append(str(e))
+                    thread=threading.Thread(target=other_thread);thread.start();thread.join()
+                    self.assertEqual(errors,['ACCOUNT_PROBE_REQUIRES_STOPPED_RUNNER_IDLE_LOCK'])
+                self.assertIsNone(service._idle_thread)
+                with self.assertRaisesRegex(ValueError,'IDLE_LOCK'):gateway.recovery_snapshot()
+            self.assertEqual(rest.snapshot.call_count,1)
 
 if __name__=='__main__':unittest.main()

@@ -1,5 +1,13 @@
 # 최신 감사: 2026-10-12 연속 운용과 진입 지연
 
+## 14:41 배포 체크포인트 / 전략 개선 완료와 구분
+
+사용자는 기존 포지션 정상 정리 뒤 배포하고 새BUILD를 직접 승인하겠다고 명시했다.14:33:51 flat/active0/HALT없음을 확인하고 정상STOP·idle 이후 인증/실계좌 잔고/미체결을 대조했다.14:34:15 source323875d의 code10개를 observation BUILD로 배포했다. config/automation/observation/승인receipt hash 불변, day/orders/trades/daily_loss 보존, 실제 주문/START/대리LIVE승인0. code-onlybackup observation_auth_code_20261012_143208. 교체10개 SHA256 일치, application45개 syntax 및 내용일치; 기존6개는 LF/CRLF 차이만이라 그대로 보존했다.
+
+복구 뒤 삼표 C가14:29:21 다시7,590원4주 체결되어14:33:24 7,480원에 구조청산, 비용모델 손익-508.882. 이 정상 청산은 HALT없이 대기로 복귀했다. 오늘5개 실제 매수는 모두C이며, 오늘 모델 순손익-1,648.235, gross daily_loss2,880.266. 실제broker현금78,536 및 모델cash가 같다는 주장은 하지 않는다. 손실예산은 이익으로 복원하지 않는 기존정책이다. 이 거래는 관측/장부 안정화만으로 C의 진입 품질이 개선됐다고 말할 수 없음을 보여준다.
+
+추가 최종경계: Gateway recovery는 공식 recover_halt가 잡은 idle OS locks 자체를 running으로 오인하면 안 된다. 자기thread가 idle context를 보유한 때만 recovery snapshot을 허용하고, 다른thread/독립호출은 차단한다. 실제 OS lock을 가진 공식경로+다른thread거절 targeted 검증을 추가했다. 최종881 PASS/FAIL0/ERROR0/SKIP0, syntax108 정상, network/orders/program-start0. 마지막 operator_service 보정의 최소 배포를 준비한다. 일반시작/현재 HALT없는 매매경로를 대신 승인하거나 자동START하지 않는다.
+
 ## 14:28 추가 인증 사고 / 운영과 독립 점검의 격리
 
 14:10:28 배포 준비용 독립 조회가 OAuth 토큰을 발급한 뒤, 운영 계좌 조회는14:10:34부터 return_code3 / `8005:Token이 유효하지 않습니다`를 반복했다. 토큰 발급과 실패의 시간관계, 이전 runner가 계속 사용한 메모리 토큰을 대조하면 독립 인증이 운영 토큰을 무효화했을 가능성이 높다. 이 점검은 작업자가 실행한 것으로, 운영 중 독립 인증은 올바른 읽기 전용 검사 방식이 아니다. 서버가 이전 토큰을 폐기한 원본 이벤트는 없으므로 인과를 완전 입증했다고 표현하지 않는다.
