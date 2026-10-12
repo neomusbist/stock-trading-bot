@@ -3,8 +3,8 @@ import copy,unittest
 from datetime import timedelta
 from unittest.mock import Mock,patch
 from automation.runner import latest_evaluation_watch,evaluate_actual_entry
-import test_after_runtime_audit as radar_fixture
-import test_subscription_refresh as entry_fixture
+import tests.test_after_runtime_audit as radar_fixture
+import tests.test_subscription_refresh as entry_fixture
 
 class RadarRefreshTests(unittest.TestCase):
     setUp=radar_fixture.RuntimeAuditRegressionTests.setUp

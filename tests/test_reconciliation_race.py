@@ -8,7 +8,7 @@ from core.settings import Config, KST, ROOT
 from core.strategy import Tick
 from automation.policy import AutomationConfig, Policy
 from automation.engine import AutonomousEngine
-from test_automation import FakeBroker
+from tests.test_automation import FakeBroker
 
 START = datetime(2026, 10, 6, 12, 19, 19, tzinfo=KST)
 

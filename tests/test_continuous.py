@@ -116,7 +116,7 @@ class ContinuousTests(unittest.TestCase):
     def test_armed_continuous_signals_keep_logging_without_orders(self):
         self.s.start_continuous(); e,broker=self.engine()
         for _ in range(3): e.enter(self.signal(e),self.tick()); self.clock[0]+=timedelta(seconds=e.a.decision_snapshot_seconds+1)
-        events=[json.loads(x) for x in (e.folder/'events.jsonl').read_text().splitlines()]
+        events=[json.loads(x) for x in (e.folder/'events.jsonl').read_text(encoding='utf-8').splitlines()]
         self.assertGreaterEqual(sum(x.get('event')=='ENTRY_EVAL' for x in events),3)
         self.assertTrue(all(x.get('decision')=='NO_BUY' for x in events if x.get('event')=='ENTRY_EVAL'))
         self.assertEqual(broker.orders,[]); self.assertFalse(e.s['positions'])
@@ -235,7 +235,7 @@ class ContinuousTests(unittest.TestCase):
             result=runner.run(Config(),self.root,seconds=0)
         self.assertEqual(result['counts']['ticks'],3); self.assertEqual(result['counts']['radar_cycles'],2)
         self.assertEqual(result['real_orders_sent'],0); fake.submit.assert_not_called(); feed.close.assert_called_once()
-        events=[json.loads(x) for x in (self.root/'runtime/automation-production/events.jsonl').read_text().splitlines()]
+        events=[json.loads(x) for x in (self.root/'runtime/automation-production/events.jsonl').read_text(encoding='utf-8').splitlines()]
         self.assertGreaterEqual(sum(x.get('event')=='ENTRY_EVAL' for x in events),3)
 
     def test_popen_handshake_uses_single_existing_supervisor_wrapper(self):

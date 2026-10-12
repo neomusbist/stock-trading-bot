@@ -68,6 +68,7 @@ class CapitalRetirementTests(unittest.TestCase):
         # 2. 다른 종목의 INTENT가 남아있으면 신규 BUY 차단 (Fail-Closed, 0 additional broker calls)
         self.engine = self.make_engine()
         self.engine.reconcile(self.snapshot); self.engine.connected = True; self.engine.market = '3'
+        self.engine.s['orders'].clear()
         self.engine.s['orders']['foreign_intent'] = {
             'local': 'foreign_intent', 'id': '', 'symbol': '005930', 'side': 'BUY',
             'qty': 1, 'limit': 2500, 'filled': 0, 'amount': 0., 'status': 'INTENT',
@@ -81,6 +82,7 @@ class CapitalRetirementTests(unittest.TestCase):
         # 3. 다른 종목의 UNKNOWN이 남아있으면 신규 BUY 차단 (Fail-Closed, 0 additional broker calls)
         self.engine = self.make_engine()
         self.engine.reconcile(self.snapshot); self.engine.connected = True; self.engine.market = '3'
+        self.engine.s['orders'].clear()
         self.engine.s['orders']['foreign_unknown'] = {
             'local': 'foreign_unknown', 'id': 'REAL-UNK', 'symbol': '005930', 'side': 'BUY',
             'qty': 1, 'limit': 2500, 'filled': 0, 'amount': 0., 'status': 'UNKNOWN',
@@ -94,11 +96,14 @@ class CapitalRetirementTests(unittest.TestCase):
         # 4. HALT 존재 시 신규 BUY 차단 (Fail-Closed, 0 additional broker calls)
         self.engine = self.make_engine()
         self.engine.reconcile(self.snapshot); self.engine.connected = True; self.engine.market = '3'
+        self.engine.s['orders'].clear()
         self.engine.halt('MANUAL_HALT_TEST')
         broker_count_before = len(self.broker.orders)
         o_halt_blocked = self.engine.enter(self.small_signal('999990'), self.tick(2500, '999990'))
         self.assertIsNone(o_halt_blocked)
         self.assertEqual(len(self.broker.orders), broker_count_before)
+        last_eval = next(iter(self.engine.decisions.last.values()))[0]
+        self.assertIn('NO_BUY_ACCOUNT_OR_CONNECTION', last_eval)
     def test_2500_current_risk_rejects_with_precise_reason(self):
         s=self.quantities(); self.assertEqual(s['capital_quantity'],1); self.assertEqual(s['risk_quantity'],0)
         self.assertEqual(s['reason_code'],'RISK_BUDGET_ZERO_QTY'); self.assertEqual(s['risk_budget'],9)

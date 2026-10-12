@@ -19,7 +19,7 @@ class ShadowTests(unittest.TestCase):
   self.s.update([self.row()],self.start);self.s.tick(self.tick(),self.start);self.assertIn('001210',self.s.detector.last);self.assertTrue(all(v['SHADOW_ONLY'] for _,v in self.events))
  def test_no_order_surface_or_live_dispatch(self):
   self.assertFalse(hasattr(self.s,'broker'));self.assertFalse(hasattr(self.s,'engine'));self.assertFalse(hasattr(self.s,'enter'))
-  root=Path(__file__).resolve().parents[1];s=(root/'automation/runner.py').read_text();self.assertIn('received,real_symbols,lookup',s);self.assertNotIn('engine.enter(', (root/'automation/shadow_observation.py').read_text())
+  root=Path(__file__).resolve().parents[1];s=(root/'automation/runner.py').read_text(encoding='utf-8');self.assertIn('received,real_symbols,lookup',s);self.assertNotIn('engine.enter(', (root/'automation/shadow_observation.py').read_text(encoding='utf-8'))
  def test_source_changes_preserve_fresh_buffers_and_completed_bars(self):
   self.s.update([self.row()],self.start);self.s.tick(self.tick(),self.start);buf=self.s.detector.buffers['001210'];self.s.update([self.row(2,'WATCH')],self.start+timedelta(seconds=1));self.s.update([self.row()],self.start+timedelta(seconds=2));self.assertIs(buf,self.s.detector.buffers['001210']);self.assertEqual(self.events[-1][1]['data_action'],'RETAIN_FRESH')
   self.setUp();self.s.update([self.row()],self.start)

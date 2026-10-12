@@ -1,0 +1,303 @@
+{
+  "timestamp": "2026-10-13T03:14:39.124005",
+  "total_saved_bytes": 4613291260,
+  "total_saved_mb": 4399.58,
+  "total_saved_gb": 4.296,
+  "files_processed": [
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\radar_latest.json.emyxy9d_.tmp",
+      "size_bytes": 163960,
+      "note": "Grade C: Orphan .tmp crash write file"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\operator_console.txt.20261008-083244-512591.4388.72276859",
+      "size_bytes": 367451312,
+      "note": "Grade B: Compressed into archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\radar_history.jsonl.20261008-083250-422753.13444.d2426a42",
+      "size_bytes": 165607714,
+      "note": "Grade B: Compressed into archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\radar_history.jsonl.20261008-123726-215659.11884.dc7a7e55",
+      "size_bytes": 67329550,
+      "note": "Grade B: Compressed into archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\radar_history.jsonl.20261008-162553-433477.2516.af705542",
+      "size_bytes": 67155437,
+      "note": "Grade B: Compressed into archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\radar_history.jsonl.20261008-192206-550383.2516.458531d0",
+      "size_bytes": 67300959,
+      "note": "Grade B: Compressed into archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261008-083253-696432.13444.f2d5128e",
+      "size_bytes": 361514144,
+      "note": "Grade B: Compressed into archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261008-095057-459984.15008.c3afb89c",
+      "size_bytes": 67113588,
+      "note": "Grade B: Compressed into archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261008-104751-597391.14840.b9a4248c",
+      "size_bytes": 67109236,
+      "note": "Grade B: Compressed into archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261008-112825-677355.3056.17c7ba1c",
+      "size_bytes": 67109966,
+      "note": "Grade B: Compressed into archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261008-120816-271049.14852.6ce0a6d2",
+      "size_bytes": 67112329,
+      "note": "Grade B: Compressed into archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261008-125403-784892.11884.6dace4c1",
+      "size_bytes": 67109535,
+      "note": "Grade B: Compressed into archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261008-133206-738781.7668.5f809da5",
+      "size_bytes": 67109334,
+      "note": "Grade B: Compressed into archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261008-143238-692619.15240.5a082fb8",
+      "size_bytes": 67109018,
+      "note": "Grade B: Compressed into archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261008-150500-330400.15240.dd3ecea0",
+      "size_bytes": 67109653,
+      "note": "Grade B: Compressed into archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261008-162415-665103.2516.c8e5ee64",
+      "size_bytes": 67111421,
+      "note": "Grade B: Compressed into archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261008-172720-951451.2516.d5d3362a",
+      "size_bytes": 67112761,
+      "note": "Grade B: Compressed into archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261008-184424-797823.2516.b03c03ee",
+      "size_bytes": 67111960,
+      "note": "Grade B: Compressed into archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\operator_console.txt.20261012-083641-924473.1880.5cc190c1",
+      "size_bytes": 69051597,
+      "note": "Grade B: Compressed into archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\radar_history.jsonl.20261012-110936-109903.12392.aa95c165",
+      "size_bytes": 67410977,
+      "note": "Grade B: Compressed into archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\radar_history.jsonl.20261012-143237-240473.14932.101d0fcb",
+      "size_bytes": 67125112,
+      "note": "Grade B: Compressed into archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\radar_history.jsonl.20261012-182428-026101.7552.9317afcb",
+      "size_bytes": 67148558,
+      "note": "Grade B: Compressed into archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261012-090750-937911.12124.6914cf35",
+      "size_bytes": 67109016,
+      "note": "Grade B: Compressed into archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261012-100103-287649.2344.a1cee6c0",
+      "size_bytes": 67114522,
+      "note": "Grade B: Compressed into archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261012-104551-038689.12392.2c851cec",
+      "size_bytes": 67110705,
+      "note": "Grade B: Compressed into archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261012-111740-325205.7620.8f9e020d",
+      "size_bytes": 67110853,
+      "note": "Grade B: Compressed into archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261012-121643-862200.4456.9949684f",
+      "size_bytes": 67111434,
+      "note": "Grade B: Compressed into archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261012-124655-650608.10044.9cf824e2",
+      "size_bytes": 67111898,
+      "note": "Grade B: Compressed into archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261012-131323-279528.10044.8c568997",
+      "size_bytes": 67109078,
+      "note": "Grade B: Compressed into archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261012-134130-020313.13212.1da97587",
+      "size_bytes": 67109026,
+      "note": "Grade B: Compressed into archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261012-140754-461183.13212.7088f999",
+      "size_bytes": 67108912,
+      "note": "Grade B: Compressed into archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261012-145948-681795.14144.79fe4bbc",
+      "size_bytes": 67111155,
+      "note": "Grade B: Compressed into archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261012-165527-896288.7552.f73ecaf9",
+      "size_bytes": 67115360,
+      "note": "Grade B: Compressed into archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\archive\\shadow_events.jsonl.20261012-182922-133150.7552.f2e0a3f6",
+      "size_bytes": 67109054,
+      "note": "Grade B: Compressed into archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261008-083247-648128.13444.df72b11d",
+      "size_bytes": 360215842,
+      "note": "Grade B: Compressed into prod_archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261008-094519-713840.15008.a562238a",
+      "size_bytes": 67151365,
+      "note": "Grade B: Compressed into prod_archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261008-102839-506997.14840.f2eb8b57",
+      "size_bytes": 67113117,
+      "note": "Grade B: Compressed into prod_archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261008-113206-113266.3056.7b3d6cd6",
+      "size_bytes": 67109084,
+      "note": "Grade B: Compressed into prod_archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261008-123427-790957.11884.af80eb43",
+      "size_bytes": 67110512,
+      "note": "Grade B: Compressed into prod_archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261008-132706-206815.7668.3d769553",
+      "size_bytes": 67108977,
+      "note": "Grade B: Compressed into prod_archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261008-143624-762705.15240.6d384499",
+      "size_bytes": 67141835,
+      "note": "Grade B: Compressed into prod_archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261008-151544-127632.15240.49cbbd01",
+      "size_bytes": 67112398,
+      "note": "Grade B: Compressed into prod_archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261008-163828-276874.2516.c80b13fb",
+      "size_bytes": 67117955,
+      "note": "Grade B: Compressed into prod_archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261008-172854-966775.2516.eb2873ec",
+      "size_bytes": 67109071,
+      "note": "Grade B: Compressed into prod_archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261008-181655-024839.2516.9c09a8ed",
+      "size_bytes": 67109831,
+      "note": "Grade B: Compressed into prod_archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261008-191406-621193.2516.c8c0afd8",
+      "size_bytes": 67110534,
+      "note": "Grade B: Compressed into prod_archive_20261008.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261012-092710-913314.15288.55dbc75e",
+      "size_bytes": 67110111,
+      "note": "Grade B: Compressed into prod_archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261012-100637-105597.2344.4be61241",
+      "size_bytes": 67129347,
+      "note": "Grade B: Compressed into prod_archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261012-105821-028176.12392.9b7af1fc",
+      "size_bytes": 67117252,
+      "note": "Grade B: Compressed into prod_archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261012-120136-893099.4456.1f816178",
+      "size_bytes": 67109843,
+      "note": "Grade B: Compressed into prod_archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261012-123851-674643.10044.582213c3",
+      "size_bytes": 67311131,
+      "note": "Grade B: Compressed into prod_archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261012-130821-168297.10044.0798c10e",
+      "size_bytes": 67109007,
+      "note": "Grade B: Compressed into prod_archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261012-134209-230623.13212.eb56b8ae",
+      "size_bytes": 67117491,
+      "note": "Grade B: Compressed into prod_archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261012-142833-791904.14932.5d01935b",
+      "size_bytes": 67123016,
+      "note": "Grade B: Compressed into prod_archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261012-161916-608366.7552.dabf9bcf",
+      "size_bytes": 67126305,
+      "note": "Grade B: Compressed into prod_archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261012-165517-276169.7552.5d95e024",
+      "size_bytes": 67136424,
+      "note": "Grade B: Compressed into prod_archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261012-173306-959437.7552.0d0a59f6",
+      "size_bytes": 67115939,
+      "note": "Grade B: Compressed into prod_archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261012-180710-975639.7552.22e81b63",
+      "size_bytes": 67136198,
+      "note": "Grade B: Compressed into prod_archive_20261012.zip"
+    },
+    {
+      "path": "%USERPROFILE%\\Desktop\\주식자동매매\\runtime\\automation-production\\archive\\events.jsonl.20261012-184543-596456.7552.d173933d",
+      "size_bytes": 67130174,
+      "note": "Grade B: Compressed into prod_archive_20261012.zip"
+    }
+  ]
+}

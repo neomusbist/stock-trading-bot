@@ -5,7 +5,7 @@ from core.settings import KST
 from core.util import shared_binary_reader
 from core.event_log import append_jsonl
 from automation.observation_retention import ObservationRetention
-import test_subscription_refresh as fixtures
+import tests.test_subscription_refresh as fixtures
 
 class RetentionTests(unittest.TestCase):
     def test_capacity_and_roles_never_authorize_retained_or_drop_critical(self):
@@ -55,8 +55,8 @@ class SharedLogTests(unittest.TestCase):
             with shared_binary_reader(path) as reader:
                 append_jsonl(path,{'n':1},max_bytes=1)
                 self.assertEqual(json.loads(reader.read()),{'n':0})
-            self.assertEqual(json.loads(path.read_text()),{'n':1})
+            self.assertEqual(json.loads(path.read_text(encoding='utf-8')),{'n':1})
             archives=list((path.parent/'archive').iterdir());self.assertEqual(len(archives),1)
-            self.assertEqual(json.loads(archives[0].read_text()),{'n':0})
+            self.assertEqual(json.loads(archives[0].read_text(encoding='utf-8')),{'n':0})
 
 if __name__=='__main__':unittest.main()

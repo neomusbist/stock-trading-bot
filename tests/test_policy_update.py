@@ -229,7 +229,7 @@ class PolicyUpdateTests(unittest.TestCase):
     def test_session_end_preserves_real_quantity_and_order_intent(self):
         self.buy(); self.clock[0]=self.clock[0].replace(hour=15,minute=20)
         qty=self.engine.s['positions'][SYMBOL]['qty']; self.engine.timer(); self.engine.save()
-        state=json.loads(self.engine.path.read_text()); self.assertEqual(state['positions'][SYMBOL]['qty'],qty)
+        state=json.loads(self.engine.path.read_text(encoding='utf-8')); self.assertEqual(state['positions'][SYMBOL]['qty'],qty)
         self.assertEqual(len(self.broker.orders),1)
 
     def test_invalid_inputs_and_bad_symbol_rejected_before_intent(self):

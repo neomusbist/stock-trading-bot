@@ -50,6 +50,11 @@
 !/tools/session_audit.py
 !/tools/offline_benchmark.py
 !/tools/offline_regression.py
+!/TEST_AUDIT_REPORT.md
+!/STORAGE_AUDIT_REPORT.md
+!/HANDOFF.md
+!/tools/verify_fault_injection.py
+!/cleanup_audit_trail.json
 
 # Explicit exclusions remain effective even with later allow rules.
 .env

@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import Mock,patch
 from datetime import timedelta
 from websocket import WebSocketConnectionClosedException
-import test_subscription_refresh as fixtures
+import tests.test_subscription_refresh as fixtures
 
 class RefreshTransportTests(unittest.TestCase):
     setUp=fixtures.SubscriptionRefreshTests.setUp

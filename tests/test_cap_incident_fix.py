@@ -43,7 +43,7 @@ class CapIncidentTests(unittest.TestCase):
         p=self.p.refresh(); p['commands'].pop(-2); atomic_json(self.p.path,p)
         self.assertFalse(self.s._approval_basis(*self.s.settings()))
         self.setUp()
-        self.approved_then_changed(); cfg=json.loads((self.root/'config.json').read_text()); cfg['risk_fraction']=.004; atomic_json(self.root/'config.json',cfg)
+        self.approved_then_changed(); cfg=json.loads((self.root/'config.json').read_text(encoding='utf-8')); cfg['risk_fraction']=.004; atomic_json(self.root/'config.json',cfg)
         self.assertFalse(self.s._approval_basis(*self.s.settings()))
     def test_rejected_initial_pilot_does_not_erase_prior_pass(self):
         self.approved_then_changed(); before=self.s.pilot_proof()
@@ -61,10 +61,10 @@ class CapIncidentTests(unittest.TestCase):
     def test_error_traceback_and_history_preserved(self):
         try: raise PermissionError(13,'synthetic denied',str(self.root/'state.json'))
         except PermissionError as error: self.s.save_error(error)
-        r=json.loads((self.root/'runtime/operator_error.json').read_text())
+        r=json.loads((self.root/'runtime/operator_error.json').read_text(encoding='utf-8'))
         self.assertEqual(r['type'],'PermissionError'); self.assertIn('state.json',r['error']); self.assertIn('traceback',r)
-        history=(self.root/'runtime/operator_error_history.jsonl').read_text(); self.s.save_error(ValueError('second reason'))
-        self.assertTrue((self.root/'runtime/operator_error_history.jsonl').read_text().startswith(history))
+        history=(self.root/'runtime/operator_error_history.jsonl').read_text(encoding='utf-8'); self.s.save_error(ValueError('second reason'))
+        self.assertTrue((self.root/'runtime/operator_error_history.jsonl').read_text(encoding='utf-8').startswith(history))
         self.assertIn('second reason',self.s.snapshot()['current_error'])
     def test_fresh_market_heartbeat_drives_display_only(self):
         self.approved_then_changed(); folder=self.root/'runtime/automation-production'; atomic_json(folder/'state.json',{'positions':{},'orders':{},'trades':[],'halt':''})
@@ -91,7 +91,7 @@ class ConnectionProbeTests(unittest.TestCase):
                 if ack: main.check_connection(Config())
                 else:
                     with self.assertRaises(RuntimeError): main.check_connection(Config())
-                result=json.loads((root/'connection_check.json').read_text()); engine.assert_not_called(); rest.return_value.buy.assert_not_called(); rest.return_value.sell.assert_not_called(); feed.close.assert_called_once()
+                result=json.loads((root/'connection_check.json').read_text(encoding='utf-8')); engine.assert_not_called(); rest.return_value.buy.assert_not_called(); rest.return_value.sell.assert_not_called(); feed.close.assert_called_once()
                 return result,factory.call_args.args[1]
     def test_connection_probe_watchlist_scenarios_table(self):
         # 1. empty candidates uses 005930 readonly probe
