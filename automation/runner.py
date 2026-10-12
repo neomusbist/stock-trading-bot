@@ -503,12 +503,12 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
         if not (readiness_check or seconds>0) or cfg.live_mode or policy.mode!="ARMED" or policy.state.get("live_authorized") or policy.state.get("releases") or policy.state.get("test_capital_release",{}).get("status") in {"APPROVED","SUBMITTING"}:
             raise ValueError("재자격은 ARMED·실주문 승인 없음·주문 금지 readiness 검사만 허용")
         # 파일의 승인한도는 보존하며 이 조회 실행에서만 주문자본을 0으로 제한한다.
-        auto=replace(auto,AUTO_TRADING_CAP_KRW=0)
+        auto=replace(auto,AUTO_TRADING_CAP_KRW=0,daily_risk_override_day=None,daily_risk_override_budget_krw=None)
     if readiness_check:
         if policy.mode not in {'ARMED','STOP','LIVE'} or policy.state.get('releases') or policy.state.get('test_capital_release',{}).get('status') in {'APPROVED','SUBMITTING'}:
             raise ValueError('readiness 조회는 위험상태 및 시험매도 승인이 없는 때만 허용')
         if not isinstance(policy,ReadOnlyPilotPolicy):policy=ReadOnlyPilotPolicy(policy)
-        cfg=replace(cfg,live_mode=False);auto=replace(auto,AUTO_TRADING_CAP_KRW=0)
+        cfg=replace(cfg,live_mode=False);auto=replace(auto,AUTO_TRADING_CAP_KRW=0,daily_risk_override_day=None,daily_risk_override_budget_krw=None)
     # 기존 Config의 비용 예약/총위험 계산에도 명시적 수수료를 반영한다.
     effective=replace(cfg,roundtrip_cost_fraction=auto.commission_buy+auto.commission_sell+auto.sell_tax)
     effective.validate()

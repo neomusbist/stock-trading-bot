@@ -102,5 +102,18 @@ class DailyRiskOverrideTests(unittest.TestCase):
         row=next(r for r in reversed(rows) if r['event']=='ENTRY_EVAL')
         self.assertEqual(row['daily_risk_budget_krw'],3880.266);self.assertTrue(row['daily_risk_override_active'])
         self.assertEqual(row['max_daily_loss_fraction'],.04);self.assertEqual(row['risk_fraction'],.02)
+    def test_actual_readonly_runner_clears_only_in_memory_override_with_zero_cap(self):
+        from automation import runner
+        atomic_json(self.root/'automation.json',asdict(self.override()))
+        before=(self.root/'automation.json').read_bytes();seen=[]
+        class BoundaryReached(Exception):pass
+        def engine_boundary(cfg,auto,*args):
+            auto.validate();self.assertFalse(cfg.live_mode);self.assertEqual(auto.capital_limit,0)
+            self.assertIsNone(auto.daily_risk_override_day);self.assertIsNone(auto.daily_risk_override_budget_krw)
+            seen.append(True);raise BoundaryReached()
+        with patch.object(runner,'Rest'),patch.object(runner,'AutonomousEngine',side_effect=engine_boundary),\
+             self.assertRaises(BoundaryReached):
+            runner.run(self.cfg,self.root,recover_pilot=True,operational_pilot=True,readiness_check=True)
+        self.assertEqual(seen,[True]);self.assertEqual((self.root/'automation.json').read_bytes(),before)
 
 if __name__=='__main__':unittest.main()
