@@ -66,10 +66,22 @@ def calculate_tier(gates: dict, setup_trials: list, row: dict = None) -> int:
         and t.get('acceleration_required') is False and t.get('candidate_generated') is True]
     safe_keys=('warmup','spread','structure','market_status')
     independent=[t for t in independent if t.get('gates',{}).get('liquidity',{}).get('result')=='PASS']
+    # A formed box/pullback with impossible RR, invalidation or costs is not
+    # geometry readiness. Only the actual breakout can still be waiting.
+    price_keys={'invalidation','chase','risk_reward','resistance','economic','entry_context'}
+    viable=[t for t in independent if all(v.get('result')=='PASS' for k,v in t.get('gates',{}).items()
+        if k in price_keys)]
+    blocked_geometry=bool(independent and not viable)
+    independent=viable
     if independent and all(gates.get(k,{}).get('result')=='PASS' for k in safe_keys):
         if any(t.get('entry_ready') is True and t.get('gates') and
                all(v.get('result')=='PASS' for v in t['gates'].values()) for t in independent):return TIER_SIGNAL_READY
         return TIER_GEOMETRY_BASE_READY
+
+    other_viable=any(t.get('setup')=='A' and t.get('candidate_generated') and t.get('gates') and
+        all(v.get('result')=='PASS' for k,v in t['gates'].items() if k not in {'breakout','order_price'})
+        for t in (setup_trials or []))
+    if blocked_geometry and not other_viable:return TIER_FRESH_WEAK
 
     # 가속 또는 유동성 명시적 FAIL이면 TIER_FRESH_WEAK
     accel = gates.get('acceleration', {}).get('result')

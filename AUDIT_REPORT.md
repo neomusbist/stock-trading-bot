@@ -1,5 +1,23 @@
 # 최신 감사: 2026-10-12 연속 운용과 진입 지연
 
+## 19:16 개발 완료 / 장중 참고 저항 및 WATCH 실행 가능성
+
+개발 BUILD는 V1.3-risk2-watch12-bc20M-entrycontext-20261012, STRATEGY_VERSION은 V1.3-confirmed-intraday-room-20261012이다. 목표가격 상한/진입 자격이 바뀌므로 기존 신호버전과 구분한다. entry_context_enabled 기본값은 false이며 ON은 별도 승인하는 실험이다. 전체 915 PASS / FAIL0 / ERROR0 / SKIP0, syntax111, network_attempts0 / actual_orders0 / actual_program_started false. 대상167 PASS를 포함한다. 기존 검사를 삭제하거나 skip하지 않았다. 최초 전체912의 실패1/오류3은 기존 AFTER depth fixture 생성시 실제 호스트 시간을 사용한 구독 선택 문제였다. 고정 AFTER 시각과 _AL packet으로 fixture를 맞췄으며 기존 assertion은 유지했다.
+
+실제 AFTER 라온시큐어/금호건설은 모두 Setup A였다. 라온은16:06:23 승인, 16:06:27 local체결, 16,410원3주, AFTER 이전고점16,400 돌파/stop16,240/기존목표16,680/RR1.588. 16:09:06 stop청산 모델손익 -622.1325. 금호는16:55:56 승인·local체결, 13,610원1주, AFTER 이전고점13,600 돌파/stop13,470/기존목표13,820/RR1.5. 17:43:54 stop청산 모델손익 -171.002. HTS 3분봉의16:54/17:42는 봉 시작시각이며 정확한 주문시각과 혼동하지 않는다. 두 청산 모두 초기 구조선 이탈이고, 연결장애 청산은 아니다. 이후 반등만으로 손절이 잘못됐다고 확정하지 않는다.
+
+원인: AFTER 전략 데이터는 세션 분리되고 A는 AFTER 고점을 사용한다. 기존 목표는 패턴폭/일봉 저항을 기준으로 하며 앞서 확인한 더 가까운 장중 저항을 충분히 제한하지 않는다. 새 PriceContext는 양쪽 이웃이 모두 완성된 연속1분봉 고점만 참고로 저장한다. 역할 변경/정규장→AFTER/transport reset에도 당일 참고만 유지하고 전략봉·틱·warmup은 별개로 초기화한다. 256종목/종목당30봉·128고점으로 제한하며 추가 API/구독은 없다. 재시작에서는 당일 장부의 기존 매수 전 snapshot만 참고 복원하고 warmup 복원은0이다. 미래/익일/미완성 snapshot은 쓰지 않는다. 과거 수신하지 않은 구간은 UNKNOWN이다.
+
+ON일 때 목표는 min(기존 목표, 확인된 근접 장중 고점)이다. 기존 RR1.5/Economic를 재계산하고 주문 직전 proof/목표/유한 RR를 확인한다. 손절선, A/B/C geometry, 가속, 비용, risk2/daily4/cap81300/WATCH12/보유1/주문 안전조건은 유지한다. 이는 상승 초입을 새로 발견하는 전략이 아니다. 별도 큰 시장지수 체계는 아직 실응답 검증이 부족하며 UNKNOWN으로 남는다.
+
+같은 시점 자료의 제한 replay: 저장된 진입 전7개 snapshot 기준 새 조건은6개 차단했다. AFTER 라온의 확인 저항16,450 기준 RR0.235, AFTER 금호13,700 기준 RR0.643으로 둘 다 FAIL이다. 그러나 차단6개에는 손실4개와 기존 수익2개가 함께 있다. 금호 오전 손실은 보존된 참고 부족으로 통과했다. 전체 틱/호가/가상체결 replay나 수익성 개선 입증이 아니다. 사후 가격으로 BUY 판단을 바꾸지 않았다.
+
+반복 선정의 코드 원인 하나: B/C candidate_generated + liquidity만으로 높은 geometry tier가 가능해 RR/Economic/invalidation 등 가격 gate 실패인 후보도 우대됐다. 이제 그 가격 gate가 통과한 형상만 우대하며 breakout 대기는 허용한다. 유효 A, source1, 동티어 +2 hysteresis는 유지한다. 16시 이후 저장178 cycle에서 RAW 고유373/WATCH 고유32/실제 승인2였다. 두 종목만 검색한 것은 아니지만 STATUS_SCAN_LIMIT7636, ONE_SHARE_UNAFFORDABLE7889, PATTERN_OR_GATE_NOT_READY6319 등의 반복 단계 탈락이 있었다. 수치는 고유종목 수와 실패 이벤트 수가 서로 다르며 표본 종료 이후의 전일 최종치가 아니다. 전시장 초기 발견 지연과 실전 다양성 개선은 아직 입증하지 않았다.
+
+19:12:49 읽기 확인: 설치 BUILD는 기존 daybudget1000, worker7552 LIVE/연결·account 정상, 보유0/활성주문0, HALT로 주문권한OFF였다. 198440의19:02:47 청산은 원본 quote 시각19:02:16/last tick약40초, fresh REST 응답도 원본 quote는 오래된 상태, 15초 재확인 종료 때문이다. WS/account/subscription은 정상이고 1.46초 뒤 fresh0D가 도착했으나 SELL intent는 이미 제출됐다. 단순 전역 단절이라고 설명하면 틀리며, 조용한 동일호가 vs 실제 관측불능 API 의미는 미검증이다. 청산 guard/HALT를 우회하거나 임의 타이머를 늘리지 않았다.
+
+운영본 코드/config/approval/장부 변경0, STOP0, 실제 테스트 주문0이다. 현재 오늘 총 예산3,880.266 중 gross daily_loss3,694.5081, flat 잔여185.7579이며 신규1,000원을 다시 부여하지 않는다. 첨부 통합지시문의 LIVE 별도 승인에 따라 코드8개 및 entry_context_enabled=true의 최소 배포안을 준비한다. 배포는 사용자 승인→정상STOP/idle→공식 실계좌 보유·미체결·UNKNOWN 대조/정당한 HALT 원인 해결→backup→hash검증 순서이며 새 LIVE는 사용자가 직접 승인한다. 본 개발검사 통과를 실전 전체 정상화나 수익 회복 완료라고 표시하지 않는다.
+
 ## 15:12 최종 운영 반영 / 위험예산 예외
 
 사용자요청에따라 code325f940 기준6개를15:11:50 STOP/idle/실계좌읽기대조후배포했다. 현재BUILD V1.3-risk2-watch12-bc20M-daybudget1000-20261012. 최종893 PASS/FAIL0/ERROR0/SKIP0, syntax109/network0/orders0/실제프로그램시작0.6개code SHA256개발동일/syntax·importPASS. 백업Documents/주식자동매매_개발/backups/daily_budget1000_20261012_151146. 원래main/미커밋작업보존, origin/fix/continuous-trading-20261012에push했다.

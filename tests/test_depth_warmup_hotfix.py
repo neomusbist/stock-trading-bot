@@ -23,11 +23,13 @@ class DepthWarmupTests(unittest.TestCase):
         self.d=PatternDetector(self.cfg,self.auto,costs);self.d.continuous_observation=True
         self.watch={'code':SYM,'status':'WATCH','source_count':2,'market_status':{'pass':True},'resistance':20000}
         self.rest=Mock();self.rest.cfg=self.cfg
-        self.feed=Feed(self.rest,[SYM])
+        # Pin the fixture session at construction too: host wall-clock must not
+        # make this AFTER packet a queued KRX frame in an SOR subscription.
+        with patch('core.realtime.now',return_value=BASE):self.feed=Feed(self.rest,[SYM])
     def book(self,ask=16310,bid=16300,aq=34,bq=56):
-        return {'type':'0D','item':SYM,'values':{'21':'181000','41':str(ask),'51':str(bid),'61':str(aq),'71':str(bq),'121':'12345','125':'23456'}}
+        return {'type':'0D','item':SYM+'_AL','values':{'21':'181000','41':str(ask),'51':str(bid),'61':str(aq),'71':str(bq),'121':'12345','125':'23456'}}
     def trade(self,stamp=BASE,price=16300,ask=16310,bid=16300,cumulative=1000):
-        return {'type':'0B','item':SYM,'values':{'20':stamp.strftime('%H%M%S'),'10':str(price),'15':'10','13':str(cumulative),'27':str(ask),'28':str(bid),'290':'2'}}
+        return {'type':'0B','item':SYM+'_AL','values':{'20':stamp.strftime('%H%M%S'),'10':str(price),'15':'10','13':str(cumulative),'27':str(ask),'28':str(bid),'290':'2'}}
     def tick(self,second,price=16300):
         return Tick(SYM,BASE+timedelta(seconds=second),price,100,10000+second,price+10,price,
                     ask_qty=10,bid_qty=10,depth_available=True)

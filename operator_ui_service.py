@@ -88,6 +88,9 @@ SETUP_WAIT_REASONS={
     'NO_CONTROLLED_PULLBACK':'눌림 형상 없음','NO_REBREAKOUT':'재돌파 미도달',
     'BOX_NOT_FORMED':'박스 형상 없음','NO_INTRADAY_BOX':'박스 형상 없음',
     'BREAKOUT_NOT_REACHED':'돌파 미도달','RISK_REWARD_FAIL':'RR 미충족','ECONOMIC_FAIL':'비용 대비 여유 부족',
+    'ENTRY_CONTEXT_FAIL':'장중 저항까지 상승 여유 부족',
+    'ENTRY_CONTEXT_PROOF_MISSING_OR_INVALID':'장중 저항 검사 근거 미확인',
+    'ENTRY_CONTEXT_RR_CHANGED':'주문 직전 상승 여유 변경',
     'LIQUIDITY_FAIL':'유동성 미충족','SPREAD_FAIL':'호가 간격 초과','STRUCTURE_FAIL':'구조 미충족',
     'RESISTANCE_FAIL':'상단 여유 부족','INVALIDATION_FAIL':'무효화 조건 미충족','CHASE_FAIL':'추격 범위 초과'}
 

@@ -520,6 +520,11 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     atomic_json(folder/'session_settings.json',{'config':asdict(cfg),'effective_config':asdict(effective),'automation':asdict(auto)})
     detector=PatternDetector(effective,auto,engine.costs)
     detector.continuous_observation=True
+    if auto.entry_context_enabled:
+        saved=[p.get('signal',{}) for p in engine.s['trades']]
+        saved.extend(o.get('signal') or {} for o in engine.s['orders'].values() if o.get('side')=='BUY')
+        references=detector.price_context.bootstrap(saved,now(),effective.stale_seconds)
+        engine.event('ENTRY_REFERENCE_RECOVERY',**references)
     # 검사 시간 종료는 STOP과 같으며 LIVE의 시간 제한 검사는 금지한다.
     if seconds and (cfg.live_mode or auto.capital_limit!=0 or policy.mode!='ARMED' or
                     policy.state.get('test_capital_release',{}).get('status') in {'APPROVED','SUBMITTING'}):
@@ -545,7 +550,9 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     reporter=Reporter(root)
     from automation.observation_worker import ObservationWorker
     observation_rest=Rest(replace(effective,live_mode=False),auth_session=rest.auth_session);observation_rest.session_guard=lambda:control_supported(now()) or (getattr(effective,'after_enabled',False) and after_control_supported(now()));observation_rest.diagnostic_only=True
-    shadow=ObservationWorker(effective,auto,engine.costs,root,observation_rest);shadow.start()
+    shadow=ObservationWorker(effective,auto,engine.costs,root,observation_rest)
+    if auto.entry_context_enabled:shadow.observer.detector.price_context=copy.deepcopy(detector.price_context)
+    shadow.start()
     shadow_state={};observation_drops=0
     lookup={}; rows=[]; by_symbol={}; prices={}; counts={'ticks':0,'radar_cycles':0,'account_checks':0,'subscription_acks':0}
     engine._last_eval_frame={}

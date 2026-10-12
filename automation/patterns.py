@@ -10,6 +10,7 @@ from core.util import floor_tick,tick_size
 from automation.allocation import efficiency
 from automation.session import supported, after_supported
 from automation.decisions import gate
+from automation.price_context import PriceContext
 
 def observation_locked(method):
     @wraps(method)
@@ -29,6 +30,7 @@ class PatternDetector(Detector):
         self.last_gap_reason={}
         self.observation_start={}; self.observation_session={}
         self._state_lock=RLock()
+        self.price_context=PriceContext()
 
     @observation_locked
     def reset(self):
@@ -58,6 +60,8 @@ class PatternDetector(Detector):
             self.day_high[t.symbol]=max(t.price,self.day_high.get(t.symbol,t.price))
         minute=t.time.replace(second=0,microsecond=0); b=self.current.get(t.symbol)
         if b and b['time']!=minute:
+            # Prior confirmed references are distinct from consecutive signal bars.
+            self.price_context.record(t.symbol,b,t.time,self.cfg.stale_seconds)
             if (minute-b['time']).total_seconds()==60:
                 self.history.setdefault(t.symbol,deque(maxlen=30)).append(b)
             else:
@@ -168,7 +172,11 @@ class PatternDetector(Detector):
             snapshot={key:(deque(source.buffers[symbol]) if key=='buffers' else
                            source.last[symbol] if key=='last' else deepcopy(getattr(source,key)[symbol]))
                       for key in names if symbol in getattr(source,key)}
+            reference=PriceContext();reference.day=source.price_context.day
+            if symbol in source.price_context.rows:
+                reference.rows[symbol]=deepcopy(source.price_context.rows[symbol])
         with self._state_lock:
+            self.price_context.transfer(reference,symbol)
             src_last=snapshot.get('last');tgt_last=self.last.get(symbol)
             if tgt_last and (src_last is None or (src_last.time,src_last.cumulative)<(tgt_last.time,tgt_last.cumulative)):return False
             src_bars=len(snapshot.get('history',()))
@@ -294,6 +302,7 @@ class PatternDetector(Detector):
             target=price_gates['risk_reward']['values']['target']
             score=price_gates['economic']['values']['score']
             gates.update({key:price_gates[key] for key in ('breakout','chase','invalidation','risk_reward','resistance','order_price','economic')})
+            if 'entry_context' in price_gates:gates['entry_context']=price_gates['entry_context']
             gates['liquidity']=trial['gates']['liquidity']
             gates['acceleration']={**gates['acceleration'],'required':name=='A','scope':'ENTRY_GATE' if name=='A' else 'OBSERVATION_ONLY'}
             gates['pattern']=gate(True,setup=name,acceleration_required=name=='A')
@@ -304,6 +313,7 @@ class PatternDetector(Detector):
             return {'symbol':t.symbol,'time':t.time.isoformat(),'limit':limit,'stop':stop,**setup,
                 'evaluation_gates':gates,'setup_trials':trials,'acceleration_required':name=='A',
                 'market_context':context,'discovery_context':watch.get('discovery_context'),
+                'price_context':price_gates.get('entry_context',{}).get('values'),
                 'decision_bar_snapshot':[{**{k:b.get(k) for k in ('open','high','low','close','volume')},
                     'time':b['time'].isoformat()} for b in bars[-12:]],
                 'target':target,'target_basis':'과거 저항으로 제한한 관측 패턴 폭 연장 가설; 고정 익절선 아님',
@@ -347,6 +357,10 @@ class PatternDetector(Detector):
         stop=floor_tick(setup['support']*(1-c.structural_buffer))
         limit=floor_tick(min(t.ask,breakout*(1+c.max_chase))); resistance=watch.get('resistance')
         target=self.target(t,watch,setup,limit)
+        references=self.price_context.snapshot(t.symbol,t,limit) if self.a.entry_context_enabled else {}
+        peak=references.get('nearest_confirmed_peak')
+        original_target=target
+        if self.a.entry_context_enabled and peak:target=min(target,peak['price'])
         distance=(limit-stop)/limit if limit>0 else None
         rr=(target-limit)/(limit-stop) if limit>stop else None
         horizon=getattr(self.a,'horizon_'+setup['pattern'].lower()+'_minutes')
@@ -359,7 +373,7 @@ class PatternDetector(Detector):
                 avg_span=sum(b['high']-b['low'] for b in bars[-min(len(bars),4):])/min(len(bars),4)
                 if (limit-stop)<avg_span*1.1:
                     invalidation_pass=False
-        return {'breakout':gate(t.price>breakout and limit>breakout,price=t.price,breakout=breakout,setup=setup['pattern'],
+        result={'breakout':gate(t.price>breakout and limit>breakout,price=t.price,breakout=breakout,setup=setup['pattern'],
                 ask=t.ask,entry=limit,reason='BREAKOUT_QUOTE_NOT_CONFIRMED' if t.price>breakout and limit<=breakout else None),
             'chase':gate(t.ask/breakout-1<=c.max_chase,chase=t.ask/breakout-1,max_chase=c.max_chase,ask=t.ask),
             'invalidation':gate(invalidation_pass if distance is not None else None,
@@ -369,6 +383,11 @@ class PatternDetector(Detector):
                 distance_pct=resistance/limit-1 if resistance is not None and limit>0 else None,min_room=c.min_resistance_room),
             'order_price':gate(limit>=t.ask,limit=limit,ask=t.ask),
             'economic':gate(score['decision']=='TRADE',score=score,tick_size=tick_size(t.price),tick_cost_fraction=tick_size(t.price)/t.price)}
+        if self.a.entry_context_enabled:
+            result['entry_context']=gate(rr is not None and rr>=c.min_reward_risk,
+                enabled=True,reason='CONFIRMED_INTRADAY_RESISTANCE_RR' if peak and (rr is None or rr<c.min_reward_risk) else None,
+                original_target=original_target,target=target,required_rr=c.min_reward_risk,calculated_rr=rr,**references)
+        return result
 
     @observation_locked
     def base_gates(self,t,watch):

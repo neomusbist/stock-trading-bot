@@ -38,6 +38,7 @@ class AutomationConfig:
     max_consecutive_losses: int | None = 3  # null: 연속 손실 횟수 제한 없음. 일일 위험예산은 별도 유지.
     daily_risk_override_day: str | None = None
     daily_risk_override_budget_krw: float | None = None
+    entry_context_enabled: bool = False  # separately approved strategy experiment
     pullback_min_rise: float = 0.008
     pullback_max_retrace: float = 0.65
     pullback_volume_ratio: float = 0.75
@@ -79,7 +80,7 @@ class AutomationConfig:
         for k in ('decision_snapshot_seconds','scan_seconds','rank_decay_cycles','max_scan_charts','min_source_count','cooldown_seconds','max_consecutive_losses','box_min_bars','empirical_min_trades','horizon_a_minutes','horizon_b_minutes','horizon_c_minutes'):
             if k=='max_consecutive_losses' and getattr(self,k) is None: continue
             if type(getattr(self,k)) is not int or getattr(self,k)<=0: raise ValueError(f'{k}: 양의 정수 필요')
-        if type(self.ALLOW_OVERNIGHT) is not bool or type(self.costs_confirmed) is not bool or type(self.replacement_enabled) is not bool:
+        if type(self.ALLOW_OVERNIGHT) is not bool or type(self.costs_confirmed) is not bool or type(self.replacement_enabled) is not bool or type(self.entry_context_enabled) is not bool:
             raise ValueError('불리언 설정 오류')
         for k in ('new_entry_cutoff','force_flatten_start','after_prep_start','after_market_start','after_entry_cutoff','after_force_flatten_start','after_market_close'):
             datetime.strptime(getattr(self,k),'%H:%M:%S')

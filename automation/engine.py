@@ -272,6 +272,17 @@ class AutonomousEngine(ExistingExits,Engine):
 
     def entry_market_reason(self,signal,quantity,fallback=None,phase='PRE_INTENT'):
         """No I/O: recheck latest receiver state immediately before a BUY leaves the process."""
+        if self.a.entry_context_enabled and signal.get('pattern') in {'A','B','C'}:
+            proof=signal.get('evaluation_gates',{}).get('entry_context',{})
+            values=proof.get('values',{})
+            if (proof.get('result')!='PASS' or values.get('enabled') is not True
+                    or values.get('asof')!=signal.get('time') or values.get('target')!=signal.get('target')):
+                return 'ENTRY_CONTEXT_PROOF_MISSING_OR_INVALID'
+            try:
+                rr=(signal['target']-signal['limit'])/(signal['limit']-signal['stop'])
+                if not math.isfinite(rr) or signal['stop']>=signal['limit'] or rr<self.c.min_reward_risk:
+                    return 'ENTRY_CONTEXT_RR_CHANGED'
+            except (KeyError,TypeError,ZeroDivisionError):return 'ENTRY_CONTEXT_PROOF_MISSING_OR_INVALID'
         provider=getattr(self,'entry_quote_provider',None)
         if provider and not signal.get('symbol'):return 'ENTRY_MARKET_DATA_UNAVAILABLE'
         tick,book=provider(signal['symbol']) if provider else (fallback,{})
