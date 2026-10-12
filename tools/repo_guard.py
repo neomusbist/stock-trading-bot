@@ -9,8 +9,9 @@ ROOT_FILES={'main.py','candidate_builder.py','control.py','supervisor.py','opera
     'operator_ui_service.py','operator_gui.py','gui_launch.py','gui_menu.cmd','GUI_GUIDE.md',
     'operator_runner.py','operator_process.py','local_diagnostics.py','run.bat','test.bat','operator_menu.cmd',
     '.gitignore','.gitattributes','.env.example','config.example.json','automation.example.json','requirements.txt',
-    'README.md','AUDIT_REPORT.md','TEST_REPORT.md','NEXT_SESSION_CHECK.md','운영요약.md','사용자_시운전_가이드.txt','DEPLOYMENT_LAYOUT.md','observation.example.json','REPOSITORY_GUIDE.md','SECURITY.md','THIRD_PARTY_NOTICES.md','SOURCE_MANIFEST.json','V1.3_HANDOFF_20261007.md','V1.2_설계감사_구현명세.md','TEST_AUDIT_REPORT.md','STORAGE_AUDIT_REPORT.md','HANDOFF.md','cleanup_audit_trail.json'}
-TOOLS={'repo_guard.py','setup_local.py','export_source.py','session_audit.py','offline_benchmark.py','offline_regression.py','night_profile.py','verify_fault_injection.py'}
+    'README.md','AUDIT_REPORT.md','TEST_REPORT.md','NEXT_SESSION_CHECK.md','운영요약.md','사용자_시운전_가이드.txt','DEPLOYMENT_LAYOUT.md','observation.example.json','REPOSITORY_GUIDE.md','SECURITY.md','THIRD_PARTY_NOTICES.md','SOURCE_MANIFEST.json','V1.3_HANDOFF_20261007.md','V1.2_설계감사_구현명세.md','TEST_AUDIT_REPORT.md','STORAGE_AUDIT_REPORT.md','HANDOFF.md','cleanup_audit_trail.json','GUI_PERFORMANCE_REPORT.md'}
+TOOLS={'repo_guard.py','setup_local.py','export_source.py','session_audit.py','offline_benchmark.py','offline_regression.py','night_profile.py','verify_fault_injection.py','benchmark_gui_performance.py'}
+
 def allowed(name):
     p=Path(name); parts=p.parts
     if len(parts)==1: return name in ROOT_FILES

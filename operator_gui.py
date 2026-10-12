@@ -133,27 +133,83 @@ def setup_table_copy_menu(w):
     w.copy_selected = lambda: copy_table_tsv(w, sorted({i.row() for i in w.selectionModel().selectedIndexes()}) if w.selectionModel() else [])
     w.copy_all = lambda: copy_table_tsv(w, None)
 
+DEFAULT_COL_WIDTHS = {
+    '종목': 120,
+    '상태': 150,
+    '현재가': 95,
+    '최근 평가': 105,
+    '주요 차단 / 대기 사유': 320,
+    '보유수량 (Setup)': 120,
+    '진입 평균가': 95,
+    '초기 무효화': 95,
+    '현재 보호선': 95,
+    '대응 상태': 120,
+    '청산 조건': 130,
+    '시각': 135,
+    '구분': 80,
+    '종목 / 대상': 120,
+    '상세 내용': 380,
+    '판단 / 실제 사유': 380,
+    '방향': 60,
+    '수량 / 체결': 90,
+    '가격': 85,
+    '이유': 90,
+    '손익': 75,
+    '전략버전': 80,
+}
+
 def table(headers):
-    w=QTableWidget(0,len(headers)); w.setHorizontalHeaderLabels(headers)
+    w = QTableWidget(0, len(headers))
+    w.setHorizontalHeaderLabels(headers)
     w.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
     w.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-    w.setAlternatingRowColors(True); w.verticalHeader().hide()
-    w.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-    w.horizontalHeader().setStretchLastSection(True)
+    w.setAlternatingRowColors(True)
+    w.verticalHeader().hide()
+    # 열 너비 자동 변동(Jitter) 방지: Interactive 모드로 설정하여 수동 조절 가능 및 갱신 시 너비 보존
+    header = w.horizontalHeader()
+    header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+    header.setStretchLastSection(True)
+    for col, h in enumerate(headers):
+        w.setColumnWidth(col, DEFAULT_COL_WIDTHS.get(h, 100))
+    w.setTextElideMode(Qt.TextElideMode.ElideRight)
     setup_table_copy_menu(w)
     return w
 
-def rows_to_table(widget,rows):
-    values=tuple(tuple('미확인' if v is None else str(v) for v in row) for row in rows)
-    if getattr(widget,'_rendered_values',None)==values and widget.rowCount()==len(values):return
-    scroll=widget.verticalScrollBar().value()
-    widget.setRowCount(len(rows))
-    for i,row in enumerate(rows):
-        for j,value in enumerate(row):
-            item=QTableWidgetItem('미확인' if value is None else str(value)); item.setToolTip(item.text())
-            widget.setItem(i,j,item)
+def rows_to_table(widget, rows):
+    values = tuple(tuple('미확인' if v is None else str(v) for v in row) for row in rows)
+    if getattr(widget, '_rendered_values', None) == values and widget.rowCount() == len(values):
+        return
+    scroll = widget.verticalScrollBar().value()
+    selected_rows = [i.row() for i in widget.selectionModel().selectedRows()] if widget.selectionModel() else []
+
+    widget.setUpdatesEnabled(False)
+    try:
+        target_len = len(rows)
+        if widget.rowCount() != target_len:
+            widget.setRowCount(target_len)
+        for i, row in enumerate(rows):
+            for j, value in enumerate(row):
+                val_str = '미확인' if value is None else str(value)
+                item = widget.item(i, j)
+                if item is None:
+                    item = QTableWidgetItem(val_str)
+                    item.setToolTip(val_str)
+                    widget.setItem(i, j, item)
+                else:
+                    if item.text() != val_str:
+                        item.setText(val_str)
+                    if item.toolTip() != val_str:
+                        item.setToolTip(val_str)
+        if selected_rows and widget.selectionModel():
+            for r in selected_rows:
+                if r < target_len:
+                    widget.selectRow(r)
+    finally:
+        widget.setUpdatesEnabled(True)
+
     widget.verticalScrollBar().setValue(scroll)
-    widget._rendered_values=values
+    widget._rendered_values = values
+
 
 def full_stamp(row): return row.get('timestamp') or row.get('time') or row.get('closed') or row.get('opened') or '시각 미확인'
 

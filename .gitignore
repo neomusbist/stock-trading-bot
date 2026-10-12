@@ -55,6 +55,8 @@
 !/HANDOFF.md
 !/tools/verify_fault_injection.py
 !/cleanup_audit_trail.json
+!/GUI_PERFORMANCE_REPORT.md
+!/tools/benchmark_gui_performance.py
 
 # Explicit exclusions remain effective even with later allow rules.
 .env
