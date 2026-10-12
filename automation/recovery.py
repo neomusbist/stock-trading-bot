@@ -4,16 +4,29 @@ from core.util import atomic_json
 from core.event_log import append_jsonl
 
 REVIEWABLE={'관리 잔고와 실제 잔고 불일치: 자동 매도 보류 필요','데이터/상태 오류: PermissionError'}
+DATA_EXIT_HALT='보유종목 시세 지연: 긴급 청산 요청'
 TERMINAL={'FILLED','CANCELED','REJECTED'}
 
 def recover_reviewed_halt(path,state,snapshot,stamp,reason):
-    if state.get('halt') not in REVIEWABLE:raise ValueError('HALT_REASON_REQUIRES_SEPARATE_REVIEW')
+    if state.get('halt') not in REVIEWABLE|{DATA_EXIT_HALT}:raise ValueError('HALT_REASON_REQUIRES_SEPARATE_REVIEW')
     if state.get('positions') or any(o['status'] not in TERMINAL for o in state['orders'].values()):
         raise ValueError('NON_FLAT_ORDER_LEDGER')
     if snapshot.get('account_identity')!=state.get('identity'):raise ValueError('ACCOUNT_IDENTITY_MISMATCH')
     query=datetime.fromisoformat(snapshot['query_started_at'])
     incident=datetime.fromisoformat(state['halt_info']['occurred_at'])
     if not incident<query<=stamp or (stamp-query).total_seconds()>15:raise ValueError('RECOVERY_SNAPSHOT_STALE')
+    if state.get('halt')==DATA_EXIT_HALT:
+        # Explicit review only, after the emergency exit is fully confirmed.
+        # A flat local ledger alone cannot prove that an uncertain SELL completed.
+        trade=state.get('trades',[])[-1] if state.get('trades') else {}
+        try:closed=datetime.fromisoformat(trade.get('closed',''))
+        except (ValueError,TypeError):closed=None
+        sells=[o for o in state['orders'].values() if o.get('symbol')==trade.get('symbol')
+            and o.get('side')=='SELL' and o.get('status')=='FILLED' and o.get('filled',0)>0]
+        if (trade.get('reason')!='시세 지연/연결 단절' or trade.get('ownership','BOT')!='BOT'
+                or closed is None or closed.tzinfo is None or not incident<=closed<=query
+                or not trade.get('qty') or sum(o['filled'] for o in sells)<trade['qty']):
+            raise ValueError('DATA_EXIT_FILL_CONFIRMATION_REQUIRED')
     if snapshot['orders']:raise ValueError('BROKER_PENDING_ORDERS')
     existing=state['automation']['existing']
     expected={s:h['qty'] for s,h in existing.items() if h['qty']}

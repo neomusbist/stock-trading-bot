@@ -1,5 +1,13 @@
 # 최신 감사: 2026-10-12 연속 운용과 진입 지연
 
+## 19:27 최종 추가검증 / 승인된 배포와 데이터청산 복구
+
+사용자가 배포 및 entry_context ON 실험을 승인했다.19:21:24 정상STOP 완료, 봇보유·미체결·UNKNOWN0. 기존 공식 복구에 없는 데이터 비상청산 HALT는 사고 이후의 해당 BOT 청산기록과 전량FILLED SELL을 추가로 요구하는 수동복구 경로로 지원했다. 기존 STOP/idle·신규15초이내실계좌·계좌identity·외부보호잔고·미체결·UNKNOWN 조건은 유지하며 자동해제하지 않는다. 일일위험 또는 다른HALT는 해제하지 않는다. 코드추가 automation/recovery.py 및 신규4개테스트. 최종919 PASS/FAIL0/ERROR0/SKIP0/syntax112, 실제network/orders/program-start0. 대상46 PASS. 앞선915와 이후복구4개를 구분한다.
+
+19:26:59 실제 읽기 API 대조: 계좌identity/외부보호잔고일치·봇보유0·미체결0·UNKNOWN0·현금77,723·장부SHA불변. 실제 주문 API는 transport allowlist에서 거절한다. SOR 198440_AL의ka10004는원본호가19:26:58,응답19:26:59.117, bid1,583/ask1,585/bidqty254/askqty27,633 정상. NXT _NX는ValueError로미검증이며둘다PASS라고하지않는다. 원본호가시간을응답시간으로바꾸지않았다.
+
+강동씨앤엘은C box breakout1,580에대해1,581원8주진입/stop1,565/목표1,606/RR1.5625였다. 약1원상승후비용모델순손실21.1076은고정익절정책때문이아니라보유시세검증실패의비상청산이었다. 당일작은반등을새신호로삼는C의기대값및시세quiet-book을실제장애와구분하는문제는추가검증이필요하다. 확인없는freshness위조·15초guard임의확대·손절선확대는하지않았다. 승인된이번배포는참고저항/종목우선순위/명시적flat복구까지이며전체진입·청산수익성이해결됐다고표시하지않는다.
+
 ## 19:16 개발 완료 / 장중 참고 저항 및 WATCH 실행 가능성
 
 개발 BUILD는 V1.3-risk2-watch12-bc20M-entrycontext-20261012, STRATEGY_VERSION은 V1.3-confirmed-intraday-room-20261012이다. 목표가격 상한/진입 자격이 바뀌므로 기존 신호버전과 구분한다. entry_context_enabled 기본값은 false이며 ON은 별도 승인하는 실험이다. 전체 915 PASS / FAIL0 / ERROR0 / SKIP0, syntax111, network_attempts0 / actual_orders0 / actual_program_started false. 대상167 PASS를 포함한다. 기존 검사를 삭제하거나 skip하지 않았다. 최초 전체912의 실패1/오류3은 기존 AFTER depth fixture 생성시 실제 호스트 시간을 사용한 구독 선택 문제였다. 고정 AFTER 시각과 _AL packet으로 fixture를 맞췄으며 기존 assertion은 유지했다.
