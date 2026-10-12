@@ -1,5 +1,13 @@
 # 최신 감사: 2026-10-12 연속 운용과 진입 지연
 
+## 14:47 최종 적용 상태
+
+최종881 PASS/FAIL0/ERROR0/SKIP0, syntax108 및network/orders/program-start0. source61dd5c73a207462feaee62bc6043824b3865f317까지 origin/fix/continuous-trading-20261012 push 완료.14:34 code10개 배포에 이어14:43:26 최종operator_service 잠금소유 보정1개를 정상STOP/idle/fresh account 아래 반영했다. 마지막 계좌현금78,536, 계좌identity/외부보호잔고/미체결0 대조, day/orders/trades/daily_loss 및config/automation/observation/approval/policy hash 보존. 설치45개 application source는 syntax/normalized내용이 개발본과 일치하며 새10개는 최종code SHA256 일치한다. 기존6개LF/CRLF 차이는 덮어쓰지 않았다.
+
+BUILD_ID=V1.3-risk2-watch12-bc20M-observation-20261012, STRATEGY_VERSION/STRATEGY_EXPERIMENT 유지. 새BUILD의 사용자 직접LIVE승인은 이 문서 작성 시 아직 실제heartbeat로 확인되지 않았다. 사용자가 직접 승인하겠다고 답했고, GUI가 없음을 확인한 뒤14:45 GUI만 열었다. 작업자가 START/LIVE 승인/실제주문을 실행한 것은 아니다. 현재STOP/HALT없음/보유0/미체결0이며 새실행 여부는 매번 actualheartbeat로 재확인해야 한다.
+
+당일 손실은초기화되지않았다. flat 장부equity78,123.018, gross daily_loss2,880.266, 기존daily4%3,124.92072 중잔여244.65472. 이익이loss사용액을복원하지않는기존정책이다. day/symbol/consecutive count limits null이지만 기존시간cooldown900초 및잔여risk 수량0 차단은보존했다. 실제broker비용확정손익과model손익을혼동하지않는다. 전체전략정상화/수익성/실전HALT율0를입증한완료보고가아니다.
+
 ## 14:41 배포 체크포인트 / 전략 개선 완료와 구분
 
 사용자는 기존 포지션 정상 정리 뒤 배포하고 새BUILD를 직접 승인하겠다고 명시했다.14:33:51 flat/active0/HALT없음을 확인하고 정상STOP·idle 이후 인증/실계좌 잔고/미체결을 대조했다.14:34:15 source323875d의 code10개를 observation BUILD로 배포했다. config/automation/observation/승인receipt hash 불변, day/orders/trades/daily_loss 보존, 실제 주문/START/대리LIVE승인0. code-onlybackup observation_auth_code_20261012_143208. 교체10개 SHA256 일치, application45개 syntax 및 내용일치; 기존6개는 LF/CRLF 차이만이라 그대로 보존했다.
