@@ -154,5 +154,80 @@ class TestIntradayResistanceAudit(unittest.TestCase):
         self.assertEqual(res.tier_map['002990'], TIER_GEOMETRY_BASE_READY)
         self.assertIn('002990', res.next_watch)
 
+    def test_kumho_late_box_exhaustion_rejected(self):
+        """When a stock has surged >15% and 15m trend is MIXED or DOWN,
+        Setup C must be rejected due to LATE_STAGE_DISTRIBUTION_RISK."""
+        sym = '002990'
+        # 16 completed bars before 11:10 (from 10:38 to 10:53) with pullback and chop (MIXED)
+        bars = [
+            {'open': 13700.0, 'high': 13950.0 - i * 10, 'low': 13680.0 if i % 2 == 0 else 13650.0,
+             'close': 13720.0, 'volume': 50000,
+             'time': datetime(2026, 10, 12, 10, 38 + i, 0, tzinfo=KST)}
+            for i in range(16)
+        ]
+        # Open price was 11,140 KRW (+23.8% gain at 13,800)
+        watch = {
+            'symbol': sym,
+            'code': sym,
+            'status': 'WATCH',
+            'open': 11140.0,
+            'resistance': 15000.0,
+            'overhead_share_estimate': 0.13,
+            'resistance_room_pass': True,
+            'market_status': {'pass': True},
+            'source_details': {'ka10032': {}, 'ka10027': {}}
+        }
+        t = Tick(
+            time=datetime(2026, 10, 12, 11, 9, 58, tzinfo=KST),
+            symbol=sym,
+            price=13800.0,
+            volume=500,
+            cumulative=10517649,
+            bid=13790.0,
+            ask=13800.0,
+            regular=True
+        )
+        trials = self.detector.setup_trials(t, watch, gates=self.detector.base_gates(t, watch), _bars=bars)
+        c_trial = next(x for x in trials if x['setup'] == 'C')
+        self.assertFalse(c_trial['entry_ready'])
+        self.assertEqual(c_trial['gates']['structure']['result'], 'FAIL')
+        self.assertEqual(c_trial['gates']['structure']['values']['reason'], 'LATE_STAGE_DISTRIBUTION_RISK')
+
+    def test_official_recover_manual_review_halt(self):
+        """Test the official recovery method on AutonomousEngine."""
+        import tempfile
+        from pathlib import Path
+        from automation.policy import Policy
+        from automation.engine import AutonomousEngine
+        from tests.test_automation import FakeBroker
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            policy = Policy(tmppath / 'policy.json')
+            policy.command('LIVE', confirmation='LIVE')
+            broker = FakeBroker()
+            engine = AutonomousEngine(self.cfg, self.policy, policy, tmppath / 'book', broker,
+                                      lambda: datetime(2026, 10, 12, 12, 0, tzinfo=KST))
+            engine.reconcile({'cash': 50000, 'equity': 50000, 'holdings': {}, 'orders': []})
+            engine.connected = True
+            engine.market = '3'
+
+            # Simulate MANUAL_REVIEW HALT
+            engine.halt('시스템 점검 필요')
+            engine.s['halt_info']['classification'] = 'MANUAL_REVIEW'
+            engine.save()
+
+            # Attempt without confirmation fails
+            ok, msg = engine.recover_manual_review_halt('테스트 해제', confirmation='WRONG')
+            self.assertFalse(ok)
+            self.assertEqual(msg, 'EXPLICIT_CONFIRMATION_REQUIRED')
+
+            # Attempt with proper confirmation succeeds
+            ok, msg = engine.recover_manual_review_halt('장부 대조 완료 및 사용자 승인', confirmation='AUTHORIZE_HALT_RECOVERY')
+            self.assertTrue(ok)
+            self.assertEqual(msg, 'RECOVERED')
+            self.assertEqual(engine.s['halt'], '')
+            self.assertFalse(engine.s['halt_info']['active'])
+
 if __name__ == '__main__':
     unittest.main()

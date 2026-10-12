@@ -673,6 +673,41 @@ class AutonomousEngine(ExistingExits,Engine):
         self.event('HALT_RECOVERED',halt_info=old)
         return True
 
+    def recover_manual_review_halt(self, reason, confirmation=None):
+        """User-authorized recovery for MANUAL_REVIEW halt.
+        Never bypasses reconciliation: requires connected=True, account_ok=True,
+        no positions, no active/pending/uncertain orders, flat holdings, and explicit confirmation.
+        """
+        if confirmation != 'AUTHORIZE_HALT_RECOVERY':
+            return False, 'EXPLICIT_CONFIRMATION_REQUIRED'
+        info = self.s.get('halt_info', {})
+        if not self.s.get('halt'):
+            return False, 'NOT_HALTED'
+        if not self.connected or not self.account_ok:
+            return False, 'ACCOUNT_OR_BROKER_NOT_OK'
+        if self.s.get('positions') or self.active_orders() or self.external_qty_mismatch:
+            return False, 'NON_FLAT_POSITIONS_OR_ORDERS'
+        if getattr(self, 'reconcile_has_orders', True):
+            return False, 'PENDING_BROKER_ORDERS'
+        if time.monotonic() - self.last_account > self.c.reconcile_seconds * 3:
+            return False, 'ACCOUNT_RECONCILIATION_STALE'
+
+        old = dict(info)
+        old.update(active=False, recovered_at=self.clock().isoformat(),
+                   recovery='USER_AUTHORIZED_MANUAL_REVIEW_CLEARED',
+                   recovery_reason=str(reason))
+        self.s.setdefault('halt_history', []).append(old)
+        self.s['halt'] = ''
+        self.s['halt_info'] = old
+        try:
+            self.save()
+        except Exception as e:
+            self.s['halt'] = info.get('reason', 'HALT')
+            self.s['halt_info'] = info
+            return False, f'SAVE_FAILED: {e}'
+        self.event('MANUAL_HALT_RECOVERED', halt_info=old, reason=reason)
+        return True, 'RECOVERED'
+
     def legacy_exit_allowed(self,symbol,qty,signal):
         # 계산 도구는 allocation.py에 보존. 현재 실계좌의 기존 보유 매도에는 연결하지 않음.
         return False

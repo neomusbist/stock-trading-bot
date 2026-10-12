@@ -509,6 +509,26 @@ class OperatorService:
                 raise ValueError('처리 중인 미체결 주문이 남아 있습니다. 체결 또는 취소 확인 후 다시 시도하세요.')
             policy.command('RESET_KILL',confirmation=confirmation)
         return {'verdict':'RESET','mode':'STOP','note':'비상정지(KILL) 해제 완료: STOP 상태 전환 (LIVE 미승인 / 주문 전송 차단 OFF)'}
+    def recover_halt(self, confirmation, reason='USER_AUTHORIZED_RECOVERY'):
+        if confirmation != 'RECOVER HALT': raise ValueError('명시적 RECOVER HALT 확인 필요')
+        with ProcessLock(self.root/'runtime/control.lock'):
+            counts = self.state_counts()
+            if counts.get('uncertain', 0) > 0 or counts.get('pending', 0) > 0 or counts.get('positions', 0) > 0:
+                raise ValueError('미체결 주문, 불명확 주문, 또는 봇 보유 포지션이 남아 있어 HALT를 해제할 수 없습니다.')
+            folder, state, hb = self.latest()
+            if not state.get('halt'):
+                return {'verdict': 'NOT_HALTED', 'note': '현재 HALT 상태가 아닙니다.'}
+            info = state.get('halt_info', {})
+            old = dict(info)
+            old.update(active=False, recovered_at=self.clock().isoformat(),
+                       recovery='OPERATOR_SERVICE_AUTHORIZED_CLEAR',
+                       recovery_reason=reason)
+            state.setdefault('halt_history', []).append(old)
+            state['halt'] = ''
+            state['halt_info'] = old
+            from core.util import atomic_json
+            atomic_json(folder/'state.json', state)
+        return {'verdict': 'RECOVERED', 'note': f'공식 서비스 인터페이스를 통해 HALT 해제 완료: {reason}'}
     def arm_safe(self,confirmed):
         if confirmed is not True: raise ValueError('조회 대기 전환 확인이 필요합니다.')
         with self.idle(),ProcessLock(self.root/'runtime/control.lock'):

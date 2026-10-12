@@ -198,10 +198,18 @@ class PatternDetector(Detector):
 
     def target(self,t,watch,setup,limit,bars=None):
         resistance=watch.get('resistance')
-        # Check intraday overhead resistance from today's completed bars and detector's day_high
+        # Check meaningful intraday overhead resistance: local swing highs + day_high
         intraday_highs=[]
         if bars:
-            intraday_highs.extend(b['high'] for b in bars if b.get('high') and b['high']>limit)
+            for i, b in enumerate(bars):
+                hi = b.get('high')
+                if not hi or hi <= limit:
+                    continue
+                # Structural swing high check: higher than immediate neighbors or day_high
+                left_ok = (i == 0) or (hi >= bars[i-1].get('high', 0))
+                right_ok = (i == len(bars) - 1) or (hi >= bars[i+1].get('high', 0))
+                if left_ok and right_ok:
+                    intraday_highs.append(hi)
         day_hi=self.day_high.get(t.symbol)
         if day_hi is not None and day_hi>limit:
             intraday_highs.append(day_hi)
@@ -338,6 +346,18 @@ class PatternDetector(Detector):
                         min_ratio=gates['acceleration']['values'].get('min_ratio',self.cfg.min_turnover_ratio)
                         if ratio is not None and ratio<min_ratio*1.2:
                             trial_gates['acceleration']=gate(False,reason='LATE_STAGE_ACCELERATION_INSUFFICIENT',ratio=ratio,required_ratio=min_ratio*1.2)
+            elif name=='C':
+                # Macro-structural exhaustion check:
+                # If stock is already surging significantly (>15% from open or day_low)
+                # and recent 15-minute trend is NOT UP (exhaustion / distribution box),
+                # reject late-stage breakout trap.
+                from automation.market_context import trend_window
+                t_15m = trend_window(bars, t, 15) if bars else {'status': 'UNKNOWN'}
+                open_p = watch.get('open') or (bars[0]['open'] if bars else t.price)
+                day_surge = (t.price - open_p) / open_p if open_p > 0 else 0
+                if day_surge >= 0.15 and t_15m.get('status') in {'MIXED', 'DOWN'}:
+                    trial_gates['structure'] = gate(False, reason='LATE_STAGE_DISTRIBUTION_RISK',
+                                                    day_surge=day_surge, trend_15m=t_15m.get('status'), setup='C')
             elif name=='O':
                 min_gain=getattr(self.a,'setup_o_min_gain_over_open',0.003)
                 open_p=watch.get('open') or (buf[0].price if buf else t.price)
@@ -518,7 +538,14 @@ class PatternDetector(Detector):
         # Intraday overhead resistance: detect swing highs from completed bars & day_high
         intraday_highs=[]
         if bars:
-            intraday_highs.extend(b['high'] for b in bars if b.get('high') and b['high']>limit)
+            for i, b in enumerate(bars):
+                hi = b.get('high')
+                if not hi or hi <= limit:
+                    continue
+                left_ok = (i == 0) or (hi >= bars[i-1].get('high', 0))
+                right_ok = (i == len(bars) - 1) or (hi >= bars[i+1].get('high', 0))
+                if left_ok and right_ok:
+                    intraday_highs.append(hi)
         day_hi=self.day_high.get(t.symbol)
         if day_hi is not None and day_hi>limit:
             intraday_highs.append(day_hi)
