@@ -1,5 +1,15 @@
 # 최신 감사: 2026-10-12 연속 운용과 진입 지연
 
+## 15:05 추가 요청 / 일일 위험예산 예외는 전략 개선과 구분
+
+15:10 최종 전체893 PASS/FAIL0/ERROR0/SKIP0, syntax109/network0/orders0/actualprogram-start0. 기존881개를 유지하고 위험예외10개 및현재승인cap/횟수제한없는AFTER2개를 추가했다. 저장된설정을정규화해서대량변경하지않고 날짜/총한도2개필드만 추가하는 보존검증도통과했다. 현재 code6개 운영배포 준비이며 아직 실제예외설정은 적용전이다.
+
+사용자 직접 승인 후 observation BUILD 실제 worker10932의14:48:37~14:53:24 LIVE/OPEN_READY/connected/account_ok를 확인했다.14:54:13 별도 STOP revision206 요청으로14:54:17 정상종료됐으며 작업자는 이 STOP 또는 대리LIVE시작을 실행하지 않았다. 실제 요청 주체는 UNKNOWN이다. HALT/보유/미체결은0, 기존 daily_loss2,880.266 유지.
+
+사용자 요청의 오늘 잔여1,000원은 총 일일 위험예산3,880.266원으로 구현한다. 기본risk2/daily4/cap81300/포지션1과 신호·청산은 그대로이고, 기본daily4보다 높아진 예외임을 명시한다. 날짜2026-10-12와 절대한도가 automation fingerprint에 결합되며 다음 날짜에는 예외를 사용하지 않는다. 기존 손실/주문/체결/승인receipt를 초기화·복사하지 않는다. 사용자의 새BUILD 직접승인이 필요하다. 현재 추가코드는 전체검증 중이며 운영에는 아직 반영되지 않았다.
+
+핵심10개검사에서 새예산이 preview뿐 아니라 super.enter 및 실제 모의 broker guard에 도달하고, 소진시 신규BUY0/보호SELL가능/재시작장부보존/다음날만료/UNKNOWN·HARD_LOCK유지를 확인했다. AFTER에 남은 과거cap20000/일일3회 하드코드를 현재승인cap·정상검증설정으로 정정하며 freshness·hash·사용자승인·cutoff는 그대로 유지한다. 이는 초기상승/진입기대값 개선을 입증한 변경이 아니다.
+
 ## 14:47 최종 적용 상태
 
 최종881 PASS/FAIL0/ERROR0/SKIP0, syntax108 및network/orders/program-start0. source61dd5c73a207462feaee62bc6043824b3865f317까지 origin/fix/continuous-trading-20261012 push 완료.14:34 code10개 배포에 이어14:43:26 최종operator_service 잠금소유 보정1개를 정상STOP/idle/fresh account 아래 반영했다. 마지막 계좌현금78,536, 계좌identity/외부보호잔고/미체결0 대조, day/orders/trades/daily_loss 및config/automation/observation/approval/policy hash 보존. 설치45개 application source는 syntax/normalized내용이 개발본과 일치하며 새10개는 최종code SHA256 일치한다. 기존6개LF/CRLF 차이는 덮어쓰지 않았다.

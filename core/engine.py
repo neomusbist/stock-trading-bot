@@ -151,6 +151,8 @@ class Engine:
         return self.clock().strftime('%H:%M:%S')>=self.c.flatten_time
 
     def risk_equity(self): return min(self.c.account_equity,self.s['equity'])
+    def daily_risk_budget(self,equity=None):
+        return (self.risk_equity() if equity is None else equity)*self.c.max_daily_loss_fraction
 
     def quantity(self,signal,equity,cash,remaining):
         return size(self.c,signal['limit'],signal['stop'],equity,cash,remaining)
@@ -228,7 +230,7 @@ class Engine:
         used_risk=sum(max(0,p['avg']-p['stop']+p['avg']*(c.roundtrip_cost_fraction+c.exit_slippage_fraction))*p['qty'] for p in self.s['positions'].values())
         used_risk+=sum((o['limit']-o['signal']['stop']+o['limit']*(c.roundtrip_cost_fraction+c.exit_slippage_fraction))*(o['qty']-o['filled']) for o in buys)
         equity=self.risk_equity()
-        remaining=equity*c.max_daily_loss_fraction-self.s['daily_loss']-used_risk
+        remaining=self.daily_risk_budget(equity)-self.s['daily_loss']-used_risk
         qty=self.quantity(signal,equity,self.s['cash']-reserved,remaining)
         if qty<=0:
             self.event('SIGNAL_BLOCKED',symbol=sym,reason='수량 0 / 계좌 위험 한도'); self.diagnostic('internal_reject_count'); return None

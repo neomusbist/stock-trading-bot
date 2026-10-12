@@ -54,6 +54,22 @@ class AfterApprovalTests(unittest.TestCase):
         self.assertEqual(result['verdict'],'SAVED')
         for p,b in self.before.items():self.assertEqual(p.read_bytes(),b)
         self.s.gateway.snapshot.assert_not_called();self.s.gateway.start.assert_not_called()
+    def test_current_approved_cap_and_unlimited_count_accept_after_with_dated_budget(self):
+        self.cfg=replace(self.cfg,max_entries_per_day=None,max_entries_per_symbol=None)
+        self.auto=replace(self.auto,AUTO_TRADING_CAP_KRW=81300,max_consecutive_losses=None,
+            daily_risk_override_day=self.stamp.date().isoformat(),daily_risk_override_budget_krw=3880.266)
+        atomic_json(self.root/'config.json',asdict(self.cfg));atomic_json(self.root/'automation.json',asdict(self.auto))
+        receipt=read_json(self.root/'runtime/operator_user_authorization.json')
+        receipt.update(config_hash=self.cfg.fingerprint(),auto_hash=self.auto.fingerprint())
+        atomic_json(self.root/'runtime/operator_user_authorization.json',receipt)
+        before=(self.root/'automation.json').read_bytes()
+        self.assertEqual(self.s.activate_after_live('81300',True)['verdict'],'SAVED')
+        self.assertEqual((self.root/'automation.json').read_bytes(),before)
+        self.assertTrue(Policy(self.policy.path).state['after_live_authorized'])
+        self.s.gateway.snapshot.assert_not_called();self.s.gateway.start.assert_not_called()
+    def test_after_amount_mismatch_cannot_change_approved_cap(self):
+        with self.assertRaises(ValueError):self.s.activate_after_live('81300',True)
+        self.assert_unapproved();self.assertEqual(read_json(self.root/'automation.json')['AUTO_TRADING_CAP_KRW'],20000)
     def test_17h_permission_can_be_on_after_click_and_refresh(self):
         self.s.activate_after_live('20000',True)
         with patch('operator_service.process_identity',return_value='synthetic'):

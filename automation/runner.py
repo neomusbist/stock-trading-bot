@@ -564,6 +564,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     from automation.decisions import BUILD_ID,STRATEGY_EXPERIMENT
     context=engine.capital_context()
     engine.event('AUTOMATION_STARTED',mode=policy.mode,approved_cap=auto.capital_limit,live_mode=cfg.live_mode,build_id=BUILD_ID,strategy_experiment=STRATEGY_EXPERIMENT,risk_fraction=cfg.risk_fraction,max_daily_loss_fraction=cfg.max_daily_loss_fraction,allowed_risk_krw=context['risk_equity']*cfg.risk_fraction,remaining_daily_risk_krw=context['risk_remaining'],
+                 daily_risk_budget_krw=context['daily_risk_budget_krw'],daily_risk_override_day=context['daily_risk_override_day'],daily_risk_override_active=context['daily_risk_override_active'],
                  message='기존 보유 평가금액 제외; 기본 실제 신규 주문 불가')
     try:
         while True:

@@ -2,8 +2,8 @@
 import json
 import math
 STRATEGY_VERSION='V1.3-b-confirmed-impulse-bc20M-20261008'
-BUILD_ID='V1.3-risk2-watch12-bc20M-observation-20261012'
-STRATEGY_EXPERIMENT='20261007-risk2-daily4-dynamiccap-watch12-accelA-bc20M-bclose20261008'
+BUILD_ID='V1.3-risk2-watch12-bc20M-daybudget1000-20261012'
+STRATEGY_EXPERIMENT='20261007-risk2-daily4-dynamiccap-watch12-accelA-bc20M-bclose20261008-dailyoverride20261012'
 
 def check_experiment_consistency(cfg, build_id=BUILD_ID, experiment=STRATEGY_EXPERIMENT):
     """BUILD_ID 또는 STRATEGY_EXPERIMENT에 risk2/daily4가 적혀 있는데
@@ -78,6 +78,9 @@ class DecisionLog:
         risk_remaining=risk_gate_values.get('remaining_risk',risk_context.get('risk_remaining',
             max(0,risk_equity*e.c.max_daily_loss_fraction-e.s.get('daily_loss',0))))
         risk_identity={'risk_fraction':e.c.risk_fraction,'max_daily_loss_fraction':e.c.max_daily_loss_fraction,
+                       'daily_risk_budget_krw':risk_context.get('daily_risk_budget_krw',risk_equity*e.c.max_daily_loss_fraction),
+                       'daily_risk_override_day':risk_context.get('daily_risk_override_day'),
+                       'daily_risk_override_active':risk_context.get('daily_risk_override_active',False),
                        'allowed_risk_krw':risk_equity*e.c.risk_fraction,
                        'remaining_daily_risk_krw':max(0,risk_remaining)}
         if 'risk_quantity' in gates:

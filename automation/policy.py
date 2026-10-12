@@ -36,6 +36,8 @@ class AutomationConfig:
     weakening_drop_points: float = 2.0
     cooldown_seconds: int = 900
     max_consecutive_losses: int | None = 3  # null: 연속 손실 횟수 제한 없음. 일일 위험예산은 별도 유지.
+    daily_risk_override_day: str | None = None
+    daily_risk_override_budget_krw: float | None = None
     pullback_min_rise: float = 0.008
     pullback_max_retrace: float = 0.65
     pullback_volume_ratio: float = 0.75
@@ -60,7 +62,15 @@ class AutomationConfig:
     def capital_limit(self): return self.AUTO_TRADING_CAP_KRW
 
     def validate(self):
+        day=self.daily_risk_override_day; budget=self.daily_risk_override_budget_krw
+        if (day is None)!=(budget is None): raise ValueError('일일 위험예산 예외는 날짜와 총 한도가 함께 필요합니다.')
+        if day is not None:
+            if type(day) is not str or datetime.strptime(day,'%Y-%m-%d').date().isoformat()!=day:
+                raise ValueError('일일 위험예산 예외 날짜 오류')
+            if type(budget) not in (int,float) or not math.isfinite(budget) or not 0<budget<=self.capital_limit:
+                raise ValueError('일일 위험예산 예외 한도는 승인자본 이내 양수여야 합니다.')
         for k,v in asdict(self).items():
+            if k in ('daily_risk_override_day','daily_risk_override_budget_krw'): continue
             if k=='max_consecutive_losses' and v is None: continue
             if k in ('new_entry_cutoff','force_flatten_start','after_prep_start','after_market_start','after_entry_cutoff','after_force_flatten_start','after_market_close'): continue
             if isinstance(v,bool): continue

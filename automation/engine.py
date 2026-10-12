@@ -134,6 +134,11 @@ class AutonomousEngine(ExistingExits,Engine):
         return False
     def risk_equity(self):
         return min(self.a.capital_limit,owned_equity(self.s['cash'],self.s['positions'],self.prices))
+    def daily_risk_budget(self,equity=None):
+        # An explicit absolute ceiling expires by KST date, including within a running process.
+        if self.a.daily_risk_override_day==self.clock().date().isoformat():
+            return self.a.daily_risk_override_budget_krw
+        return super().daily_risk_budget(equity)
     def buy_fee(self,amount): return self.costs.buy_fee(amount)
     def sell_fee(self,amount): return self.costs.sell_fee(amount)
 
@@ -229,7 +234,10 @@ class AutonomousEngine(ExistingExits,Engine):
         used=sum(max(0,p['avg']-p.get('stop',p['avg'])+p['avg']*(self.c.roundtrip_cost_fraction+self.c.exit_slippage_fraction))*p['qty'] for p in self.s['positions'].values() if p.get('ownership','BOT')=='BOT')
         used+=sum((o['limit']-(o.get('signal') or {}).get('stop',o['limit'])+o['limit']*(self.c.roundtrip_cost_fraction+self.c.exit_slippage_fraction))*(o['qty']-o['filled']) for o in self.active_orders(side='BUY'))
         return {'actual_orderable_cash':self.available_cash,'approved_cap':self.a.capital_limit,
-                'risk_equity':equity,'risk_remaining':max(0,equity*self.c.max_daily_loss_fraction-self.s['daily_loss']-used),
+                'risk_equity':equity,'risk_remaining':max(0,self.daily_risk_budget(equity)-self.s['daily_loss']-used),
+                'daily_risk_budget_krw':self.daily_risk_budget(equity),
+                'daily_risk_override_day':self.a.daily_risk_override_day,
+                'daily_risk_override_active':self.a.daily_risk_override_day==self.clock().date().isoformat(),
                 'effective_auto_cap':self.auto_available_capital(),'entry_budget':self.watch_budget(),
                 'account_fresh':self.capital_account_valid(),'last_account':self.last_account,
                 'reconcile_seconds':self.c.reconcile_seconds,'snapshot_at':self.s['automation'].get('capital_snapshot',{}).get('timestamp')}
@@ -246,7 +254,7 @@ class AutonomousEngine(ExistingExits,Engine):
         reserved=sum(o['qty']*o['limit']*(1+self.c.roundtrip_cost_fraction) for o in buys)
         used=sum(max(0,p['avg']-p.get('stop',p['avg'])+p['avg']*(self.c.roundtrip_cost_fraction+self.c.exit_slippage_fraction))*p['qty'] for p in self.s['positions'].values() if p.get('ownership','BOT')=='BOT')
         used+=sum((o['limit']-(o.get('signal') or {}).get('stop',o['limit'])+o['limit']*(self.c.roundtrip_cost_fraction+self.c.exit_slippage_fraction))*(o['qty']-o['filled']) for o in buys)
-        remaining=equity*self.c.max_daily_loss_fraction-self.s['daily_loss']-used
+        remaining=self.daily_risk_budget(equity)-self.s['daily_loss']-used
         sizing=self.quantity_details(signal,equity,self.s['cash']-reserved,remaining); qty=sizing['quantity']
         reason=self.new_entry_reason(sym)
         breakout=signal.get('evaluation_gates',{}).get('breakout',{}).get('values',{}).get('breakout')
@@ -344,7 +352,7 @@ class AutonomousEngine(ExistingExits,Engine):
         sess=self.current_session()
         venue=signal.get('venue') or (self.after_default_venue if sess=='AFTER' else 'KRX')
         signal={**signal,'account_risk_budget_krw':self.risk_equity()*self.c.risk_fraction,
-                'daily_risk_budget_krw':self.risk_equity()*self.c.max_daily_loss_fraction,
+                'daily_risk_budget_krw':self.daily_risk_budget(),
                 'approved_cap_krw':self.a.capital_limit,'bot_equity_krw':self.risk_equity(),
                 'reentry':self.s['entries'].get(signal['symbol'],0)>0,'market_state':self.market,
                 'daily_attempt':sum(self.s['entries'].values())+1,'symbol_attempt':self.s['entries'].get(signal['symbol'],0)+1,
@@ -496,7 +504,7 @@ class AutonomousEngine(ExistingExits,Engine):
             signal=intents[0]['signal']
             used=sum(max(0,p['avg']-p.get('stop',p['avg'])+self.costs.roundtrip(p['avg'],p.get('stop',p['avg']))+p.get('stop',p['avg'])*self.c.exit_slippage_fraction)*p['qty'] for p in self.s['positions'].values() if p.get('ownership','BOT')=='BOT')
             used+=sum((o['limit']-(o.get('signal') or {}).get('stop',o['limit'])+self.costs.roundtrip(o['limit'],(o.get('signal') or {}).get('stop',o['limit']))+(o.get('signal') or {}).get('stop',o['limit'])*self.c.exit_slippage_fraction)*(o['qty']-o['filled']) for o in self.active_orders(side='BUY') if o is not intents[0])
-            remaining=self.risk_equity()*self.c.max_daily_loss_fraction-self.s['daily_loss']-used
+            remaining=self.daily_risk_budget()-self.s['daily_loss']-used
             if qty>self.quantity(signal,self.risk_equity(),available,remaining): raise Rejected('주문 경계에서 위험 수량 재검증 실패')
             bot_positions={s for s,p in self.s['positions'].items() if p.get('ownership','BOT')=='BOT'}
             if len(bot_positions|{o['symbol'] for o in self.active_orders(side='BUY')})>self.c.max_positions: raise Rejected('동시 포지션 초과')

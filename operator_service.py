@@ -158,6 +158,30 @@ class OperatorService:
             finally:self._idle_thread=None
     def running(self):
         return self.process_info()['running']
+    def set_daily_risk_remaining_today(self,amount):
+        """Explicit configuration only: no receipt, mode, ledger or broker mutation."""
+        if type(amount) not in (int,float) or not math.isfinite(amount) or amount<=0:
+            raise ValueError('오늘 잔여 위험예산은 유한한 양수여야 합니다.')
+        if self.running(): raise ValueError('STOPPED_RUNNER_REQUIRED')
+        with self.idle(),ProcessLock(self.root/'runtime/control.lock'):
+            cfg,auto,policy=self.settings(); stamp=self.clock()
+            if policy.get('mode') not in {'STOP','ARMED'}: raise ValueError('STOP 또는 ARMED 필요')
+            if not self.hard_locks_ok() or any(s.get('halt') for _,s in self.states()): raise ValueError('보호정책/HALT 확인 필요')
+            counts=self.state_counts()
+            if any(counts.values()): raise ValueError('보유·미체결·UNKNOWN 0 필요')
+            path=self.root/'runtime'/('automation-'+cfg.broker_environment)/'state.json'
+            state=read_json(path)
+            if state.get('day')!=stamp.date().isoformat(): raise ValueError('오늘 장부 필요')
+            loss=state.get('daily_loss')
+            if type(loss) not in (int,float) or not math.isfinite(loss) or loss<0: raise ValueError('일일 손실장부 오류')
+            updated=replace(auto,daily_risk_override_day=stamp.date().isoformat(),daily_risk_override_budget_krw=loss+amount).validate()
+            raw=read_json(self.root/'automation.json')
+            raw.update(daily_risk_override_day=updated.daily_risk_override_day,daily_risk_override_budget_krw=updated.daily_risk_override_budget_krw)
+            atomic_json(self.root/'automation.json',raw)
+        return self.save_result('daily_risk_override',{'verdict':'SAVED','day':stamp.date().isoformat(),
+            'daily_loss_preserved':loss,'remaining_daily_risk_krw':amount,'daily_risk_budget_krw':loss+amount,
+            'risk_fraction':cfg.risk_fraction,'default_max_daily_loss_fraction':cfg.max_daily_loss_fraction,
+            'new_user_live_approval_required':True,'actual_orders':0})
     def process_info(self):
         record=read_json(self.root/'runtime/operator_runner.json',{})
         identity=process_identity(record.get('pid'))
@@ -736,12 +760,12 @@ class OperatorService:
             raise ValueError('AFTER 자동매매 한도는 숫자여야 합니다.') from None
         with ProcessLock(self.root/'runtime/control.lock'):
             cfg, auto, data = self.settings()
-            if amount_num != auto.capital_limit or auto.capital_limit != 20000:
-                raise ValueError('현재 승인한도 20,000원을 유지해야 합니다. AFTER 승인은 한도를 변경하지 않습니다.')
+            if amount_num != auto.capital_limit or auto.capital_limit <= 0:
+                raise ValueError('현재 사용자 승인한도를 유지해야 합니다. AFTER 승인은 한도를 변경하지 않습니다.')
             if not (cfg.after_enabled and cfg.live_mode and auto.costs_confirmed):
                 raise ValueError('AFTER 설정·실제매매 설정·비용 확인이 필요합니다.')
-            if (cfg.risk_fraction, cfg.max_daily_loss_fraction, cfg.max_positions, cfg.max_entries_per_day) != (0.02, 0.04, 1, 3):
-                raise ValueError('기존 risk2/daily4/1종목/3회 안전설정을 확인하세요.')
+            if (cfg.risk_fraction, cfg.max_daily_loss_fraction, cfg.max_positions) != (0.02, 0.04, 1):
+                raise ValueError('기존 risk2/기본 daily4/1종목 안전설정을 확인하세요.')
             if data['mode'] not in {'STOP','ARMED','LIVE'} or not data.get('live_authorized'):
                 raise ValueError('기존 일반 LIVE 명시 승인과 정상 운영모드가 필요합니다. KILL은 별도 복구하세요.')
             stamp = self.clock()
