@@ -183,14 +183,19 @@ class RadarWorker:
     def evaluate(self,item):
         day=now().date(); sym=item['code']; key=(day,sym)
         cached_status=self.status_cache.get(sym)
+        is_priority=sym in self.status_priority_symbols or sym in self.radar.watch
+        max_age=max(30.0,self.a.scan_seconds*1.5) if is_priority else self.a.scan_seconds*3
         if cached_status and cached_status.get('checked_at'):
             try:age=(now()-date_time.fromisoformat(cached_status['checked_at'])).total_seconds()
             except (ValueError,TypeError):age=float('inf')
-            if -1<=age<=self.a.scan_seconds*3:
+            if -1<=age<=max_age:
                 status=cached_status
             else:cached_status=None
         else:cached_status=None
         if cached_status is None:
+            if not is_priority and not self.radar.affordable(item):
+                return {'status':'UNKNOWN' if item.get('affordability',{}).get('reason_code')=='ACCOUNT_CAPITAL_UNAVAILABLE' else 'REJECT',
+                        'reason':item.get('affordability',{}).get('reason_code','ONE_SHARE_UNAFFORDABLE')}
             if self.status_fetched>=self.a.max_scan_charts: return {'status':'UNKNOWN','reason':'STATUS_SCAN_LIMIT'}
             self.status_fetched+=1
             status_started=time.perf_counter();status=self.rest.stock_status(sym);self.timings['status_ms']+=(time.perf_counter()-status_started)*1000
@@ -247,6 +252,10 @@ class RadarWorker:
                 # A stale/unknown status still fails; query scheduling must not create a gap.
                 # New candidates retain their existing source-count ordering afterwards.
                 active_watch=self.status_priority_symbols  # Immutable snapshot; no cross-thread detector access.
+                present_codes={x['code'] for x in items}
+                for sym in sorted(active_watch):
+                    if sym not in present_codes:
+                        items.append({'code':sym,'name':self.radar.watch.get(sym,{}).get('name',''),'source_details':{},'reference_price':None})
                 items.sort(key=lambda x:(x['code'] not in active_watch,x['code'] not in self.radar.watch,-len(x['source_details'])))
                 compress_started=time.perf_counter()
                 rows,watch,changes=self.radar.update(items,self.evaluate,now())

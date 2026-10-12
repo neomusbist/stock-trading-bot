@@ -294,7 +294,16 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
     if src_count<max(2,engine.a.min_source_count) and not watch.get('fallback_source1'):
         engine.event('NO_TRADE',symbol=t.symbol,reason='SOURCE_COUNT_BUY_PERMISSION_DENIED');return None
     engine.names[t.symbol]=watch.get('name')
-    engine.market_status[t.symbol]=watch.get('market_status',{'pass':None,'reason_code':'MARKET_STATUS_UNKNOWN'})
+    radar_st_map=getattr(radar,'status_cache',None)
+    if isinstance(radar_st_map,dict):
+        radar_st=radar_st_map.get(t.symbol)
+        if isinstance(radar_st,dict) and radar_st.get('checked_at'):
+            curr_checked=(engine.market_status.get(t.symbol) or {}).get('checked_at')
+            if not curr_checked or str(radar_st['checked_at'])>str(curr_checked):
+                engine.market_status[t.symbol]=radar_st
+                watch['market_status']=radar_st
+    if t.symbol not in engine.market_status:
+        engine.market_status[t.symbol]=watch.get('market_status',{'pass':None,'reason_code':'MARKET_STATUS_UNKNOWN'})
     sig=detector.signal(t,watch)
     if not sig:
         gates=detector.evaluation_gates(t,watch)
@@ -332,6 +341,23 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
     sig['name']=watch.get('name')
     sig['candidate_detected_at']=watch.get('observed_at')
     sig['fallback_source1']=bool(watch.get('fallback_source1'))
+    # JIT verification of market_status freshness before final order execution
+    curr_st=engine.market_status.get(t.symbol)
+    st_age=float('inf')
+    if curr_st and curr_st.get('checked_at'):
+        try:st_age=(engine.clock()-datetime.fromisoformat(curr_st['checked_at'])).total_seconds()
+        except Exception:st_age=float('inf')
+    if st_age>engine.a.scan_seconds*3:
+        client=getattr(engine,'rest',None) or getattr(engine,'broker',None) or getattr(radar,'rest',None)
+        if client and hasattr(client,'stock_status') and engine.connected:
+            try:
+                fresh_st=client.stock_status(t.symbol)
+                if isinstance(fresh_st,dict) and fresh_st.get('checked_at'):
+                    engine.market_status[t.symbol]=fresh_st
+                    watch['market_status']=fresh_st
+                    if isinstance(getattr(radar,'status_cache',None),dict):
+                        radar.status_cache[t.symbol]=fresh_st
+            except Exception:pass
     for sym,p in (list(engine.s['positions'].items()) if engine.a.replacement_enabled else []):
         if sym==t.symbol or p.get('exit_requested'): continue
         history=radar.cache.get((t.time.date(),sym)); price=prices.get(sym)
@@ -517,7 +543,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     observation_rest=Rest(replace(effective,live_mode=False),auth_session=rest.auth_session);observation_rest.session_guard=lambda:control_supported(now()) or (getattr(effective,'after_enabled',False) and after_control_supported(now()));observation_rest.diagnostic_only=True
     shadow=ObservationWorker(effective,auto,engine.costs,root,observation_rest);shadow.start()
     shadow_state={};observation_drops=0
-    lookup={}; rows=[]; by_symbol={}; prices={}; counts={'ticks':0,'radar_cycles':0,'account_checks':0,'subscription_acks':0}
+    lookup={}; rows=[]; by_symbol={}; prices={}; counts={'ticks':0,'radar_cycles':0,'account_checks':0,'subscription_acks':0}; demoted_watch_retained={}
     engine._last_eval_frame={}
     last_radar=0.; radar_ok=False; last_report=0.; last_heartbeat=0.;last_board=0.; started=now(); stop_at=time.monotonic()+(seconds or 120) if seconds or readiness_check else None
     smoke_ended=False; fatal=''; account_generation=0; kill_requested_at=None
@@ -691,6 +717,10 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 observed=set(shadow_state.get('symbols',[]))
                 engine.candidate_audit.shadow_count=len(observed)
                 desired.update(observed)
+                for sym in lookup: demoted_watch_retained[sym]=now()
+                demoted_watch_retained={s:t for s,t in demoted_watch_retained.items() if (now()-t).total_seconds()<=60.0}
+                if len(desired)<64:
+                    desired.update(sorted(set(demoted_watch_retained)-desired)[:max(0,64-len(desired))])
                 observation_drops,priority_symbols=prewarm_handoff(engine,detector,feed,observed,real_symbols,priority_symbols,observation_drops,shadow.deliver)
                 if in_session:
                     subscriptions.refresh(engine,detector,feed,desired,now()); symbols=set(subscriptions.symbols)
@@ -765,13 +795,20 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 if done: break
             except KeyboardInterrupt:
                 user_command(policy,'STOP'); engine.event('STOP_REQUESTED',reason='키보드 중단; 봇 포지션 보호 유지')
-            except (ValueError,KeyError,TypeError,OSError) as e:
+            except (ValueError,KeyError,TypeError,OSError,ConnectionError) as e:
                 engine.account_ok=False; engine.halt('데이터/상태 오류: '+type(e).__name__)
                 if engine.s.get('halt_info',{}).get('classification')=='RECOVERABLE_IO':
                     engine.s['halt_info']['exception']=error_record(e); engine.save()
                 engine.event('RUNTIME_ERROR',**error_record(e))
                 # 보호를 끊지 않고 다음 정상 이벤트/계좌 대조를 기다린다.
                 time.sleep(.25)
+            except Exception as e:
+                if 'WebSocket' in type(e).__name__:
+                    engine.connected=False; engine.account_ok=False
+                    engine.event('RUNTIME_ERROR',error=type(e).__name__)
+                    time.sleep(.25)
+                else:
+                    raise
     except Exception as e:
         fatal=type(e).__name__; engine.event('WORKER_FATAL',error=fatal); raise
     finally:
