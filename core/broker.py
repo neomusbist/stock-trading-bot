@@ -104,13 +104,27 @@ class Rest:
         if mutation and guard is not None:
             guard(api,body)
         attempts=1 if mutation else 3
+        auth_retried=False
         for attempt in range(attempts):
             try:
-                headers={'authorization':'Bearer '+self.get_token(),'api-id':api,'cont-yn':cont,'next-key':key}
+                used_token=self.get_token()
+                headers={'authorization':'Bearer '+used_token,'api-id':api,'cont-yn':cont,'next-key':key}
                 data,headers=self._http(path,body,headers)
                 if data.get('return_code') not in (0,'0'):
                     if 'return_code' not in data and mutation:
                         raise AmbiguousOrder('주문 응답 결과코드 없음')
+                    # HTTP 200 can contain an explicitly invalid token. Retry
+                    # reads once only; never retransmit an order or refresh
+                    # authentication from a diagnostic client.
+                    if (not mutation and not getattr(self,'diagnostic_only',False)
+                        and not auth_retried and attempt+1<attempts
+                        and str(data.get('return_code'))=='3'
+                        and '8005:' in str(data.get('return_msg',''))):
+                        with self.auth_lock:
+                            if self.token==used_token:self.token=''
+                            self.get_token()
+                        auth_retried=True
+                        continue
                     raise Rejected(f'{api}: 오류코드 {data.get("return_code", "MISSING")}',api=api,response=data)
                 return data,headers
             except Rejected:

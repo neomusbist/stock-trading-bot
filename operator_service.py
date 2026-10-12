@@ -93,6 +93,11 @@ class Gateway:
     """실제 연결은 사용자가 선택한 지원시간 내 작업에서만 한다."""
     def __init__(self,service): self.service=service
     def snapshot(self):
+        if self.service.running():raise ValueError('ACCOUNT_PROBE_REQUIRES_STOPPED_RUNNER')
+        # A separate OAuth grant can invalidate the active runner's token.
+        # Keep all runner locks through this independent account read.
+        with self.service.idle():return self._snapshot_stopped()
+    def _snapshot_stopped(self):
         cfg=load_config(self.service.root/'config.json')
         is_ctrl=control_supported(self.service.clock()) or (getattr(cfg,'after_enabled',False) and after_control_supported(self.service.clock()))
         if not is_ctrl: raise ValueError('지원시간 밖: 계좌 연결을 시작하지 않습니다.')
@@ -107,6 +112,8 @@ class Gateway:
         return self.service.run_command(args,timeout)
     def recovery_snapshot(self):
         # Only account reads; no order submission/cancellation API is exposed.
+        # recover_halt holds idle runner locks before calling this method.
+        if self.service.running():raise ValueError('ACCOUNT_PROBE_REQUIRES_STOPPED_RUNNER')
         import main
         from core.broker import Rest
         cfg=load_config(self.service.root/'config.json')

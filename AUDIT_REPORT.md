@@ -1,5 +1,15 @@
 # 최신 감사: 2026-10-12 연속 운용과 진입 지연
 
+## 14:28 추가 인증 사고 / 운영과 독립 점검의 격리
+
+14:10:28 배포 준비용 독립 조회가 OAuth 토큰을 발급한 뒤, 운영 계좌 조회는14:10:34부터 return_code3 / `8005:Token이 유효하지 않습니다`를 반복했다. 토큰 발급과 실패의 시간관계, 이전 runner가 계속 사용한 메모리 토큰을 대조하면 독립 인증이 운영 토큰을 무효화했을 가능성이 높다. 이 점검은 작업자가 실행한 것으로, 운영 중 독립 인증은 올바른 읽기 전용 검사 방식이 아니다. 서버가 이전 토큰을 폐기한 원본 이벤트는 없으므로 인과를 완전 입증했다고 표현하지 않는다.
+
+14:17:30 STOP revision198을 받아14:17:33 exit0으로 종료했다. 이 작업에서 STOP/새 배포/LIVE 시작을 실행하지 않았고, 저장된 MODE 기록에는 요청 주체가 없어 주체는 UNKNOWN이다. HALT가 빈 상태라 이 STOP을 거래 후 HALT로 합산하지 않는다. 사용자 GUI 재시작 기록14:23:20 이후 같은 continuity BUILD로 LIVE가 재개됐다. 작업자의 이후 독립 계좌검사는 running guard에서 인증 전에 거절됐다.
+
+확인된 재발 경로를 개발본에서 수정했다. Gateway의 독립 snapshot은 stopped runner 및 idle OS locks 동안만 수행하며, HALT recovery의 독립 snapshot도 running을 거절한다. 정상 조회에서 코드3과 명시적8005 token-invalid 응답이 함께 있으면 공유 인증 lock 아래 토큰을 한 번만 갱신하고 조회만 재시도한다. 다른 업무 오류/진단 client/BUY·SELL·cancel은 인증 재발급·주문 재전송 경로에 들어가지 않는다. 장부·HARD_LOCK·승인·위험 설정은 변경하지 않는다. private 배포 준비/실행 helper의 독립 인증도 반드시 STOP·idle 뒤로 이동했다. 신규 targeted10 + 기존 pipeline15 =25 PASS. 최종 전체880 PASS/FAIL0/ERROR0/SKIP0, syntax108 정상, network/orders/program-start0. 추가 코드는 아직 운영 미반영이다.
+
+시간축 정정: `trend_5m`/`trend_15m`는 실제5분/15분 봉 여러 개의 추세가 아니라, 최근5개/15개 연속 완성1분봉의 관측 window다. UP/DOWN은 구간 수익률과 매1분 higher-low/lower-high가 모두 맞는 경우이며, MIXED는 하락 확정이 아니다. 이 값을 곧바로 시장 추세 hard gate로 사용하지 않는다.
+
 상태: 운영 최소 복구 완료, 추가 관측 안정화 전체870 PASS. 추가 운영 반영은 사용자 승인 대기. 아래 과거 보고는 역사 기록이며 현재 완료 판정이 아니다.
 
 ## 확인된 문제와 수정 범위
