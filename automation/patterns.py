@@ -196,11 +196,28 @@ class PatternDetector(Detector):
             setups.append({'pattern':'A','breakout':prior,'support':support,'projection':prior+2*(prior-support)})
         return [s for s in setups if s]
 
-    def target(self,t,watch,setup,limit):
+    def target(self,t,watch,setup,limit,bars=None):
         resistance=watch.get('resistance')
-        # A/C/O가 신선한 실제 체결로 넘은 저항만 목표의 상한에서 제외한다.
-        if setup['pattern'] in {'A','C','O'} and resistance is not None and t.price>resistance:resistance=None
-        return min(resistance,setup['projection']) if resistance is not None else setup['projection']
+        # Check intraday overhead resistance from today's completed bars and detector's day_high
+        intraday_highs=[]
+        if bars:
+            intraday_highs.extend(b['high'] for b in bars if b.get('high') and b['high']>limit)
+        day_hi=self.day_high.get(t.symbol)
+        if day_hi is not None and day_hi>limit:
+            intraday_highs.append(day_hi)
+        nearest_intraday=min(intraday_highs) if intraday_highs else None
+
+        # For A/C/O: already crossed daily resistance is ignored
+        daily_res = resistance
+        if setup['pattern'] in {'A','C','O'} and daily_res is not None and t.price>daily_res:
+            daily_res = None
+
+        overhead_candidates=[r for r in (daily_res,nearest_intraday) if r is not None and r>limit]
+        if setup['pattern']=='B' and resistance is not None:
+            overhead_candidates.append(resistance)
+        effective_resistance=min(overhead_candidates) if overhead_candidates else None
+
+        return min(effective_resistance,setup['projection']) if effective_resistance is not None else setup['projection']
 
     def opening_momentum(self, t, watch, buf=None):
         """Setup O (Opening Momentum):
@@ -495,11 +512,22 @@ class PatternDetector(Detector):
         if setup['pattern']=='B' and t.price>=setup.get('peak',breakout):
             breakout=setup['peak']
         stop=floor_tick(setup['support']*(1-c.structural_buffer))
-        limit=floor_tick(min(t.ask,breakout*(1+c.max_chase))); resistance=watch.get('resistance')
-        target=self.target(t,watch,setup,limit)
+        limit=floor_tick(min(t.ask,breakout*(1+c.max_chase)))
+        daily_res=watch.get('resistance')
+
+        # Intraday overhead resistance: detect swing highs from completed bars & day_high
+        intraday_highs=[]
+        if bars:
+            intraday_highs.extend(b['high'] for b in bars if b.get('high') and b['high']>limit)
+        day_hi=self.day_high.get(t.symbol)
+        if day_hi is not None and day_hi>limit:
+            intraday_highs.append(day_hi)
+        nearest_intraday=min(intraday_highs) if intraday_highs else None
+        
+        target=self.target(t,watch,setup,limit,bars=bars)
         distance=(limit-stop)/limit if limit>0 else None
         rr=(target-limit)/(limit-stop) if limit>stop else None
-        horizon=getattr(self.a,'horizon_'+setup['pattern'].lower()+'_minutes')
+        horizon=getattr(self.a,'horizon_'+setup['pattern'].lower()+'_minutes',20)
         score=efficiency(limit,stop,target,min(1.,0.4+0.1*len(watch.get('source_details',{}))),horizon,self.costs,self.a.min_efficiency_score)
         invalidation_pass=bool(distance is not None and 0<stop<limit and c.min_stop_fraction<=distance<=c.max_stop_fraction)
         if bars and setup['pattern']=='A' and invalidation_pass:
@@ -509,14 +537,22 @@ class PatternDetector(Detector):
                 avg_span=sum(b['high']-b['low'] for b in bars[-min(len(bars),4):])/min(len(bars),4)
                 if (limit-stop)<avg_span*1.1:
                     invalidation_pass=False
+
+        overhead_candidates=[r for r in (daily_res,nearest_intraday) if r is not None and r>limit]
+        if setup['pattern']=='B' and daily_res is not None:
+            overhead_candidates.append(daily_res)
+        effective_resistance=min(overhead_candidates) if overhead_candidates else None
+        res_display=effective_resistance or daily_res
+
         return {'breakout':gate(t.price>breakout and limit>breakout,price=t.price,breakout=breakout,setup=setup['pattern'],
                 ask=t.ask,entry=limit,reason='BREAKOUT_QUOTE_NOT_CONFIRMED' if t.price>breakout and limit<=breakout else None),
             'chase':gate(t.ask/breakout-1<=c.max_chase,chase=t.ask/breakout-1,max_chase=c.max_chase,ask=t.ask),
             'invalidation':gate(invalidation_pass if distance is not None else None,
                 entry=limit,stop=stop,distance_pct=distance,min_pct=c.min_stop_fraction,max_pct=c.max_stop_fraction),
-            'risk_reward':gate(None if rr is None else rr>=c.min_reward_risk,calculated_rr=rr,required_rr=c.min_reward_risk,target=target),
-            'resistance':gate(watch.get('status') in {'ELIGIBLE','WATCH','RESERVE'} and (setup['pattern']!='B' or watch.get('resistance_room_pass') is not False),resistance_room_pass=watch.get('resistance_room_pass'),resistance=resistance,
-                distance_pct=resistance/limit-1 if resistance is not None and limit>0 else None,min_room=c.min_resistance_room),
+            'risk_reward':gate(None if rr is None else rr>=c.min_reward_risk,calculated_rr=rr,required_rr=c.min_reward_risk,target=target,effective_resistance=effective_resistance),
+            'resistance':gate(watch.get('status') in {'ELIGIBLE','WATCH','RESERVE'} and (setup['pattern']!='B' or watch.get('resistance_room_pass') is not False),
+                resistance_room_pass=watch.get('resistance_room_pass'),resistance=res_display,
+                distance_pct=res_display/limit-1 if res_display is not None and limit>0 else None,min_room=c.min_resistance_room),
             'order_price':gate(limit>=t.ask,limit=limit,ask=t.ask),
             'economic':gate(score['decision']=='TRADE',score=score,tick_size=tick_size(t.price),tick_cost_fraction=tick_size(t.price)/t.price)}
 
