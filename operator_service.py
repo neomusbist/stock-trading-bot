@@ -11,7 +11,7 @@ from dataclasses import asdict,replace
 from datetime import datetime
 from pathlib import Path
 from core.settings import ROOT,now,load_config
-from core.util import ProcessLock,atomic_json,read_json_retry,exception_details
+from core.util import ProcessLock,atomic_json,read_json_retry,exception_details,shared_binary_reader
 from automation.policy import Policy,load_automation,HARD_LOCKS,BREAKEVEN_EXITS,EXISTING_POLICIES,legacy_test_release_enabled
 from automation.session import supported,control_supported,after_supported,current_session,after_control_supported,after_entry_supported
 from automation.decisions import STRATEGY_VERSION,BUILD_ID
@@ -62,7 +62,7 @@ def tail_events(path,limit=1000):
     for source in candidates:
         if budget<=0:break
         try:
-            with source.open('rb') as f:
+            with shared_binary_reader(source) as f:
                 f.seek(0,2);end=f.tell();size=min(budget,end);f.seek(end-size);block=f.read(size)
         except FileNotFoundError:continue  # rotate may rename the active path between stat/open
         if block:blocks.append(block);budget-=len(block)

@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from core.settings import now
 from core.util import atomic_json,ProcessLock,exception_details
+from automation.observation_retention import ObservationRetention
 from core.broker import Rest,Rejected
 from core.realtime import Feed,parse_tick
 from core.strategy import Tick
@@ -22,6 +23,7 @@ from automation.engine import AutonomousEngine
 from automation.patterns import PatternDetector
 from automation.radar import RadarWorker,observation_structure
 from automation.allocation import comparison
+from automation.entry_context_audit import review_entry_context
 from automation.performance import report
 from automation.session import supported,control_supported,assessment,market_phase,after_supported,after_control_supported,after_entry_supported
 from automation.candidate_audit import CandidateAudit
@@ -146,6 +148,14 @@ class SubscriptionState:
     def acknowledge(self):
         self.refresh_pending=False
 
+    def transport_failed(self,engine,detector,feed,stamp):
+        if getattr(feed,'transport_failed',False) is not True:return
+        # Block before another order evaluation in this same cycle. A true
+        # socket failure still resets observation and requires account recovery.
+        engine.disconnect();engine.account_ok=False;engine.reset_detector=True
+        detector.reset();self.disconnected(stamp)
+        engine.event('SUBSCRIPTION_TRANSPORT_LOST',worker_restart_required=False)
+
     def gap_expired(self,detector,symbol,stamp):
         last=detector.last.get(symbol)
         if last and last.time.date()!=stamp.date():return True
@@ -167,6 +177,7 @@ class SubscriptionState:
             # Same observation universe, new exchange stream: preserve bars but
             # require a fresh post-subscription tick before any entry.
             self.waiting.update({sym:stamp for sym in desired});self.refresh_pending=True
+            self.transport_failed(engine,detector,feed,stamp)
             engine.event('SUBSCRIPTION_REFRESH',added=[],removed=[],reason_code='EXCHANGE_STREAM_CHANGED',
                          connected=engine.connected,account_ok=engine.account_ok)
             return True
@@ -190,6 +201,7 @@ class SubscriptionState:
                 fresh_regular_tick_required=True)
         feed.update_symbols(sorted(desired))
         self.symbols=desired; self.refresh_pending=True
+        self.transport_failed(engine,detector,feed,stamp)
         engine.event('SUBSCRIPTION_REFRESH',added=sorted(added),removed=sorted(removed),
             connected=engine.connected,account_ok=engine.account_ok)
         return True
@@ -284,6 +296,22 @@ def resolve_radar_focus(engine,lookup,rows,rank_watch,readiness,cfg,auto,stamp):
     return selection
 
 
+def latest_evaluation_watch(watch,radar,symbol):
+    """Use refreshed immutable metadata without REST work on the order thread."""
+    view=dict(watch)
+    cache=getattr(radar,'status_cache',None)
+    cached=cache.get(symbol) if isinstance(cache,dict) else None
+    if not isinstance(cached,dict):return view
+    old=watch.get('market_status',{})
+    try:
+        newer=datetime.fromisoformat(cached['checked_at'])
+        prior=datetime.fromisoformat(old['checked_at']) if old.get('checked_at') else None
+        if prior is None or newer>=prior:view['market_status']=dict(cached)
+    except (KeyError,TypeError,ValueError):
+        # Malformed status is not fresh normal-status evidence.
+        view['market_status']={'pass':None,'reason_code':'MARKET_STATUS_UNKNOWN'}
+    return view
+
 def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_evaluated_frame=None):
     if not watch or not engine.connected: return None
     if last_evaluated_frame is not None:
@@ -293,6 +321,7 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
     src_count=watch.get('source_count',len(watch.get('source_details',{})) if 'source_details' in watch else engine.a.min_source_count)
     if src_count<max(2,engine.a.min_source_count) and not watch.get('fallback_source1'):
         engine.event('NO_TRADE',symbol=t.symbol,reason='SOURCE_COUNT_BUY_PERMISSION_DENIED');return None
+    watch=latest_evaluation_watch(watch,radar,t.symbol)
     engine.names[t.symbol]=watch.get('name')
     engine.market_status[t.symbol]=watch.get('market_status',{'pass':None,'reason_code':'MARKET_STATUS_UNKNOWN'})
     sig=detector.signal(t,watch)
@@ -339,6 +368,13 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
         engine.event('OPPORTUNITY_COMPARISON',symbol=sym,candidate=t.symbol,comparison=result)
         if result['decision']=='REPLACE' and engine.policy.mode=='LIVE' and not engine.new_entry_reason(t.symbol):
             engine.request_exit(sym,'비용/안전마진 포함 상대효율 교체')
+    context=review_entry_context(sig,engine.costs,engine.c.min_reward_risk,engine.a.min_efficiency_score)
+    key=(sig.get('pattern'),sig.get('limit'),sig.get('stop'),sig.get('target'),
+         (sig.get('decision_bar_snapshot') or [{}])[-1].get('time'))
+    prior=getattr(engine,'_entry_context_keys',{})
+    if prior.get(t.symbol)!=key:
+        engine.event('ENTRY_CONTEXT_AUDIT',symbol=t.symbol,setup=sig.get('pattern'),review=context)
+        prior[t.symbol]=key;engine._entry_context_keys=prior
     o=engine.enter(sig,t)
     account.need_fills=bool(engine.active_orders())
     return o
@@ -500,6 +536,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
         return (radar_worker,account_worker,Feed(rest,sorted(symbols)))
     symbols=set(engine.s['positions'])|{o['symbol'] for o in engine.active_orders()}
     subscriptions=SubscriptionState(symbols); priority_symbols=set(symbols)
+    observation_retention=ObservationRetention();retained_observation=set()
     radar,account,feed=clients()
     from automation.position_health import PositionDataHealth
     position_health=PositionDataHealth(engine,feed,account,subscriptions)
@@ -681,9 +718,15 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 desired.update(set(engine.s['automation']['existing'])&(set(BREAKEVEN_EXITS)|({TEST_RELEASE_SYMBOL} if legacy_test_release_enabled() else set())))
                 if (readiness_check or (in_session and not supported(now()))) and not desired:desired.add('005930')  # 조회 증거용; HARD_LOCK 종목은 WATCH/주문 대상이 아니다.
                 real_symbols=set(desired)
-                observed=set(shadow_state.get('symbols',[]))
+                observed=shadow_state.get('symbols',[])
                 engine.candidate_audit.shadow_count=len(observed)
-                desired.update(observed)
+                desired,observed,retained=observation_retention.select(lookup,real_symbols,observed,now(),
+                    grace_seconds=auto.scan_seconds,capacity=observation_settings.max_symbols)
+                if retained!=retained_observation:
+                    engine.event('OBSERVATION_RETENTION',symbols=sorted(retained),
+                        grace_seconds=auto.scan_seconds,subscription_count=len(desired),
+                        capacity=observation_settings.max_symbols,actual_order_permission=False)
+                    retained_observation=retained
                 observation_drops,priority_symbols=prewarm_handoff(engine,detector,feed,observed,real_symbols,priority_symbols,observation_drops,shadow.deliver)
                 if in_session:
                     subscriptions.refresh(engine,detector,feed,desired,now()); symbols=set(subscriptions.symbols)
@@ -766,7 +809,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 # 보호를 끊지 않고 다음 정상 이벤트/계좌 대조를 기다린다.
                 time.sleep(.25)
     except Exception as e:
-        fatal=type(e).__name__; engine.event('WORKER_FATAL',error=fatal); raise
+        fatal=type(e).__name__; engine.event('WORKER_FATAL',**error_record(e)); raise
     finally:
         shadow.close()
         if data_active: feed.close(); radar.close(); account.close()

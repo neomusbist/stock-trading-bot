@@ -8,6 +8,7 @@ import time
 import traceback
 import threading
 from pathlib import Path
+from contextlib import contextmanager
 
 def number(value, signed=False):
     if value is None or str(value).strip() == '':
@@ -110,6 +111,24 @@ def _read_json_retry(path,encoding):
         except PermissionError:
             if attempt==5: raise
             time.sleep(.01*(2**attempt))
+
+@contextmanager
+def shared_binary_reader(path):
+    """A live log reader must permit atomic replacement and size rotation."""
+    if os.name!='nt':
+        with Path(path).open('rb') as stream:yield stream
+        return
+    import ctypes,msvcrt
+    from ctypes import wintypes
+    api=windows_reader_api()
+    handle=api.CreateFileW(str(Path(path).absolute()),0x80000000,7,None,3,0x80,None)
+    if handle==wintypes.HANDLE(-1).value:
+        error=ctypes.get_last_error()
+        raise OSError(0,ctypes.FormatError(error),str(path),error)
+    try:fd=msvcrt.open_osfhandle(handle,os.O_RDONLY)
+    except Exception:
+        api.CloseHandle(handle);raise
+    with os.fdopen(fd,'rb') as stream:yield stream
 
 def write_csv(path, rows, fields=None):
     path = Path(path)

@@ -186,7 +186,11 @@ class RadarWorker:
         if cached_status and cached_status.get('checked_at'):
             try:age=(now()-date_time.fromisoformat(cached_status['checked_at'])).total_seconds()
             except (ValueError,TypeError):age=float('inf')
-            if -1<=age<=self.a.scan_seconds*3:
+            ttl=self.a.scan_seconds*3
+            # Refresh actual WATCH one existing radar cycle before expiry.
+            # Keep the API budget and the order-side freshness guard unchanged.
+            if sym in self.status_priority_symbols:ttl=max(0,ttl-self.a.scan_seconds)
+            if -1<=age<=ttl:
                 status=cached_status
             else:cached_status=None
         else:cached_status=None

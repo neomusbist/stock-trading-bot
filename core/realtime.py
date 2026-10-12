@@ -64,7 +64,7 @@ class Feed:
     def __init__(self,rest,symbols,index_subscription_enabled=False):
         self.rest=rest; self.symbols=list(dict.fromkeys(symbols)); self.q=queue.Queue(maxsize=100000)
         self.stop=threading.Event(); self.overflow=threading.Event(); self.socket=None
-        self.logged_in=False; self.subscription_lock=threading.RLock()
+        self.logged_in=False; self.transport_failed=False; self.subscription_lock=threading.RLock()
         self.observation_symbols=frozenset(); self.priority_symbols=None; self.observation_sink=None
         self.observation_q=queue.Queue(maxsize=8192);self.observation_drops=0
         self.orderbooks={}
@@ -94,6 +94,7 @@ class Feed:
                 if event.get('return_code') not in (None,0,'0'):self.index_context.clear()
                 return  # Diagnostic ACK is never an order/market subscription ACK.
             if event.get('trnm') in {'ERROR','DISCONNECTED'}:
+                self.transport_failed=True;self.logged_in=False
                 self.orderbooks.clear();self.latest_ticks.clear()
                 self.index_context.clear()
             if event.get('trnm')=='REAL':
@@ -166,8 +167,16 @@ class Feed:
                 for symbol in set(mapping)-set(updated):mapping.pop(symbol,None)
             if self.socket and self.logged_in:
                 # refresh=0 그룹을 완전히 교체하며 주문/장상태 구독은 항상 다시 포함한다.
-                self.socket.send(json.dumps({'trnm':'REG','grp_no':'1','refresh':'0','data':[
-                    {'item':self.wire_symbols,'type':['0B','0D']},{'item':[''],'type':['00','0s']}]}))
+                from websocket import WebSocketException
+                try:
+                    self.socket.send(json.dumps({'trnm':'REG','grp_no':'1','refresh':'0','data':[
+                        {'item':self.wire_symbols,'type':['0B','0D']},{'item':[''],'type':['00','0s']}]}))
+                except (WebSocketException,ConnectionError,TimeoutError) as error:
+                    # A closed transport must not terminate the market worker.
+                    # Keep the desired universe for the receiver's normal reconnect.
+                    self.emit({'trnm':'DISCONNECTED','reason':type(error).__name__,'stage':'SUBSCRIPTION_SEND'})
+                    try:self.socket.close()
+                    except (WebSocketException,ConnectionError,TimeoutError):pass
             return True
 
     def refresh_exchange(self):
@@ -204,7 +213,7 @@ class Feed:
                         if m.get('trnm')=='LOGIN':
                             if m.get('return_code') not in (0,'0'):
                                 self.emit({'trnm':'ERROR','reason':'로그인 실패'}); ws.close(); return
-                            self.logged_in=True
+                            self.logged_in=True;self.transport_failed=False
                             self.wire_symbols=self.subscription_items(self.symbols)
                             ws.send(json.dumps({'trnm':'REG','grp_no':'1','refresh':'0','data':[
                                 {'item':self.wire_symbols,'type':['0B','0D']},{'item':[''],'type':['00','0s']}]}))

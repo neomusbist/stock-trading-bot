@@ -4,6 +4,9 @@ import json
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+from core.util import shared_binary_reader
 
 CASES = ('금호전기', '우리로', '와이어블', '빛샘전자', '대한광통신', '덕우전자',
          '이루온', '한국파마', '윈팩', '다산네트웍스', '에이스테크', '솔루엠')
@@ -18,7 +21,7 @@ def file_records(path):
     if not path.exists(): return
     # 실행 중인 로그도 최초 파일 길이까지만 읽는다. writer/파일 잠금을 사용하지 않는다.
     size = path.stat().st_size
-    with path.open('rb') as stream:
+    with shared_binary_reader(path) as stream:
         while stream.tell() < size:
             line = stream.readline(min(size-stream.tell(), 16*1024*1024))
             if not line.endswith(b'\n'): break
