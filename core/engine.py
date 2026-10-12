@@ -282,6 +282,8 @@ class Engine:
             p['qty']-=delta
             if not p['qty']: del positions[sym]
         self.fill_applied(o,delta,price)
+        o['last_fill_at']=self.clock().isoformat()
+        if sym in positions: positions[sym]['last_fill_at']=o['last_fill_at']
         o['filled']=total; o['amount']=amount
         if total==o['qty']: o['status']='FILLED'
         self.save(); self.event('FILL',side=o['side'],symbol=sym,qty=delta,price=price)
@@ -393,6 +395,16 @@ class Engine:
     def reconcile(self,snapshot,fills=()):
         """잔고와 미체결 조회가 불일치하면 신규 진입을 금지하고 기존 보호는 유지한다."""
         self.account_ok=False
+        started=snapshot.get('query_started_at')
+        if started:
+            try:
+                query=datetime.fromisoformat(started)
+                fills_at=[datetime.fromisoformat(o['last_fill_at']) for o in self.s['orders'].values() if o.get('last_fill_at')]
+                if any(query<=t for t in fills_at):
+                    self.event('RECONCILE_DEFERRED',reason='SNAPSHOT_PREDATES_LOCAL_FILL',query_started_at=started)
+                    return False
+            except (TypeError,ValueError):
+                self.halt('계좌 조회시각 불명확');return False
         balances=snapshot['holdings']; open_orders={str(r['ord_no']):r for r in snapshot['orders']}
         for p in self.s['positions'].values(): p['qty_blocked']=False
         for o in self.active_orders():
@@ -430,9 +442,29 @@ class Engine:
                         if (c_now-t_created).total_seconds()<=max(self.c.order_timeout_seconds,10): continue
                     except (ValueError,TypeError): pass
                 self.halt('주문 접수 후 체결/취소 상태 미확인')
+        if started and any(query<=datetime.fromisoformat(o['last_fill_at']) for o in self.s['orders'].values() if o.get('last_fill_at')):
+            self.event('RECONCILE_DEFERRED',reason='SNAPSHOT_PREDATES_REST_FILL',query_started_at=started)
+            self.save();return False
         for sym,p in self.s['positions'].items():
             b=balances.get(sym)
             if not b or b['qty']!=p['qty']:
+                actual=b['qty'] if b else 0
+                own_sells=self.active_orders(sym,'SELL')
+                # REST fills and balance queries are separate snapshots. A known
+                # pending SELL can explain a lower balance before its fill event.
+                # Block all further orders until fill/next fresh query confirms it.
+                try:
+                    recent=bool(started and own_sells and all(o['id'] and o['status'] not in {'INTENT','UNKNOWN'}
+                        and 0<=(self.clock()-datetime.fromisoformat(o['created'])).total_seconds()<=max(self.c.order_timeout_seconds,10)
+                        for o in own_sells))
+                    outstanding=sum(o['qty']-o['filled'] for o in own_sells)
+                except (TypeError,ValueError,KeyError):recent=False;outstanding=0
+                if recent and max(0,p['qty']-outstanding)<=actual<p['qty']:
+                    p['qty_blocked']=True
+                    self.event('RECONCILE_DEFERRED',symbol=sym,reason='OWN_SELL_FILL_PENDING',
+                        ledger_qty=p['qty'],broker_qty=actual,query_started_at=started,
+                        sell_orders=[o['local'] for o in own_sells])
+                    self.save();return False
                 started=snapshot.get('query_started_at')
                 last_fill=p.get('last_entry_fill_at') or p.get('opened')
                 if started and last_fill:
@@ -462,3 +494,4 @@ class Engine:
         self.s['cash']=max(0,snapshot['cash']); self.s['equity']=min(self.c.account_equity,snapshot['equity'])
         self.account_ok=True; self.last_account=time.monotonic()
         self.save()
+        return True

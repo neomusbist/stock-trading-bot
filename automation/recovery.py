@@ -1,0 +1,34 @@
+"""Explicit operator recovery after a stopped, fresh, flat broker reconciliation."""
+from datetime import datetime
+from core.util import atomic_json
+from core.event_log import append_jsonl
+
+REVIEWABLE={'관리 잔고와 실제 잔고 불일치: 자동 매도 보류 필요','데이터/상태 오류: PermissionError'}
+TERMINAL={'FILLED','CANCELED','REJECTED'}
+
+def recover_reviewed_halt(path,state,snapshot,stamp,reason):
+    if state.get('halt') not in REVIEWABLE:raise ValueError('HALT_REASON_REQUIRES_SEPARATE_REVIEW')
+    if state.get('positions') or any(o['status'] not in TERMINAL for o in state['orders'].values()):
+        raise ValueError('NON_FLAT_ORDER_LEDGER')
+    if snapshot.get('account_identity')!=state.get('identity'):raise ValueError('ACCOUNT_IDENTITY_MISMATCH')
+    query=datetime.fromisoformat(snapshot['query_started_at'])
+    incident=datetime.fromisoformat(state['halt_info']['occurred_at'])
+    if not incident<query<=stamp or (stamp-query).total_seconds()>15:raise ValueError('RECOVERY_SNAPSHOT_STALE')
+    if snapshot['orders']:raise ValueError('BROKER_PENDING_ORDERS')
+    existing=state['automation']['existing']
+    expected={s:h['qty'] for s,h in existing.items() if h['qty']}
+    actual={s:h['qty'] for s,h in snapshot['holdings'].items() if h['qty']}
+    if actual!=expected:raise ValueError('BROKER_HOLDINGS_MISMATCH')
+    # This explicit recovery never resets day, losses, cash, counters or approval.
+    old=dict(state['halt_info']);old.update(active=False,recovered_at=stamp.isoformat(),
+        recovery='EXPLICIT_FRESH_FLAT_RECONCILIATION',recovery_reason=reason)
+    updated={**state,'halt':'','halt_info':old,'halt_history':[*state.get('halt_history',[]),old]}
+    try:
+        atomic_json(path,updated)
+        append_jsonl(path.parent/'events.jsonl',{'time':stamp.isoformat(),'event':'MANUAL_HALT_RECOVERED',
+            'halt_info':old,'account_identity_match':True,'bot_positions':0,'broker_unfilled':0,
+            'query_started_at':snapshot['query_started_at'],'actual_orders':0})
+    except Exception:
+        atomic_json(path,state)
+        raise
+    return updated

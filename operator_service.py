@@ -105,6 +105,17 @@ class Gateway:
         return snapshot
     def command(self,args,timeout=60):
         return self.service.run_command(args,timeout)
+    def recovery_snapshot(self):
+        # Only account reads; no order submission/cancellation API is exposed.
+        import main
+        from core.broker import Rest
+        cfg=load_config(self.service.root/'config.json')
+        main.load_credentials()
+        rest=Rest(replace(cfg,live_mode=False))
+        started=self.service.clock().isoformat()
+        snapshot=rest.snapshot()
+        snapshot.update(account_identity=rest.identity,query_started_at=started)
+        return snapshot
     def start(self,args): return self.service.start_command(args)
 
 class OperatorService:
@@ -509,6 +520,24 @@ class OperatorService:
                 raise ValueError('처리 중인 미체결 주문이 남아 있습니다. 체결 또는 취소 확인 후 다시 시도하세요.')
             policy.command('RESET_KILL',confirmation=confirmation)
         return {'verdict':'RESET','mode':'STOP','note':'비상정지(KILL) 해제 완료: STOP 상태 전환 (LIVE 미승인 / 주문 전송 차단 OFF)'}
+    def recover_halt(self,confirmed,reason='EXPLICIT_USER_RECOVERY'):
+        if confirmed is not True:raise ValueError('EXPLICIT_HALT_RECOVERY_REQUIRED')
+        if self.running():raise ValueError('STOP_RUNNER_BEFORE_RECOVERY')
+        with self.idle(),ProcessLock(self.root/'runtime/control.lock'):
+            baseline=self.settings();cfg,auto,policy=baseline
+            if policy['mode']!='STOP' or not self.hard_locks_ok() or policy.get('releases'):
+                raise ValueError('STOP_AND_PROTECTION_REQUIRED')
+            if any(self.state_counts().values()):raise ValueError('NON_FLAT_RUNTIME')
+            folder=self.root/'runtime'/('automation-'+cfg.broker_environment)
+            state=read_json(folder/'state.json',{})
+            if not state.get('halt'):return {'verdict':'NOT_HALTED'}
+            snapshot=self.gateway.recovery_snapshot()
+            if self.settings()!=baseline or read_json(folder/'state.json')!=state:
+                raise ValueError('RECOVERY_STATE_CHANGED')
+            from automation.recovery import recover_reviewed_halt
+            recover_reviewed_halt(folder/'state.json',state,snapshot,self.clock(),reason)
+            return {'verdict':'RECOVERED','note':'실계좌 flat 대조 완료. 승인/위험예산은 보존하며 LIVE를 시작하지 않습니다.'}
+
     def arm_safe(self,confirmed):
         if confirmed is not True: raise ValueError('조회 대기 전환 확인이 필요합니다.')
         with self.idle(),ProcessLock(self.root/'runtime/control.lock'):

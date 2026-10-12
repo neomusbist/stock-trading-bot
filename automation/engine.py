@@ -616,7 +616,11 @@ class AutonomousEngine(ExistingExits,Engine):
             book=initial_allocation(snapshot,self.a.capital_limit); ledger['cash']=book; ledger['allocated']=True
             ledger['existing']={s:dict(h) for s,h in snapshot['holdings'].items() if s not in self.s['positions']}
         self.s['cash']=book
-        super().reconcile(snapshot,fills)
+        if super().reconcile(snapshot,fills) is False:
+            self.account_ok=False
+            self.s['cash']=ledger['cash']
+            self.save()
+            return False
         self.last_account=time.monotonic()-max(0,query_age)
         if not -1<=query_age<=self.c.reconcile_seconds*3: self.account_ok=False
         # REST에서 새 체결 누계가 반영된 뒤 다시 검사한다. 과거 잔고 스냅샷으로 추가 매도하지 않는다.
