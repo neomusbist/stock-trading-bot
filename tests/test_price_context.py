@@ -103,13 +103,23 @@ class ContextOrderTests(unittest.TestCase):
         for name in ('B','C'):
             self.d=PatternDetector(self.cfg,self.auto,self.e.costs)
             sig=self.feed(name);self.assertIsNotNone(sig)
-            entry=sig['limit'];stamp=self.t.time-timedelta(minutes=3)
+            entry=sig['limit']
+            # Align to :00 second boundary so bars are recognized as valid completed 1-minute references
+            stamp=(self.t.time-timedelta(minutes=3)).replace(second=0,microsecond=0)
             self.d.price_context=PriceContext()
             for i,h in enumerate((entry,entry+20,entry+10)):
                 b={'time':stamp+timedelta(minutes=i),'open':entry-100,'low':entry-100,'high':h,'close':entry-50,'gap_reason':None,'first_second':0}
                 self.d.price_context.record(self.t.symbol,b,self.t.time)
             self.assertIsNone(self.d.signal(self.t,self.watch));self.assertEqual(self.b.orders,[])
             self.assertIn('ENTRY_CONTEXT_FAIL',self.trial(name)['failed_reasons'])
+    def test_unaligned_second_bar_rejected_from_context(self):
+        pc=PriceContext()
+        now=self.clock.replace(minute=10,second=30,microsecond=0)
+        # Bars starting at arbitrary seconds (e.g. :05) must be rejected
+        bad_bar={'time':now.replace(second=5),'open':10000,'low':9900,'high':10100,'close':10050,'gap_reason':None,'first_second':0}
+        self.assertFalse(pc.record(self.watch['code'],bad_bar,now+timedelta(minutes=2)))
+
+
     def test_context_enabled_boundary_rejects_missing_or_mismatched_proof(self):
         sig=self.feed('C');self.assertIsNotNone(sig);self.e.a=replace(self.auto,entry_context_enabled=True)
         self.assertEqual(self.e.entry_market_reason(sig,1,self.t),'ENTRY_CONTEXT_PROOF_MISSING_OR_INVALID')

@@ -266,7 +266,7 @@ class CurrentBarIntegrationTests(unittest.TestCase):
 
     def enable(self):
         quality_fixture.StructureProtectionTests.enable(self)
-        self.clock-=timedelta(minutes=1)
+
 
     test_current_completed_pivot_and_stop_persist=quality_fixture.StructureProtectionTests.test_completed_bars_and_raised_stop_persist_in_existing_journal
     test_current_completed_pivot_survives_mock_restart=quality_fixture.StructureProtectionTests.test_restart_with_same_approved_settings_preserves_structural_stop

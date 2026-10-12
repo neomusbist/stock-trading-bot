@@ -144,7 +144,8 @@ class StructureProtectionTests(unittest.TestCase):
     def enable(self):
         self.e.a=replace(self.e.a,confirmed_structure_protection=True)
         self.p=self.e.s['positions'][health_fixture.SYM]
-        self.p['high']=7350;self.clock=health_fixture.BASE+timedelta(minutes=5)
+        # Align evaluation clock to 13:36:34 (BASE + 4m) so the 13:33-13:35 completed pivot sequence is current
+        self.p['high']=7350;self.clock=health_fixture.BASE+timedelta(minutes=4)
 
     def tick(self,price):return Tick(health_fixture.SYM,self.clock,price,100,10000,price+10,price)
 
@@ -174,13 +175,16 @@ class StructureProtectionTests(unittest.TestCase):
 
     def test_entry_partial_minute_future_and_missing_bar_do_not_raise_stop(self):
         self.enable();self.p['protection_bars']=self.pivot()
-        for kind in ('entry_partial','future','gap'):
+        for kind in ('entry_partial','future','gap','stale'):
             b=self.pivot()
+            eval_clock=self.clock
             if kind=='entry_partial':b[0]['time']=health_fixture.BASE.replace(second=0,microsecond=0)
             elif kind=='future':b[-1]['time']=self.clock
+            elif kind=='stale':eval_clock=self.clock+timedelta(minutes=2) # 13:38 without 13:36/13:37 bars
             else:b[1]['gap_reason']='LOCAL_DROP'
             self.p['protection_bars']=b
-            self.assertEqual(confirmed_protection(self.cfg,self.e.a,self.p,7340,self.clock)[1],7140)
+            self.assertEqual(confirmed_protection(self.cfg,self.e.a,self.p,7340,eval_clock)[1],7140)
+
 
     def test_no_stop_widening_and_unprofitable_pivot_does_not_tighten(self):
         self.enable();self.p['stop']=7300;self.p['protection_bars']=self.pivot()
