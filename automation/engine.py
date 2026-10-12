@@ -290,7 +290,15 @@ class AutonomousEngine(ExistingExits,Engine):
                 rr=(signal['target']-signal['limit'])/(signal['limit']-signal['stop'])
                 if not math.isfinite(rr) or signal['stop']>=signal['limit'] or rr<self.c.min_reward_risk:
                     return 'ENTRY_CONTEXT_RR_CHANGED'
-            except (KeyError,TypeError,ZeroDivisionError):return 'ENTRY_CONTEXT_PROOF_MISSING_OR_INVALID'
+                peak=values.get('nearest_confirmed_peak')
+                if peak:
+                    from automation.entry_timing import known_stamp
+                    price=peak.get('price')
+                    if (type(price) not in (int,float) or not math.isfinite(price) or price<=signal['limit']
+                            or not known_stamp(peak.get('confirmed_at'),datetime.fromisoformat(signal['time']))
+                            or signal['target']>price):
+                        return 'ENTRY_CONTEXT_TARGET_ABOVE_CONFIRMED_RESISTANCE'
+            except (KeyError,TypeError,ValueError,ZeroDivisionError):return 'ENTRY_CONTEXT_PROOF_MISSING_OR_INVALID'
         provider=getattr(self,'entry_quote_provider',None)
         if provider and not signal.get('symbol'):return 'ENTRY_MARKET_DATA_UNAVAILABLE'
         tick,book=provider(signal['symbol']) if provider else (fallback,{})
@@ -370,6 +378,11 @@ class AutonomousEngine(ExistingExits,Engine):
             self.diagnostic('internal_reject_count'); return None
         sess=self.current_session()
         venue=signal.get('venue') or (self.after_default_venue if sess=='AFTER' else 'KRX')
+        from automation.entry_timing import mark_risk_eligible
+        eligibility=('policy','market_status','session','connection_account','tick',
+            'repeat_slots','risk_quantity','efficiency','breakout_quote','latest_market')
+        if qty>0 and all(gates[k]['result']=='PASS' for k in eligibility):
+            mark_risk_eligible(self,signal,self.clock())
         signal={**signal,'account_risk_budget_krw':self.risk_equity()*self.c.risk_fraction,
                 'daily_risk_budget_krw':self.daily_risk_budget(),
                 'approved_cap_krw':self.a.capital_limit,'bot_equity_krw':self.risk_equity(),
@@ -586,6 +599,8 @@ class AutonomousEngine(ExistingExits,Engine):
             entry_build_id=p['signal'].get('entry_build_id'),exit_build_id=BUILD_ID,
             exit_strategy_version=STRATEGY_VERSION,entry_strategy_experiment=p['signal'].get('entry_strategy_experiment'),
             protection_evidence=p.get('protection_evidence'),data_health=p.get('data_health'),
+            exit_trigger_evidence=p.get('exit_trigger_evidence'),
+            opportunity_timing=p['signal'].get('opportunity_timing'),
             name=p['signal'].get('name') or self.names.get(trade['symbol']),setup=p['pattern'],
             candidate_detected_at=p['signal'].get('candidate_detected_at'),signal_at=p['signal'].get('time'),
             order_sent_at=p['signal'].get('order_sent_at'),first_fill_at=p.get('first_fill_at'),last_fill_at=self.clock().isoformat(),
@@ -642,7 +657,15 @@ class AutonomousEngine(ExistingExits,Engine):
 
     def request_exit(self,symbol,reason):
         p=self.s['positions'].get(symbol)
-        if p and not p.get('exit_requested'): p['exit_signal_at']=self.clock().isoformat()
+        if p and not p.get('exit_requested'):
+            from copy import deepcopy
+            p['exit_signal_at']=self.clock().isoformat()
+            # Receiver/account updates after the exit latch must not rewrite why
+            # an already submitted exit was requested in the first place.
+            p['exit_trigger_evidence']=deepcopy({'requested_at':p['exit_signal_at'],'reason':reason,
+                'initial_invalidation':p.get('initial_stop'),'effective_stop':p.get('stop'),
+                'last_quote':p.get('last_quote'),'data_health':p.get('data_health'),
+                'protection':p.get('protection_evidence')})
         return super().request_exit(symbol,reason)
 
     def reconcile(self,snapshot,fills=()):

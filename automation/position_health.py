@@ -1,6 +1,6 @@
 """Trade silence is not a socket failure. Main writer only; no broker mutations here."""
 import time,math
-from datetime import datetime
+from datetime import datetime,timedelta
 from core.util import floor_tick,tick_size
 
 
@@ -48,7 +48,12 @@ class PositionDataHealth:
         for symbol,book in snapshot.get('books',{}).items():
             if symbol in self.waiting:
                 self.probes[symbol]={'result_at':current.isoformat(),'result':'QUOTE_RECEIVED',
-                    'quote_time':book.get('time'),'venue':book.get('venue'),'source':book.get('source')}
+                    'quote_time':book.get('time'),'received_at':book.get('received_at'),
+                    'venue':book.get('venue'),'source':book.get('source'),
+                    'requested_symbol':book.get('requested_symbol'),
+                    'best_bid':book.get('best_bid'),'best_ask':book.get('best_ask'),
+                    'bid_qty':book.get('bid_qty'),'ask_qty':book.get('ask_qty'),
+                    'depth_available':book.get('depth_available')}
         for symbol,error in snapshot.get('book_errors',{}).items():
             if symbol in self.waiting:
                 self.probes[symbol]={'result_at':current.isoformat(),'result':'PROBE_FAILED',
@@ -74,8 +79,14 @@ class PositionDataHealth:
             if not confirmed:return False
         prior=self.quotes.get(symbol)
         if prior and self.age(prior['time'],current) is not None and self.age(prior['time'],current)<age:return False
+        if confirmed and prior and prior.get('snapshot_confirmed_at'):
+            # A delayed REST response must not replace a newer confirmation.
+            previous_age=self.age(prior['snapshot_confirmed_at'],current)
+            received_age=self.age(book.get('received_at'),current)
+            if previous_age is not None and received_age is not None and received_age>previous_age:return False
         self.quotes[symbol]={'time':book['time'],'bid':bid,'ask':ask,'source':source}
-        if confirmed:self.quotes[symbol].update(snapshot_confirmed_at=book['received_at'],confirmation='MATCHED_STANDING_BOOK')
+        if confirmed:self.quotes[symbol].update(snapshot_confirmed_at=book['received_at'],confirmation='MATCHED_STANDING_BOOK',
+            confirmation_book={k:book[k] for k in ('time','best_bid','best_ask','bid_qty','ask_qty')})
         p['last_quote']=dict(self.quotes[symbol]);e.prices[symbol]=bid
         self.waiting.pop(symbol,None)
         self.account.position_symbols=frozenset(set(self.account.position_symbols)-{symbol})
@@ -107,14 +118,40 @@ class PositionDataHealth:
             if not isinstance(value,(int,float)) or not math.isfinite(value) or value<=0 or value!=prior.get(key):return False
         return bool(prior.get('depth_available'))
 
-    def trade_seen(self,symbol):
+    def trade_seen(self,symbol,tick):
+        e=self.engine;current=e.clock();p=e.s['positions'].get(symbol)
+        age=self.age(tick.time,current)
+        if (not p or p.get('ownership','BOT')!='BOT' or tick.symbol!=symbol
+                or not tick.regular or type(tick.price) not in (int,float) or not math.isfinite(tick.price)
+                or tick.price<=0 or age is None or age>e.c.stale_seconds):return
         self.waiting.pop(symbol,None)
+        self.account.position_symbols=frozenset(set(self.account.position_symbols)-{symbol})
+        old=p.get('data_health') or {}
+        if old.get('reason_code') in {'POSITION_QUOTE_RECHECK_PENDING','POSITION_DATA_UNVERIFIED_TIMEOUT'}:
+            # The runner has already protected this fresh real trade. Resolving
+            # its blind interval must survive the next quiet period/restart.
+            health={**old,'checked_at':current.isoformat(),'reason_code':'POSITION_TRADE_FRESH',
+                'last_tick_age':age,'verified_trade_at':tick.time.isoformat(),'emergency_exit':False}
+            for key in ('recheck_started_at','recheck_seconds','recheck_deadline_seconds'):health.pop(key,None)
+            p['data_health']=health;e.save()
+            e.event('POSITION_DATA_HEALTH',symbol=symbol,**health)
 
     def should_exit(self,symbol,position,current):
         e=self.engine
         # Latest receiver book avoids queued-message delays; copy under its brief lock.
         with self.feed.subscription_lock:
             book=dict(self.feed.orderbooks.get(symbol,{}) or {})
+        invalidated=False
+        prior=self.quotes.get(symbol,{})
+        confirmed_book=prior.get('confirmation_book')
+        if confirmed_book and book:
+            book_age=self.age(book.get('time'),current);prior_age=self.age(prior.get('time'),current)
+            if (book_age is not None and prior_age is not None and book_age<=prior_age
+                    and (not book.get('depth_available') or any(book.get(k)!=v for k,v in confirmed_book.items()))):
+                # A conflicting later receiver observation invalidates the old
+                # cross-check. Its stale price is not itself an emergency trigger.
+                for key in ('confirmation_book','snapshot_confirmed_at','confirmation'):prior.pop(key,None)
+                position['last_quote']=dict(prior);invalidated=True
         if book:self.accept_book(symbol,book,current)
         quote=self.quotes.get(symbol,{})
         quote_age=self.age(quote.get('time'),current)
@@ -128,7 +165,8 @@ class PositionDataHealth:
                   'quote_source':quote.get('source'),'ws_heartbeat_age':ws_age,'connected':e.connected,
                   'account_age':account_age,'account_ok':e.account_ok,'subscription_state':'ACTIVE' if subscribed else 'PENDING_OR_ABSENT',
                   'event_loop_lag':getattr(e,'event_loop_lag',None),
-                  'snapshot_confirmation_age':confirmation_age,'snapshot_confirmation':quote.get('confirmation')}
+                  'snapshot_confirmation_age':confirmation_age,'snapshot_confirmation':quote.get('confirmation'),
+                  'standing_confirmation_invalidated':invalidated}
         # A real disconnect must not be excused by a previously cached book.
         if not e.connected:
             reason='GLOBAL_DISCONNECTED';exit_now=True
@@ -138,14 +176,23 @@ class PositionDataHealth:
                 and confirmation_age<=e.c.position_stale_seconds and ws_fresh and account_fresh and subscribed):
             reason='TRADE_QUIET_REST_BOOK_CONFIRMED';exit_now=False;self.waiting.pop(symbol,None)
         else:
-            first=self.waiting.setdefault(symbol,current)
+            first=self.waiting.get(symbol)
+            if first is None:
+                old=position.get('data_health') or {}
+                if old.get('reason_code') in {'POSITION_QUOTE_RECHECK_PENDING','POSITION_DATA_UNVERIFIED_TIMEOUT'}:
+                    try:
+                        prior=datetime.fromisoformat(old.get('recheck_started_at') or old['checked_at'])
+                        if not old.get('recheck_started_at'):prior-=timedelta(seconds=old.get('recheck_seconds',0))
+                        if prior.tzinfo is not None and prior.date()==current.date() and prior<=current:first=prior
+                    except (TypeError,ValueError,KeyError,OverflowError):pass
+                self.waiting[symbol]=first or current;first=self.waiting[symbol]
             grace=max(e.c.position_stale_seconds,e.c.reconcile_seconds*3)
             elapsed=(current-first).total_seconds()
             # Bound the blind period by one existing watchdog/reconciliation window.
             # Failed price verification cannot hold a position indefinitely on PING/account alone.
             exit_now=elapsed>=grace
             reason='POSITION_DATA_UNVERIFIED_TIMEOUT' if exit_now else 'POSITION_QUOTE_RECHECK_PENDING'
-            evidence.update(recheck_seconds=elapsed,recheck_deadline_seconds=grace)
+            evidence.update(recheck_started_at=first.isoformat(),recheck_seconds=elapsed,recheck_deadline_seconds=grace)
             requested=symbol not in self.account.position_symbols
             self.account.position_symbols=frozenset(set(self.account.position_symbols)|{symbol})
             if e.current_session()=='AFTER':
@@ -157,7 +204,16 @@ class PositionDataHealth:
                 self.account.request.set()
         evidence['probe']=dict(self.probes.get(symbol,{}))
         evidence.update(reason_code=reason,ws_fresh=ws_fresh,account_fresh=account_fresh,emergency_exit=exit_now)
+        old_health=position.get('data_health') or {}
         position['data_health']=evidence
+        pending_reasons={'POSITION_QUOTE_RECHECK_PENDING','POSITION_DATA_UNVERIFIED_TIMEOUT'}
+        started=(evidence.get('recheck_started_at')
+            and evidence['recheck_started_at']!=old_health.get('recheck_started_at'))
+        resolved=old_health.get('reason_code') in pending_reasons and reason not in pending_reasons
+        if started or resolved:
+            # Persist interval start and resolution once each, not on every
+            # tick. Reconstruction cannot reset or revive a cleared deadline.
+            e.save()
         key=(reason,exit_now)
         prior=self.logged.get(symbol)
         if prior is None or prior[0]!=key or (current-prior[1]).total_seconds()>=5:

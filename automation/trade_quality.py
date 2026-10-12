@@ -4,13 +4,18 @@ from datetime import datetime, timedelta
 from core.util import floor_tick
 
 
-def complete_sequence(raw, asof, count, not_before=None):
+def complete_sequence(raw, asof, count, not_before=None, require_recent=False):
+    if (not isinstance(asof,datetime) or asof.tzinfo is None
+            or type(count) is not int or count<1):return []
     result=[]
     for bar in raw or ():
         try:
             stamp=bar['time']
             if isinstance(stamp,str):stamp=datetime.fromisoformat(stamp)
-            if not isinstance(stamp,datetime) or stamp.tzinfo is None or asof.tzinfo is None:continue
+            if not isinstance(stamp,datetime) or stamp.tzinfo is None:continue
+            # Minute bars cannot begin at an arbitrary second. A shifted timestamp
+            # must not make a partial entry minute look like a completed minute.
+            if stamp.second or stamp.microsecond:continue
             if stamp.date()!=asof.date() or stamp+timedelta(minutes=1)>asof:continue
             if not_before is not None and stamp<not_before:continue
             if bar.get('gap_reason') or bar.get('first_second',0)>5:continue
@@ -23,16 +28,27 @@ def complete_sequence(raw, asof, count, not_before=None):
     result=sorted(result,key=lambda b:b['time'])[-count:]
     if len(result)!=count:return []
     if any(b['time']-a['time']!=timedelta(minutes=1) for a,b in zip(result,result[1:])):return []
+    if require_recent and result[-1]['time']!=asof.replace(second=0,microsecond=0)-timedelta(minutes=1):return []
     return result
 
 
 def box_direction(raw, asof, count):
-    bars=complete_sequence(raw,asof,count)
+    bars=complete_sequence(raw,asof,count,require_recent=True)
     evidence={'asof':asof.isoformat(),'bars_required':count}
     if not bars:return None,{**evidence,'reason':'BOX_DIRECTION_DATA_UNAVAILABLE'}
     first,last=bars[0],bars[-1]
     declining=(last['close']<first['open'] and last['high']<first['high'] and last['low']<first['low'])
-    return not declining,{**evidence,'reason':'DECLINING_RANGE' if declining else 'BASE_OR_RISING_RANGE',
+    # Falling endpoints can also contain a completed reversal. Require a higher
+    # low and a completed close reclaiming the intervening reaction high. A live
+    # breakout tick alone cannot supply this confirmation.
+    reversal=False
+    if declining and len(bars)>=3:
+        left,center,right=bars[-3:]
+        reversal=(center['low']>left['low'] and right['low']>=center['low']
+            and center['close']>left['close'] and right['close']>center['high'])
+    reason='CONFIRMED_REVERSAL_BASE' if reversal else 'DECLINING_RANGE' if declining else 'BASE_OR_RISING_RANGE'
+    return not declining or reversal,{**evidence,'reason':reason,'endpoint_declining':declining,
+        'completed_reversal':reversal,
         'start':first['time'].isoformat(),'end':last['time'].isoformat(),
         'first_open':first['open'],'first_high':first['high'],'first_low':first['low'],
         'last_close':last['close'],'last_high':last['high'],'last_low':last['low']}
@@ -49,7 +65,7 @@ def confirmed_protection(cfg, auto, position, price, asof):
     # Exclude the partially observed entry minute, even when the detector has earlier ticks.
     first_full=opened.replace(second=0,microsecond=0)
     if opened>first_full:first_full+=timedelta(minutes=1)
-    bars=complete_sequence(position.get('protection_bars'),asof,3,first_full)
+    bars=complete_sequence(position.get('protection_bars'),asof,3,first_full,require_recent=True)
     if not bars:return high,prior,{**evidence,'reason':'CONFIRMED_PULLBACK_NOT_READY'}
     left,center,right=bars
     previous_low=position.get('confirmed_protection_low',position['initial_stop'])
