@@ -52,7 +52,7 @@ UI_REASONS.update({
     'OUTSIDE_WINDOW': '신규진입 가능시간 밖',
     'EFFICIENCY_UNKNOWN_OR_LOW': '비용 대비 기대수익 낮음',
     'NO_BUY_EFFICIENCY': '비용 대비 기대수익 낮음',
-    'SETUP_NOT_READY': 'Setup 미완성 (A/B/C 형상 대기)',
+    'SETUP_NOT_READY': 'Setup 미완성 (A/B/C/O 형상 대기)',
     'MANUAL_HOLD': '수동 보유 관리 (HARD_LOCK)',
     'SELL_SESSION_FLATTEN': '정규장 마감 청산 (15:10)',
     'SELL_STOP_FLAT': '사용자 전량 청산 요청',
@@ -89,7 +89,8 @@ SETUP_WAIT_REASONS={
     'BOX_NOT_FORMED':'박스 형상 없음','NO_INTRADAY_BOX':'박스 형상 없음',
     'BREAKOUT_NOT_REACHED':'돌파 미도달','RISK_REWARD_FAIL':'RR 미충족','ECONOMIC_FAIL':'비용 대비 여유 부족',
     'LIQUIDITY_FAIL':'유동성 미충족','SPREAD_FAIL':'호가 간격 초과','STRUCTURE_FAIL':'구조 미충족',
-    'RESISTANCE_FAIL':'상단 여유 부족','INVALIDATION_FAIL':'무효화 조건 미충족','CHASE_FAIL':'추격 범위 초과'}
+    'RESISTANCE_FAIL':'상단 여유 부족','INVALIDATION_FAIL':'무효화 조건 미충족','CHASE_FAIL':'추격 범위 초과',
+    'INSUFFICIENT_OPENING_DATA':'개장 관측 데이터 부족','OPENING_MOMENTUM_FAIL':'개장 모멘텀 미충족'}
 
 
 def setup_wait_summary(row):
@@ -97,7 +98,7 @@ def setup_wait_summary(row):
     trials=row.get('setup_trials') or (row.get('details') or {}).get('setup_trials') or []
     parts=[]
     for trial in trials:
-        if not isinstance(trial,dict) or trial.get('setup') not in {'A','B','C'}:continue
+        if not isinstance(trial,dict) or trial.get('setup') not in {'A','B','C','O'}:continue
         gates=trial.get('gates') or {};labels=[]
         for reason in trial.get('failed_reasons') or []:
             label=SETUP_WAIT_REASONS.get(reason,reason)

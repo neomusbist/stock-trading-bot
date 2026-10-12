@@ -55,6 +55,13 @@ class AutomationConfig:
     after_entry_cutoff: str = '19:45:00'
     after_force_flatten_start: str = '19:55:00'
     after_market_close: str = '20:00:00'
+    setup_o_enabled: bool = True
+    setup_o_min_ticks: int = 3
+    setup_o_min_seconds: float = 3.0
+    setup_o_min_turnover: float = 5000000.0
+    setup_o_min_gain_over_open: float = 0.003
+    setup_o_end_time: str = '09:05:00'
+    horizon_o_minutes: int = 15
 
     @property
     def capital_limit(self): return self.AUTO_TRADING_CAP_KRW
@@ -62,21 +69,23 @@ class AutomationConfig:
     def validate(self):
         for k,v in asdict(self).items():
             if k=='max_consecutive_losses' and v is None: continue
-            if k in ('new_entry_cutoff','force_flatten_start','after_prep_start','after_market_start','after_entry_cutoff','after_force_flatten_start','after_market_close'): continue
+            if k in ('new_entry_cutoff','force_flatten_start','after_prep_start','after_market_start','after_entry_cutoff','after_force_flatten_start','after_market_close','setup_o_end_time'): continue
             if isinstance(v,bool): continue
             if not isinstance(v,(int,float)) or not math.isfinite(v) or v<0:
                 raise ValueError(f'{k}: 유효한 0 이상 숫자 필요')
-        for k in ('decision_snapshot_seconds','scan_seconds','rank_decay_cycles','max_scan_charts','min_source_count','cooldown_seconds','max_consecutive_losses','box_min_bars','empirical_min_trades','horizon_a_minutes','horizon_b_minutes','horizon_c_minutes'):
+        for k in ('decision_snapshot_seconds','scan_seconds','rank_decay_cycles','max_scan_charts','min_source_count','cooldown_seconds','max_consecutive_losses','box_min_bars','empirical_min_trades','horizon_a_minutes','horizon_b_minutes','horizon_c_minutes','horizon_o_minutes','setup_o_min_ticks'):
             if k=='max_consecutive_losses' and getattr(self,k) is None: continue
             if type(getattr(self,k)) is not int or getattr(self,k)<=0: raise ValueError(f'{k}: 양의 정수 필요')
-        if type(self.ALLOW_OVERNIGHT) is not bool or type(self.costs_confirmed) is not bool or type(self.replacement_enabled) is not bool:
+        if type(self.ALLOW_OVERNIGHT) is not bool or type(self.costs_confirmed) is not bool or type(self.replacement_enabled) is not bool or type(self.setup_o_enabled) is not bool:
             raise ValueError('불리언 설정 오류')
-        for k in ('new_entry_cutoff','force_flatten_start','after_prep_start','after_market_start','after_entry_cutoff','after_force_flatten_start','after_market_close'):
+        for k in ('new_entry_cutoff','force_flatten_start','after_prep_start','after_market_start','after_entry_cutoff','after_force_flatten_start','after_market_close','setup_o_end_time'):
             datetime.strptime(getattr(self,k),'%H:%M:%S')
         if not '09:00:00'<self.new_entry_cutoff<self.force_flatten_start<'15:20:00':
             raise ValueError('신규진입 마감 < 강제청산 시작 < 15:20 필요')
         if not '15:30:00'<=self.after_prep_start<self.after_market_start<self.after_entry_cutoff<self.after_force_flatten_start<=self.after_market_close<='20:30:00':
             raise ValueError('AFTER 운영시간 설정 오류: prep < start < cutoff < flatten <= close')
+        if not '09:00:00'<self.setup_o_end_time<='09:30:00':
+            raise ValueError('setup_o_end_time: 09:00 초과 09:30 이하 필요')
         if type(self.AUTO_TRADING_CAP_KRW) is not int: raise ValueError('승인 한도는 원 단위 정수여야 합니다')
         if self.scan_seconds<15 or self.max_scan_charts>50 or self.min_source_count>5: raise ValueError('레이더 범위 오류')
         for k in ('commission_buy','commission_sell','sell_tax','pullback_max_retrace','pullback_volume_ratio','box_max_range','unrealized_giveback_fraction'):

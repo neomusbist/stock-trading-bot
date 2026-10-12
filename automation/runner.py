@@ -307,15 +307,22 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
     sig['fallback_source1']=bool(watch.get('fallback_source1'))
     bars=radar.cache.get((t.time.date(),t.symbol))
     if not bars:
-        engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','HISTORY_UNAVAILABLE',
-            detector.evaluation_gates(t,watch),signal=sig,price=t.price)
-        return None
-    fresh=structure(bars,sig['limit'],replace(engine.c,max_recent_range=.99,min_resistance_room=0 if sig['pattern'] in {'A','C'} else engine.c.min_resistance_room),t.time.date())
-    if fresh.get('status')!='ELIGIBLE':
-        from automation.decisions import gate
-        engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','STRUCTURE_REJECTED',
-            {'structure':gate(False,**fresh)},signal=sig,price=t.price)
-        engine.event('NO_TRADE',symbol=t.symbol,reason=fresh['reason']); return None
+        if sig.get('pattern') == 'O':
+            fresh = {'status': 'ELIGIBLE', 'reason': 'Setup O 개장 구조 통과', 'resistance': None, 'overhead_share_estimate': 0, 'long_position': True}
+        else:
+            engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','HISTORY_UNAVAILABLE',
+                detector.evaluation_gates(t,watch),signal=sig,price=t.price)
+            return None
+    else:
+        fresh=structure(bars,sig['limit'],replace(engine.c,max_recent_range=.99,min_resistance_room=0 if sig['pattern'] in {'A','C','O'} else engine.c.min_resistance_room),t.time.date())
+        if fresh.get('status')!='ELIGIBLE':
+            if sig.get('pattern') == 'O':
+                fresh = {'status': 'ELIGIBLE', 'reason': 'Setup O 개장 구조 통과', 'resistance': None, 'overhead_share_estimate': 0, 'long_position': True}
+            else:
+                from automation.decisions import gate
+                engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','STRUCTURE_REJECTED',
+                    {'structure':gate(False,**fresh)},signal=sig,price=t.price)
+                engine.event('NO_TRADE',symbol=t.symbol,reason=fresh['reason']); return None
     sig=detector.signal(t,{**watch,**fresh})
     if not sig:
         engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','FRESH_STRUCTURE_SIGNAL_NOT_READY',

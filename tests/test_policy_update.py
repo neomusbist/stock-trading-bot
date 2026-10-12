@@ -229,7 +229,7 @@ class PolicyUpdateTests(unittest.TestCase):
     def test_session_end_preserves_real_quantity_and_order_intent(self):
         self.buy(); self.clock[0]=self.clock[0].replace(hour=15,minute=20)
         qty=self.engine.s['positions'][SYMBOL]['qty']; self.engine.timer(); self.engine.save()
-        state=json.loads(self.engine.path.read_text()); self.assertEqual(state['positions'][SYMBOL]['qty'],qty)
+        state=json.loads(self.engine.path.read_text(encoding='utf-8')); self.assertEqual(state['positions'][SYMBOL]['qty'],qty)
         self.assertEqual(len(self.broker.orders),1)
 
     def test_invalid_inputs_and_bad_symbol_rejected_before_intent(self):
@@ -260,13 +260,14 @@ class PolicyUpdateTests(unittest.TestCase):
 
     def test_complete_trade_costs_and_price_band_are_analysis_only(self):
         from automation.performance import report
+        from automation.decisions import STRATEGY_VERSION
         self.buy(); p=self.engine.s['positions'][SYMBOL]; q=p['qty']
         self.engine.request_exit(SYMBOL,'사용자 STOP_FLAT'); self.engine.drive_exits(); o=list(self.engine.s['orders'].values())[-1]
         self.engine.cumulative_fill(o,1,10200)
         self.engine.cumulative_fill(o,q,q*10200)
         row=report(self.engine.s['trades'])['completed_trades'][0]
         self.assertAlmostEqual(row['gross_pnl']-row['commission']-row['tax'],row['net_pnl'])
-        self.assertEqual(row['qty'],q); self.assertEqual(row['strategy_version'],'V1.3-b-confirmed-impulse-bc20M-20261008')
+        self.assertEqual(row['qty'],q); self.assertEqual(row['strategy_version'],STRATEGY_VERSION)
         self.assertEqual(row['price_band'],'10000~30000'); self.assertIsNone(row['actual_slippage'])
 
     def test_protection_update_has_full_immediate_decision_context(self):

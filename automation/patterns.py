@@ -198,9 +198,68 @@ class PatternDetector(Detector):
 
     def target(self,t,watch,setup,limit):
         resistance=watch.get('resistance')
-        # A/C가 신선한 실제 체결로 넘은 저항만 목표의 상한에서 제외한다.
-        if setup['pattern'] in {'A','C'} and resistance is not None and t.price>resistance:resistance=None
+        # A/C/O가 신선한 실제 체결로 넘은 저항만 목표의 상한에서 제외한다.
+        if setup['pattern'] in {'A','C','O'} and resistance is not None and t.price>resistance:resistance=None
         return min(resistance,setup['projection']) if resistance is not None else setup['projection']
+
+    def opening_momentum(self, t, watch, buf=None):
+        """Setup O (Opening Momentum):
+        09:00:00~09:05:00 개장 초반 유효 상승세를 포착.
+        완성 1분봉 2~5개를 기다리지 않고, 09:00 정규장 시작 이후의 실제 체결·호가·거래대금 흐름으로 평가.
+        단순 1회 체결이나 급등률만으로 매수하지 않고:
+        - 최소 3회 이상 체결
+        - 최소 3초 이상 관측
+        - 시가 대비 +0.3% 이상 상승 유지
+        - 최근 틱 최고가 돌파/유지
+        - 직전 틱 대비 가격 하락 되밀림 없음
+        - 최소 거래대금 500만원 이상
+        - 스프레드 정상 (<= max_spread)
+        - 구조적 지지선(시가 및 관측 저점) 기반 손절선 산출
+        """
+        c = self.cfg
+        if not getattr(self.a, 'setup_o_enabled', False): return None
+        if after_supported(t.time): return None
+        t_str = t.time.strftime('%H:%M:%S')
+        end_time = getattr(self.a, 'setup_o_end_time', '09:05:00')
+        if not ('09:00:00' <= t_str < end_time): return None
+        if buf is None: buf = list(self.buffers.get(t.symbol, []))
+        opening_ticks = [x for x in buf if x.regular and x.time.strftime('%H:%M:%S') >= '09:00:00']
+        min_ticks = getattr(self.a, 'setup_o_min_ticks', 3)
+        if len(opening_ticks) < min_ticks: return None
+        elapsed = (t.time - opening_ticks[0].time).total_seconds()
+        min_seconds = getattr(self.a, 'setup_o_min_seconds', 3.0)
+        if elapsed < min_seconds: return None
+        open_price = watch.get('open') or opening_ticks[0].price
+        if open_price <= 0: return None
+        min_gain = getattr(self.a, 'setup_o_min_gain_over_open', 0.003)
+        if t.price < open_price * (1.0 + min_gain): return None
+        highest_so_far = max(x.price for x in opening_ticks)
+        if t.price < highest_so_far: return None
+        if len(opening_ticks) >= 2 and opening_ticks[-1].price < opening_ticks[-2].price: return None
+        opening_turnover = sum(x.price * x.volume for x in opening_ticks)
+        min_turnover = getattr(self.a, 'setup_o_min_turnover', 5000000.0)
+        if opening_turnover < min_turnover: return None
+        if not (0 < t.bid <= t.ask): return None
+        spread = (t.ask - t.bid) / t.price
+        if spread > c.max_spread: return None
+        support = min(open_price, min(x.price for x in opening_ticks))
+        stop = floor_tick(support * (1.0 - c.structural_buffer))
+        if stop >= t.price: return None
+        distance = (t.price - stop) / t.price
+        if distance > c.max_stop_fraction or distance < c.min_stop_fraction: return None
+        breakout = open_price
+        limit = floor_tick(min(t.ask, breakout * (1.0 + c.max_chase)))
+        if limit < t.ask: return None
+        projection = limit + 2.0 * (limit - stop)
+        return {
+            'pattern': 'O',
+            'breakout': breakout,
+            'support': support,
+            'projection': projection,
+            'open_price': open_price,
+            'opening_turnover': opening_turnover,
+            'opening_ticks_count': len(opening_ticks),
+        }
 
     def box(self,bars):
         if len(bars)<self.a.box_min_bars: return None
@@ -214,21 +273,38 @@ class PatternDetector(Detector):
         gates=self.base_gates(t,watch) if gates is None else gates
         bars=self.usable_bars(t.symbol,after_only=is_after) if _bars is None else _bars
         setups={s['pattern']:s for s in self.candidates(t,bars,is_after=is_after)}
+        is_opening_o = (getattr(self.a, 'setup_o_enabled', False) and not is_after and '09:00:00' <= t.time.strftime('%H:%M:%S') < getattr(self.a, 'setup_o_end_time', '09:05:00'))
+        if is_opening_o:
+            o_setup = self.opening_momentum(t, watch)
+            if o_setup: setups['O'] = o_setup
         _,b_reason,b_evidence=self.pullback_analysis(bars)
         trials=[]
-        for name in ('A','B','C'):
+        setups_to_test = ('A','B','C','O') if is_opening_o else ('A','B','C')
+        for name in setups_to_test:
             setup=setups.get(name)
-            required=2 if name=='A' else 4 if name=='B' else self.a.box_min_bars
+            required=0 if name=='O' else 2 if name=='A' else 4 if name=='B' else self.a.box_min_bars
             why=[]
             if not supported(t.time) and not is_after:why.append('OUT_OF_SUPPORTED_SESSION')
             if not setup:
-                why.append('INSUFFICIENT_USABLE_BARS' if len(bars)<required else
+                why.append('INSUFFICIENT_OPENING_DATA' if name=='O' else
+                           'INSUFFICIENT_USABLE_BARS' if len(bars)<required else
                            'PRIOR_HIGH_NOT_BROKEN' if name=='A' else
                            b_reason if name=='B' else 'BOX_NOT_FORMED')
             price_gates=self.setup_gates(t,watch,setup,bars=bars) if setup else {}
             # Market-status authorization remains at the unchanged engine/order boundary.
             common={k:gates[k] for k in ('warmup','spread','structure')}
-            if is_after:
+            if name=='O':
+                buf=[x for x in list(self.buffers.get(t.symbol,[])) if x.regular and x.time.strftime('%H:%M:%S')>='09:00:00']
+                min_ticks=getattr(self.a,'setup_o_min_ticks',3)
+                min_sec=getattr(self.a,'setup_o_min_seconds',3.0)
+                elapsed=(t.time-buf[0].time).total_seconds() if buf else 0
+                turnover=sum(x.price*x.volume for x in buf)
+                min_turnover=getattr(self.a,'setup_o_min_turnover',5000000.0)
+                open_p=watch.get('open') or (buf[0].price if buf else t.price)
+                common['warmup']=gate(len(buf)>=min_ticks and elapsed>=min_sec,ticks=len(buf),min_ticks=min_ticks,elapsed=elapsed,min_seconds=min_sec,setup='O')
+                common['liquidity']=gate(turnover>=min_turnover,window_turnover=turnover,min_turnover=min_turnover,setup='O')
+                common['structure']=gate(open_p>0 and t.price>=open_p,open_price=open_p,price=t.price,setup='O')
+            elif is_after:
                 common['liquidity']=gates['liquidity']
             else:
                 threshold=self.cfg.min_window_turnover if name=='A' else self.cfg.min_bc_window_turnover
@@ -245,18 +321,23 @@ class PatternDetector(Detector):
                         min_ratio=gates['acceleration']['values'].get('min_ratio',self.cfg.min_turnover_ratio)
                         if ratio is not None and ratio<min_ratio*1.2:
                             trial_gates['acceleration']=gate(False,reason='LATE_STAGE_ACCELERATION_INSUFFICIENT',ratio=ratio,required_ratio=min_ratio*1.2)
+            elif name=='O':
+                min_gain=getattr(self.a,'setup_o_min_gain_over_open',0.003)
+                open_p=watch.get('open') or (buf[0].price if buf else t.price)
+                accel_ok=bool(open_p>0 and t.price>=open_p*(1+min_gain) and (len(buf)<2 or buf[-1].price>=buf[-2].price))
+                trial_gates['acceleration']=gate(accel_ok,min_gain=min_gain,setup='O')
             failed=[k for k,v in trial_gates.items() if v['result']!='PASS']
             why.extend('ACCELERATION_FAIL' if k=='acceleration' else
                        'NO_REBREAKOUT' if k=='breakout' and name=='B' else
                        'BREAKOUT_NOT_REACHED' if k=='breakout' else k.upper()+'_FAIL' for k in failed)
             virtual=price_gates.get('invalidation',{}).get('values',{})
             trials.append({'setup':name,'evaluated':True,'candidate_generated':bool(setup),
-                'acceleration_required':name=='A','acceleration_observation':gates['acceleration'],
+                'acceleration_required':name in ('A','O'),'acceleration_observation':trial_gates.get('acceleration',gates['acceleration']),
                 'failed_reasons':why,'primary_reason_code':why[0] if why else 'SETUP_PRICE_GATES_PASS',
                 'gates':trial_gates,'setup_geometry':setup,
                 'impulse_evidence':b_evidence if name=='B' else None,
                 'entry_ready':bool(setup and not why),
-                'price_action':{'condition':'CONTROLLED_PULLBACK' if name=='B' else 'INTRADAY_BOX' if name=='C' else 'PRIOR_HIGH_BREAKOUT',
+                'price_action':{'condition':'OPENING_MOMENTUM' if name=='O' else 'CONTROLLED_PULLBACK' if name=='B' else 'INTRADAY_BOX' if name=='C' else 'PRIOR_HIGH_BREAKOUT',
                     'formed':bool(setup),'breakout':price_gates.get('breakout',gate(False,reason='GEOMETRY_ABSENT'))},
                 'virtual_entry':virtual.get('entry'),'virtual_invalidation':virtual.get('stop')})
         return trials
@@ -277,6 +358,41 @@ class PatternDetector(Detector):
         if is_after:
             if watch.get('vi_active') or getattr(t,'vi_active',False) or watch.get('single_price_auction'): return None
             if watch.get('is_etf_etn') or watch.get('after_ineligible'): return None
+        is_opening_o = (getattr(self.a, 'setup_o_enabled', False) and not is_after and '09:00:00' <= t.time.strftime('%H:%M:%S') < getattr(self.a, 'setup_o_end_time', '09:05:00'))
+        if is_opening_o and len(bars) < 2:
+            o_trial = next((x for x in trials if x['setup'] == 'O'), None)
+            if o_trial and o_trial['entry_ready']:
+                setup = o_trial['setup_geometry']
+                price_gates = o_trial['gates']
+                stop = o_trial['virtual_invalidation']
+                limit = o_trial['virtual_entry']
+                if limit >= t.ask and 0 < t.bid <= t.ask:
+                    target = price_gates['risk_reward']['values']['target']
+                    score = price_gates['economic']['values']['score']
+                    gates.update({key: price_gates[key] for key in ('breakout', 'chase', 'invalidation', 'risk_reward', 'resistance', 'order_price', 'economic')})
+                    gates['warmup'] = price_gates['warmup']
+                    gates['liquidity'] = price_gates['liquidity']
+                    gates['structure'] = price_gates['structure']
+                    gates['acceleration'] = {**price_gates['acceleration'], 'required': True, 'scope': 'ENTRY_GATE'}
+                    gates['pattern'] = gate(True, setup='O', acceleration_required=True)
+                    venue = watch.get('venue') or 'KRX'
+                    return {
+                        'symbol': t.symbol, 'time': t.time.isoformat(), 'limit': limit, 'stop': stop, **setup,
+                        'evaluation_gates': gates, 'setup_trials': trials, 'acceleration_required': True,
+                        'market_context': context, 'discovery_context': watch.get('discovery_context'),
+                        'decision_bar_snapshot': [{**{k: b.get(k) for k in ('open', 'high', 'low', 'close', 'volume')},
+                            'time': b['time'].isoformat()} for b in bars[-12:]],
+                        'target': target, 'target_basis': '개장 모멘텀 구조적 위험비 기반 가설; 고정 익절선 아님',
+                        'turnover': price_gates['liquidity']['values'].get('window_turnover', 0),
+                        'turnover_ratio': 1.0, 'gain': (t.price - setup.get('open_price', t.price)) / setup.get('open_price', t.price) if setup.get('open_price') else 0.0,
+                        'efficiency': score, 'source_count': watch.get('source_count', len(watch.get('source_details', {}))),
+                        'source_details': watch.get('source_details', {}), 'source_deltas': watch.get('source_deltas', {}),
+                        'fallback_source1': bool(watch.get('fallback_source1')),
+                        'structure': {k: watch.get(k) for k in ('long_position', 'overhead_share_estimate', 'resistance', 'recent_support')},
+                        'risk_per_share': score['risk_per_share'], 'market_state': '3',
+                        'session': 'REGULAR', 'venue': venue,
+                        'planned_qty': None, 'liquidity_mode': 'turnover'
+                    }
         # Keep warmup, turnover, spread and existing tick-window prerequisites.
         if any(gates[k]['result']!='PASS' for k in ('warmup','spread','structure')):return None
         c=self.cfg
@@ -314,6 +430,40 @@ class PatternDetector(Detector):
                 'risk_per_share':score['risk_per_share'],'market_state':'3',
                 'session':'AFTER' if is_after else 'REGULAR','venue':venue,
                 'planned_qty':None,'liquidity_mode':'depth' if is_after else 'turnover'}
+        if is_opening_o:
+            o_trial = next((x for x in trials if x['setup'] == 'O'), None)
+            if o_trial and o_trial['entry_ready']:
+                setup = o_trial['setup_geometry']
+                price_gates = o_trial['gates']
+                stop = o_trial['virtual_invalidation']
+                limit = o_trial['virtual_entry']
+                if limit >= t.ask and 0 < t.bid <= t.ask:
+                    target = price_gates['risk_reward']['values']['target']
+                    score = price_gates['economic']['values']['score']
+                    gates.update({key: price_gates[key] for key in ('breakout', 'chase', 'invalidation', 'risk_reward', 'resistance', 'order_price', 'economic')})
+                    gates['warmup'] = price_gates['warmup']
+                    gates['liquidity'] = price_gates['liquidity']
+                    gates['structure'] = price_gates['structure']
+                    gates['acceleration'] = {**price_gates['acceleration'], 'required': True, 'scope': 'ENTRY_GATE'}
+                    gates['pattern'] = gate(True, setup='O', acceleration_required=True)
+                    venue = watch.get('venue') or 'KRX'
+                    return {
+                        'symbol': t.symbol, 'time': t.time.isoformat(), 'limit': limit, 'stop': stop, **setup,
+                        'evaluation_gates': gates, 'setup_trials': trials, 'acceleration_required': True,
+                        'market_context': context, 'discovery_context': watch.get('discovery_context'),
+                        'decision_bar_snapshot': [{**{k: b.get(k) for k in ('open', 'high', 'low', 'close', 'volume')},
+                            'time': b['time'].isoformat()} for b in bars[-12:]],
+                        'target': target, 'target_basis': '개장 모멘텀 구조적 위험비 기반 가설; 고정 익절선 아님',
+                        'turnover': price_gates['liquidity']['values'].get('window_turnover', 0),
+                        'turnover_ratio': 1.0, 'gain': (t.price - setup.get('open_price', t.price)) / setup.get('open_price', t.price) if setup.get('open_price') else 0.0,
+                        'efficiency': score, 'source_count': watch.get('source_count', len(watch.get('source_details', {}))),
+                        'source_details': watch.get('source_details', {}), 'source_deltas': watch.get('source_deltas', {}),
+                        'fallback_source1': bool(watch.get('fallback_source1')),
+                        'structure': {k: watch.get(k) for k in ('long_position', 'overhead_share_estimate', 'resistance', 'recent_support')},
+                        'risk_per_share': score['risk_per_share'], 'market_state': '3',
+                        'session': 'REGULAR', 'venue': venue,
+                        'planned_qty': None, 'liquidity_mode': 'turnover'
+                    }
         return None
 
     @observation_locked

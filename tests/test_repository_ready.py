@@ -76,7 +76,7 @@ class RepositoryTests(unittest.TestCase):
         with patch.object(main,'ROOT',self.root),patch.object(Path,'home',side_effect=AssertionError('explicit credentials required')):
             main.load_credentials()
     def test_local_config_takes_precedence(self):
-        cfg=json.loads((self.root/'config.example.json').read_text()); cfg['max_positions']=2
+        cfg=json.loads((self.root/'config.example.json').read_text(encoding='utf-8')); cfg['max_positions']=2
         atomic_json(self.root/'config.json',cfg); self.assertEqual(load_config(self.root/'config.json').max_positions,2)
     def test_setup_never_overwrites_existing(self):
         setup=tool('setup_local'); self.assertEqual(len(setup.setup(self.root)),2)
@@ -105,7 +105,7 @@ class RepositoryTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             e=AutonomousEngine(Config(),AutomationConfig(),policy,self.root/'book',broker,lambda:clock[0])
             e.enter({'symbol':'999990','limit':2000,'stop':1990},Tick('999990',clock[0],2000,100,100,2001,1999))
-        rows=[json.loads(x) for x in (self.root/'book/events.jsonl').read_text().splitlines()]
+        rows=[json.loads(x) for x in (self.root/'book/events.jsonl').read_text(encoding='utf-8').splitlines()]
         self.assertTrue(any(r.get('primary_reason_code')=='NO_BUY_OUTSIDE_SESSION' for r in rows)); self.assertFalse(e.s['halt']); self.assertEqual(broker.orders,[])
         clock[0]=datetime(2026,10,2,9,10,tzinfo=KST); self.assertNotEqual(e.new_entry_reason('999990'),'OUT_OF_SUPPORTED_SESSION'); self.assertFalse(e.s['halt'])
     def test_hard_locks_preserved(self): self.assertEqual(HARD_LOCKS,{'005930','017900'})

@@ -74,9 +74,9 @@ class OperatorInterfaceTests(unittest.TestCase):
         self.gateway=FakeGateway(self); self.s=OperatorService(self.root,lambda:self.clock[0],self.gateway,sleep=lambda x:None)
 
     def save_config(self,**changes):
-        p=self.root/'config.json'; d=json.loads(p.read_text()); d.update(changes); atomic_json(p,d)
+        p=self.root/'config.json'; d=json.loads(p.read_text(encoding='utf-8')); d.update(changes); atomic_json(p,d)
     def save_auto(self,**changes):
-        p=self.root/'automation.json'; d=json.loads(p.read_text()); d.update(changes); atomic_json(p,d)
+        p=self.root/'automation.json'; d=json.loads(p.read_text(encoding='utf-8')); d.update(changes); atomic_json(p,d)
     def pilot_proof(self):
         return self.s.save_result('pilot',{'verdict':'PASS','orders':0,'samsung_orders':0,'gwang_orders':0})
     def ready(self):
@@ -139,7 +139,7 @@ class OperatorInterfaceTests(unittest.TestCase):
     def test_pilot_no_regular_ticks_inconclusive(self):
         original=self.gateway.command
         def no_ticks(args,timeout=60):
-            value=original(args,timeout); p=self.root/'automation_check.json'; d=json.loads(p.read_text()); d['counts']['ticks']=0; atomic_json(p,d); return value
+            value=original(args,timeout); p=self.root/'automation_check.json'; d=json.loads(p.read_text(encoding='utf-8')); d['counts']['ticks']=0; atomic_json(p,d); return value
         self.gateway.command=no_ticks; self.assertEqual(self.s.pilot()['verdict'],'INCONCLUSIVE')
     def test_pilot_stale_previous_result_not_reused(self):
         self.gateway.command=Mock(return_value=0)
@@ -234,7 +234,7 @@ class OperatorInterfaceTests(unittest.TestCase):
         self.assertFalse(self.gateway.calls)
     def test_recent_result_is_human_readable_and_original_events_unchanged(self):
         self.s.pilot(); eventpath=self.root/'runtime/automation-smoke/events.jsonl'; before=eventpath.read_bytes()
-        st=self.s.public_status(); show_result(json.loads((self.root/'runtime/operator_last_result.json').read_text()),lambda x:None)
+        st=self.s.public_status(); show_result(json.loads((self.root/'runtime/operator_last_result.json').read_text(encoding='utf-8')),lambda x:None)
         self.assertEqual(eventpath.read_bytes(),before); self.assertIn('판정: PASS',(self.root/'사용자_최근결과.txt').read_text(encoding='utf-8-sig'))
         self.assertTrue(st['decisions'])
     def test_missing_cash_is_not_imputed(self):
@@ -262,7 +262,7 @@ class OperatorInterfaceTests(unittest.TestCase):
         for field in ('connected','account_ok'):
             def command_hb(args,timeout=60):
                 rc=original(args,timeout); path=self.root/'runtime/automation-smoke/heartbeat.json'
-                hb=json.loads(path.read_text()); hb[field]=False; atomic_json(path,hb); return rc
+                hb=json.loads(path.read_text(encoding='utf-8')); hb[field]=False; atomic_json(path,hb); return rc
             self.gateway.command=command_hb
             self.assertEqual(self.s.pilot()['verdict'],'INCONCLUSIVE')
         self.assertFalse(self.gateway.orders)
