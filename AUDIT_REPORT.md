@@ -1,5 +1,13 @@
 # 최신 감사: 2026-10-12 연속 운용과 진입 지연
 
+## 15:12 최종 운영 반영 / 위험예산 예외
+
+사용자요청에따라 code325f940 기준6개를15:11:50 STOP/idle/실계좌읽기대조후배포했다. 현재BUILD V1.3-risk2-watch12-bc20M-daybudget1000-20261012. 최종893 PASS/FAIL0/ERROR0/SKIP0, syntax109/network0/orders0/실제프로그램시작0.6개code SHA256개발동일/syntax·importPASS. 백업Documents/주식자동매매_개발/backups/daily_budget1000_20261012_151146. 원래main/미커밋작업보존, origin/fix/continuous-trading-20261012에push했다.
+
+공식set_daily_risk_remaining_today(1000)으로 automation.json의날짜2026-10-12/총일일예산3880.266 두key만설정했다. daily_loss2880.266/당일장부/config/observation/policy/승인receipt SHA보존,flat잔여1,000원. 기본daily4/risk2/cap81300/보유1/신호·청산은유지하고예외만익일만료한다. 계좌현금78536/보호외부잔고대조/미체결0을실제읽기확인했으며실주문0이다.
+
+15:12:33 현재STOP/HALT없음/보유미체결UNKNOWN0이며새BUILD/설정의사용자승인은아직없어정상차단된다. 기존receipt를복사하지않았다. 정규장14:55cutoff가이미지났으므로사용자는GUI를다시열고15:40이후새설정직접승인·시작,16:00이후AFTER readiness충족을확인해야한다. 신규매수19:45미만/청산19:55/지원20:00정책은변경없음. 거래당2%와잔여예산중작은값으로수량계산하며급락/슬리피지손실의절대상한을보장하는것은아니다. 진입품질·수익성이개선됐다는완료판정은여전히미검증이다.
+
 ## 15:05 추가 요청 / 일일 위험예산 예외는 전략 개선과 구분
 
 15:10 최종 전체893 PASS/FAIL0/ERROR0/SKIP0, syntax109/network0/orders0/actualprogram-start0. 기존881개를 유지하고 위험예외10개 및현재승인cap/횟수제한없는AFTER2개를 추가했다. 저장된설정을정규화해서대량변경하지않고 날짜/총한도2개필드만 추가하는 보존검증도통과했다. 현재 code6개 운영배포 준비이며 아직 실제예외설정은 적용전이다.
