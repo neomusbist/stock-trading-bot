@@ -272,6 +272,20 @@ class AutonomousEngine(ExistingExits,Engine):
 
     def entry_market_reason(self,signal,quantity,fallback=None,phase='PRE_INTENT'):
         """No I/O: recheck latest receiver state immediately before a BUY leaves the process."""
+        if self.a.structural_pullback_enabled and signal.get('pattern')=='B':
+            from automation.structural_pullback import structural_pullback
+            try:
+                proof=signal.get('evaluation_gates',{}).get('pullback_structure',{})
+                values=proof.get('values',{})
+                passed,evidence=structural_pullback(signal.get('decision_bar_snapshot'),datetime.fromisoformat(signal['time']),
+                    signal,self.c,signal['limit'],values.get('bid'),values.get('ask'))
+                if (passed is not True or proof!={'result':'PASS','values':{'enabled':True,**evidence}}
+                        or signal['stop']!=evidence['buffered_stop']
+                        or evidence['target_ceiling'] is not None and signal['target']>evidence['target_ceiling']
+                        or signal['target']>signal['projection']
+                        or (signal['target']-signal['limit'])/(signal['limit']-signal['stop'])<self.c.min_reward_risk):
+                    return 'PULLBACK_STRUCTURE_PROOF_MISSING_OR_INVALID'
+            except (KeyError,TypeError,ValueError,ZeroDivisionError):return 'PULLBACK_STRUCTURE_PROOF_MISSING_OR_INVALID'
         if self.a.fresh_box_basis_enabled and signal.get('pattern')=='C':
             from automation.trade_quality import fresh_box_basis
             try:
@@ -326,6 +340,20 @@ class AutonomousEngine(ExistingExits,Engine):
             tick_venue=getattr(tick,'venue',None),tick_depth_source=getattr(tick,'depth_source',None),
             spread=(tick.ask-tick.bid)/tick.price if tick.price>0 else None)
         if not tick.regular or not 0<=age<=self.c.stale_seconds:return 'ENTRY_MARKET_DATA_STALE'
+        if self.a.structural_pullback_enabled and signal.get('pattern')=='B':
+            if tick.ask-tick.bid>signal['evaluation_gates']['pullback_structure']['values']['buffer_amount']:
+                return 'PULLBACK_STRUCTURE_SPREAD_CHANGED'
+            if provider:
+                try:
+                    book_age=(self.clock()-datetime.fromisoformat(book['time'])).total_seconds()
+                    bid,ask=book['best_bid'],book['best_ask']
+                    if any(type(v) not in (int,float) or not math.isfinite(v) or v<=0 for v in (bid,ask)) or bid>ask:
+                        return 'PULLBACK_ENTRY_BOOK_UNAVAILABLE'
+                except (KeyError,TypeError,ValueError):return 'PULLBACK_ENTRY_BOOK_UNAVAILABLE'
+                if not 0<=book_age<=self.c.stale_seconds:return 'PULLBACK_ENTRY_BOOK_STALE'
+                if ask>signal['limit']:return 'ENTRY_QUOTE_ABOVE_LIMIT'
+                if ask-bid>signal['evaluation_gates']['pullback_structure']['values']['buffer_amount']:
+                    return 'PULLBACK_STRUCTURE_SPREAD_CHANGED'
         breakout=signal.get('evaluation_gates',{}).get('breakout',{}).get('values',{}).get('breakout')
         # Legacy core synthetic signals have no geometry. The real runner always
         # supplies a provider; all production A/B/C signals also carry breakout.

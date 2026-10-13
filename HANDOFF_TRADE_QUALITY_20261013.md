@@ -1,5 +1,52 @@
 # V1.5 entry-quality development result — 2026-10-13
 
+## Structural B checkpoint
+
+Branch: `fix/v1.5-structural-b-20261013`, based on `d4c0647`.
+BUILD: `V1.5-risk2-watch12-bc20M-structuralB-20261013`.
+Dedicated gate: `structural_pullback_enabled`, default false; the authorized
+deployment explicitly enables it. Existing chase/resilient/exit-policy flags
+are not implicitly enabled, and no fixed minimum stop percentage is raised.
+
+The retained incident reused the minimum of a still-unconfirmed pullback as
+support and projected the impulse beyond already known overhead. The opt-in B
+gate requires a completed higher-low recovery after the last floor touch, with
+a close through that floor candle's reaction high. A live uptick cannot confirm
+its own candle. Recorded lower highs plus lower lows require a completed reclaim.
+References are bounded, predecision observations; unknown earlier trends are
+not invented. The initial floor must retain the upward impulse's base.
+
+The support buffer is derived from the existing structural buffer, one price
+tick and the actual bid/ask spread. Risk must exceed the observed median
+pullback-candle range and spread plus modeled exit slippage. Insufficient
+room causes rejection rather than arbitrary stop widening. Target is capped
+at the nearest uncleared confirmed local high or the impulse peak above entry.
+RR and cost efficiency are recalculated before account-risk sizing. Production
+order boundaries recompute the normalized bar proof, stop and target ceiling,
+and verify the newest receiver book; changed/stale/missing quotes cannot reuse
+an older trade quote to enter.
+
+Validation: **1,037 PASS**, zero failures/errors/skips, 127 syntax files, zero
+syntax errors/network attempts/actual orders. Twelve new tests cover the
+incident's normalized geometry, confirmed shallow/narrow legitimate support,
+unconfirmed one-bar floors, observed execution noise, bad/future/partial bars,
+proof tampering, latest-book changes, and actual synthetic broker order routing.
+Existing tests were retained; release-identity expectations were updated.
+
+Frozen replay: nineteen records on three dates, twelve with decision bars and
+seven UNKNOWN. Three recorded B decisions become ineligible; no observed
+winner with usable bars is newly blocked. All saved A/B/C trials were checked:
+two of those decisions have no alternative ready setup; one still has a ready A.
+Thus rejecting B is not claimed to eliminate every whole trade. Independent
+profitable B observations remain insufficient. Waiting for a completed recovery
+can miss fast V-shaped rebounds; losing an individual trade does not prove its
+original support was intrinsically meaningless. Expectancy remains unproven.
+
+Before deployment preserve the latest user-approved daily override and loss
+journal, broker holdings/orders, and existing ownership protection. New BUILD
+approval uses the official direct-user GUI path, never copied receipts. Detailed
+trade and broker evidence, backup, deployed hashes, PID and flags stay private.
+
 ## Feed catch-up checkpoint
 
 Branch: `fix/v1.5-exit-lifecycle-20261013`, based on `e49a18b` (including

@@ -334,6 +334,7 @@ class PatternDetector(Detector):
             if 'entry_context' in price_gates:gates['entry_context']=price_gates['entry_context']
             if 'box_direction' in price_gates:gates['box_direction']=price_gates['box_direction']
             if 'box_origin' in price_gates:gates['box_origin']=price_gates['box_origin']
+            if 'pullback_structure' in price_gates:gates['pullback_structure']=price_gates['pullback_structure']
             gates['liquidity']=trial['gates']['liquidity']
             gates['acceleration']={**gates['acceleration'],'required':name=='A','scope':'ENTRY_GATE' if name=='A' else 'OBSERVATION_ONLY'}
             gates['pattern']=gate(True,setup=name,acceleration_required=name=='A')
@@ -346,7 +347,8 @@ class PatternDetector(Detector):
                 'market_context':context,'discovery_context':watch.get('discovery_context'),
                 'price_context':price_gates.get('entry_context',{}).get('values'),
                 'decision_bar_snapshot':[{**{k:b.get(k) for k in ('open','high','low','close','volume')},
-                    'time':b['time'].isoformat()} for b in bars[-(max(12,2*self.a.box_min_bars+2) if self.a.fresh_box_basis_enabled else 12):]],
+                    **({k:b[k] for k in ('first_second','gap_reason') if k in b} if self.a.structural_pullback_enabled else {}),
+                    'time':b['time'].isoformat()} for b in bars[-(30 if self.a.structural_pullback_enabled else max(12,2*self.a.box_min_bars+2) if self.a.fresh_box_basis_enabled else 12):]],
                 'target':target,'target_basis':'과거 저항으로 제한한 관측 패턴 폭 연장 가설; 고정 익절선 아님',
                 'turnover':turnover,'turnover_ratio':ratio,'gain':gain,
                 'efficiency':score,'source_count':watch.get('source_count',len(watch.get('source_details',{}))),'source_details':watch.get('source_details',{}),'source_deltas':watch.get('source_deltas',{}),
@@ -392,6 +394,12 @@ class PatternDetector(Detector):
         peak=references.get('nearest_confirmed_peak')
         original_target=target
         if self.a.entry_context_enabled and peak:target=min(target,peak['price'])
+        structural=None;structural_pass=None
+        if self.a.structural_pullback_enabled and setup['pattern']=='B':
+            from automation.structural_pullback import structural_pullback
+            structural_pass,structural=structural_pullback(bars,t.time,setup,c,limit,t.bid,t.ask)
+            if structural.get('buffered_stop') is not None:stop=structural['buffered_stop']
+            if structural.get('target_ceiling') is not None:target=min(target,structural['target_ceiling'])
         distance=(limit-stop)/limit if limit>0 else None
         rr=(target-limit)/(limit-stop) if limit>stop else None
         horizon=getattr(self.a,'horizon_'+setup['pattern'].lower()+'_minutes')
@@ -427,6 +435,7 @@ class PatternDetector(Detector):
             result['entry_context']=gate(rr is not None and rr>=c.min_reward_risk,
                 enabled=True,reason='CONFIRMED_INTRADAY_RESISTANCE_RR' if peak and (rr is None or rr<c.min_reward_risk) else None,
                 original_target=original_target,target=target,required_rr=c.min_reward_risk,calculated_rr=rr,**references)
+        if structural is not None:result['pullback_structure']=gate(structural_pass,enabled=True,**structural)
         if self.a.fresh_box_basis_enabled and setup['pattern']=='C':
             from automation.trade_quality import fresh_box_basis
             passed,evidence=fresh_box_basis(bars,t.time,self.a.box_min_bars,self.a.box_max_range)

@@ -16,7 +16,7 @@ GATE_NAMES={'warmup':'관측 준비','acceleration':'가속','liquidity':'거래
     'structure':'일봉 구조','market_status':'종목상태','pattern':'Setup','breakout':'돌파','chase':'추격 거리',
     'invalidation':'무효화 거리','risk_reward':'보상/위험','resistance':'상단 여유','economic':'비용/효율',
     'policy':'운영 승인','session':'거래시간','connection_account':'계좌/통신','tick':'시세 신선도',
-    'repeat_slots':'재진입/보유한도','risk_quantity':'위험수량'}
+    'repeat_slots':'재진입/보유한도','risk_quantity':'위험수량','pullback_structure':'눌림 지지 확인'}
 CANDIDATE_FIELDS={'raw_candidates':'원시 후보','affordable':'1주 매수 가능',
     'unaffordable':'1주 매수 불가','affordability_unknown_or_observation':'자본확인 불가 / 관찰',
     'liquidity_fail':'유동성 탈락','spread_fail':'호가 간격 탈락','structure_fail':'구조 탈락',
@@ -91,6 +91,11 @@ SETUP_WAIT_REASONS={
     'ENTRY_CONTEXT_FAIL':'장중 저항까지 상승 여유 부족',
     'ENTRY_CONTEXT_PROOF_MISSING_OR_INVALID':'장중 저항 검사 근거 미확인',
     'ENTRY_CONTEXT_RR_CHANGED':'주문 직전 상승 여유 변경',
+    'PULLBACK_STRUCTURE_FAIL':'눌림 지지 확인 또는 가격 여유 부족',
+    'PULLBACK_STRUCTURE_PROOF_MISSING_OR_INVALID':'주문 직전 눌림 지지 근거 변경',
+    'PULLBACK_STRUCTURE_SPREAD_CHANGED':'주문 직전 호가 간격 확대',
+    'PULLBACK_ENTRY_BOOK_STALE':'주문 직전 호가 시각 지연',
+    'PULLBACK_ENTRY_BOOK_UNAVAILABLE':'주문 직전 실제 호가 미확인',
     'BOX_DIRECTION_FAIL':'내려가는 가격 구간 또는 박스 방향 근거 부족',
     'BOX_DIRECTION_PROOF_MISSING_OR_INVALID':'주문 직전 박스 방향 검사 근거 미확인',
     'LIQUIDITY_FAIL':'유동성 미충족','SPREAD_FAIL':'호가 간격 초과','STRUCTURE_FAIL':'구조 미충족',
