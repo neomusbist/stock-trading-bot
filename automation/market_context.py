@@ -81,14 +81,27 @@ class IndexContext:
 
 class DiscoveryContext:
     """Bounded day-specific discovery evidence; morning preparation is never a BUY list."""
-    def __init__(self,limit=256):self.limit=limit;self.day=None;self.rows=OrderedDict()
+    def __init__(self,limit=256,path=None):
+        self.limit=limit;self.day=None;self.rows=OrderedDict();self.firsts=OrderedDict();self.path=path
+        if path:
+            import json
+            try:
+                saved=json.loads(path.read_text(encoding='utf-8'));self.day=datetime.fromisoformat(saved['day']).date()
+                self.rows=OrderedDict(list(saved.get('rows',{}).items())[-limit:])
+                self.firsts=OrderedDict(list(saved.get('firsts',{}).items())[-8192:])
+            except (OSError,ValueError,KeyError,TypeError):self.day=None;self.rows.clear();self.firsts.clear()
     def update(self,rows,stamp):
-        if self.day!=stamp.date():self.rows.clear();self.day=stamp.date()
+        if self.day!=stamp.date():self.rows.clear();self.firsts.clear();self.day=stamp.date()
         out=[]
         for row in rows:
             symbol=row['code'];price=row.get('reference_price');prior=self.rows.get(symbol)
-            first=prior['first_raw_at'] if prior else row.get('first_raw_at') or stamp.isoformat()
-            first_price=prior['first_raw_price'] if prior else row.get('first_raw_price') or price
+            known=self.firsts.get(symbol,{})
+            first=known.get('first_raw_at') or (prior['first_raw_at'] if prior else row.get('first_raw_at') or stamp.isoformat())
+            first_price=known.get('first_raw_price') or (prior['first_raw_price'] if prior else row.get('first_raw_price') or price)
+            try:
+                parsed=datetime.fromisoformat(first)
+                if not parsed.tzinfo or parsed.date()!=stamp.date() or parsed>stamp:raise ValueError('invalid discovery time')
+            except (ValueError,TypeError):first=stamp.isoformat();first_price=price
             delta=price/prior['price']-1 if prior and price and prior['price'] else None
             gap=(stamp-datetime.fromisoformat(prior['seen_at'])).total_seconds() if prior else None
             context={'first_raw_at':first,'first_raw_price':first_price,'last_raw_at':stamp.isoformat(),
@@ -97,8 +110,13 @@ class DiscoveryContext:
                 'activity':'NEW_DISCOVERY' if prior is None else 'RISING_RECENTLY' if delta is not None and delta>0 else 'FALLING_RECENTLY' if delta is not None and delta<0 else 'UNCHANGED_OR_UNKNOWN',
                 'preopen_prepared':bool((prior or {}).get('preopen') or stamp.strftime('%H:%M:%S')<'09:00:00'),
                 'diagnostic_only':True,'actual_order_permission':False}
-            out.append({**row,'discovery_context':context})
+            out.append({**row,'first_raw_at':first,'first_raw_price':first_price,'discovery_context':context})
+            self.firsts[symbol]={'first_raw_at':first,'first_raw_price':first_price}
             self.rows[symbol]={'first_raw_at':first,'first_raw_price':first_price,'price':price,'seen_at':stamp.isoformat(),'preopen':context['preopen_prepared']}
             self.rows.move_to_end(symbol)
         while len(self.rows)>self.limit:self.rows.popitem(last=False)
+        while len(self.firsts)>8192:self.firsts.popitem(last=False)
+        if self.path:
+            from core.util import atomic_json
+            atomic_json(self.path,{'day':self.day.isoformat(),'rows':self.rows,'firsts':self.firsts,'diagnostic_only':True})
         return out

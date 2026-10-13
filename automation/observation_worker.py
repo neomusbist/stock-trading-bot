@@ -152,7 +152,20 @@ class ObservationWorker:
         return rows,clock,capital
     def publish(self,rows,source_stamp,capital):
         self.observer.capital=dict(capital)
-        ready=self.clock();self.observer.update(rows,ready)
+        ready=self.clock()
+        # Incremental metadata publication must not evict an already observed
+        # candidate just because its replacement status query has not finished.
+        merged=[]
+        for row in rows:
+            prior=self.observer.rows.get(row['code'])
+            status=row.get('shadow_view',row).get('market_status',{})
+            saved=self.metadata.get(row['code'],{})
+            checked=saved.get('checked')
+            fresh=checked is not None and 0<=(ready-checked).total_seconds()<=self.settings.metadata_ttl_seconds
+            if prior and not status and fresh and saved.get('status',{}).get('pass') is True:
+                row={**row,'shadow_view':{**prior.get('shadow_view',{}),'market_status':saved['status']}}
+            merged.append(row)
+        self.observer.update(merged,ready)
         with self.lock:
             selected=set(self.observer.rows)
             self.runtime_snapshot={'symbols':tuple(selected),'evaluations':{s:v for s,v in self.runtime_snapshot['evaluations'].items() if s in selected}}

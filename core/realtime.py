@@ -140,7 +140,10 @@ class Feed:
                             if self.observation_sink:self.observation_sink(tick,received)
                             if item.get('item') not in self.priority_symbols:self.observation_q.put_nowait((received,tick))
                         except (queue.Full,ValueError,KeyError):self.observation_drops+=1
-                    if item.get('type')!='0B' or item.get('item') in self.priority_symbols:priority.append(item)
+                    # Diagnostic books are already stored above for their paired ticks.
+                    # Do not put all SHADOW depth traffic on the order/position queue.
+                    # Order events, market state, and every protected/WATCH book stay FIFO.
+                    if item.get('type') not in {'0B','0D'} or item.get('item') in self.priority_symbols:priority.append(item)
                 if not priority:return
                 event={**event,'data':priority}
             elif event.get('trnm')=='REAL':

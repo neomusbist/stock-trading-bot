@@ -3,6 +3,56 @@ from collections import OrderedDict
 from datetime import datetime
 
 
+class ObservationTimeline:
+    """Small day-specific evidence file, never a restored trading/approval state."""
+    def __init__(self,path=None):
+        self.path=path;self.day=None;self.rows=OrderedDict();self.saved_at=None
+        if path:
+            import json
+            try:
+                data=json.loads(path.read_text(encoding='utf-8'))
+                self.day=datetime.fromisoformat(data['day']).date()
+                self.rows=OrderedDict(list(data['symbols'].items())[-8192:])
+            except (OSError,ValueError,KeyError,TypeError):self.day=None;self.rows.clear()
+
+    def row(self,symbol,stamp):
+        if self.day!=stamp.date():self.rows.clear();self.day=stamp.date();self.saved_at=None
+        row=self.rows.setdefault(symbol,{})
+        # Reject corrupt/future/previous-day persisted times, rather than
+        # projecting them into today's chronology.
+        for key in list(row):
+            if key.endswith('_at') and known_stamp(row[key],stamp) is None:row.pop(key)
+        self.rows.move_to_end(symbol)
+        while len(self.rows)>8192:self.rows.popitem(last=False)
+        return row
+
+    def raw(self,rows,stamp):
+        for item in rows:
+            row=self.row(item['code'],stamp)
+            first=known_stamp((item.get('discovery_context') or {}).get('first_raw_at'),stamp) or known_stamp(item.get('first_raw_at'),stamp)
+            if first and (not row.get('first_raw_at') or first<row['first_raw_at']):row['first_raw_at']=first
+
+    def watch(self,symbol,stamp,rejoined=True):
+        row=self.row(symbol,stamp);row.setdefault('first_watch_at',stamp.isoformat())
+        if rejoined:row['last_watch_rejoin_at']=stamp.isoformat()
+        return dict(row)
+
+    def tick(self,symbol,stamp,bars,price=None):
+        row=self.row(symbol,stamp);row['last_normal_tick_at']=stamp.isoformat()
+        if price is not None:row['last_trade_price']=price
+        if bars:row['last_valid_completed_bar_at']=bars[-1]['time'].isoformat()
+
+    def signal(self,symbol,stamp):
+        row=self.row(symbol,stamp);row.setdefault('first_valid_signal_at',stamp.isoformat())
+
+    def save(self,stamp):
+        if self.path and self.day==stamp.date() and (self.saved_at is None or (stamp-self.saved_at).total_seconds()>=5):
+            from core.util import atomic_json
+            atomic_json(self.path,{'day':self.day.isoformat(),'symbols':self.rows,'diagnostic_only':True,
+                                   'actual_order_permission':False,'restores_ticks_or_bars':False})
+            self.saved_at=stamp
+
+
 def known_stamp(value,asof):
     try:
         stamp=value if isinstance(value,datetime) else datetime.fromisoformat(value)
@@ -21,6 +71,8 @@ def watch_started(row,prior,stamp):
 
 def annotate_signal(engine,detector,watch,signal):
     asof=datetime.fromisoformat(signal['time']);symbol=signal['symbol']
+    timeline=getattr(engine,'observation_timeline',None)
+    if timeline is not None:timeline.signal(symbol,asof)
     state=getattr(engine,'_opportunity_timing',None)
     if not isinstance(state,dict) or state.get('day')!=asof.date():
         state={'day':asof.date(),'symbols':OrderedDict()};engine._opportunity_timing=state

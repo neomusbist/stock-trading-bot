@@ -343,8 +343,11 @@ def candidate_wait_reason(s):
 
 def board_freshness(row,clock):
     row=dict(row)
-    row['data_fresh']=bool(row.get('gates') and 0<=age(row.get('timestamp'),clock)<=15)
-    row['data_note']='현재 틱 판단' if row['data_fresh'] else '틱 판단 대기 / 오래된 기록'
+    # Evaluation emission time and ranking refresh time are not trade timestamps.
+    row['evaluation_fresh']=bool(row.get('gates') and 0<=age(row.get('timestamp'),clock)<=15)
+    row['data_fresh']=bool(0<=age(row['last_normal_tick_at'],clock)<=15) if row.get('last_normal_tick_at') else row['evaluation_fresh']
+    row['data_note']=('현재 틱 판단' if row['evaluation_fresh'] else '정상 틱 수신 / 조건 평가 갱신 대기') if row['data_fresh'] else '틱 판단 대기 / 오래된 기록'
+    if row.get('price_basis')=='RANK_REFERENCE':row['data_note']+='; 가격은 랭킹 조회값'
     return row
 
 def start_block(s):
@@ -416,6 +419,12 @@ class UserOperations(OperatorService):
             for row in (s.get('candidate_summary') or {}).get('candidates',[]):
                 if row.get('discovery_status') not in {'WATCH','RESERVE'}:continue
                 symbol=row['symbol'];board[symbol]={**board.get(symbol,{}),**row,'state':row.get('discovery_status'),'gates':row.get('gate_results',{})}
+        for symbol,row in board.items():
+            observed=hb.get('watch_observation',{}).get(symbol,{})
+            row.update(observed)
+            if observed.get('last_trade_price') is not None:
+                row['current_price']=observed['last_trade_price'];row['price_basis']='RECEIVED_TRADE'
+            else:row['price_basis']='EVALUATED_TRADE' if row.get('gates') and row.get('evaluation_observed',True) else 'RANK_REFERENCE'
         s['candidate_board']=[board_freshness(row,self.clock()) for row in list(board.values())[:40]]
         radar=read_json(self.root/'runtime/radar_latest.json',{})
         s['candidate_performance']=radar.get('performance',{}) if s['process']['running'] and 0<=age(radar.get('time'),self.clock())<=auto.scan_seconds*3 else {}

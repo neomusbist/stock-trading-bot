@@ -281,6 +281,9 @@ def apply_focus_selection(engine,lookup,by_symbol,selection):
         source1=row.get('source_count',0)==1
         from automation.entry_timing import watch_started
         first_watch=watch_started(row,lookup.get(sym),selection.focus_epoch)
+        timeline=getattr(engine,'observation_timeline',None)
+        if timeline is not None:
+            first_watch=timeline.watch(sym,datetime.fromisoformat(selection.focus_epoch))['first_watch_at']
         lookup[sym]={**row,'status':'WATCH','fallback_source1':source1,
                      'watch_type':'FALLBACK_SOURCE1' if source1 else 'PRIMARY','first_watch_at':first_watch}
         if sym in engine.source_qualification:
@@ -289,6 +292,12 @@ def apply_focus_selection(engine,lookup,by_symbol,selection):
 def resolve_radar_focus(engine,lookup,rows,rank_watch,readiness,cfg,auto,stamp):
     """Commit the final focus against actual incumbents, before subscription changes."""
     pool={row['code']:row for row in rows}
+    for sym,prior in lookup.items():
+        row=pool.get(sym,{})
+        if row.get('affordability',{}).get('reason_code')=='ACCOUNT_CAPITAL_UNAVAILABLE':
+            # Cash uncertainty blocks execution, not the collection of quotes.
+            # Only an existing observation slot can survive this transient state.
+            pool[sym]={**prior,'reason':'ACCOUNT_CAPITAL_UNAVAILABLE','observation_only':True}
     # Preserve the radar's existing bounded grace for temporarily missing ranks.
     for row in rank_watch:pool.setdefault(row['code'],row)
     previous=list(lookup)
@@ -303,6 +312,8 @@ def resolve_radar_focus(engine,lookup,rows,rank_watch,readiness,cfg,auto,stamp):
         row=pool[sym];source1=row.get('source_count',0)==1
         from automation.entry_timing import watch_started
         first_watch=watch_started(row,lookup.get(sym),stamp)
+        timeline=getattr(engine,'observation_timeline',None)
+        if timeline is not None:first_watch=timeline.watch(sym,stamp,rejoined=sym not in previous)['first_watch_at']
         lookup[sym]={**row,'status':'WATCH','fallback_source1':source1,
                      'watch_type':'FALLBACK_SOURCE1' if source1 else 'PRIMARY','first_watch_at':first_watch}
         if sym in engine.source_qualification:engine.source_qualification[sym]['fallback_source1']=source1
@@ -327,6 +338,11 @@ def latest_evaluation_watch(watch,radar,symbol):
 
 def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_evaluated_frame=None):
     if not watch or not engine.connected: return None
+    if watch.get('observation_only'):
+        from automation.decisions import gate
+        engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','ACCOUNT_CAPITAL_UNAVAILABLE',
+                              {'connection_account':gate(False,observation_only=True)},price=t.price)
+        return None
     if last_evaluated_frame is not None:
         key=(t.time,t.cumulative)
         if last_evaluated_frame.get(t.symbol)==key:return None
@@ -396,6 +412,8 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
 def process_message(engine,detector,message,received,symbols,lookup,radar,prices,account,radar_ok,subscriptions=None):
     tr=message.get('trnm')
     if tr in {'ERROR','DISCONNECTED'}:
+        engine.event('REALTIME_FAILURE',transport_event=tr,reason=message.get('reason'),stage=message.get('stage'),
+                     event_loop_lag=getattr(engine,'event_loop_lag',None),queue_depth=getattr(engine,'feed_queue_size',None))
         engine.disconnect(); engine.account_ok=False; engine.reset_detector=True; detector.reset()
         if subscriptions is not None:subscriptions.disconnected(received)
         return 0
@@ -431,11 +449,16 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
             t=parsed[1] if isinstance(parsed,tuple) and len(parsed)==2 and parsed[0]==received and isinstance(parsed[1],Tick) else parse_tick(item,received,book_stale_seconds=engine.c.stale_seconds)
             if t.symbol not in symbols:continue
             if subscriptions is not None and not subscriptions.tick_ready(t,received):continue
-            # Exit protection must not depend on entry detector acceptance (volume/history/warmup).
             state=getattr(engine,'s',{})
             positions=state.get('positions',{}) if isinstance(state,dict) else {}
-            protected=t.symbol in positions and t.regular and 0<=(engine.clock()-t.time).total_seconds()<=engine.c.stale_seconds
-            if not detector.ingest(t,now()):
+            clock_fn=getattr(engine,'clock',None)
+            wall_clock=clock_fn() if callable(clock_fn) else None
+            if not isinstance(wall_clock,datetime):wall_clock=now()
+            protected=t.symbol in positions and t.regular and 0<=(wall_clock-t.time).total_seconds()<=engine.c.stale_seconds
+            # Preserve genuine receiver-time history even if the consumer was
+            # delayed. Old frames can build past bars, never generate a current
+            # order or exit. Current execution still uses wall-clock freshness.
+            if not detector.ingest(t,received):
                 if protected and t.price>0:
                     prices[t.symbol]=t.bid or t.price
                     engine.on_tick(t)  # no fabricated/old completed bar on a rejected observation
@@ -443,7 +466,11 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
                     if health is not None:health.trade_seen(t.symbol,t)
                 continue
             if subscriptions is not None:subscriptions.accepted(t.symbol)
-            accepted+=1; prices[t.symbol]=t.bid or t.price;engine.last_regular_tick_at=t.time
+            accepted+=1;engine.last_regular_tick_at=t.time
+            timeline=getattr(engine,'observation_timeline',None)
+            if timeline is not None:timeline.tick(t.symbol,t.time,detector.usable_bars(t.symbol),t.price)
+            if not 0<=(wall_clock-t.time).total_seconds()<=engine.c.stale_seconds:continue
+            prices[t.symbol]=t.bid or t.price
             if engine.market=='UNKNOWN': engine.market='3'
             finished=list(detector.completed.get(t.symbol,[]))
             if getattr(engine.a,'confirmed_structure_protection',False) and protected:
@@ -542,6 +569,8 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     engine=AutonomousEngine(effective,auto,policy,folder,rest,now)
     observation_settings=load_observation(root);engine.observation_settings=observation_settings
     engine.candidate_audit=CandidateAudit()
+    from automation.entry_timing import ObservationTimeline
+    engine.observation_timeline=ObservationTimeline(root/'runtime/observation_timeline.json')
     engine.candidate_audit.refresh_seconds=auto.scan_seconds
     atomic_json(folder/'session_settings.json',{'config':asdict(cfg),'effective_config':asdict(effective),'automation':asdict(auto)})
     detector=PatternDetector(effective,auto,engine.costs)
@@ -666,6 +695,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         radar_ok=False; engine.event('RADAR_UNAVAILABLE',**{k:v for k,v in result.items() if k!='time'})
                     else:
                         if result.get('phase')=='RAW':
+                            engine.observation_timeline.raw(result['rows'],datetime.fromisoformat(result['time']))
                             qualify_raw(engine,result['rows'],result['time'],is_raw_phase=True)
                             engine.event('RAW_CANDIDATES',observed_at=result['time'],raw_count=len(result['rows']),
                                 candidates=[{k:row.get(k) for k in ('code','name','first_raw_at','first_raw_price','reference_price','source_count','affordability')} for row in result['rows']])
@@ -814,6 +844,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     atomic_json(root/'runtime/candidate_summary.json',summary)
                     engine.save(); reporter.submit(rows,engine.s); last_report=time.monotonic()
                 if time.monotonic()-last_heartbeat>=1:
+                    engine.observation_timeline.save(now())
                     sess_name=engine.current_session()
                     phase_str=market_phase(now(),live_approved=getattr(engine,'after_live_authorized',False))
                     if sess_name=='AFTER':
@@ -836,6 +867,8 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         'pid':os.getpid(),'identity':process_identity(os.getpid()),
                         'account_ok':engine.account_ok,'radar_ok':radar_ok,'connected':engine.connected,
                         'subscription_refresh_pending':subscriptions.refresh_pending,'subscription_tick_waiting':sorted(subscriptions.waiting),
+                        'watch_observation':{s:dict(engine.observation_timeline.rows.get(s,{})) for s in lookup},
+                        'feed_queue_depth':getattr(engine,'feed_queue_size',None),'event_loop_lag_seconds':getattr(engine,'event_loop_lag',None),
                         'available_capital':min(engine.available_cash,auto.capital_limit),'approved_cap':auto.capital_limit,
                         'bot_cash':engine.s['cash'],'positions':len(engine.s['positions']),'pending':len(engine.active_orders()),
                         'strategy':'MANAGE' if engine.s['positions'] else 'SCAN' if lookup else 'QUIET','counts':counts})

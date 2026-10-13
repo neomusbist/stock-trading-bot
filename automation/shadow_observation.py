@@ -61,7 +61,6 @@ class ShadowObserver:
   def priority(row):
    sym=row['code'];score=row.get('discovery_score',row.get('source_count',0)*10)
    held=sym in self.rows and (stamp-self.selected_at.get(sym,stamp)).total_seconds()<residence_seconds
-   new_stronger=sym not in self.rows and score>weakest
    gates=self.latest.get(sym,{}).get('gates',{})
    try:fresh=0<=(stamp-datetime.fromisoformat(self.latest[sym]['timestamp'])).total_seconds()<=15
    except (KeyError,ValueError):fresh=False
@@ -69,7 +68,10 @@ class ShadowObserver:
    if self.auto.setup_aware_watch_priority:
     observation=self.latest.get(sym,{})
     strong=fresh and calculate_tier(gates,observation.get('setup_trials',[]),row)<=1
-   return (0 if watch_priority(row) else 1 if strong or new_stronger else 2 if held else 3 if sym not in self.rows else 4,-score,sym)
+   tier_rank=0 if watch_priority(row) else 1 if strong else 2
+   effective_score=score+(2.0 if held else 0.0)
+   tie_rank=1 if (sym in self.rows and not held) else 0
+   return (tier_rank,-effective_score,tie_rank,sym)
   eligible.sort(key=priority)
   selected={r['code']:r for r in eligible[:self.limit]}
   for sym in list(self.detached-set(selected)):

@@ -173,11 +173,30 @@ class RadarWorker:
         self.status_priority_symbols=frozenset()  # Actual main-thread WATCH, including fast promotions.
         self.available_capital=0.; self.status_fetched=0; self.status_cache={}
         self.capital_context={}; self.refresh_account=None
+        self.status_waiting={};self.status_sequence=0
         self.thread=threading.Thread(target=self.run,name='rank-radar',daemon=True)
         self.timings={'status_ms':0.,'history_ms':0.,'structure_ms':0.};self.cycle_samples=[]
         self.observation_sink=None;self.observation_allowed=True
         from automation.market_context import DiscoveryContext
-        self.discovery_context=DiscoveryContext(limit=self.observation_settings.max_raw_symbols*2)
+        self.discovery_context=DiscoveryContext(limit=self.observation_settings.max_raw_symbols*2,
+                                                path=self.root/'runtime/discovery_context.json')
+
+    def scheduled_items(self,items):
+        """Incumbent deadlines first; bounded FIFO admission for unqueried RAW.
+
+        API-denied rows keep their position across cycles, rather than losing
+        to the same high-source rows every time a status TTL expires.
+        Affordability is still checked by DynamicRadar before any API call.
+        """
+        present={r['code'] for r in items}
+        self.status_waiting={s:n for s,n in self.status_waiting.items() if s in present}
+        ranked=sorted(enumerate(items),key=lambda pair:(-len(pair[1]['source_details']),pair[0]))
+        for _,r in ranked:
+            if r['code'] not in self.status_waiting:
+                self.status_waiting[r['code']]=self.status_sequence;self.status_sequence+=1
+        active=self.status_priority_symbols
+        return sorted(items,key=lambda r:(r['code'] not in active,r['code'] not in self.radar.watch,
+                                         self.status_waiting[r['code']]))
 
     def get_cached_metadata(self,symbol):
         day=now().date()
@@ -204,6 +223,7 @@ class RadarWorker:
             self.status_fetched+=1
             status_started=time.perf_counter();status=self.rest.stock_status(sym);self.timings['status_ms']+=(time.perf_counter()-status_started)*1000
             self.status_cache[sym]=status
+            self.status_waiting.pop(sym,None)
         if status['pass'] is not True:
             return {'status':'REJECT' if status['pass'] is False else 'UNKNOWN','reason':status['reason_code'],'market_status':status}
         history_started=time.perf_counter()
@@ -256,7 +276,7 @@ class RadarWorker:
                 # A stale/unknown status still fails; query scheduling must not create a gap.
                 # New candidates retain their existing source-count ordering afterwards.
                 active_watch=self.status_priority_symbols  # Immutable snapshot; no cross-thread detector access.
-                items.sort(key=lambda x:(x['code'] not in active_watch,x['code'] not in self.radar.watch,-len(x['source_details'])))
+                items=self.scheduled_items(items)
                 compress_started=time.perf_counter()
                 rows,watch,changes=self.radar.update(items,self.evaluate,now())
                 cycle_ms=(time.perf_counter()-cycle_started)*1000;self.cycle_samples=(self.cycle_samples+[cycle_ms])[-100:]
