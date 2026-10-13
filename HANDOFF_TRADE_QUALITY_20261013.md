@@ -1,159 +1,75 @@
-# Trade quality handoff — 2026-10-13
+# V1.5 entry-quality development result — 2026-10-13
 
-Status: development changes complete; integration and deployment are pending.
-Base: `7693c563d1d42d4c4467f17a85564743df0c4824`.
-Branch: `fix/trade-quality-night-20261013`.
-Source commit: `df56fc284ea33bef5eebf9195db02d28406a9a78`.
+Base: V1.4 `abb29815ca114fc0ce50babc4035f15236a64ba5`.
+Branch: `feat/v1.5-entry-quality-20261013`.
+Status: verified development checkpoint; no operating deployment, LIVE approval, restart or real orders.
+The branch is the development identity. Existing production BUILD identifiers are not a claim of V1.5 release readiness; new release stamping and approval belong to separately approved packaging.
 
-## Ownership and operating boundary
+## Actual changes in trading decisions
 
-This branch owns trading quality only. Antigravity owns the baseline 949-test
-inventory/deduplication/performance and storage audit/cleanup. Neither of those
-two tasks was continued after the ownership change. Existing audit drafts stay
-in their original development workspace. No operating credentials, account,
-orders or runtime were used after the scope change. There were no real orders,
-operating restarts, deployments or approval-record mutations.
+1. `fresh_box_basis_enabled` (default **false**) adds an independent-base check for Setup C. Using the existing five-bar length and 1.5% box range, it finds an already confirmed close above an earlier box. If that breakout candle is still inside the current claimed five-bar base, C fails `BOX_CONTAINS_COMPLETED_BREAKOUT`. Five fully completed bars after the breakout can form a new base. Breaking the old floor retires that earlier hypothesis, allowing a separately evaluated reversal. First live breakout of an initial complete base remains possible. No extra acceleration, percentage-rise or arbitrary elapsed-time threshold was added.
+2. The new C check is part of the actual detector's price gates, not merely a log. The engine recomputes its timestamped proof and normalized OHLC digest before an order can leave the process. Missing/changed data is blocked. Unknown, gaps, duplicates, partial and stale candles do not become PASS. B/A geometry, liquidity, risk and protection are unchanged.
+3. `setup_aware_watch_priority` (default **false**) makes RAW compression use the already implemented A/B/C readiness tiers. Previously DynamicRadar labeled a valid C/B with acceleration FAIL as FRESH_WEAK although fast focus used setup-specific readiness. Both RAW WATCH ranking and diagnostic residence now recognize a viable independent B/C. Stale observations, failed liquidity/RR/box-origin, hard locks, affordability and normal final order guards remain enforced. WATCH stays 12; no capacity, request budget or rank score expansion.
+4. No new exit policy was applied. V1.4's confirmed post-entry protection and matched REST data-health paths are preserved. A longer hold cannot be honestly justified by selected after-the-fact charts without a complete post-entry receiver/quote/REST stream.
 
-## Changes from the base
+## Kumho Construction chronology and cause
 
-- `automation/trade_quality.py`: reject malformed/partial/stale minute sequences.
-  C declining endpoints still reject a mere live breakout. A completed higher-low
-  recovery that closes over the intervening reaction high can qualify, subject
-  to the unchanged geometry, breakout, chase, RR, costs and risk checks. Raising
-  a structural profit stop requires a current complete sequence; the original
-  invalidation and emergency exits remain active.
-- `automation/price_context.py` and `automation/entry_context_audit.py`: retire
-  a confirmed peak only after a later valid completed close above it; retain the
-  clearance evidence. A live wick cannot clear it, and an older role-handoff copy
-  cannot restore it. A completed close received during a role handoff also clears
-  an older destination peak. Historical snapshots before clearance retain it.
-  A newly confirmed peak remains a potential resistance.
-- `automation/engine.py`: verify the claimed resistance/target proof again at
-  the order boundary; record the original exit-trigger evidence separately from
-  later receiver/health updates. Eligibility timing requires nonzero risk-sized
-  quantity and passing engine safety gates.
-- `automation/position_health.py`: reject regressing REST receipts; invalidate
-  an old standing-book cross-check when a later receiver book conflicts. A stale
-  conflicting quote requests verification rather than immediately submitting a
-  sale. Preserve the blind-interval start through journal/object reconstruction.
-  Persist interval start and resolution once each so cleared deadlines cannot
-  revive after reconstruction. Fresh validated trades also resolve the interval
-  through the runner, including when the entry detector rejects the observation.
-  Stale/nonregular/future/invalid trades cannot resolve it. Probe evidence separates
-  market quote time, HTTP receipt time and main-thread processing time.
-- `automation/entry_timing.py` and `automation/runner.py`: separate first known
-  RAW/WATCH, observation, detector signal, engine eligibility and latest radar
-  refresh. Never substitute a refresh timestamp for first discovery. Missing
-  earlier process history is explicitly UNKNOWN; bounded to 512 symbols/day.
-- `tools/trade_quality_replay.py`: explicit frozen-input offline replay only.
-  Does not read operating config/policy/runtime or connect to a broker. Raw
-  outputs belong outside Git. Future, previous-day and naive RAW/WATCH/observation
-  timestamps are UNKNOWN; they cannot become first-discovery evidence.
-- `tests/test_trade_quality_night.py`: dedicated new tests only. Existing test
-  files and shared pytest configuration have not been edited.
+Closed archives, verified unchanged by SHA256, show:
 
-The BUILD/strategy constants and feature-flag defaults were deliberately left
-at the base values. This is source awaiting integration, not a new deployable
-release. Never deploy this branch under the old BUILD or reuse old approval.
+| Event | Time | Price / decision |
+|---|---|---|
+| First retained RAW | 08:36:49 | discovery only |
+| First radar WATCH | 08:53:33 | does not prove uninterrupted later observation |
+| Earlier B signal | 09:56:05 | 13,990; MARKET_STATUS_STALE |
+| Earlier C signal | 11:04:29 | 13,680; MARKET_STATUS_STALE, logged at 11:04:30 |
+| Earlier C signal | 11:05:16 | 13,700; MARKET_STATUS_STALE, logged at 11:05:17 |
+| Later C signal | 11:08:53 | 13,790; MARKET_STATUS_STALE |
+| Accepted C | 11:09:58 | 13,800; order accepted 11:09:59.773954 |
 
-## Frozen replay and limits
+The 09:56 check still referenced 09:52:06 status; the 11:04/11:05 signals referenced 11:01:23. At scan=60 seconds, the hard status TTL is **180 seconds**. 120 seconds is V1.4's refresh trigger, not permission to use stale data. V1.4 already refreshes incumbent WATCH one scan before expiry and publishes status-cache changes immediately to the main evaluator (`test_status_publication.py`). Do not attribute that earlier fix to this V1.5 checkpoint or assert that a simulated fresh status proves an earlier executable order.
 
-Eight retained trades were compared using only known predecision snapshots and
-already captured timestamped resistance references. The candidate source may
-have been visible preopen; that does not establish uninterrupted intraday WATCH
-observation. Detector signal availability is distinct from account/order safety
-eligibility. The first fully executable opportunity is UNKNOWN where its full
-guard evidence was not retained.
+At 11:09:58, the rolling five-bar high was 13,790 and low 13,660; width 130 produced target 14,050. Buffered stop was 13,640, giving gross RR=(14,050−13,800)/(13,800−13,640)=1.5625. In the retained preceding bars a lower earlier box had already broken by completed close at 11:04/11:05. The current C base reused those breakout candles, moving the support and projection upward. The new origin gate rejects this late follow-through as a new independent C breakout.
 
-Combined price gates block six cases: four historical losses and two historical
-winners. The count is unchanged from the base experiment. Two remaining losses
-still pass entry price gates. The revision removes demonstrably already-cleared
-resistance and preserves completed reversal bases, but no additional historical
-trade in this eight-case sample is thereby proved executable. No future outcome
-was used to exempt a winning trade from an unbroken resistance. This sample does
-not establish improved expected value.
+Around 11:00–11:09, radar repeatedly labeled the symbol FRESH_WEAK despite C evaluation not requiring A acceleration. This is a verified priority inconsistency; the exact alternative historical WATCH membership cannot be reconstructed because every competing symbol's contemporaneous readiness is not retained. New ranking behavior is validated on isolated competing candidates, not reported as proven historical earlier fills.
 
-The eight entry snapshots cannot reproduce complete post-entry minute bars,
-receiver messages and REST receipt times. Revised exit prices/P&L remain UNKNOWN.
-One quiet-book incident's final health row came after its exit latch, so it must
-not be used to infer the original cause. A probe processing time is not an HTTP
-receipt time. Functional quiet-book protection passes synthetic broker tests;
-the historical transaction cannot be claimed prevented from missing evidence.
+## Eight-trade point-in-time comparison
 
-The inherited confirmed-structure policy gives a normal profitable pullback
-more room than the MFE giveback stop. It can give back more profit or retain the
-initial stop until a valid profitable higher low forms. Do not call that a proven
-better exit policy. Market-regime filtering, larger universes and earlier entry
-thresholds were not added or weakened.
+Actual code `PatternDetector.setup_gates` was rerun with stored decision OHLC, stored breakout/ask, existing geometry and then-known resistance. Default V1.4 and V1.5-origin-only differ only by the new flag. Historical exit results are comparison labels and are not fed into entry logic. Account, approval, quantity, pending orders and hypothetical fills are **not** replayed.
 
-## Targeted validation
+| Date/time | Symbol/setup | V1.4 default price gates | V1.5 origin-only | Observed outcome |
+|---|---|---|---|---|
+| 10/12 09:58:52 | 042510 C | PASS | PASS | profit |
+| 10/12 11:09:58 | 002990 C | PASS | FAIL origin | loss |
+| 10/12 12:28:03 | 042510 C | PASS | PASS | profit |
+| 10/12 12:42:36 | 038500 C | PASS | PASS | loss |
+| 10/12 14:29:19 | 038500 C | PASS | PASS | loss |
+| 10/12 16:06:21 | 042510 A | PASS | PASS | loss |
+| 10/12 16:55:55 | 002990 A | PASS | PASS | loss |
+| 10/12 18:57:44 | 198440 C | PASS | FAIL origin | loss |
 
-- New dedicated tests: 42 PASS, 0 FAIL/ERROR, no socket attempts or real orders.
-- Related targeted safety/lifecycle/continuity suites: 134 PASS, 0 FAIL/ERROR.
-- Baseline quality/context suites: 42 cases, 37 PASS, 5 conflicts below.
-- Changed Python syntax: 10 files parsed. No baseline 949-case/full integrated
-  regression was run; that belongs after the two branches merge.
+The origin experiment blocks two selected losses and zero selected winners. It does **not** establish better expectancy or predict the profit of any replacement trade. With existing context+direction enabled, both profitable Raon entries still fail resistance RR/economic/context. V1.5 origin does not solve that over-blocking tradeoff. A winner's outcome does not make a known resistance invalid. Do not disable that guard silently or count an origin-only PASS as a full strategy PASS.
 
-Do not describe the five conflicts as passing or delete them merely to turn the
-suite green. Their current expectations are incompatible with the new explicit
-freshness/minute-boundary requirement. The dedicated file proves current-bar
-runner delivery, stop persistence and mock restart; it also retains stale-bar
-rejection as a separate boundary.
+A separately truncated earlier-minute reconstruction is private and explicitly incomplete: at 11:04 only seven of the required bounded twelve historical bars were retained in the later snapshot. It cannot prove that the full contemporaneous V1.5 origin check would have permitted that earlier order. Same-second events can have different prices and gate outcomes; use `signal_at`, not the first log line in that wall-clock second.
 
-A separate reviewer reproduced four final boundary defects (handoff clearance,
-persisted quote/trade recheck resolution and future discovery timestamps). All were fixed,
-with six new regression cases included in the 42-case dedicated suite. The
-related 134 checks were rerun after these fixes. This is targeted validation,
-not a substitute for integrated regression or proof of trading profitability.
-Final read-only review found no additional blocking defect in these corrected
-boundaries; the reviewer did not independently rerun the test suite. The 42-case
-baseline comparison was also rerun on the final source: its five documented
-conflicts remain, with no additional failures.
+## Selection coverage and remaining limitations
 
-### Test conflicts for the integration owner
+The closed Oct12 radar archive contains 532 cycles, **615 unique RAW symbols** and **78 unique radar WATCH symbols**. Counts cover retained preopen and intraday cycles, not the whole Korean market. The eight executed trades concentrate on four symbols. Compression-cycle reason counts include unaffordable 22,315, status-scan budget 19,936, resistance room+turnover 11,953 and turnover 4,272. These are repeated row evaluations, **not unique lost opportunities**. Status-scan exhaustion is a bounded API workload policy, not a trade count limit; this checkpoint does not raise it.
 
-Four `test_trade_quality.StructureProtectionTests` cases use 13:33–13:35 bars at
-13:37:34 and expect a stop raise despite no 13:36 complete bar:
+Oct08 provides ten ENTRY_CANDIDATE records on an independent date. Three C candidates lack decision-bar snapshots and are UNKNOWN for the new origin test; seven A/B records are outside C scope. Thus independent-date strategy validation remains incomplete. No full post-entry quote/REST/bar stream is present to compute a credible alternate exit price, MFE/MAE path or net PnL. Keep the new flags OFF pending broader saved-data or isolated paper evidence.
 
-1. `test_completed_bars_and_raised_stop_persist_in_existing_journal`
-2. `test_confirmed_post_entry_higher_low_raises_and_real_breach_exits`
-3. `test_real_runner_delivers_completed_bars_before_tick_protection`
-4. `test_restart_with_same_approved_settings_preserves_structural_stop`
+## Validation and preserved boundaries
 
-`test_price_context.ContextOrderTests.test_context_rr_blocks_real_pattern_before_fake_order`
-creates bars starting at arbitrary `:05` seconds. Such rows no longer enter the
-minute reference store. Preserve the blocked-order scenario using minute-aligned
-inputs, and keep an explicit malformed timestamp rejection case.
+- Baseline: 992 PASS, zero failures/errors/skips; new targeted: **12 PASS**.
+- Final offline regression: **1004 PASS**, zero failures/errors/skips, 122 syntax files, zero syntax errors, zero network attempts, zero actual orders, operating program not started.
+- Tests cover first C breakout, old completed breakout reuse, five-bar rearming, retired old floor, future-price exclusion, invalid histories, default-OFF strict booleans, actual detector gates, engine proof tampering, B/C acceleration independence and failed/stale competing readiness.
+- New tests are in `tests/test_v15_entry_quality.py`; existing baseline tests and shared pytest settings were not removed or reorganized.
+- Reproduction tool: `tools/trade_quality_v15_replay.py --evidence-dir FROZEN_DIR --independent-events OCT08_FROZEN_JSONL --output PRIVATE_JSON`. Historical evidence/output stay outside Git. Source manifest and staged-byte guard must pass before commit.
+- Preserve the operating layout documented in `DEPLOYMENT_LAYOUT.md`; never wholesale-copy the checkout or restore archived readiness PASS files. No active runtime/authentication/approval/account state was used or changed.
 
-The dedicated new file reuses baseline fixture APIs from `test_setup_acceleration`,
-`test_standing_book_confirmation`, `test_trade_quality` and `test_price_context`.
-If Antigravity centralizes/removes those fixtures, adapt these imports in the
-integration branch rather than silently dropping the new tests.
+## Integration work still required
 
-## Integration and resume
-
-1. Merge/cherry-pick this strategy branch with the independent test/storage work.
-   Resolve the five documented fixture expectations intentionally. Preserve all
-   safety and order-lifecycle assertions.
-2. Run the integrated regression and sequential mock-broker trade scenarios.
-   Verify HTTP receipt evidence against actual response adapters in an authorized
-   read-only smoke. Do not test real orders.
-3. Assign a distinct BUILD/strategy identity and release manifest. Feature flags
-   are still OFF by default: `entry_context_enabled`, `confirmed_box_direction`,
-   `confirmed_structure_protection`, `stable_position_book_confirmation`.
-   Decide their operating activation using the documented tradeoffs and fresh
-   evidence, not eight-case hindsight or this branch's commit status.
-4. Only after checks and the user's deployment approval, back up the operating
-   source and reconcile positions/orders/UNKNOWN. New LIVE authorization must be
-   given by the user through the GUI; never copy an older approval receipt.
-5. For additional replay, explicitly supply the frozen evidence folder:
-   `python -B tools/trade_quality_replay.py --evidence-dir FROZEN_DIR --output-dir PRIVATE_DIR`.
-   The four required filenames are in the tool docstring. Private handoff records
-   exact local paths, result logs and evidence hashes. Do not recapture runtime
-   under the current instruction.
-
-Remaining substantive work: verify observation coverage before the initial surge,
-measure first signal blocked by stale status versus by held-position/cash/risk,
-and evaluate candidate diversity/trend-aware entries on a larger point-in-time
-sample. The base already prioritizes WATCH status refresh; its latency is not
-re-proved here against a live API. Earlier profitable fills are not promised.
+1. Obtain adequate independent-date C snapshots and competing readiness histories to measure actual selection latency and false exclusions.
+2. Evaluate reclaim/acceptance of genuinely cleared near resistance while preserving conservative RR. No new threshold is justified by these two winners alone.
+3. Compare normal pullbacks versus structural failure using complete post-entry bars and executable quotes; do not remove emergency exit or widen loss budgets as a substitute.
+4. Validate candidate coverage across prices/source intersections without increasing live subscriptions or API budget blindly.
+5. Integrate reviewed development commits and other agent results; stamp a new BUILD, package only approved code, and request explicit deployment and direct user LIVE approval separately. This result is **not deployed** and does not claim LIVE readiness or profitability.

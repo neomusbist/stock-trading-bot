@@ -68,7 +68,7 @@ def calculate_tier(gates: dict, setup_trials: list, row: dict = None) -> int:
     independent=[t for t in independent if t.get('gates',{}).get('liquidity',{}).get('result')=='PASS']
     # A formed box/pullback with impossible RR, invalidation or costs is not
     # geometry readiness. Only the actual breakout can still be waiting.
-    price_keys={'invalidation','chase','risk_reward','resistance','economic','entry_context','box_direction'}
+    price_keys={'invalidation','chase','risk_reward','resistance','economic','entry_context','box_direction','box_origin'}
     viable=[t for t in independent if all(v.get('result')=='PASS' for k,v in t.get('gates',{}).items()
         if k in price_keys)]
     blocked_geometry=bool(independent and not viable)

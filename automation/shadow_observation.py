@@ -66,6 +66,9 @@ class ShadowObserver:
    try:fresh=0<=(stamp-datetime.fromisoformat(self.latest[sym]['timestamp'])).total_seconds()<=15
    except (KeyError,ValueError):fresh=False
    strong=fresh and all(gates.get(k,{}).get('result')=='PASS' for k in ('acceleration','liquidity'))
+   if self.auto.setup_aware_watch_priority:
+    observation=self.latest.get(sym,{})
+    strong=fresh and calculate_tier(gates,observation.get('setup_trials',[]),row)<=1
    return (0 if watch_priority(row) else 1 if strong or new_stronger else 2 if held else 3 if sym not in self.rows else 4,-score,sym)
   eligible.sort(key=priority)
   selected={r['code']:r for r in eligible[:self.limit]}

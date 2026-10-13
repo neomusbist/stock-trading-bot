@@ -304,6 +304,7 @@ class PatternDetector(Detector):
             gates.update({key:price_gates[key] for key in ('breakout','chase','invalidation','risk_reward','resistance','order_price','economic')})
             if 'entry_context' in price_gates:gates['entry_context']=price_gates['entry_context']
             if 'box_direction' in price_gates:gates['box_direction']=price_gates['box_direction']
+            if 'box_origin' in price_gates:gates['box_origin']=price_gates['box_origin']
             gates['liquidity']=trial['gates']['liquidity']
             gates['acceleration']={**gates['acceleration'],'required':name=='A','scope':'ENTRY_GATE' if name=='A' else 'OBSERVATION_ONLY'}
             gates['pattern']=gate(True,setup=name,acceleration_required=name=='A')
@@ -316,7 +317,7 @@ class PatternDetector(Detector):
                 'market_context':context,'discovery_context':watch.get('discovery_context'),
                 'price_context':price_gates.get('entry_context',{}).get('values'),
                 'decision_bar_snapshot':[{**{k:b.get(k) for k in ('open','high','low','close','volume')},
-                    'time':b['time'].isoformat()} for b in bars[-12:]],
+                    'time':b['time'].isoformat()} for b in bars[-(max(12,2*self.a.box_min_bars+2) if self.a.fresh_box_basis_enabled else 12):]],
                 'target':target,'target_basis':'과거 저항으로 제한한 관측 패턴 폭 연장 가설; 고정 익절선 아님',
                 'turnover':turnover,'turnover_ratio':ratio,'gain':gain,
                 'efficiency':score,'source_count':watch.get('source_count',len(watch.get('source_details',{}))),'source_details':watch.get('source_details',{}),'source_deltas':watch.get('source_deltas',{}),
@@ -388,6 +389,10 @@ class PatternDetector(Detector):
             result['entry_context']=gate(rr is not None and rr>=c.min_reward_risk,
                 enabled=True,reason='CONFIRMED_INTRADAY_RESISTANCE_RR' if peak and (rr is None or rr<c.min_reward_risk) else None,
                 original_target=original_target,target=target,required_rr=c.min_reward_risk,calculated_rr=rr,**references)
+        if self.a.fresh_box_basis_enabled and setup['pattern']=='C':
+            from automation.trade_quality import fresh_box_basis
+            passed,evidence=fresh_box_basis(bars,t.time,self.a.box_min_bars,self.a.box_max_range)
+            result['box_origin']=gate(passed,enabled=True,**evidence)
         if self.a.confirmed_box_direction and setup['pattern']=='C':
             from automation.trade_quality import box_direction
             passed,evidence=box_direction(bars,t.time,self.a.box_min_bars)

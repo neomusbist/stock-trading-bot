@@ -1,5 +1,7 @@
 """Opt-in price-structure experiments. No broker access or future-price inputs."""
 import math
+import hashlib
+import json
 from datetime import datetime, timedelta
 from core.util import floor_tick
 
@@ -52,6 +54,45 @@ def box_direction(raw, asof, count):
         'start':first['time'].isoformat(),'end':last['time'].isoformat(),
         'first_open':first['open'],'first_high':first['high'],'first_low':first['low'],
         'last_close':last['close'],'last_high':last['high'],'last_low':last['low']}
+
+
+def fresh_box_basis(raw, asof, count, max_range):
+    """A completed breakout cannot also be a candle of a newly claimed C base.
+
+    Uses the existing box length/range, at most two bases plus two candles.
+    This is an opt-in independent-base hypothesis, not a profitability estimate.
+    A base rearms after a full count of bars following the confirmed breakout;
+    a broken old floor retires that old hypothesis instead of freezing reversal.
+    """
+    evidence={'asof':asof.isoformat(),'bars_required':count,'max_range':max_range}
+    eligible=[]
+    for bar in raw or ():
+        try:
+            stamp=bar['time']
+            if isinstance(stamp,str):stamp=datetime.fromisoformat(stamp)
+            if stamp.tzinfo is not None and stamp.date()==asof.date() and stamp+timedelta(minutes=1)<=asof:
+                eligible.append(bar)
+        except (KeyError,TypeError,ValueError,AttributeError):continue
+    size=min(len(eligible),2*count+2)
+    bars=complete_sequence(eligible,asof,size,require_recent=True) if size>=count else []
+    if not bars:return None,{**evidence,'reason':'BOX_ORIGIN_DATA_UNAVAILABLE'}
+    current_start=bars[-count]['time']
+    evidence.update(start=current_start.isoformat(),end=bars[-1]['time'].isoformat(),history_bars=len(bars),
+        basis_sha256=hashlib.sha256(json.dumps([[b['time'].isoformat()]+[b[k] for k in ('open','high','low','close')] for b in bars],separators=(',',':')).encode()).hexdigest())
+    for end in range(count,len(bars)):
+        base=bars[end-count:end];top=max(b['high'] for b in base);low=min(b['low'] for b in base)
+        if not 0<(top-low)/low<=max_range:continue
+        later=bars[end:]
+        # Support failure retires this old base; never carry its claim through a new reversal.
+        if any(b['low']<low for b in later):continue
+        crossed=next((b for b in later if b['close']>top),None)
+        if crossed and crossed['time']>=current_start:
+            return False,{**evidence,'reason':'BOX_CONTAINS_COMPLETED_BREAKOUT',
+                'prior_start':base[0]['time'].isoformat(),'prior_end':base[-1]['time'].isoformat(),
+                'prior_top':top,'prior_low':low,'breakout_bar':crossed['time'].isoformat(),
+                'breakout_close':crossed['close'],
+                'confirmed_at':(crossed['time']+timedelta(minutes=1)).isoformat()}
+    return True,{**evidence,'reason':'INDEPENDENT_BASE_OR_FIRST_BREAKOUT'}
 
 
 def confirmed_protection(cfg, auto, position, price, asof):

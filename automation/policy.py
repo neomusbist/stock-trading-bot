@@ -40,6 +40,8 @@ class AutomationConfig:
     daily_risk_override_budget_krw: float | None = None
     entry_context_enabled: bool = False  # separately approved strategy experiment
     stable_position_book_confirmation: bool = False  # opt-in read-only cross-check for quiet standing books
+    fresh_box_basis_enabled: bool = False  # opt-in independent C base experiment
+    setup_aware_watch_priority: bool = False  # shared existing A/B/C readiness tiers
     confirmed_box_direction: bool = False  # separately approved C descending-range exclusion
     confirmed_structure_protection: bool = False  # separately approved post-entry pivot protection
     pullback_min_rise: float = 0.008
@@ -85,7 +87,7 @@ class AutomationConfig:
             if type(getattr(self,k)) is not int or getattr(self,k)<=0: raise ValueError(f'{k}: 양의 정수 필요')
         if type(self.ALLOW_OVERNIGHT) is not bool or type(self.costs_confirmed) is not bool or type(self.replacement_enabled) is not bool or type(self.entry_context_enabled) is not bool or type(self.stable_position_book_confirmation) is not bool:
             raise ValueError('불리언 설정 오류')
-        if type(self.confirmed_box_direction) is not bool or type(self.confirmed_structure_protection) is not bool:
+        if any(type(getattr(self,k)) is not bool for k in ('confirmed_box_direction','confirmed_structure_protection','fresh_box_basis_enabled','setup_aware_watch_priority')):
             raise ValueError('불리언 설정 오류')
         for k in ('new_entry_cutoff','force_flatten_start','after_prep_start','after_market_start','after_entry_cutoff','after_force_flatten_start','after_market_close'):
             datetime.strptime(getattr(self,k),'%H:%M:%S')

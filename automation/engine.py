@@ -272,6 +272,14 @@ class AutonomousEngine(ExistingExits,Engine):
 
     def entry_market_reason(self,signal,quantity,fallback=None,phase='PRE_INTENT'):
         """No I/O: recheck latest receiver state immediately before a BUY leaves the process."""
+        if self.a.fresh_box_basis_enabled and signal.get('pattern')=='C':
+            from automation.trade_quality import fresh_box_basis
+            try:
+                passed,evidence=fresh_box_basis(signal.get('decision_bar_snapshot'),datetime.fromisoformat(signal['time']),self.a.box_min_bars,self.a.box_max_range)
+                proof=signal.get('evaluation_gates',{}).get('box_origin',{})
+                if passed is not True or proof!={'result':'PASS','values':{'enabled':True,**evidence}}:
+                    return 'BOX_ORIGIN_PROOF_MISSING_OR_INVALID'
+            except (KeyError,TypeError,ValueError):return 'BOX_ORIGIN_PROOF_MISSING_OR_INVALID'
         if self.a.confirmed_box_direction and signal.get('pattern')=='C':
             from automation.trade_quality import box_direction
             try:
