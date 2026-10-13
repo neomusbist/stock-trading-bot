@@ -794,6 +794,10 @@ class AutonomousEngine(ExistingExits,Engine):
                 ledger['capital_refresh_pending']=False
                 self.event('ACCOUNT_CAPITAL_REFRESHED',**ledger['capital_snapshot'])
             else: self.account_ok=False
+        from automation.broker_pnl import settle_broker_pnl
+        fee_report=settle_broker_pnl(self.s,fills,self.costs,self.clock(),getattr(self.broker,'identity','paper'))
+        if fee_report['cash_adjustment'] or fee_report['pnl_adjustment']:
+            self.event('BROKER_PNL_RECONCILED',**fee_report)
         self.s['equity']=self.risk_equity(); self.save()
         self.kill_checked=True
         self.reconciled_at=self.clock().isoformat()

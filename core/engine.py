@@ -280,7 +280,8 @@ class Engine:
             self.s['cash']+=delta*price-self.sell_fee(delta*price)
             self.s['trades'].append(self.decorate_trade({'symbol':sym,'opened':p['opened'],'closed':self.clock().isoformat(),'qty':delta,
                 'entry':p['avg'],'exit':price,'pnl_estimate':pnl,'MFE':p['high']-p['avg'],'MAE':p['avg']-p['low'],
-                'initial_stop':p['initial_stop'],'final_stop':p['stop'],'reason':p['exit_reason']},p))
+                'initial_stop':p['initial_stop'],'final_stop':p['stop'],'reason':p['exit_reason'],
+                'exit_order_local':o['local'],'exit_order_id':o['id']},p))
             p['qty']-=delta
             if not p['qty']: del positions[sym]
         self.fill_applied(o,delta,price)

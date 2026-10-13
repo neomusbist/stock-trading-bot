@@ -1,3 +1,19 @@
+# Broker PnL settlement checkpoint
+
+BUILD `V1.5-risk2-watch12-bc20M-structuralAE3-20261013` preserves structuralAE2's entry, AFTER failure and explicit external-close recovery changes. Its new accounting path makes reported broker fees and taxes authoritative after a confirmed matching fill. Entry-risk reservations still use modeled costs until actual charges exist.
+
+The user's final cost directive was prompted by Raon 3 shares at 17,460 then 17,500. The configured 0.015% buy/sell commission contributed 7.857 + 7.875 = 15.732 modeled fees. The broker reported both commissions zero and sell tax 105: gross120 minus105 yields **+15**, replacing modeled **-0.732**. Tax and commission are read, not recomputed from a guessed rounding rule.
+
+`automation/broker_pnl.py` validates account/day, order identity uniqueness, side/symbol, filled quantity and amount. Explicit zero is valid; missing, nonfinite, negative, duplicated or mismatched charges remain unconfirmed. Confirmed prior cost provenance is preserved if a later query omits a fee. Partial-order growth only replaces the newly booked modeled increment; repeat queries cannot double-credit cash. Trades link their exit order directly, with a unique fill-time fallback for old records. Partial closes allocate known charges without duplicating entry fees. Historical modeled PnL is retained for audit while compatible realized-PnL fields and performance cost totals use broker costs.
+
+The original six Oct13 closes were compared to the 19:59 broker query: realized results -1,086 / -676 / -169 / -574 / -1,114 / +15. Gross losing-trade accumulation becomes **3,619**, and net day result **-3,604**. The original absolute risk ceiling **5,222.7945** is unchanged. This is a documented fee correction, not a risk-budget reset; protected holdings, entry counters and approval/config remain intact. Other days without a matching dated broker record are not invented as settled.
+
+13 dedicated accounting cases cover zero costs, tax precedence, subsequent broker revisions, repeat-query idempotence, partial quantities, missing/invalid/duplicate fields, identity/day mismatch, old exit matching and actual performance cost labels. Full release results are saved in the private regression report. No actual test orders are permitted. Direct user approval of the new BUILD remains required; outside operating hours the program must wait for the next supported session.
+
+Official field identifiers are confirmed in the [Kiwoom REST API guide](https://openapi.kiwoom.com/m/guide/apiguide?dummyVal=0); the monetary comparisons are the user's actual broker query, not a universal brokerage-fee claim.
+
+---
+
 # AFTER burst exit checkpoint
 
 BUILD: `V1.5-risk2-watch12-bc20M-structuralAE2-20261013`.
