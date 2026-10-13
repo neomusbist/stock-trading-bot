@@ -1,14 +1,16 @@
 """Explicit operator recovery after a stopped, fresh, flat broker reconciliation."""
 from datetime import datetime
+import math
 from core.util import atomic_json
 from core.event_log import append_jsonl
 
 REVIEWABLE={'관리 잔고와 실제 잔고 불일치: 자동 매도 보류 필요','데이터/상태 오류: PermissionError'}
 DATA_EXIT_HALT='보유종목 시세 지연: 긴급 청산 요청'
+EXTERNAL_ORDER_HALTS={'관리 종목 외부 미체결 주문','관리 종목에 외부 주문 감지: 계좌 대조 필요'}
 TERMINAL={'FILLED','CANCELED','REJECTED'}
 
 def recover_reviewed_halt(path,state,snapshot,stamp,reason):
-    if state.get('halt') not in REVIEWABLE|{DATA_EXIT_HALT}:raise ValueError('HALT_REASON_REQUIRES_SEPARATE_REVIEW')
+    if state.get('halt') not in REVIEWABLE|{DATA_EXIT_HALT}|EXTERNAL_ORDER_HALTS:raise ValueError('HALT_REASON_REQUIRES_SEPARATE_REVIEW')
     if state.get('positions') or any(o['status'] not in TERMINAL for o in state['orders'].values()):
         raise ValueError('NON_FLAT_ORDER_LEDGER')
     if snapshot.get('account_identity')!=state.get('identity'):raise ValueError('ACCOUNT_IDENTITY_MISMATCH')
@@ -28,6 +30,26 @@ def recover_reviewed_halt(path,state,snapshot,stamp,reason):
                 or not trade.get('qty') or sum(o['filled'] for o in sells)<trade['qty']):
             raise ValueError('DATA_EXIT_FILL_CONFIRMATION_REQUIRED')
     if snapshot['orders']:raise ValueError('BROKER_PENDING_ORDERS')
+    if state.get('halt') in EXTERNAL_ORDER_HALTS:
+        review=(state.get('external_close_reviews') or [None])[-1]
+        if not isinstance(review,dict) or review.get('source')!='BROKER_CONFIRMED_USER_EXTERNAL_SELL':
+            raise ValueError('EXTERNAL_CLOSE_REVIEW_REQUIRED')
+        order=state['orders'].get(review.get('local'),{})
+        rows=[r for r in snapshot.get('fills',[]) if str(r.get('ord_no'))==review.get('order_id')]
+        try:
+            qty=review['quantity'];price=review['price'];sym=review['symbol']
+            observed=datetime.fromisoformat(review['observed_at'])
+            row=rows[0]
+            valid=(len(rows)==1 and type(qty) is int and qty>0 and type(price) in (int,float) and math.isfinite(price) and price>0
+                and incident<observed<=query and (query-observed).total_seconds()<=300
+                and row.get('stk_cd','').lstrip('A')==sym and row.get('io_tp_nm')=='-매도'
+                and row.get('ord_stt')=='체결' and int(row['cntr_qty'])==int(row['ord_qty'])==qty
+                and int(row['oso_qty'])==0 and float(row['cntr_pric'])==price
+                and order.get('id')==review['order_id'] and order.get('symbol')==sym and order.get('side')=='SELL'
+                and order.get('status')=='FILLED' and order.get('filled')==order.get('qty')==qty
+                and order.get('amount')==qty*price and order.get('signal',{}).get('ownership')=='USER_EXTERNAL')
+        except (KeyError,IndexError,TypeError,ValueError):valid=False
+        if not valid:raise ValueError('EXTERNAL_CLOSE_FILL_PROOF_INVALID')
     existing=state['automation']['existing']
     expected={s:h['qty'] for s,h in existing.items() if h['qty']}
     actual={s:h['qty'] for s,h in snapshot['holdings'].items() if h['qty']}

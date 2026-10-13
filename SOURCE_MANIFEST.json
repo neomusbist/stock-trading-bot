@@ -42,8 +42,8 @@
     },
     {
       "path": "HANDOFF_TRADE_QUALITY_20261013.md",
-      "sha256": "022a823e57e550ab52da2c1dbf0369ca428a5b69f404846f1a865fdf2b5d658d",
-      "git_blob_sha256": "f8ed9ddff465024d7f3948826555eaa6fbe74f17"
+      "sha256": "4c35d58a0f199b6d340e768e535a659f1430421fb4fcaf2ed80d62bbd3c43c18",
+      "git_blob_sha256": "a2c8ac74e128c6739876b6cdf31f65a470843707"
     },
     {
       "path": "NEXT_SESSION_CHECK.md",
@@ -101,6 +101,11 @@
       "git_blob_sha256": "2c0fde47fd17067a423c53fc3556da925a487659"
     },
     {
+      "path": "automation/after_momentum.py",
+      "sha256": "97e96359fd7f0966fc0f04fc4d0f228f095bef3205701d10ed402dcf4ce93123",
+      "git_blob_sha256": "ddd35fba8024d36a645f80cb1a6b7be829e0c06a"
+    },
+    {
       "path": "automation/allocation.py",
       "sha256": "31fce84c4b6dd266058618758704c7da0433e59234e9c23b99f0cb42df9ac989",
       "git_blob_sha256": "64d22da3bfccdf0b4e40c5dbaad70525b7ea58a6"
@@ -117,13 +122,13 @@
     },
     {
       "path": "automation/decisions.py",
-      "sha256": "724a0d94eb545cc7ca0fa435e764312deb1d6d1007ba5905305e10c11053d7e0",
-      "git_blob_sha256": "9206a0258e5ba5d7c02a1745b6f0061d983848f3"
+      "sha256": "e7e0b5ffcddefa7d78ebf6ba935bb2b0ac246976cdd1249cfb6e87f2c1af4b1a",
+      "git_blob_sha256": "33bf28c0a8bcf29886e6d70cf46ec28aab92b28a"
     },
     {
       "path": "automation/engine.py",
-      "sha256": "6867affeaf83336693257730f98c7dce0feae0270229c43bc93cbeb4e490b8dd",
-      "git_blob_sha256": "9849f2f0b3753940ea337f7c7c81f25ca0269cf7"
+      "sha256": "3e2b62487ddde135eb9e965a41c19091f09f3fd80fea2bdcaf6ef0631f798099",
+      "git_blob_sha256": "f12ba01da8bcda1a8ff0758e912326f74b75cc32"
     },
     {
       "path": "automation/entry_context_audit.py",
@@ -187,8 +192,8 @@
     },
     {
       "path": "automation/policy.py",
-      "sha256": "ace8d6602679b9e7a5d3fdf2bed9aa1b36e18e95ff308321af5a5c12a229726b",
-      "git_blob_sha256": "297cacc3182e5a5c5d1104af1db65ec2457d1260"
+      "sha256": "474bd8b063bd95916429105762d50c827e5329b7b3b5fa3db6f94416f0cb816c",
+      "git_blob_sha256": "a1048e10e29145e7ce56b262f7ad24bd391119af"
     },
     {
       "path": "automation/position_health.py",
@@ -212,8 +217,8 @@
     },
     {
       "path": "automation/recovery.py",
-      "sha256": "b0b062755aeab1a0add205ab17fde88339c50723c788bec62546af186fa514ce",
-      "git_blob_sha256": "1775335b486f07df6df39a09a1f09060e6da66f4"
+      "sha256": "e8cada948343ec8b6e4fb67c490a54a3c27c772757cae5ac42456b11ec5f810d",
+      "git_blob_sha256": "66552bd6912cd1cbc5587a8d573adcc893c4a2b1"
     },
     {
       "path": "automation/runner.py",
@@ -362,8 +367,8 @@
     },
     {
       "path": "operator_service.py",
-      "sha256": "47884fde7a78ba26a3ec4f5cd09a761e3b4acdc7200da962000c594c14cba3ad",
-      "git_blob_sha256": "f304fb0aa3821f945dc587671d67c6a1518b478c"
+      "sha256": "68d2b2f80cde0f1803e49eaa3b01f60f0286bba480d8bd27286ca4301824f1d4",
+      "git_blob_sha256": "fcfafbe2fa5ac4451c512fb37ba0782ea4b0c343"
     },
     {
       "path": "operator_ui_service.py",
@@ -414,6 +419,11 @@
       "path": "tests/test_after_market.py",
       "sha256": "5c73891c9248cdab2f1081834ba5920f46cf5c202bb15add1b333fa7f7ddeb34",
       "git_blob_sha256": "57e2b573176c01a106d3b5cd87e7d02711e146d0"
+    },
+    {
+      "path": "tests/test_after_momentum.py",
+      "sha256": "6f1e8f95ea1f53fb40745d953c16361a763777dd59749e1d0a9bc9f84caf9d53",
+      "git_blob_sha256": "d7ec5e686052334d31c11ffc1d22f306fea9b810"
     },
     {
       "path": "tests/test_after_resume.py",
@@ -496,6 +506,11 @@
       "git_blob_sha256": "fcc0d079c18e0aad53803ea16ac802da663b398e"
     },
     {
+      "path": "tests/test_external_manual_recovery.py",
+      "sha256": "a2db9c0f370f214ca5abb1762a00c0ed19e839a22f7cf192a1f9b5aaa1b7501e",
+      "git_blob_sha256": "3b16bccde147b5561c8285d072d65b93baaa46d1"
+    },
+    {
       "path": "tests/test_gui.py",
       "sha256": "bafb1f53ac1d123fe0dfeef80c63f980a7f179dd41e60d3c4fbfb58c0b2f734a",
       "git_blob_sha256": "d9f83077f90b5b152ffd3f45fc2c7f481087da68"
@@ -567,8 +582,8 @@
     },
     {
       "path": "tests/test_policy_update.py",
-      "sha256": "b432758355a1708e4d80b328a3691af55e70a0c14ea8aadff4c0ec76f0879d97",
-      "git_blob_sha256": "b271f55ab29ec9d1dc1c80622dc5bbb82617af71"
+      "sha256": "579afea248876eed6f35588c54f118322c40f02520948e376f3935a11edae7bb",
+      "git_blob_sha256": "ac848489575c6c32e2d6d66a94a47764bdf741b9"
     },
     {
       "path": "tests/test_position_data_health.py",
@@ -612,8 +627,8 @@
     },
     {
       "path": "tests/test_setup_acceleration.py",
-      "sha256": "f2eee6b63bf02cc21ecadbbb462505ef56415bf9031a3d2576491da98480fb5d",
-      "git_blob_sha256": "9cee21569e24aab70f34e14675398e71cd8fd1ee"
+      "sha256": "87e2f421addc1a59350693aa39bb7b5bce0516504553888712ebde592f3deff1",
+      "git_blob_sha256": "016c78e88b7dd7359f1c6f636303b7d9e98fb03c"
     },
     {
       "path": "tests/test_shadow_capacity_roles.py",
@@ -702,8 +717,8 @@
     },
     {
       "path": "tests/test_v13_risk_identity.py",
-      "sha256": "447a020a96d5dd3fdbccb1a675976c6547c95670730d178d8ffd44f200feaa0a",
-      "git_blob_sha256": "c8807144baa06aae88c63fa55b4c727853a2e243"
+      "sha256": "56be718a95553f626757df0789fb4ba9ad78f6a468822ab5a6b50ad9feeef4a5",
+      "git_blob_sha256": "2e3618d1434cbb3ccdd2d061d8ae07ff6ed9b48f"
     },
     {
       "path": "tests/test_v15_entry_quality.py",
@@ -803,6 +818,6 @@
   ],
   "local_data_included": false,
   "credentials_included": false,
-  "fixture": "synthetic",
+  "fixture": "synthetic and anonymized completed market OHLCV",
   "api_fixture": "field identifiers only"
 }

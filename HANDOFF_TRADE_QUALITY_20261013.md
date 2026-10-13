@@ -1,3 +1,45 @@
+# AFTER burst exit checkpoint
+
+BUILD: `V1.5-risk2-watch12-bc20M-structuralAE2-20261013`.
+Extends committed structuralAE checkpoint `7efbd16`. Production application is separately recorded in the private deployment report; this document does not assert deployment or LIVE approval.
+
+## Confirmed operating blind spot
+
+The retained Oct13 Raon position entered Setup A in AFTER at 17,460 with initial stop 17,180 and post-entry high 17,700. The 240-point favorable excursion did not reach the 280-point one-R threshold, so existing profit protection remained unarmed. Initial price invalidation is not a sufficient sole measure of whether a burst continues. A chart's later decline cannot establish that the exact high was sellable when it occurred.
+
+## Actual decision change
+
+`after_momentum_failure_enabled` defaults false. When enabled together with the validated new A/B invalidation policy, only an AFTER A burst uses this exit. The separately proven sustained-continuation entry mode is outside its scope.
+
+A failed burst rebound is confirmed by:
+
+- An observed post-fill peak above entry; a partial entry minute cannot supply that peak without a real post-fill tick timestamp.
+- A later completed rebound whose close reclaims the preceding candle's high but whose high remains below the observed peak.
+- Three later fresh consecutive completed candles with strictly falling highs, lows and closes, ending below that rebound's low.
+
+That failure latches an exit before the initial structural/emergency stop is necessarily reached. One-R activation is not required. Volume is retained in the evidence; fading volume alone cannot cause an exit and expanding sell volume cannot veto confirmed price failure. Invalid volume, missing/shifted/stale/future/partial candles and unconfirmed recovery produce UNKNOWN or HOLD, not an exit.
+
+A first controlled pullback, retained higher low, recovered close or new higher peak remains HOLD unless the existing structural/emergency protection independently applies. This does not promise capturing the high. It needs at least three decline confirmations after a failed rebound and may still exit before a subsequent successful recovery. A fast outright collapse remains covered by the independently sized emergency stop.
+
+Only new positions carrying validated invalidation proof use this policy. Existing holdings receive no retroactive stop widening or new unapproved exit rule. Exit evidence is frozen when requested, and order/account/duplicate/quantity safeguards are unchanged.
+
+## Validation and limits
+
+20 dedicated cases in `tests/test_after_momentum.py` passed before full regression. They include failure below one-R but above the initial stop, normal pullback/recovery retention, expanding sell volume, malformed/late/future candles, valid partial-minute peak provenance, equal-peak retest reset, strict flags, legacy position preservation and a single mock SELL with frozen evidence. One uses anonymized public market OHLCV values; no account/order/authentication capture is included.
+
+The prior structuralAE checkpoint had 1,072 PASS. The final structuralAE2 operating release regression has **1,098 PASS, FAIL/ERROR/SKIP 0**, 133 syntax files without errors, zero network attempts, zero actual orders and no operating program start. The extra six cases verify explicit recovery after an already executed manual SELL, refusing missing/wrong/duplicate/old fill proof, retained bot quantity, pending orders and protected-holding mismatch. No real test orders are allowed. The new policy is an implementation hypothesis, not a textbook quotation or proven positive expectancy. Exact Oct13 alternative executable exit price and net PnL require the actual completed-bar and quote record; chart pixels or later broker references alone do not prove a historical executable order.
+
+Oct13 completed SOR reference replay, received later at 19:16 and strictly cut at each decision time, first confirms failure at 16:59. The 16:52 lower rebound floor was 17,520; the 16:56/57/58 closes were 17,500/17,460/17,450. Peak 17,700 remained below the legacy 17,740 profit activation. This is a reference-bar counterfactual, not an actual order/quote replay. No hypothetical fill price or net PnL is asserted. The actual stored entry candles still pass the new A structural check: this release does not claim that every ultimately disappointing burst should have been refused initially.
+
+## Integration
+
+Preserve structuralAE's meaningful support, overhead resistance cap, account-risk sizing and early affordable RAW status admission. Keep WATCH12 and API request budgets. Include `automation/after_momentum.py` in the source allowlist and enable the four independent release flags only after approved flat-state deployment. Back up source/config/journals, reconcile manual fills and protected holdings, preserve the day's losses and override, and request direct user GUI approval for the new BUILD. Do not copy approval receipts or reset HALT indiscriminately.
+
+The user subsequently authorized operating deployment and recovery after the manual sale. A fresh broker query confirmed the full 3-share SELL at 17,500, no remaining bot holding and no pending orders. The already executed external fill was reviewed in a stopped isolated model, then journaled under official idle/control locks with the original entry, fee model and day ledger preserved. Existing approval/config hashes stayed unchanged. Explicit recovery requires a fresh matching broker fill and protected holding comparison; this is not an automatic HALT bypass. Gateway recovery reads the fill record only for this specific external-order incident. Operating backup/application/preflight and direct new-BUILD user approval are separately evidenced in the private deployment report; do not infer approval from the source commit.
+
+
+---
+
 # V1.5 entry-quality development result — 2026-10-13
 
 ## Structural AE checkpoint

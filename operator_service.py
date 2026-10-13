@@ -123,6 +123,10 @@ class Gateway:
         rest=Rest(replace(cfg,live_mode=False))
         started=self.service.clock().isoformat()
         snapshot=rest.snapshot()
+        from automation.recovery import EXTERNAL_ORDER_HALTS
+        state=read_json(self.service.root/'runtime'/('automation-'+cfg.broker_environment)/'state.json',{})
+        if state.get('halt') in EXTERNAL_ORDER_HALTS:
+            snapshot['fills']=rest.fills()
         snapshot.update(account_identity=rest.identity,query_started_at=started)
         return snapshot
     def start(self,args): return self.service.start_command(args)

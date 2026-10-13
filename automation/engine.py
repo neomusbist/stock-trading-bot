@@ -676,7 +676,7 @@ class AutonomousEngine(ExistingExits,Engine):
         return trade
 
     def observe_protection_bar(self,symbol,bar):
-        """Keep at most three real completed post-entry bars in the existing position journal."""
+        """Retain real post-entry bars; AFTER burst failure needs bounded recent history."""
         if not (self.a.confirmed_structure_protection or self.a.confirmed_invalidation_enabled):return
         p=self.s['positions'].get(symbol)
         if not p:return
@@ -690,13 +690,18 @@ class AutonomousEngine(ExistingExits,Engine):
         stamp=b['time'].isoformat()
         previous=p.get('protection_bars',[])
         if previous and stamp<=previous[-1]['time']:return
-        p['protection_bars']=(previous+[{**b,'time':stamp}])[-3:]
+        p['protection_bars']=(previous+[{**b,'time':stamp}])[-(30 if self.a.after_momentum_failure_enabled and p.get('signal',{}).get('session')=='AFTER' else 3):]
         policy=p.get('signal',{}).get('invalidation_policy')
         if self.a.confirmed_invalidation_enabled and policy:
             soft=max(policy['structural_stop'],p.get('confirmed_soft_stop',policy['structural_stop']))
             p['last_invalidation_bar']={'time':stamp,'close':b['close'],'structural_stop':soft}
             if b['time']==self.clock().replace(second=0,microsecond=0)-timedelta(minutes=1) and b['close']<=soft:
                 self.request_exit(symbol,'확정봉 종가의 구조적 무효화')
+            if self.a.after_momentum_failure_enabled:
+                from automation.after_momentum import after_momentum_failure
+                failed,evidence=after_momentum_failure(p,self.clock())
+                p['after_momentum_evidence']=evidence
+                if failed is True:self.request_exit(symbol,'AFTER 급등 후 반등 실패 확인')
         self.save()
 
     def protection(self,p,price,completed_low):
@@ -733,7 +738,9 @@ class AutonomousEngine(ExistingExits,Engine):
             p['exit_trigger_evidence']=deepcopy({'requested_at':p['exit_signal_at'],'reason':reason,
                 'initial_invalidation':p.get('initial_stop'),'effective_stop':p.get('stop'),
                 'last_quote':p.get('last_quote'),'data_health':p.get('data_health'),
-                'protection':p.get('protection_evidence')})
+                'protection':p.get('protection_evidence'),
+                'invalidation':p.get('invalidation_evidence'),
+                'after_momentum':p.get('after_momentum_evidence')})
         return super().request_exit(symbol,reason)
 
     def reconcile(self,snapshot,fills=()):
@@ -953,6 +960,8 @@ class AutonomousEngine(ExistingExits,Engine):
         if p and self.a.confirmed_invalidation_enabled and policy:
             trade_fresh=0<=(self.clock()-t.time).total_seconds()<=self.c.stale_seconds
             if trade_fresh:
+                if self.a.after_momentum_failure_enabled and t.price>p['high']:
+                    p['after_entry_peak']={'price':t.price,'time':t.time.isoformat()}
                 p['last_tick']=self.clock().isoformat();p['low']=min(p['low'],t.price)
                 p['high'],p['stop']=self.protection(p,t.price,completed_low)
             soft=max(policy['structural_stop'],p['stop'])
