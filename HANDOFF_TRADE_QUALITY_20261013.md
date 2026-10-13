@@ -1,6 +1,6 @@
 # V1.5 overnight judgment checkpoint (2026-10-14)
 
-BUILD: `V1.5-risk2-watch12-bc20M-nightquality-20261014`.
+BUILD: `V1.5-risk2-watch12-bc20M-nightquality-r1-20261014`.
 Branch: `fix/v1.5-night-quality-20261014`; base `d602fc8`.
 Strategy identity: `V1.5-structural-continuation-20261014`. Operating exit policy
 remains E/AE3; A-D hypotheses remain observation only.
@@ -21,6 +21,12 @@ known resistance, net reward/risk, daily structure, liquidity, freshness and fin
 order/risk sizing checks remain required. No fixed-percent stop was widened or
 narrowed. A known nearby ceiling, weaker rebound, flat lows, incomplete/future
 history, insufficient turnover or stale execution quote remains blocked.
+An earlier observed session high also bounds the new local target even when it
+is outside the reference window. With entry 10,040 and known high 10,060, the
+pre-fix target 10,330 inflated RR to 1.5263 and allowed entry. The corrected target
+is capped at 10,060, RR 0.1053, and the existing reward/risk check refuses entry.
+A distant old high at 11,000 preserves the valid local-rise example below.
+This is a known price ceiling, not an invented confirmed pivot or widened stop.
 The new local entry is explicitly sustained continuation and does not inherit
 the AFTER burst-failure policy merely because its short acceleration also passes.
 
@@ -67,9 +73,9 @@ AE3 superiority/expectancy and alternative early-winner retention remain unprove
 
 ## Verification and operating boundary
 
-Sixteen dedicated cases exercise changed qualification, normal counterexamples,
+Seventeen dedicated cases exercise changed qualification, normal counterexamples,
 81,300-capital receiver/order/fill/close handling, strict freshness, persisted day
-chronology and policy attribution. Final integrated regression: 1,202 PASS, zero
+chronology and policy attribution. Final integrated regression: 1,203 PASS, zero
 FAIL/ERROR/SKIP, 142 valid syntax files and zero network attempts. The three prior identity assertions
 only change to the new release identity; no test is removed or reorganized.
 

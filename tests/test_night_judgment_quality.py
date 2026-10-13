@@ -48,6 +48,13 @@ class SustainedLocalRiseTests(unittest.TestCase):
         self.assertTrue(a['candidate_generated']);self.assertFalse(a['entry_ready'])
         self.assertEqual(a['gates']['risk_reward']['result'],'FAIL')
 
+    def test_known_session_high_outside_the_reference_window_caps_local_target(self):
+        d=self.detector();d.prior_high['999990']=10060
+        a=self.trial(d=d)
+        self.assertTrue(a['candidate_generated']);self.assertFalse(a['entry_ready'])
+        self.assertEqual(a['gates']['risk_reward']['values']['target'],10060)
+        self.assertEqual(a['gates']['risk_reward']['result'],'FAIL')
+
     def test_warmup_and_liquidity_are_not_bypassed_by_continuation(self):
         for gate in ('warmup','liquidity'):
             common=self.common()

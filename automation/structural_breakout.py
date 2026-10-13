@@ -52,6 +52,12 @@ def structural_breakout(raw,asof,setup,cfg,entry,bid,ask):
     projection=breakout+2*(breakout-support)
     peak=confirmed_overhead(rows,asof,entry)
     ceiling=min(projection,peak['price']) if peak else projection
+    # A locally confirmed new rise does not erase an earlier observed session
+    # high merely because that high is outside the bounded reference history.
+    known_high=setup.get('prior_session_high') if setup.get('entry_basis')=='LOCAL_CONFIRMED_CONTINUATION' else None
+    known_high_valid=type(known_high) in (int,float) and math.isfinite(known_high) and known_high>entry
+    capped_by_session_high=bool(known_high_valid and known_high<ceiling)
+    if known_high_valid:ceiling=min(ceiling,known_high)
     digest=hashlib.sha256(json.dumps([[b['time'].isoformat()]+[b[k] for k in ('open','high','low','close')]+[b.get('volume')] for b in rows],separators=(',',':')).encode()).hexdigest()
     evidence.update(reference_sha256=digest,known_bars=len(rows),span_seconds=span,
         range_anchor_at=anchor['time'].isoformat(),range_anchor_high=anchor['high'],
@@ -59,6 +65,8 @@ def structural_breakout(raw,asof,setup,cfg,entry,bid,ask):
         confirmation_bar=confirm['time'].isoformat() if confirm else None,
         structural_stop=structural_stop,emergency_stop=hard_stop,buffer=buffer,noise_band=noise,
         projection=projection,target_ceiling=ceiling,nearest_confirmed_peak=peak,
+        known_prior_session_high=known_high if known_high_valid else None,
+        session_high_ceiling_applied=capped_by_session_high,
         original_micro_support=setup['support'],spread=spread)
     rising=rows[-1]['close']>base[touch]['close'] and support<breakout<entry
     valid=bool(confirm and rising and 0<hard_stop<structural_stop<entry and ceiling>entry)

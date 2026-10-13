@@ -2,8 +2,8 @@
 import json
 import math
 STRATEGY_VERSION='V1.5-structural-continuation-20261014'
-BUILD_ID='V1.5-risk2-watch12-bc20M-nightquality-20261014'
-STRATEGY_EXPERIMENT='20261007-risk2-daily4-dynamiccap-watch12-accelA-bc20M-bclose20261008-dailyoverride20261012-context-optin-matched-rest-hold-box-direction-pivot-protection-v15entry-feedcatchup-structuralB-structuralAE3-close-invalidation-after-failed-rebound-brokerpnl-exitplan-ohlcv-wiring-shared-emergency-local-confirmed-continuation-day-lineage-policy-attribution'
+BUILD_ID='V1.5-risk2-watch12-bc20M-nightquality-r1-20261014'
+STRATEGY_EXPERIMENT='20261007-risk2-daily4-dynamiccap-watch12-accelA-bc20M-bclose20261008-dailyoverride20261012-context-optin-matched-rest-hold-box-direction-pivot-protection-v15entry-feedcatchup-structuralB-structuralAE3-close-invalidation-after-failed-rebound-brokerpnl-exitplan-ohlcv-wiring-shared-emergency-local-confirmed-continuation-day-lineage-policy-attribution-session-ceiling-cap'
 
 def check_experiment_consistency(cfg, build_id=BUILD_ID, experiment=STRATEGY_EXPERIMENT):
     """BUILD_ID 또는 STRATEGY_EXPERIMENT에 risk2/daily4가 적혀 있는데
