@@ -390,6 +390,44 @@ def position_invalidation_lines(position,enabled=False):
     return policy['structural_stop'],hard,True
 
 
+def exit_plan_presentation(row,order_permission=False):
+    """Arrange engine-authored facts; no new targets, thresholds or decisions."""
+    v=row.get('exit_state') or {};plan=v.get('plan') or {};lines=v.get('lines') or {}
+    data=v.get('market_data') or {};info=v.get('presentation') or {}
+    target=info.get('target') or {};profit=info.get('profit') or {}
+    orders=v.get('active_orders') or []
+    sell=[o for o in orders if o.get('side')=='SELL']
+    order_text='실제 활성 매도 주문 없음' if not sell else ' / '.join(
+        f"매도 {o.get('qty','?')}주 · 체결 {o.get('filled','?')}주 · {o.get('status','UNKNOWN')} · {o.get('reason') or '주문 사유 UNKNOWN'}" for o in sell)
+    if not orders and v.get('pending_orders'):order_text=f"활성 주문 {v['pending_orders']}건 / 세부 주문 기록 대기"
+    requested=(v.get('exit_reason') or row.get('hold_reason')) if v.get('exit_requested') else '청산 요청 없음'
+    conditions=list(info.get('conditions') or [])
+    conditions.append({'key':'orders','label':'실제 매도 주문','status':'활성' if sell else '데이터 부족' if v.get('pending_orders') and not orders else '미발동',
+                       'detail':order_text})
+    active=profit.get('protect_price')
+    protection=(money(active)+' · 이익보호') if active is not None else money(lines.get('active_structure'))+(' · 종가 구조선' if lines.get('close_based') else ' · 체결가 보호선')
+    initial=target.get('initial',plan.get('initial_target',plan.get('target')))
+    current=target.get('current',plan.get('target'))
+    change_reason=target.get('change_reason') or ('최초 목표 유지' if current==initial and initial is not None else 'UNKNOWN')
+    expected=profit.get('expected_condition') or '데이터 부족 / 엔진의 구체적 익절 조건 기록 대기'
+    if data.get('bid') is None and data.get('current') is None:expected+=' · 현재 시세 판단 대기'
+    next_exit=v.get('next_exit') or '엔진 청산 조건 기록 대기'
+    if v.get('exit_requested'):next_exit='발동한 청산 요청 처리 중: '+str(requested)
+    permission='허용' if order_permission and v.get('order_allowed') else '차단'
+    return {'summary': [
+                ('entry','실제 평균 체결가',money(plan.get('entry'))),
+                ('current','현재가 / 실제 신선한 체결',money(data.get('current'))),
+                ('initial_target','최초 예상 목표가',money(initial) if initial is not None else 'UNKNOWN'),
+                ('current_target','현재 예상 목표가',money(current)+' · '+str(change_reason)),
+                ('protection','현재 보호선',protection),
+                ('activation','1R 가격 / 보호 발동가격',money(profit.get('one_r_price',plan.get('one_r_price')))+' / '+money(profit.get('activation_price',plan.get('profit_activation_price')))),
+                ('net','호가 기준 예상 순손익',money(v.get('estimated_net_pnl'))),
+                ('profit_status','수익보호 상태',profit.get('status') or '엔진 기록 대기')],
+            'policy':profit.get('policy_text') or '목표가 도달만으로 매도하지 않음 / 구조적 청산 또는 보호선 이탈 시 매도',
+            'expected':expected,'next_exit':next_exit,'orders':order_text+' · 주문 '+permission,
+            'conditions':conditions}
+
+
 def exit_plan_text(row,order_permission=False):
     """Format persisted engine values. No GUI target/protection/PnL calculation."""
     v=row.get('exit_state') or {};plan=v.get('plan') or {};lines=v.get('lines') or {}
@@ -400,7 +438,7 @@ def exit_plan_text(row,order_permission=False):
     orders='허용' if order_permission and v.get('order_allowed') else '차단 / 계좌·운영 상태 확인 필요'
     quote='신선한 매수호가' if data.get('quote_fresh') else '별도 재확인된 동일 호가' if data.get('standing_fresh') else '판단 대기 / 호가 오래됨'
     deadline=plan.get('flatten_at') or '당일 강제청산 없음 (설정 확인)'
-    return '\n'.join([
+    text=[
         f"진입 이유: Setup {plan.get('setup','?')} · {plan.get('entry_logic','미확인')} | 청산 정책: AE3",
         f"진입 평균가 {money(plan.get('entry'))} | 최초 구조 무효화 {money(plan.get('initial_invalidation'))} | 최초 비상선 {money(plan.get('initial_emergency'))}",
         f"현재 {'완성봉 종가 구조선' if lines.get('close_based') else '체결가 보호선'} {money(lines.get('active_structure'))} | 즉시 비상선 {money(lines.get('emergency'))}",
@@ -413,7 +451,27 @@ def exit_plan_text(row,order_permission=False):
         f"예상 순손익 {money(v.get('estimated_net_pnl'))} · {quote} | 잔여 위험 추정 {money(v.get('remaining_risk_estimate'))} (급락 체결손실 상한 아님)",
         f"최종 청산 {deadline} · {plan.get('session')} / {plan.get('venue')} · 거래 종료 {plan.get('market_close')} | 주문 {orders} | 미체결 {v.get('pending_orders',0)}건",
         '목표가 매도 예약 주문 없음. 예상 손익은 체결·비용 확정 전 추정이며, 새 익절 후보는 관찰 전용입니다.'
-    ])
+    ]
+    info=v.get('presentation') or {};target=info.get('target') or {};profit=info.get('profit') or {}
+    if info:
+        panel=exit_plan_presentation(row,order_permission)
+        text += ['',f"최초 예상 목표가 {money(target.get('initial'))} | 현재 예상 목표가 {money(target.get('current'))} · {target.get('change_reason')}",
+            '진입 당시 기록된 가격 손익비: '+(f"{target['initial_price_rr']:.2f}" if isinstance(target.get('initial_price_rr'),(int,float)) else 'UNKNOWN')+' / 현재 설정 비용 포함 예상 손익비: '+rr_text,
+            f"실제 익절 정책: {profit.get('active_policy')} / {profit.get('policy_text')}",
+            '예상 익절 조건: '+panel['expected'], '이익보호 규칙: '+str(profit.get('rule')),
+            '목표 도달 처리: '+str(target.get('reassessment')),
+            '실제 목표 도달 기록: '+(str(target['touch'].get('time'))+' / '+money(target['touch'].get('price')) if target.get('touch') else '수신 체결로 확인된 도달 기록 없음'),
+            panel['orders'],'보호선 변경 이력: '+str(info.get('history_note'))]
+        for h in info.get('history') or []:
+            ev=h.get('evidence') or {}
+            text.append(f"  {h.get('time','UNKNOWN')} · {money(h.get('stop'))} · {ev.get('reason') or ev.get('policy') or '최초 보호선'}")
+        text.append('조건별 상태:')
+        for c in panel['conditions']:text.append(f"  [{c['status']}] {c['label']}: {c['detail']}")
+        evidence=profit.get('evidence') or {}
+        text.append('확정 지지 근거: '+(f"저점 {money(evidence.get('pivot_low'))} · 확인 {evidence.get('confirmation_time','UNKNOWN')} · {evidence.get('reason','UNKNOWN')}" if evidence else 'UNKNOWN / 확정 지지 근거 기록 없음'))
+        after=info.get('after') or {};ev=after.get('evidence') or {}
+        text.append(f"AFTER 실제 판단 근거: {'ON' if after.get('enabled') else '미적용'} · {ev.get('reason','UNKNOWN')} · 반등 저점 {money(ev.get('rebound_floor'))} · 확정봉 {ev.get('decline_times') or 'UNKNOWN'} · 종가 {ev.get('closes') or 'UNKNOWN'}")
+    return '\n'.join(text)
 
 
 class UserOperations(OperatorService):
@@ -474,8 +532,22 @@ class UserOperations(OperatorService):
         s['candidate_performance']=radar.get('performance',{}) if s['process']['running'] and 0<=age(radar.get('time'),self.clock())<=auto.scan_seconds*3 else {}
         s['bot_positions']=[]
         for sym,p in state.get('positions',{}).items():
+            if p.get('ownership')!='BOT' or sym in HARD_LOCKS or sym in BREAKEVEN_EXITS:continue
             from automation.exit_plan import display_state
             view=display_state(p.get('exit_state'),self.clock(),cfg.stale_seconds)
+            # Orders may be saved after the last tick-authored projection.
+            # Read their real journal states even when prices have expired.
+            from core.engine import TERMINAL
+            active=[o for o in state.get('orders',{}).values() if o.get('symbol')==sym and o.get('status') not in TERMINAL]
+            view['pending_orders']=len(active)
+            view['active_orders']=[{k:o.get(k) for k in ('side','status','qty','filled','limit','created')} |
+                                  {'reason':(o.get('signal') or {}).get('reason')} for o in active]
+            view['exit_requested']=bool(p.get('exit_requested'))
+            view['exit_reason']=p.get('exit_reason')
+            if view['exit_requested']:
+                view['hold_reason']='청산 요청 처리 중: '+str(p.get('exit_reason') or '사유 UNKNOWN')
+                if view.get('market_data',{}).get('current') is None and view.get('market_data',{}).get('bid') is None:
+                    view['trend_status']='청산 요청 유지 / 현재 추세 판단 불가'
             current=view.get('market_data',{}).get('current')
             structural,protective,close_based=position_invalidation_lines(p,auto.confirmed_invalidation_enabled)
             if view.get('lines'):

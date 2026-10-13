@@ -34,7 +34,7 @@ class V13RiskIdentityTests(unittest.TestCase):
                 (self.engine.folder/'events.jsonl').read_text(encoding='utf-8').splitlines()]
 
     def test_identity_separates_signal_rules_and_risk_experiment(self):
-        self.assertEqual(BUILD_ID, 'V1.5-risk2-watch12-bc20M-exitplan-20261013')
+        self.assertEqual(BUILD_ID, 'V1.5-risk2-watch12-bc20M-exitgui-20261013')
         self.assertEqual(STRATEGY_VERSION, 'V1.5-structural-exitplan-20261013')
         self.assertIn('risk2', STRATEGY_EXPERIMENT)
         self.assertIn('daily4', STRATEGY_EXPERIMENT)

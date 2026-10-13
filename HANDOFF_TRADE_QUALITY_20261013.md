@@ -1,4 +1,40 @@
-# V1.5 exit plan and completed-bar wiring checkpoint
+# V1.5 exit GUI follow-up checkpoint
+
+BUILD: `V1.5-risk2-watch12-bc20M-exitgui-20261013`.
+Branch: `fix/v1.5-exit-plan-20261013`; preserves `dbea214` and `9e7217b`.
+Strategy identity and trading rules remain `V1.5-structural-exitplan-20261013` / AE3.
+
+The position panel now separates summary, active-condition table and detailed
+evidence/history. It shows immutable signal target, current recorded target and
+change reason, exact engine initial-R activation, actual profitable protection,
+explicit unarmed status, completed-close versus immediate emergency, legacy C
+trailing/giveback, AFTER readiness/failure evidence, deadlines and actual orders.
+Target touch is a record/observation comparison, not an automatic sell or target
+revision. Missing evidence remains UNKNOWN. A-D observers still cannot order.
+
+The pure engine projection is the price/condition source. GUI/service code formats
+it without recomputing targets, protection or trading decisions. Snapshot combines
+the latest saved order/latch state even when the last projected price expired and
+excludes protected/external holdings from BOT plans. Fractional-fill activation
+uses actual `initial_r`; presentation history is bounded without trimming ledger
+history. No configuration, approval, journal or risk-setting change is required.
+
+Thirty new tests in `tests/test_exit_plan_display.py` cover target immutability,
+original versus cost-modeled RR, 1R without profitable support, A/B and C paths,
+AFTER scope/freshness, target touch without sell, stale partial orders and user
+exits, read-only real service flow, protected ownership and widget selection.
+Final offline regression: 1,186 PASS, zero FAIL/ERROR/SKIP/network attempts.
+Historical replay/UI examples stay outside Git. They do not inject positions into
+an operating journal or imply alternative fills/profits. Profitability and the
+benefit of observer policies remain unproved.
+
+Deployment scope is engine-owned display projection, order-state projection,
+GUI/service and BUILD identity. Worker remains STOP, no new LIVE approval or order.
+Before a future LIVE start, the user must approve the new BUILD through the GUI.
+
+---
+
+# Preserved previous exit plan and completed-bar wiring checkpoint
 
 BUILD: `V1.5-risk2-watch12-bc20M-exitplan-20261013`, based on preserved AE3 `718a7ae`.
 The operating policy remains AE3. Targets are entry/reassessment hypotheses, not

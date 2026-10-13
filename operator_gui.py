@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QLabel,QPushButt
     QTableWidgetItem,QHeaderView,QPlainTextEdit,QMessageBox,QDialog,QLineEdit,QFormLayout,QInputDialog,QProgressBar,QMenu)
 from operator_ui_service import (UserOperations, CANDIDATE_FIELDS, GATE_NAMES, money, presentation,
     start_block, human_decision, result_text, candidate_display, candidate_wait_reason,
-    format_observation_age, human_blocker_reason, extract_important_events, context_description,exit_plan_text)
+    format_observation_age, human_blocker_reason, extract_important_events, context_description,exit_plan_text,exit_plan_presentation)
 from operator_service import decision_line, read_json
 from local_diagnostics import redact
 
@@ -309,16 +309,43 @@ class MainWindow(QMainWindow):
         self.cockpit_split=cockpit_split;self._plan_positions_visible=False
 
         bot_box=QGroupBox('봇 운용 포지션'); bot_b_layout=QVBoxLayout(bot_box)
-        self.bot_board=table(['종목','보유수량 (Setup)','진입 평균가','현재가','초기 무효화','현재 보호선','대응 상태','청산 조건'])
+        self.bot_board=table(['종목','보유수량 (Setup)','진입 평균가','현재가','최초 구조 무효화','비상선 / 체결가 보호선','대응 상태','청산 조건'])
+        self.bot_board.setMaximumHeight(80)
         self.bot_board.setToolTip('예상손실은 최초 체결가부터 현재 보호선까지 비용·설정 슬리피지를 포함한 추정액입니다. 급락 실제손실 상한은 아닙니다.')
         bot_b_layout.addWidget(self.bot_board)
         self.bot_empty_label=QLabel('현재 봇이 보유 중인 포지션이 없습니다. (신규 진입 탐색 대기)')
         self.bot_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter); self.bot_empty_label.setStyleSheet('color:#64748b;font-size:13px;padding:12px;')
         bot_b_layout.addWidget(self.bot_empty_label)
+        self.exit_plan_panel=QWidget();plan_layout=QVBoxLayout(self.exit_plan_panel);plan_layout.setContentsMargins(0,0,0,0)
+        self.exit_plan_heading=QLabel('보유종목의 기대 가격과 실제 매도 조건');plan_layout.addWidget(self.exit_plan_heading)
+        grid=QGridLayout();grid.setSpacing(6);self.exit_plan_summary={};self.exit_plan_titles={}
+        keys=('entry','current','initial_target','current_target','protection','activation','net','profit_status')
+        for i,key in enumerate(keys):
+            box=QWidget();layout=QVBoxLayout(box);layout.setContentsMargins(8,4,8,4);layout.setSpacing(2)
+            title=QLabel();title.setStyleSheet('color:#52657d;font-size:11px;');layout.addWidget(title)
+            value=QLabel();value.setWordWrap(True);value.setStyleSheet('font-weight:600;color:#18334f;');layout.addWidget(value)
+            box.setStyleSheet('background:#f4f7fb;border-radius:4px;');grid.addWidget(box,i//4,i%4)
+            self.exit_plan_summary[key]=value;self.exit_plan_titles[key]=title
+        plan_layout.addLayout(grid)
+        self.exit_plan_policy=QLabel();self.exit_plan_policy.setWordWrap(True)
+        self.exit_plan_policy.setStyleSheet('color:#36536a;font-size:12px;');plan_layout.addWidget(self.exit_plan_policy)
+        self.exit_plan_expected=QLabel();self.exit_plan_expected.setWordWrap(True)
+        self.exit_plan_expected.setStyleSheet('background:#fff5dd;color:#775016;padding:5px;font-weight:600;');plan_layout.addWidget(self.exit_plan_expected)
+        self.exit_plan_next=QLabel();self.exit_plan_next.setWordWrap(True);plan_layout.addWidget(self.exit_plan_next)
+        self.exit_plan_orders=QLabel();self.exit_plan_orders.setWordWrap(True);plan_layout.addWidget(self.exit_plan_orders)
+        self.exit_plan_tabs=QTabWidget();plan_layout.addWidget(self.exit_plan_tabs,1)
+        self.exit_conditions=table(['실제 엔진 조건','상태','판정 조건 / 미발동 이유'])
+        self.exit_conditions.setWordWrap(True);self.exit_conditions.setMinimumHeight(150)
+        self.exit_conditions.horizontalHeader().setSectionResizeMode(2,QHeaderView.ResizeMode.Stretch)
+        self.exit_conditions.setColumnWidth(0,165);self.exit_conditions.setColumnWidth(1,80)
+        self.exit_plan_tabs.addTab(self.exit_conditions,'현재 청산 조건')
         self.exit_plan_details=QPlainTextEdit();self.exit_plan_details.setReadOnly(True)
-        self.exit_plan_details.setMinimumHeight(240)
+        self.exit_plan_details.setMinimumHeight(150)
         self.exit_plan_details.setToolTip('엔진이 저장한 청산 계획입니다. 목표가·종가 구조선·즉시 비상선은 서로 다른 조건입니다.')
-        bot_b_layout.addWidget(self.exit_plan_details)
+        self.exit_plan_tabs.addTab(self.exit_plan_details,'상세 근거 / 변경 이력')
+        bot_b_layout.addWidget(self.exit_plan_panel)
+        self._exit_plan_rows=[];self._exit_plan_permission=False
+        self.bot_board.itemSelectionChanged.connect(self.render_exit_plan)
         cockpit_split.addWidget(bot_box)
 
         cand_box=QGroupBox('실시간 감시 후보 종목 (WATCH / SHADOW)'); cand_b_layout=QVBoxLayout(cand_box)
@@ -411,6 +438,27 @@ class MainWindow(QMainWindow):
     def _read_failed(self,message):
         self.reading=False; self.buttons['start'].setEnabled(False); self.cards['safety'].setText('주의 — 상태 읽기 오류')
         self.notice.setText('상태를 읽을 수 없습니다. 시작은 차단하며 중지·비상정지는 사용할 수 있습니다. '+message)
+    def render_exit_plan(self):
+        """Read-only widgets consume the engine projection and saved order states."""
+        if not self._exit_plan_rows:
+            self.exit_plan_details.clear();self.exit_conditions.setRowCount(0)
+            for value in self.exit_plan_summary.values():value.clear()
+            for label in (self.exit_plan_policy,self.exit_plan_expected,self.exit_plan_next,self.exit_plan_orders):label.clear()
+            return
+        index=self.bot_board.currentRow()
+        row=self._exit_plan_rows[index if 0<=index<len(self._exit_plan_rows) else 0]
+        panel=exit_plan_presentation(row,self._exit_plan_permission)
+        self.exit_plan_heading.setText(str(row.get('name') or row.get('symbol'))+' · '+str(row.get('quantity','?'))+'주 · Setup '+str(row.get('setup') or 'UNKNOWN'))
+        for key,title,value in panel['summary']:
+            self.exit_plan_titles[key].setText(title);self.exit_plan_summary[key].setText(value)
+        self.exit_plan_policy.setText('실제 정책 E (AE3) · '+panel['policy'])
+        self.exit_plan_expected.setText('예상 익절 조건: '+panel['expected'])
+        self.exit_plan_next.setText('다음 청산 조건: '+panel['next_exit'])
+        self.exit_plan_orders.setText(panel['orders'])
+        rows_to_table(self.exit_conditions,[[c['label'],c['status'],c['detail']] for c in panel['conditions']])
+        self.exit_conditions.resizeRowsToContents()
+        self.exit_plan_details.setPlainText(exit_plan_text(row,self._exit_plan_permission))
+
     def apply_status(self,s):
         self.status=s; operation,market,safety=presentation(s)
         self.clock.setText(s['time'][:19].replace('T',' ')+' / '+s.get('build_id',s['strategy_version']))
@@ -500,17 +548,18 @@ class MainWindow(QMainWindow):
             entry_p=money(r.get('entry'))
             curr_p=money(r.get('current'))
             inval_p=money(r.get('invalidation'))
-            prot_p=money(r.get('protection'))
+            view=r.get('exit_state') or {};lines=view.get('lines') or {}
+            prot_p=('비상 ' if lines.get('close_based') else '체결 ')+money(r.get('protection'))
             hold_st=str(r.get('hold_reason') or '보유 중')
             next_ex=str(r.get('next_exit') or '-')
             bot_rows.append([name,qty_setup,entry_p,curr_p,inval_p,prot_p,hold_st,next_ex])
-        rows_to_table(self.bot_board,bot_rows)
+        self.bot_board.blockSignals(True);rows_to_table(self.bot_board,bot_rows);self.bot_board.blockSignals(False)
         self.bot_board.setVisible(bool(bot_pos))
         self.bot_empty_label.setVisible(not bool(bot_pos))
-        self.exit_plan_details.setVisible(bool(bot_pos))
-        self.exit_plan_details.setPlainText('\n\n'.join(exit_plan_text(r,bool(s.get('trading_on'))) for r in bot_pos))
+        self._exit_plan_rows=bot_pos;self._exit_plan_permission=bool(s.get('trading_on'))
+        self.exit_plan_panel.setVisible(bool(bot_pos));self.render_exit_plan()
         if bool(bot_pos)!=self._plan_positions_visible:
-            self.cockpit_split.setSizes([340,220,160] if bot_pos else [110,250,180])
+            self.cockpit_split.setSizes([470,180,100] if bot_pos else [110,250,180])
             self._plan_positions_visible=bool(bot_pos)
 
         board=s.get('candidate_board',[])

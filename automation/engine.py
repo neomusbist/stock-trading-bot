@@ -727,7 +727,8 @@ class AutonomousEngine(ExistingExits,Engine):
         from automation.exit_plan import state_for_position
         from automation.exit_candidates import observe_candidates
         allowed=self.can_exit(symbol,p) and self.account_ok and (not self.c.live_mode or time.monotonic()-self.last_account<=self.c.reconcile_seconds*3)
-        p['exit_state']=state_for_position(self.c,self.a,p,self.clock(),len(self.active_orders(symbol)),allowed)
+        orders=self.active_orders(symbol)
+        p['exit_state']=state_for_position(self.c,self.a,p,self.clock(),len(orders),allowed,orders=orders)
         key=[p.get('last_complete_bar_at'),p.get('target_touch',{}).get('time'),bool(p.get('exit_requested')),p['qty']]
         previous=p.get('profit_policy_observation',{})
         if previous.get('source_key')!=key:

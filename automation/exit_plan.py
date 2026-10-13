@@ -85,6 +85,8 @@ def build_plan(cfg, auto, signal, entry=None, quantity=None, filled=False):
             'one_r_price': entry+risk if valid_risk else None,
             'profit_activation_price': entry+cfg.protect_at_r*risk if valid_risk else None,
             'activation_r': cfg.protect_at_r, 'target': target if valid_target else None,
+            'initial_target': target if number(target) and target > 0 else None,
+            'initial_target_basis': target_basis,
             'target_status': 'HYPOTHESIS' if valid_target else 'UNKNOWN', 'target_basis': target_basis,
             'confirmed_resistance': resistance, 'projection': signal.get('projection'),
             'target_action': '청산 재평가 지점; 도달만으로 자동매도하지 않음', 'resting_target_order': False,
@@ -102,8 +104,101 @@ def build_plan(cfg, auto, signal, entry=None, quantity=None, filled=False):
             'experimental_profit_orders_enabled': False}
 
 
-def state_for_position(cfg, auto, position, asof, pending=0, order_allowed=False):
-    plan = position.get('exit_plan') or build_plan(cfg, auto, position.get('signal', {}), position['avg'], position['qty'], True)
+def _condition(key, label, status, detail, evidence=None):
+    return {'key': key, 'label': label, 'status': status, 'detail': detail,
+            'evidence': deepcopy(evidence or {})}
+
+
+def _profit_view(cfg, auto, p, plan, lines, data, asof, bar_fresh):
+    """Engine-authored explanation only. Never raise a stop or request an exit."""
+    sig = p.get('signal') or {}
+    initial = sig.get('target', plan.get('initial_target', plan.get('target')))
+    initial = initial if number(initial) and initial > 0 else None
+    current_target = plan.get('target')
+    current_target = current_target if number(current_target) and current_target > 0 else None
+    unchanged = initial is not None and current_target == initial
+    touch = p.get('target_touch')
+    if touch and not fresh(touch.get('time'), asof, 86400): touch = None
+    original_rr = sig.get('evaluation_gates', {}).get('risk_reward', {}).get('values', {}).get('calculated_rr')
+    target = {'initial': initial, 'current': current_target,
+              'initial_price_rr': original_rr if number(original_rr) else None,
+              'initial_basis': sig.get('target_basis') or plan.get('initial_target_basis') or plan.get('target_basis'),
+              'change_reason': '최초 목표 유지' if unchanged else plan.get('target_change_reason') or 'UNKNOWN / 목표 변경 근거 기록 없음',
+              'touch': deepcopy(touch),
+              'reassessment': '목표 도달 시각 기록 및 관찰 후보 비교만 수행. 활성 보호선·확정봉 실패·비상선은 기존 규칙으로 계속 평가. 목표만으로 매도·목표 상향하지 않음',
+              'resting_sell_order': False}
+    confirmed = bool(auto.confirmed_structure_protection or
+                     auto.confirmed_invalidation_enabled and sig.get('invalidation_policy'))
+    risk = p.get('initial_r')
+    activation = p['avg'] + cfg.protect_at_r*risk if number(risk) and risk > 0 else None
+    armed = activation is not None and p['high'] >= activation
+    raised = lines['active_structure'] > lines['initial_structure'] if lines['close_based'] else p['stop'] > p['initial_stop']
+    protect_price = lines['active_structure']
+    modeled_stop_net = (protect_price*(1-cfg.exit_slippage_fraction)*(1-auto.commission_sell-auto.sell_tax)
+                        - p['avg']*(1+auto.commission_buy))*p['qty']
+    protecting = bool(raised and modeled_stop_net > 0)
+    evidence = deepcopy(p.get('protection_evidence') or {})
+    close = '완성봉 종가' if lines['close_based'] else '신선한 체결가'
+    if protecting:
+        expected = f"{close} ≤ {protect_price:,.0f}원 시 청산 요청. 현재 보호선의 비용·슬리피지 포함 순손익 추정 {modeled_stop_net:+,.2f}원; 실제 체결 수익 보장 아님"
+    elif confirmed:
+        expected = (f"익절 보호 미발동 · {activation:,.0f}원 도달 후 " if activation is not None else '익절 보호 미발동 · 1R 기준 UNKNOWN · ')
+        expected += '진입 후 연속 3개 확정봉의 높은 저점 확인·비용 초과 보호선 필요. 그 보호선의 완성봉 종가 이탈 시 청산' if lines['close_based'] else '진입 후 연속 3개 확정봉의 높은 저점 확인·비용 초과 보호선 필요. 보호선 체결가 이탈 시 청산'
+    else:
+        expected = (f"익절 보호 미발동 · {activation:,.0f}원 도달 후 " if activation is not None else '익절 보호 미발동 · 1R 기준 UNKNOWN · ')
+        expected += '기존 트레일링·수익 반납선 상승 후 신선한 체결가가 보호선 이하이면 청산'
+    if confirmed:
+        rule = '1R 이후 진입 후 연속 3개 확정봉: 중앙 저점 ≤ 왼쪽 저점, < 오른쪽 저점, 직전 확정 저점보다 높음. 완충 적용 보호선이 이전 선보다 높고 현재가 아래이며 비용 기준을 초과해야 상승'
+    else:
+        rule = (f"1R 이후 고점 대비 {cfg.trailing_fraction:.1%} 트레일링, 비용 기준선, 유효 완성봉 저점 및 "
+                f"최고 미실현 이익의 {auto.unrealized_giveback_fraction:.0%} 반납선 중 높은 값. 실제 선은 엔진 stop 사용")
+    failures = deepcopy(p.get('after_momentum_evidence') or {})
+    after_enabled = bool(auto.after_momentum_failure_enabled and auto.confirmed_invalidation_enabled
+                         and sig.get('invalidation_policy') and sig.get('session') == 'AFTER'
+                         and sig.get('pattern') == 'A'
+                         and sig.get('evaluation_gates', {}).get('acceleration', {}).get('values', {}).get('mode') != 'CONFIRMED_CONTINUATION')
+    after_ready = fresh(failures.get('asof'), asof, 65) and bool(failures.get('decline_times'))
+    after_failed = after_ready and failures.get('reason') == 'AFTER_BURST_FAILED_REBOUND'
+    failure_rule = '최근 최대 30개의 진입 후 연속 확정봉(최소 5개)에서 최고점 이후 낮은 반등 확인. 마지막 3개 봉의 고점·저점·종가가 모두 하락하고 마지막 종가가 반등 저점 아래이면 1R 전에도 청산'
+    conditions = [
+        _condition('structure', '구조적 종가 무효화' if lines['close_based'] else '체결가 보호선',
+                   '활성' if (bar_fresh if lines['close_based'] else data['current'] is not None) else '데이터 부족',
+                   f"규칙 활성 · {close} ≤ {protect_price:,.0f}원. 단일 틱의 종가 구조선 접촉은 종가 확정이 아님" if lines['close_based'] else f"규칙 활성 · {close} ≤ {protect_price:,.0f}원"),
+        _condition('emergency', '즉시 비상청산선', '활성' if data['bid'] is not None or data['current'] is not None else '데이터 부족',
+                   f"규칙 활성 · 신선한 호가·체결 ≤ {lines['emergency']:,.0f}원. 갭 체결손실 상한 아님"),
+        _condition('profit', '현재 이익보호선', '활성' if protecting else '미발동', expected, evidence),
+        _condition('activation', '이익보호 발동 기준', '활성' if armed else '미발동' if activation is not None else '데이터 부족',
+                   f"고점 기록 ≥ {activation:,.0f}원 · " + ('도달; 추가 지지 확인 필요' if confirmed else '도달') if armed else f"{activation:,.0f}원 미도달" if activation is not None else '실제 initial_r 기록 부족'),
+        _condition('after', 'AFTER 급등 후 반등 실패', '활성' if after_failed else '미발동' if not after_enabled or after_ready else '데이터 부족',
+                   failure_rule + (' · 실패 확정' if after_failed else ' · 규칙 ON / 실패 미확정' if after_ready else ' · 규칙 ON / 확정봉 증거 대기' if after_enabled else ' · 이 포지션에는 미적용 (OFF 또는 범위 밖)'), failures),
+        _condition('deadline', '세션 종료 청산', '활성' if plan.get('flatten_at') else '미발동',
+                   str(plan.get('flatten_at') or '강제청산 없음') + ' · ' + str(plan.get('session', 'UNKNOWN'))),
+        _condition('request', '이미 발동한 청산 요청', '활성' if p.get('exit_requested') else '미발동',
+                   p.get('exit_reason') or '청산 요청 없음', {'time': p.get('exit_signal_at')}),
+        _condition('experimental', '익절 후보 A~D', '관찰 전용',
+                   '목표 전량·목표 부분·목표 후 재평가·조기 구조 추적: 실제 매도 주문에 적용하지 않음')]
+    saved_history = p.get('stop_history') or []
+    history = deepcopy(saved_history[-20:])
+    if not saved_history: history_note = 'UNKNOWN / 보호선 변경 이력 기록 없음'
+    elif len(saved_history) == 1: history_note = '최초 보호선 유지 (상향 변경 기록 없음)'
+    else: history_note = '엔진이 저장한 보호선 변경 ' + str(len(saved_history)-1) + '회 (최근 20개 표시)'
+    return {'target': target, 'profit': {'active_policy': 'AE3', 'path': 'CONFIRMED_HIGHER_LOW' if confirmed else 'LEGACY_TRAIL_GIVEBACK',
+                'policy_text': '목표가 도달만으로 매도하지 않음 / 구조적 청산 또는 보호선 이탈 시 매도',
+                'activation_price': activation, 'one_r_price': p['avg']+risk if number(risk) and risk > 0 else None,
+                'armed': armed, 'protecting': protecting, 'protect_price': protect_price if protecting else None,
+                'status': '익절 보호 활성' if protecting else '익절 보호 미발동',
+                'expected_condition': expected, 'rule': rule, 'evidence': evidence,
+                'modeled_net_at_protect_price': modeled_stop_net if protecting else None},
+            'conditions': conditions, 'after': {'enabled': after_enabled, 'ready': bool(after_ready), 'failed': bool(after_failed), 'evidence': failures},
+            'history': history, 'history_note': history_note}
+
+
+def state_for_position(cfg, auto, position, asof, pending=0, order_allowed=False, orders=None):
+    plan = deepcopy(position.get('exit_plan') or build_plan(cfg, auto, position.get('signal', {}), position['avg'], position['qty'], True))
+    # Display activation uses the exact engine risk even for fractional fills.
+    if number(position.get('initial_r')) and position['initial_r'] > 0:
+        plan['one_r_price'] = position['avg']+position['initial_r']
+        plan['profit_activation_price'] = position['avg']+cfg.protect_at_r*position['initial_r']
     lines = invalidation_lines(cfg, auto, position)
     quote = position.get('last_quote') or {}
     quote_fresh = fresh(quote.get('time'), asof, cfg.stale_seconds)
@@ -144,7 +239,13 @@ def state_for_position(cfg, auto, position, asof, pending=0, order_allowed=False
     if plan['after_failed_rebound']: next_exit += ' / AFTER 낮은 반등 이후 3개 확정봉 실패'
     if plan['flatten_at']: next_exit += f" / {plan['flatten_at']} 당일 청산"
     next_exit += ' / 전역 데이터 장애·STOP_FLAT/KILL'
-    return {'version': 1, 'asof': asof.isoformat(), 'plan': deepcopy(plan), 'lines': lines,
+    data = {'bid': bid, 'current': current}
+    presentation = _profit_view(cfg, auto, position, plan, lines, data, asof, bar_fresh)
+    return {'version': 2, 'asof': asof.isoformat(), 'plan': deepcopy(plan), 'lines': lines,
+            'presentation': presentation, 'exit_reason': position.get('exit_reason'),
+            'active_orders': [{'side': o.get('side'), 'status': o.get('status'), 'qty': o.get('qty'), 'filled': o.get('filled'),
+                               'limit': o.get('limit'), 'created': o.get('created'), 'reason': (o.get('signal') or {}).get('reason')}
+                              for o in (orders or [])],
             'highest': position['high'], 'mfe_per_share': mfe, 'mfe_fraction': mfe/position['avg'],
             'mae_per_share': max(0., position['avg']-position.get('low', position['avg'])),
             'profit_armed': armed, 'protection_status': protection, 'trend_status': trend,
@@ -178,6 +279,11 @@ def display_state(saved, asof, stale_seconds):
         else:
             view['trend_status'] = '판단 불가'
             view['hold_reason'] = '신선한 호가·체결 대기; 기존 보호 규칙 유지'
-    if not fresh(view.get('asof'), asof, stale_seconds): view['order_allowed'] = False
+    if not fresh(view.get('asof'), asof, stale_seconds):
+        view['order_allowed'] = False
+        for condition in view.get('presentation', {}).get('conditions', []):
+            if condition['key'] in {'structure', 'emergency'} or condition['key'] == 'after' and view['presentation']['after']['enabled']:
+                condition['status'] = '데이터 부족'
+                condition['detail'] += ' · 엔진의 현재 판단 기록 만료 / 규칙 유지'
     view['market_data'] = data
     return view
