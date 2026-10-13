@@ -24,7 +24,7 @@ and stores the active lines, activation/one-R prices, highest observed trade, MF
 conditional failures, deadline, fresh-bid estimated net PnL and order safety state.
 The GUI reads that state, distinguishes hypotheses from triggers, expires stale
 prices and never presents an old decision-log price as a fresh executable quote.
-The plan panel is read-only. Completed fills preserve their plans and diagnostics;
+The plan panel is read-only. User/deadline exits do not assert trend failure; a stale display preserves a latched exit and its reason. Completed fills preserve their plans and diagnostics;
 realized net PnL continues to use the broker-authoritative AE3 accounting.
 
 ## Hypotheses and evidence limits
@@ -50,8 +50,8 @@ early structure trailing is therefore not enabled just because it is implementab
 
 ## Verification and operating handoff
 
-Release regression: 1,154 PASS; FAIL/ERROR/SKIP 0; 140 Python syntax files valid;
-network attempts 0; actual orders 0; operating program starts 0. The 43 dedicated
+Release regression: 1,156 PASS; FAIL/ERROR/SKIP 0; 140 Python syntax files valid;
+network attempts 0; actual orders 0; operating program starts 0. The 45 dedicated
 cases include genuine receiver wiring, stable/old quotes, accounting provenance,
 normal recovery counterexamples, quantity constraints and six real-widget checks.
 The old mocked runner fixture was changed to use the actual OHLCV getter; it no

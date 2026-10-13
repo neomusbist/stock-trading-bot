@@ -108,6 +108,17 @@ class ExitPlanPureTests(unittest.TestCase):
     def test_missing_or_malformed_bar_is_unknown_not_a_crash(self):
         p=position();p['last_invalidation_bar']={'time':'not-a-timestamp'}
         self.assertEqual(state_for_position(CFG,AUTO,p,AT)['trend_status'],'판단 불가')
+    def test_user_or_deadline_exit_is_not_mislabeled_confirmed_trend_failure(self):
+        for reason in ('사용자 STOP_FLAT','사용자 KILL','당일 청산 시각'):
+            p=position();p.update(exit_requested=True,exit_reason=reason)
+            v=state_for_position(CFG,AUTO,p,AT)
+            self.assertNotIn('실패 확정',v['trend_status']);self.assertIn(reason,v['hold_reason'])
+    def test_stale_display_keeps_latched_exit_reason_and_pending_order(self):
+        p=position();p.update(exit_requested=True,exit_reason='AFTER 급등 후 반등 실패 확인')
+        saved=state_for_position(CFG,AUTO,p,AT,pending=1)
+        v=display_state(saved,AT+timedelta(seconds=6),5)
+        self.assertIn('청산 요청 유지',v['trend_status']);self.assertIn(p['exit_reason'],v['hold_reason'])
+        self.assertEqual(v['pending_orders'],1);self.assertTrue(v['exit_requested'])
     def test_new_reward_guard_defaults_off_and_requires_a_boolean(self):
         self.assertFalse(AutomationConfig().exit_plan_reward_guard_enabled)
         with self.assertRaises(ValueError):replace(AUTO,exit_plan_reward_guard_enabled='true').validate()

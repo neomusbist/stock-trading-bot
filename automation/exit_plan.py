@@ -122,7 +122,9 @@ def state_for_position(cfg, auto, position, asof, pending=0, order_allowed=False
     except (KeyError, TypeError, ValueError): bar_fresh = False
     failed = position.get('after_momentum_evidence') or {}
     if position.get('exit_requested'):
-        trend, hold = '실패 확정 / 청산 요청', position.get('exit_reason') or '청산 요청 처리 중'
+        reason=position.get('exit_reason') or '청산 요청 처리 중'
+        trend = '실패 확정' if reason in ('확정봉 종가의 구조적 무효화','AFTER 급등 후 반등 실패 확인') else '청산 요청 / 추세 별도 확인'
+        hold = '청산 요청 처리 중: '+reason
     elif not (bid is not None or current is not None):
         trend, hold = '판단 불가', '신선한 호가·체결 대기; 기존 보호 규칙 유지'
     elif failed.get('reason') == 'AFTER_BURST_FAILED_REBOUND':
@@ -171,8 +173,11 @@ def display_state(saved, asof, stale_seconds):
         data['current'] = None
         data['trade_fresh'] = False
     if data.get('bid') is None and data.get('current') is None:
-        view['trend_status'] = '판단 불가'
-        view['hold_reason'] = '신선한 호가·체결 대기; 기존 보호 규칙 유지'
+        if view.get('exit_requested'):
+            view['trend_status'] = '청산 요청 유지 / 현재 추세 판단 불가'
+        else:
+            view['trend_status'] = '판단 불가'
+            view['hold_reason'] = '신선한 호가·체결 대기; 기존 보호 규칙 유지'
     if not fresh(view.get('asof'), asof, stale_seconds): view['order_allowed'] = False
     view['market_data'] = data
     return view
