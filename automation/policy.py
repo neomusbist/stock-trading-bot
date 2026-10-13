@@ -44,7 +44,10 @@ class AutomationConfig:
     setup_aware_watch_priority: bool = False  # shared existing A/B/C readiness tiers
     confirmed_box_direction: bool = False  # separately approved C descending-range exclusion
     confirmed_structure_protection: bool = False  # separately approved post-entry pivot protection
+    chase_quality_filter: bool = False  # opt-in late-stage chase and shallow pullback exclusion
+    resilient_protection_enabled: bool = False  # opt-in resilient emergency bid stop buffer
     pullback_min_rise: float = 0.008
+    pullback_min_retrace: float = 0.20  # minimum retrace fraction for confirmed controlled pullback
     pullback_max_retrace: float = 0.65
     pullback_volume_ratio: float = 0.75
     box_max_range: float = 0.015

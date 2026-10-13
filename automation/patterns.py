@@ -108,13 +108,20 @@ class PatternDetector(Detector):
             return None,'IMPULSE_CLOSE_PROGRESS_INSUFFICIENT',evidence
         if base<=0 or rise/base<self.a.pullback_min_rise or not 0<peak-low<=rise*self.a.pullback_max_retrace:
             return None,'NO_CONTROLLED_PULLBACK',evidence
+        retrace = (peak-low)/rise if rise>0 else 0
+        evidence['pullback_retrace'] = retrace
+        evidence['pullback_bars'] = len(pull)
+        if getattr(self.a, 'chase_quality_filter', False):
+            min_retrace = getattr(self.a, 'pullback_min_retrace', 0.20)
+            if retrace < min_retrace or len(pull) < 2:
+                return None, 'PULLBACK_SHALLOW_OR_UNCONFIRMED', evidence
         impulse_volume=sum(b['volume'] for b in impulse)/len(impulse)
         pull_volume=sum(b['volume'] for b in pull)/len(pull)
         if impulse_volume<=0 or pull_volume>impulse_volume*self.a.pullback_volume_ratio:return None,'PULLBACK_VOLUME_FAIL',evidence
         if low<=base:return None,'PULLBACK_INVALIDATION_FAIL',evidence
         rebreakout = min(peak, max(b['high'] for b in pull[-2:])) if len(pull) >= 2 else peak
         return {'pattern':'B','breakout':rebreakout,'peak':peak,'support':low,'projection':peak+rise,
-                'pullback_volume_ratio':pull_volume/impulse_volume,'retrace':(peak-low)/rise,
+                'pullback_volume_ratio':pull_volume/impulse_volume,'retrace':retrace,
                 **evidence},None,evidence
 
     @observation_locked
@@ -253,6 +260,14 @@ class PatternDetector(Detector):
                         min_ratio=gates['acceleration']['values'].get('min_ratio',self.cfg.min_turnover_ratio)
                         if ratio is not None and ratio<min_ratio*1.2:
                             trial_gates['acceleration']=gate(False,reason='LATE_STAGE_ACCELERATION_INSUFFICIENT',ratio=ratio,required_ratio=min_ratio*1.2)
+            elif getattr(self.a, 'chase_quality_filter', False) and bars and len(bars)>=2:
+                swing_low=min(b['low'] for b in bars)
+                extension=(t.price-swing_low)/swing_low if swing_low>0 else 0
+                if extension>0.07:
+                    if name=='B' and setup and setup.get('retrace', 0)<0.30:
+                        trial_gates['chase']=gate(False,reason='LATE_STAGE_EXTENSION_EXCEEDED',extension=extension,max_extension=0.07)
+                    elif name=='C':
+                        trial_gates['chase']=gate(False,reason='LATE_STAGE_EXTENSION_EXCEEDED',extension=extension,max_extension=0.07)
             failed=[k for k,v in trial_gates.items() if v['result']!='PASS']
             why.extend('ACCELERATION_FAIL' if k=='acceleration' else
                        'NO_REBREAKOUT' if k=='breakout' and name=='B' else
@@ -368,12 +383,17 @@ class PatternDetector(Detector):
         horizon=getattr(self.a,'horizon_'+setup['pattern'].lower()+'_minutes')
         score=efficiency(limit,stop,target,min(1.,0.4+0.1*len(watch.get('source_details',{}))),horizon,self.costs,self.a.min_efficiency_score)
         invalidation_pass=bool(distance is not None and 0<stop<limit and c.min_stop_fraction<=distance<=c.max_stop_fraction)
-        if bars and setup['pattern']=='A' and invalidation_pass:
+        if bars and invalidation_pass:
             swing_low=min(b['low'] for b in bars)
             extension=(t.price-swing_low)/swing_low if swing_low>0 else 0
-            if extension>0.07:
+            if setup['pattern']=='A' and extension>0.07:
                 avg_span=sum(b['high']-b['low'] for b in bars[-min(len(bars),4):])/min(len(bars),4)
                 if (limit-stop)<avg_span*1.1:
+                    invalidation_pass=False
+            elif getattr(self.a, 'chase_quality_filter', False) and extension>0.07:
+                if setup['pattern']=='B' and setup.get('retrace', 0)<0.30:
+                    invalidation_pass=False
+                elif setup['pattern']=='C':
                     invalidation_pass=False
         result={'breakout':gate(t.price>breakout and limit>breakout,price=t.price,breakout=breakout,setup=setup['pattern'],
                 ask=t.ask,entry=limit,reason='BREAKOUT_QUOTE_NOT_CONFIRMED' if t.price>breakout and limit<=breakout else None),

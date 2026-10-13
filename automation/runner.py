@@ -49,6 +49,8 @@ class AccountWorker:
         self.position_symbols=frozenset()
         self.position_context={}
         self.observation_settings=ObservationSettings()
+        self.last_query_started=0.
+        self.min_query_interval=1.0
         self.thread=threading.Thread(target=self.run,name='account-reader',daemon=True)
     def book_due(self,symbol,stamp=None):
         price=self.external_prices.get(symbol);stamp=time.monotonic() if stamp is None else stamp
@@ -57,7 +59,12 @@ class AccountWorker:
         return stamp-self.book_queries.get(symbol,float('-inf'))>=(settings.far_book_seconds if far else self.interval)
     def run(self):
         while not self.stop.is_set():
+            now_mono=time.monotonic()
+            elapsed=now_mono-self.last_query_started
+            if elapsed<self.min_query_interval:
+                time.sleep(self.min_query_interval-elapsed)
             started=time.monotonic(); query_started_at=now().isoformat()
+            self.last_query_started=started
             try:
                 fills=self.rest.fills() if self.need_fills else []
                 snapshot=self.rest.snapshot()
@@ -114,7 +121,9 @@ def update_market(engine,value):
     engine.market=value
 
 def request_capital_refresh(engine,account,in_session):
-    if in_session and engine.s['automation'].get('capital_refresh_pending'):
+    ledger=engine.s.get('automation',{})
+    if in_session and (ledger.get('capital_refresh_pending') or ledger.get('reconcile_deferred_pending')):
+        ledger['reconcile_deferred_pending']=False
         account.request.set()
         return True
     return False
@@ -484,6 +493,16 @@ def readiness_snapshot(engine,counts,radar_ok,stamp,detector=None):
         if regular:last=max(regular+[last] if last else regular)
     tick_age=(stamp-last).total_seconds() if last is not None else None
     fresh_tick=in_market and tick_age is not None and 0<=tick_age<=engine.c.stale_seconds and last.date()==stamp.date()
+    tick_lag_source=None
+    if not fresh_tick and in_market:
+        loop_lag=getattr(engine,'event_loop_lag',0)
+        q_size=getattr(engine,'feed_queue_size',0)
+        if isinstance(loop_lag,(int,float)) and loop_lag>1.0:
+            tick_lag_source='EVENT_LOOP_LAG'
+        elif isinstance(q_size,(int,float)) and q_size>5:
+            tick_lag_source='QUEUE_BUFFER'
+        else:
+            tick_lag_source='WS_SOURCE_SILENT'
     radar_at=getattr(engine,'last_radar_at',None)
     radar_current=radar_ok and radar_at is not None and supported(radar_at) and radar_at.date()==stamp.date()
     gates={'control_session':in_control,'websocket_reg_ack':bool(engine.connected and counts['subscription_acks']>0),
@@ -498,7 +517,7 @@ def readiness_snapshot(engine,counts,radar_ok,stamp,detector=None):
     return {'state':state,'phase':assessment(stamp)['phase'],'gates':gates,'missing':missing,
             'regular_epoch':stamp.replace(hour=9,minute=0,second=0,microsecond=0).isoformat(),
             'last_regular_tick_at':last.isoformat() if last else None,'regular_tick_age':tick_age,
-            'market_pending':not in_market,'strategy_warmup_separate':True}
+            'tick_lag_source':tick_lag_source,'market_pending':not in_market,'strategy_warmup_separate':True}
 
 def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness_check=False):
     root=Path(root); auto=load_automation(root/'automation.json'); policy=Policy(root/'runtime/automation_policy.json')
@@ -627,7 +646,10 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     else:
                         for sym,error in result['snapshot'].get('book_errors',{}).items(): engine.event('EXISTING_BOOK_UNAVAILABLE',symbol=sym,**error)
                         position_health.probe_results(result['snapshot'],now())
-                        engine.reconcile(result['snapshot'],result['fills']); counts['account_checks']+=1; account_generation+=1
+                        reconciled=engine.reconcile(result['snapshot'],result['fills']); counts['account_checks']+=1; account_generation+=1
+                        if reconciled is False and engine.s.get('automation',{}).get('reconcile_deferred_pending'):
+                            engine.s['automation']['reconcile_deferred_pending']=False
+                            account.request.set()
                         for sym,book in result['snapshot'].get('books',{}).items():
                             position_health.accept_book(sym,book,now(),source='ka10004')
                         engine.event('ACCOUNT_LATENCY',**result['snapshot'].get('performance',{}))
@@ -755,6 +777,11 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     for sym in list(engine.s['positions']): engine.request_exit(sym,'수신 큐 초과')
                 try:
                     if not in_session: raise queue.Empty
+                    try:
+                        raw_qs = feed.q.qsize() if hasattr(feed, 'q') and hasattr(feed.q, 'qsize') else 0
+                        engine.feed_queue_size = raw_qs if isinstance(raw_qs, (int, float)) else 0
+                    except Exception:
+                        engine.feed_queue_size = 0
                     received,message=feed.q.get(timeout=.25)
                     engine.event_loop_lag=max(0,(now()-received).total_seconds())
                     if message.get('trnm')=='REG' and message.get('return_code') in (0,'0'): counts['subscription_acks']+=1

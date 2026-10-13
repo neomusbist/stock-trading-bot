@@ -431,12 +431,20 @@ class MainWindow(QMainWindow):
             m_style='background:#f1f5f9;color:#475569;border:1px solid #cbd5e1;font-weight:700;padding:4px 10px;border-radius:4px;'
         self.mode_badge.setText(m_text); self.mode_badge.setStyleSheet(m_style)
         trading_on=bool(s.get('trading_on'))
+        now_mono=time.monotonic()
         if trading_on:
+            self._last_trading_on_mono=now_mono
             p_text='[주문 권한] 실제 주문 허용 (ON)'
             p_style='background:#dcfce7;color:#166534;border:1px solid #86efac;font-weight:700;padding:4px 10px;border-radius:4px;'
         else:
-            p_text='[주문 권한] 주문 전송 차단 (OFF)'
-            p_style='background:#f8fafc;color:#64748b;border:1px solid #cbd5e1;font-weight:700;padding:4px 10px;border-radius:4px;'
+            explicit_halt=mode in ('KILL','STOP') or bool(s.get('halt')) or not s.get('process',{}).get('running')
+            time_since_on=now_mono-getattr(self,'_last_trading_on_mono',0.)
+            if not explicit_halt and time_since_on<1.5 and mode=='LIVE':
+                p_text='[주문 권한] 실제 주문 허용 (확인 중)'
+                p_style='background:#dcfce7;color:#166534;border:1px solid #86efac;font-weight:700;padding:4px 10px;border-radius:4px;'
+            else:
+                p_text='[주문 권한] 주문 전송 차단 (OFF)'
+                p_style='background:#f8fafc;color:#64748b;border:1px solid #cbd5e1;font-weight:700;padding:4px 10px;border-radius:4px;'
         self.permission_badge.setText(p_text); self.permission_badge.setStyleSheet(p_style)
         self.cards['operation'].setText(operation); self.cards['market'].setText(market); self.cards['safety'].setText(safety)
         self.cards['safety'].setStyleSheet('color:#b43838;' if s.get('halt') else 'color:#8a620c;' if safety.startswith('주의') else 'color:#56657a;' if safety.startswith('로컬 상태') else 'color:#24684a;')

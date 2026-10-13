@@ -368,7 +368,11 @@ class Engine:
         if p['stop']>previous or time.monotonic()-self.last_checkpoint>=1:
             self.save(); self.last_checkpoint=time.monotonic()
         if p['stop']>previous: self.event('STOP_RAISED',symbol=t.symbol,stop=p['stop'])
-        emergency_bid_stop = min(p['stop'] - tick_size(p['stop']), floor_tick(p['stop'] * (1 - self.c.structural_buffer)))
+        if getattr(self, 'a', None) and getattr(self.a, 'resilient_protection_enabled', False):
+            buffer_amount = max(3 * tick_size(p['stop']), p['stop'] * 0.008)
+            emergency_bid_stop = floor_tick(p['stop'] - buffer_amount)
+        else:
+            emergency_bid_stop = min(p['stop'] - tick_size(p['stop']), floor_tick(p['stop'] * (1 - self.c.structural_buffer)))
         if t.price <= p['stop']:
             self.request_exit(t.symbol, '구조/이익보호선 이탈')
         elif t.bid > 0 and t.bid <= emergency_bid_stop:
@@ -404,6 +408,8 @@ class Engine:
                 fills_at=[datetime.fromisoformat(o['last_fill_at']) for o in self.s['orders'].values() if o.get('last_fill_at')]
                 if any(query<=t for t in fills_at):
                     self.event('RECONCILE_DEFERRED',reason='SNAPSHOT_PREDATES_LOCAL_FILL',query_started_at=started)
+                    if hasattr(self, 's') and isinstance(self.s.get('automation'), dict):
+                        self.s['automation']['reconcile_deferred_pending'] = True
                     return False
             except (TypeError,ValueError):
                 self.halt('계좌 조회시각 불명확');return False

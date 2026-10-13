@@ -160,7 +160,8 @@ def select_focus(
         reason = str(r.get('reason', ''))
         if reason.startswith('HARD_LOCK') or reason.startswith('EXISTING_POLICY'):
             continue
-        if r.get('affordability', {}).get('entry_eligible') is False:
+        afford = r.get('affordability', {})
+        if afford.get('entry_eligible') is False or afford.get('reason_code') == 'ONE_SHARE_UNAFFORDABLE':
             continue
         status = r.get('status')
         if status and status not in {'ELIGIBLE', 'WATCH', 'RESERVE', 'SHADOW'}:
