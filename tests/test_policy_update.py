@@ -266,7 +266,7 @@ class PolicyUpdateTests(unittest.TestCase):
         self.engine.cumulative_fill(o,q,q*10200)
         row=report(self.engine.s['trades'])['completed_trades'][0]
         self.assertAlmostEqual(row['gross_pnl']-row['commission']-row['tax'],row['net_pnl'])
-        self.assertEqual(row['qty'],q); self.assertEqual(row['strategy_version'],'V1.5-structural-exitplan-20261013')
+        self.assertEqual(row['qty'],q); self.assertEqual(row['strategy_version'],'V1.5-structural-continuation-20261014')
         self.assertEqual(row['price_band'],'10000~30000'); self.assertIsNone(row['actual_slippage'])
 
     def test_protection_update_has_full_immediate_decision_context(self):

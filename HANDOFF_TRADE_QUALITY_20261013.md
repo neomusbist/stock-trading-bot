@@ -1,4 +1,93 @@
-# V1.5 exit GUI follow-up checkpoint
+# V1.5 overnight judgment checkpoint (2026-10-14)
+
+BUILD: `V1.5-risk2-watch12-bc20M-nightquality-20261014`.
+Branch: `fix/v1.5-night-quality-20261014`; base `d602fc8`.
+Strategy identity: `V1.5-structural-continuation-20261014`. Operating exit policy
+remains E/AE3; A-D hypotheses remain observation only.
+
+## Confirmed entry decision change
+
+The three-completed-bar rising continuation check already existed, but its caller
+only generated Setup A above the observed session high. A sustained new local
+rise below an older high could never reach that check. With the existing structural
+A flag ON, the detector now qualifies three genuinely received completed candles
+with rising lows/closes, the existing minimum gain and nondecreasing positive
+volume, then requires a breakout of the recent complete reference range. The
+range uses the existing twelve-candle pattern horizon. Prior references bound
+support/overhead; they never manufacture received warmup or a live signal.
+
+All existing structural support confirmation, noise/spread emergency allowance,
+known resistance, net reward/risk, daily structure, liquidity, freshness and final
+order/risk sizing checks remain required. No fixed-percent stop was widened or
+narrowed. A known nearby ceiling, weaker rebound, flat lows, incomplete/future
+history, insufficient turnover or stale execution quote remains blocked.
+The new local entry is explicitly sustained continuation and does not inherit
+the AFTER burst-failure policy merely because its short acceleration also passes.
+
+An identical controlled receiver stream produces no baseline buy candidate and
+one new fake-broker buy at 10,040, local breakout 10,030, structural line 9,870,
+emergency stop 9,850 and target 10,330 (price RR 1.5263). With approved capital
+81,300 and the existing risk rules it sizes one share. The real receiver/detector/
+engine/mock-order/fill/plan path holds a soft touch, then exits a confirmed broken
+close. This demonstrates a changed judgment and invoked integration, not a real
+historical fill, earlier discovery or measured profitability.
+
+## Historical checks and evidence limits
+
+Frozen evidence has 22 trade fragments; 14 retain entry candles, eight do not.
+No complete historical received stream including earlier quotes/warmup is
+available. On the stored price geometry, baseline and new gates are identical:
+three recorded positive entries remain price-qualified and one recorded losing
+entry remains qualified. The earlier declining/reused C-box and unconfirmed B
+support/overhead rejections remain in force. Those were already fixed in d602fc8,
+not newly prevented by this patch. Missing earlier A references cannot prove a
+named historical losing trade would be prevented. No saved snapshot qualifies the
+new three-candle continuation route. Earlier actual opportunities, missed-winner
+rate, and expectancy therefore remain UNKNOWN.
+
+Post-entry review preserves the completed-OHLCV receiver wiring, confirmed-close
+versus separate emergency stop, observed higher-low protection and AFTER failed
+rebound checks. The stored Exgate exit was triggered by global disconnect/consumer
+lag; the original socket cause is unresolved. The later Raon reference suggests a
+failed-rebound signal at 16:59, but it is counterfactual and cannot establish an
+alternative executable fill. Their observed sub-1R gains do not justify enabling
+an arbitrary breakeven or fixed-profit exit. No exit trading rule changed tonight.
+
+## Evidence corrections
+
+Trade lineage now merges valid same-day persisted RAW/WATCH/first-signal evidence
+with current-process observation. Restart/rejoin can no longer replace known day
+discovery chronology in the trade while the GUI retains the older time. This does
+not restore ticks, candle warmup, risk eligibility or approval state.
+
+The offline exit comparator now labels mixed older-build and manual outcomes as
+historical outcomes. A manual close or missing AE3 execution proof is not counted
+as an actual AE3 trade. No imaginary A-D fills or net profits are created. Current
+AE3 superiority/expectancy and alternative early-winner retention remain unproved.
+
+## Verification and operating boundary
+
+Sixteen dedicated cases exercise changed qualification, normal counterexamples,
+81,300-capital receiver/order/fill/close handling, strict freshness, persisted day
+chronology and policy attribution. Final integrated regression: 1,202 PASS, zero
+FAIL/ERROR/SKIP, 142 valid syntax files and zero network attempts. The three prior identity assertions
+only change to the new release identity; no test is removed or reorganized.
+
+Production must remain STOP, Worker stopped, order permission OFF, with no BOT,
+pending or UNKNOWN orders before applying source. Preserve config, approvals,
+protected holdings, day override and loss ledger byte-for-byte. Cached cash 21,675
+is an old broker snapshot marked not fresh, not a confirmed sale-credit omission.
+Do not restore LIVE from that cash value. PermissionError locking process remains
+unidentified; existing bounded atomic-write/shared-read handling is preserved.
+
+Remote publication, source backup/deployment/hash proof and the fresh STOP/OFF GUI
+check are recorded separately in the private release artifacts after this source
+commit. Private replay inputs, reports and captures stay outside Git. User approval
+of the new BUILD is required before LIVE; this checkpoint does not grant it.
+
+---
+
+# Preserved V1.5 exit GUI follow-up checkpoint
 
 BUILD: `V1.5-risk2-watch12-bc20M-exitgui-20261013`.
 Branch: `fix/v1.5-exit-plan-20261013`; preserves `dbea214` and `9e7217b`.

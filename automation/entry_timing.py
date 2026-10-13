@@ -72,21 +72,28 @@ def watch_started(row,prior,stamp):
 def annotate_signal(engine,detector,watch,signal):
     asof=datetime.fromisoformat(signal['time']);symbol=signal['symbol']
     timeline=getattr(engine,'observation_timeline',None)
-    if timeline is not None:timeline.signal(symbol,asof)
+    persisted={}
+    if timeline is not None:
+        timeline.signal(symbol,asof)
+        persisted=timeline.row(symbol,asof)
     state=getattr(engine,'_opportunity_timing',None)
     if not isinstance(state,dict) or state.get('day')!=asof.date():
         state={'day':asof.date(),'symbols':OrderedDict()};engine._opportunity_timing=state
     rows=state['symbols'];row=rows.setdefault(symbol,{})
-    first=known_stamp((watch.get('discovery_context') or {}).get('first_raw_at'),asof) or known_stamp(watch.get('first_raw_at'),asof)
+    known=[known_stamp(v,asof) for v in ((watch.get('discovery_context') or {}).get('first_raw_at'),watch.get('first_raw_at'),persisted.get('first_raw_at'))]
+    first=min((v for v in known if v),default=None)
     if first and (not row.get('first_raw_at') or first<row['first_raw_at']):row['first_raw_at']=first
-    watch_at=known_stamp(watch.get('first_watch_at'),asof)
+    known=[known_stamp(v,asof) for v in (watch.get('first_watch_at'),persisted.get('first_watch_at'))]
+    watch_at=min((v for v in known if v),default=None)
     if watch_at and (not row.get('first_watch_at') or watch_at<row['first_watch_at']):row['first_watch_at']=watch_at
-    row.setdefault('first_detector_signal_at',signal['time'])
+    # Persisted chronology is evidence, never restored trading/warmup state.
+    earlier=known_stamp(persisted.get('first_valid_signal_at'),asof)
+    row['first_detector_signal_at']=min(v for v in (row.get('first_detector_signal_at'),earlier,signal['time']) if v)
     signal['candidate_detected_at']=row.get('first_raw_at')
     signal['latest_radar_cycle_at']=known_stamp(watch.get('observed_at'),asof)
     signal['opportunity_timing']={**row,
         'observation_started_at':known_stamp(getattr(detector,'observation_start',{}).get(symbol),asof),
-        'signal_at':signal['time'],'scope':'OBSERVED_THIS_PROCESS_OR_EXPLICIT_DISCOVERY_CONTEXT',
+        'signal_at':signal['time'],'scope':'DAY_TIMELINE_AND_CURRENT_PROCESS' if timeline is not None else 'OBSERVED_THIS_PROCESS_OR_EXPLICIT_DISCOVERY_CONTEXT',
         'missing_earlier_opportunities':'UNKNOWN','diagnostic_only':True}
     rows.move_to_end(symbol)
     while len(rows)>512:rows.popitem(last=False)

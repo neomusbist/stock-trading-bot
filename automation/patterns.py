@@ -216,13 +216,34 @@ class PatternDetector(Detector):
             self.last_eval.pop(symbol,None);self._eval_keys.pop(symbol,None)
             return True
 
-    def candidates(self,t,bars,is_after=False):
+    def candidates(self,t,bars,is_after=False,venue=None):
         setups=[self.pullback(bars),self.box(bars)]
         prior=(self.after_prior_high if is_after else self.prior_high).get(t.symbol)
         if prior and t.price>prior and len(bars)>=2:
             lookback=min(len(bars),4 if len(bars)>=4 else 3 if len(bars)>=3 else 2)
             support=min(b['low'] for b in bars[-lookback:])
             setups.append({'pattern':'A','breakout':prior,'support':support,'projection':prior+2*(prior-support)})
+        elif self.a.structural_breakout_enabled:
+            # The existing continuation path used to be unreachable below an
+            # old session high. Require real received rising bars; references
+            # can bound their local range, never manufacture signal warmup.
+            from automation.structural_breakout import confirmed_continuation
+            from automation.trade_quality import complete_sequence
+            continued,proof=confirmed_continuation(bars,t.time,self.cfg.min_price_gain)
+            if continued is True:
+                venue=venue or (getattr(self.cfg,'after_default_venue','SOR') if is_after else 'KRX')
+                references=self.price_context.reference_bars(t.symbol,t.time,venue)
+                count=min(len(references),12)  # same existing pattern horizon
+                base=complete_sequence(references,t.time,count,require_recent=True) if count>=3 else []
+                if base:
+                    local_high=max(b['high'] for b in base)
+                    support=min(b['low'] for b in bars[-min(len(bars),4):])
+                    if t.price>local_high and support<local_high:
+                        setups.append({'pattern':'A','breakout':local_high,'support':support,
+                            'projection':local_high+2*(local_high-support),
+                            'entry_basis':'LOCAL_CONFIRMED_CONTINUATION',
+                            'prior_session_high':prior,'continuation_evidence':proof,
+                            'local_range_start':base[0]['time'].isoformat()})
         return [s for s in setups if s]
 
     def target(self,t,watch,setup,limit):
@@ -242,7 +263,8 @@ class PatternDetector(Detector):
         is_after=after_supported(t.time)
         gates=self.base_gates(t,watch) if gates is None else gates
         bars=self.usable_bars(t.symbol,after_only=is_after) if _bars is None else _bars
-        setups={s['pattern']:s for s in self.candidates(t,bars,is_after=is_after)}
+        venue=watch.get('venue') or (getattr(self.cfg,'after_default_venue','SOR') if is_after else 'KRX')
+        setups={s['pattern']:s for s in self.candidates(t,bars,is_after=is_after,venue=venue)}
         _,b_reason,b_evidence=self.pullback_analysis(bars)
         trials=[]
         for name in ('A','B','C'):
@@ -266,10 +288,11 @@ class PatternDetector(Detector):
             trial_gates={**common,**price_gates}
             if name=='A':
                 trial_gates['acceleration']=gates['acceleration']
-                if self.a.structural_breakout_enabled and price_gates.get('breakout_structure',{}).get('result')=='PASS' and gates['acceleration']['result']!='PASS':
+                local_continuation=bool(setup and setup.get('entry_basis')=='LOCAL_CONFIRMED_CONTINUATION')
+                if self.a.structural_breakout_enabled and price_gates.get('breakout_structure',{}).get('result')=='PASS' and (gates['acceleration']['result']!='PASS' or local_continuation):
                     from automation.structural_breakout import confirmed_continuation
                     venue=watch.get('venue') or (getattr(self.cfg,'after_default_venue','SOR') if is_after else 'KRX')
-                    sustained,proof=confirmed_continuation(self.price_context.reference_bars(t.symbol,t.time,venue),t.time,self.cfg.min_price_gain)
+                    sustained,proof=confirmed_continuation(bars if local_continuation else self.price_context.reference_bars(t.symbol,t.time,venue),t.time,self.cfg.min_price_gain)
                     if sustained is True:
                         trial_gates['acceleration']=gate(True,**gates['acceleration']['values'],mode='CONFIRMED_CONTINUATION',continuation=proof)
                 if bars and len(bars)>=2:

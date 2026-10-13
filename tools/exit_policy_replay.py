@@ -44,7 +44,16 @@ def compare(trades,timelines=None):
         for name in ('TARGET_FULL','TARGET_PARTIAL','TARGET_REASSESS','STRUCTURAL_TRAIL','AE3'):
             item['policies'][name]={'first_signal_at':None,'alternative_fill_price':None,'alternative_net_pnl':None,
                 'status':'UNKNOWN_NO_POST_ENTRY_PRICE_HISTORY', 'quantity': None}
-        item['policies']['AE3'].update(status='RECORDED_BASELINE_ACTUAL_EXIT',actual_exit_at=trade['closed'],reason=trade.get('reason'))
+        # Recorded exits span older builds and user interventions. They cannot
+        # establish the expectancy of a policy deployed only after those exits.
+        item['recorded_exit']={'build':trade.get('exit_build_id'),'entry_build':signal.get('entry_build_id'),
+                              'at':trade['closed'],'reason':trade.get('reason'),'actual_pnl':trade['pnl_estimate']}
+        trigger=trade.get('exit_trigger_evidence') or {}
+        ae3=(trigger.get('exit_state') or {}).get('plan',{}).get('profit_policy')=='AE3'
+        manual=any(word in str(trade.get('reason') or '') for word in ('사용자','수동'))
+        item['ae3_execution_proven']=bool(ae3 and not manual)
+        item['policies']['AE3'].update(status='RECORDED_AE3_EXIT_EVIDENCE' if ae3 and not manual else 'HISTORICAL_EXIT_NOT_VALIDATED_AE3',
+                                      actual_exit_at=trade['closed'] if ae3 and not manual else None,reason=trade.get('reason'))
         if trade['qty']<2:item['policies']['TARGET_PARTIAL']['status']='NOT_APPLICABLE_ONE_SHARE'
         if timeline:
             if timeline.get('basis') not in ('ACTUALLY_RECEIVED_COMPLETED_BARS','LATER_REFERENCE_COUNTERFACTUAL'):
@@ -80,7 +89,10 @@ def compare(trades,timelines=None):
         out.append(item)
     actual=report(trades)
     return {'scope':'FROZEN_POINT_IN_TIME_DIAGNOSTIC_NO_ORDERS','trade_count':len(rows),
-            'dates':sorted({r['opened'][:10] for r in rows}),'existing_actual_policy':actual['all'],
+            'dates':sorted({r['opened'][:10] for r in rows}),'recorded_historical_policy':actual['all'],
+            'historical_policy_note':'Mixed historical builds/manual exits; not measured AE3 expectancy',
+            'ae3_execution_evidence_count':sum(r['ae3_execution_proven'] for r in out),
+            'ae3_expectancy':'UNKNOWN_WITHOUT_SEPARATE_ACTUAL_POLICY_SAMPLE',
             'trade_results':out,'alternative_realized_pnl_known_count':0,
             'new_policy_expectancy_proven':False,'winning_trades_early_exit_effect':'UNKNOWN_WITHOUT_EXECUTABLE_TIMELINES',
             'quantity_note':'1주 부분익절 불가; 2주는 1+1, 3주는 1+2. 고정·최소 수수료 영향은 미확인',
