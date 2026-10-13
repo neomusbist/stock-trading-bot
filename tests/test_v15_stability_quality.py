@@ -194,6 +194,54 @@ class V15StabilityQualityTests(unittest.TestCase):
         gates_legacy = self.d.setup_gates(t, self.watch, setup_b)
         self.assertTrue(gates_legacy['invalidation']['result'] == 'PASS')
 
+    def test_downtrend_rebound_rejected_as_setup_b(self):
+        """Technical bounce after significant decline (>5% from session high or below MA20) is rejected as Setup B."""
+        base_time = self.clock
+        # Morning peak at 13,970, then drop and steady consolidation at 12,600, then small bounce to 12,840
+        bars = [make_bar(base_time + timedelta(minutes=0), 13800, 13970, 13750, 13900, 200)]
+        bars.extend([make_bar(base_time + timedelta(minutes=i), 12600, 12630, 12600, 12610, 100) for i in range(1, 10)])
+        # Impulse rebound in seq[-12:]
+        bars.append(make_bar(base_time + timedelta(minutes=10), 12610, 12700, 12600, 12700, 120))
+        bars.append(make_bar(base_time + timedelta(minutes=11), 12700, 12840, 12690, 12840, 150))
+        # 2-bar pullback
+        bars.append(make_bar(base_time + timedelta(minutes=12), 12840, 12840, 12780, 12800, 50))
+        bars.append(make_bar(base_time + timedelta(minutes=13), 12800, 12820, 12760, 12780, 40))
+
+        # 1. With chase_quality_filter = True: rejected due to session high drawdown (13970 -> 12840 is -8.1%)
+        self.d.a = replace(self.d.a, chase_quality_filter=True, pullback_max_drawdown_from_high=0.05)
+        pattern, reason, evidence = self.d.pullback_analysis(bars)
+        self.assertIsNone(pattern)
+        self.assertEqual(reason, 'DOWNTREND_REBOUND_NOT_PULLBACK')
+
+        # 2. With chase_quality_filter = False: legacy recognizes it as Setup B
+        self.d.a = replace(self.d.a, chase_quality_filter=False)
+        pattern_legacy, reason_legacy, _ = self.d.pullback_analysis(bars)
+        self.assertIsNotNone(pattern_legacy)
+        self.assertEqual(pattern_legacy['pattern'], 'B')
+
+    def test_healthy_uptrend_pullback_accepted(self):
+        """Healthy uptrend with controlled pullback above MA20 and near session high is accepted."""
+        base_time = self.clock
+        # 14 bars in a clear uptrend, making new highs, then a 2-bar controlled pullback
+        bars = [
+            make_bar(base_time + timedelta(minutes=i), 10000 + i * 50, 10040 + i * 50, 9990 + i * 50, 10030 + i * 50, 100)
+            for i in range(10)
+        ]
+        # Strong impulse up to 10,700
+        bars.append(make_bar(base_time + timedelta(minutes=10), 10480, 10600, 10470, 10590, 150))
+        bars.append(make_bar(base_time + timedelta(minutes=11), 10590, 10700, 10580, 10690, 180))
+        # 2-bar controlled pullback (retrace ~24.6% of 10090->10700 rise)
+        bars.append(make_bar(base_time + timedelta(minutes=12), 10690, 10690, 10570, 10600, 60))
+        bars.append(make_bar(base_time + timedelta(minutes=13), 10600, 10610, 10550, 10560, 50))
+
+        self.d.a = replace(self.d.a, chase_quality_filter=True, pullback_max_drawdown_from_high=0.05)
+        pattern, reason, evidence = self.d.pullback_analysis(bars)
+        self.assertIsNotNone(pattern)
+        self.assertEqual(pattern['pattern'], 'B')
+        self.assertEqual(pattern['peak'], 10700)
+        self.assertIsNone(reason)
+
 
 if __name__ == '__main__':
     unittest.main()
+

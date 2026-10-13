@@ -115,6 +115,16 @@ class PatternDetector(Detector):
             min_retrace = getattr(self.a, 'pullback_min_retrace', 0.20)
             if retrace < min_retrace or len(pull) < 2:
                 return None, 'PULLBACK_SHALLOW_OR_UNCONFIRMED', evidence
+            if len(bars) >= 10:
+                session_high = max(b['high'] for b in bars)
+                max_drawdown = getattr(self.a, 'pullback_max_drawdown_from_high', 0.05)
+                if session_high > 0 and (session_high - peak) / session_high > max_drawdown:
+                    return None, 'DOWNTREND_REBOUND_NOT_PULLBACK', evidence
+                if len(bars) >= 15:
+                    ma_window = min(len(bars), 20)
+                    ma = sum(b['close'] for b in bars[-ma_window:]) / ma_window
+                    if peak < ma and seq[-1]['close'] < ma:
+                        return None, 'DOWNTREND_REBOUND_NOT_PULLBACK', evidence
         impulse_volume=sum(b['volume'] for b in impulse)/len(impulse)
         pull_volume=sum(b['volume'] for b in pull)/len(pull)
         if impulse_volume<=0 or pull_volume>impulse_volume*self.a.pullback_volume_ratio:return None,'PULLBACK_VOLUME_FAIL',evidence
