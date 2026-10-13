@@ -178,6 +178,22 @@ class V15StabilityQualityTests(unittest.TestCase):
         self.assertIn('042510', sel.next_watch)
         self.assertNotIn('000660', sel.next_watch)
 
+    def test_tight_stop_distance_rejected_under_chase_quality_filter(self):
+        """Setup with too tight stop distance (<1.2%, like Kumho Electric 0.85%) is rejected under chase_quality_filter."""
+        # Kumho Electric: limit = 12840, support = 12740, stop = 12730 -> distance = 0.85%
+        setup_b = {'pattern': 'B', 'breakout': 12840, 'support': 12740, 'peak': 12840, 'projection': 13000}
+        t = Tick('001210', self.clock, 12840, 10, 1000, 12840, 12830)
+
+        # 1. Under chase_quality_filter = True: rejected
+        self.d.a = replace(self.d.a, chase_quality_filter=True, min_stop_distance_fraction=0.012)
+        gates = self.d.setup_gates(t, self.watch, setup_b)
+        self.assertFalse(gates['invalidation']['result'] == 'PASS')
+
+        # 2. Under chase_quality_filter = False (legacy): passes
+        self.d.a = replace(self.d.a, chase_quality_filter=False)
+        gates_legacy = self.d.setup_gates(t, self.watch, setup_b)
+        self.assertTrue(gates_legacy['invalidation']['result'] == 'PASS')
+
 
 if __name__ == '__main__':
     unittest.main()

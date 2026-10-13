@@ -45,7 +45,7 @@ def age(stamp,clock):
         value=datetime.fromisoformat(stamp)
         if value.tzinfo is None: return math.inf
         seconds=(clock-value).total_seconds()
-        return seconds if seconds>=0 else math.inf
+        return max(0.0, seconds) if seconds>=-2.0 else math.inf
     except (ValueError,TypeError): return math.inf
 
 def in_window(stamp,start,end):

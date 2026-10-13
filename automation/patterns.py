@@ -383,6 +383,10 @@ class PatternDetector(Detector):
         horizon=getattr(self.a,'horizon_'+setup['pattern'].lower()+'_minutes')
         score=efficiency(limit,stop,target,min(1.,0.4+0.1*len(watch.get('source_details',{}))),horizon,self.costs,self.a.min_efficiency_score)
         invalidation_pass=bool(distance is not None and 0<stop<limit and c.min_stop_fraction<=distance<=c.max_stop_fraction)
+        if getattr(self.a, 'chase_quality_filter', False) and distance is not None:
+            min_dist = getattr(self.a, 'min_stop_distance_fraction', 0.012)
+            if distance < min_dist:
+                invalidation_pass = False
         if bars and invalidation_pass:
             swing_low=min(b['low'] for b in bars)
             extension=(t.price-swing_low)/swing_low if swing_low>0 else 0

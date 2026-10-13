@@ -48,6 +48,7 @@ class AutomationConfig:
     resilient_protection_enabled: bool = False  # opt-in resilient emergency bid stop buffer
     pullback_min_rise: float = 0.008
     pullback_min_retrace: float = 0.20  # minimum retrace fraction for confirmed controlled pullback
+    min_stop_distance_fraction: float = 0.012  # minimum stop distance fraction (1.2%) to prevent tight noise stops
     pullback_max_retrace: float = 0.65
     pullback_volume_ratio: float = 0.75
     box_max_range: float = 0.015

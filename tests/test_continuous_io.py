@@ -98,7 +98,7 @@ operator_runner.run(root,clock,stub,token='offline-heartbeat')
         heartbeats=set(); market=set(); checks=0
         try:
             deadline=time.monotonic()+10
-            while not (self.root/'runtime/operator_runner.json').exists() and time.monotonic()<deadline: time.sleep(.02)
+            while not ((self.root/'runtime/operator_runner.json').exists() and (self.root/'runtime/automation-production/heartbeat.json').exists()) and time.monotonic()<deadline: time.sleep(.02)
             start=time.monotonic()
             while time.monotonic()-start<2:
                 self.clock[0]=datetime(2026,10,1,9,30,tzinfo=KST)+timedelta(seconds=1+time.monotonic()-start)
