@@ -89,7 +89,7 @@ class DynamicRadar:
         x['affordability'].update(entry_eligible=ok,reason_code='ONE_SHARE_AFFORDABLE' if ok else 'ONE_SHARE_UNAFFORDABLE')
         return ok
 
-    def update(self,items,evaluate,stamp):
+    def update(self,items,evaluate,stamp,progress=None):
         self.affordability_ms=0.
         if self.day!=stamp.date():
             self.previous={}; self.missing={}; self.weak={}; self.watch={}; self.day=stamp.date()
@@ -126,6 +126,10 @@ class DynamicRadar:
                 try: x.update(evaluate(x))
                 except (OSError,ValueError,KeyError,RuntimeError) as e: x.update(status='UNKNOWN',reason=type(e).__name__)
             self.previous[sym]={'source_details':sources,'stamp':stamp}; self.missing[sym]=0; rows.append(x)
+            # Publish only after the very same compression checks have finished.
+            # This never makes RAW/unknown status or missing daily history eligible.
+            if progress is not None and x['status']=='ELIGIBLE':
+                progress([dict(r) for r in rows if r['status']=='ELIGIBLE'])
         def priority(row):
             observation=self.momentum.get(row['code'],{})
             try:fresh=0<=(stamp-date_time.fromisoformat(observation['timestamp'])).total_seconds()<=15
@@ -268,8 +272,15 @@ class RadarWorker:
         return result
 
     def emit(self,result):
-        if self.q.full(): self.q.get_nowait()
-        self.q.put_nowait(result)
+        try:self.q.put_nowait(result)
+        except queue.Full:
+            # The main thread can drain after the producer detects a full queue.
+            # A discovery notification must not turn that harmless race into a
+            # RADAR_UNAVAILABLE error or block the receiver/position manager.
+            try:self.q.get_nowait()
+            except queue.Empty:pass
+            try:self.q.put_nowait(result)
+            except queue.Full:pass
 
     def run(self):
         while not self.stop.is_set():
@@ -302,7 +313,21 @@ class RadarWorker:
                 active_watch=self.status_priority_symbols  # Immutable snapshot; no cross-thread detector access.
                 items=self.scheduled_items(items)
                 compress_started=time.perf_counter()
-                rows,watch,changes=self.radar.update(items,self.evaluate,now())
+                opening=now().weekday()<5 and '09:00:00'<=now().strftime('%H:%M:%S')<'09:10:00'
+                last_progress=[None]
+                def qualified_progress(verified):
+                    mono=time.monotonic()
+                    # Cached batches can contain hundreds of eligible rows. The
+                    # final packet includes all of them; do not flood the main
+                    # quote/position loop with a packet for every cheap cache hit.
+                    if last_progress[0] is not None and mono-last_progress[0]<.25:return
+                    last_progress[0]=mono
+                    self.emit({'phase':'QUALIFIED_PROGRESS','time':now().isoformat(),
+                        'source_observed_at':raw_stamp,'rows':verified,'raw_rows':raw_rows,
+                        'capital_context':dict(context),'error':None,
+                        'basis':'EXISTING_COMPRESSION_CHECKS_COMPLETE'})
+                rows,watch,changes=self.radar.update(items,self.evaluate,now(),
+                    progress=qualified_progress if opening else None)
                 cycle_ms=(time.perf_counter()-cycle_started)*1000;self.cycle_samples=(self.cycle_samples+[cycle_ms])[-100:]
                 payload={'time':now().isoformat(),'source_observed_at':raw_stamp,'rows':rows,'watch':watch,'changes':changes,'capital_context':dict(context),'error':None,
                     'performance':{'rank_ms':rank_ms,'compression_ms':(time.perf_counter()-compress_started)*1000,'cycle_ms':cycle_ms,

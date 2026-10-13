@@ -206,7 +206,7 @@ class ObservationWorker:
                     self.observer.capital=dict(getattr(self,'current_capital',self.observer.capital))
                     started=time.perf_counter()
                     # 큐 대기도 수신 지연에 포함한다. 오래된 틱으로 가상 신호를 만들지 않는다.
-                    self.observer.tick(t,self.clock());self.tick_ms=(time.perf_counter()-started)*1000
+                    self.observer.tick(t,self.clock(),transport_received=received);self.tick_ms=(time.perf_counter()-started)*1000
                 if time.monotonic()-last_save>=2:
                     snapshot=self.state();snapshot['performance']={'prepare_ms':self.prepare_ms,'last_eval_ms':self.tick_ms,'metadata_calls':self.apis,'queue_depth':self.ticks.qsize(),'dropped':self.dropped}
                     atomic_json(self.folder/'shadow_snapshot.json',snapshot);last_save=time.monotonic()

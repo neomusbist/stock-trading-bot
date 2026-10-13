@@ -1,4 +1,105 @@
-# V1.5 preopen continuation-proof checkpoint (2026-10-14)
+# V1.5 opening-response checkpoint (2026-10-14)
+
+BUILD: `V1.5-risk2-watch12-bc20M-opening-r3-20261014`.
+Base: `536f685`; branch `fix/v1.5-night-quality-20261014`.
+Entry strategy version remains `V1.5-structural-continuation-20261014`.
+Operating exit policy remains AE3. No entry threshold, structural invalidation,
+position sizing, daily budget, LIVE receipt or final HTTP guard is relaxed.
+
+## Actual discovery change
+
+The existing 08:00 preopen control window, regular-only detector ingestion,
+09:00 immediate radar/account request, 60-second radar cycle, bounded SHADOW
+observations, fast FOCUS notifications and bidirectional observation handoff
+already exist. They are reused. The confirmed delay is in batch publication:
+newly verified RAW candidates cannot enter the main FOCUS pool until every
+unrelated status/history query in the compression batch finishes. A diagnostic
+readiness notification does not repair a candidate absent from that main pool.
+
+Only during 09:00-09:10, the radar now publishes cumulative verified candidates
+after their existing compression checks finish. Main FOCUS uses exactly the
+existing tiers, score hysteresis, source fallback and WATCH capacity. A partial
+batch preserves unprocessed incumbents; UNKNOWN, REJECT, unaffordable, protected
+or RAW candidates never gain WATCH permission. The full final packet still owns
+the complete scan result. Fresh received candles, liquidity, support/overhead,
+reward/risk, account risk, authorization and execution rechecks remain required.
+
+The two-packet radar channel coalesces progress at at most four packets/second;
+the 60-second ranking interval and 20-status-query budget do not change. A safe
+nonblocking queue operation also handles concurrent main-thread draining without
+manufacturing RADAR_UNAVAILABLE. No extra rank/status/history API request is
+made by progress delivery. Local synthetic profiling of 300 candidates measured
+2.76 ms mean FOCUS processing; 32 timing updates measured 1.45 ms mean. These are
+CPU measurements, not live network or market latency guarantees. A mover first
+appearing between scans still has up to a 60-second phase wait plus query time.
+
+## Point-in-time comparison and limits
+
+The same source-only replay ran against actual R2 source and the improved source,
+using genuine synthetic receiver ticks and a guarded fake broker. The modeled
+batch collects rankings by second 2, verifies the new candidate by second 3 and
+finishes unrelated compression by second 16. A blocked metadata worker is an
+explicit stress assumption, not a claim about today's market.
+
+| Mock snapshot | R2 unwarmed candidate | Improved unwarmed candidate |
+| --- | --- | --- |
+| 09:00 | Not yet discovered | Not yet discovered |
+| 09:01 | WATCH since 09:00:16; zero usable bars | WATCH since 09:00:03; one usable bar |
+| 09:03 | Two usable bars; no order | Three usable bars; mock order at 09:02:05 |
+| 09:05 | Four usable bars; no order | Five usable bars; the same single mock order |
+
+A preselected candidate in both versions receives the first open tick, completes
+its first candle at 09:01 and produces the same fake-broker order at 09:02:05.
+Already successful preparation is preserved. Actual configured C-base/FOCUS/
+structural flags were separately tested with normal A/B/C receiver cases. No
+premarket, indicative, future, incomplete or REST-restored signal candle is used.
+Synthetic symbols are not real winning stocks; actual earlier opportunity rate
+and profitability are unproven.
+
+## Chronology
+
+The day-specific diagnostic timeline now separates subscription request/group
+ACK, trade time, receiver time, consumer time, execution-fresh tick, completed
+candle start and when that candle became known, first signal and local risk
+eligibility. Group REG ACK is not falsely labeled a per-symbol ACK. SHADOW
+observation before WATCH is explicit; missing or nonordered delays stay null.
+Historical backlog does not become a current execution-fresh quote. Opening
+stage events contain timestamps and small evidence, never order permission.
+The persisted timeline restores chronology only, never warmup, ticks or bars.
+
+## Opening exit comparison: observation only
+
+The separate OPENING_FAILED_REBOUND_OBSERVATION hypothesis requires an opening
+REGULAR A entry, gain below one price-risk unit, a completed weak long-wick burst,
+a subsequent completed lower rebound and a close below that retained floor. A
+single wick or initial pullback is insufficient. Incomplete entry minutes, gaps,
+missing volume, future bars and a peak outside the complete sequence stay UNKNOWN.
+Fresh bid, full-quantity depth, costs and the same estimated slippage are required
+to compute hypothetical net proceeds. This is not a live exit instruction.
+
+In a synthetic three-share failure, the candidate's 09:04 modeled net is +50.74,
+while unchanged AE3 requests exit on the broken completed close at 09:06 with
+modeled net -817.39. Another failure is already cost-negative at the earlier
+decision (-188.74). A counterexample has exactly the same 09:04 evidence but
+then recovers: early exit would keep +50.74 while the unchanged AE3 horizon bid
+mark is +829.06. That mark is not a realized fill. The two paths cannot be
+distinguished using their identical 09:04 history. No profitability claim or
+operating AE3 activation is justified. Production quote records currently lack
+full bid depth in some paths; such observations leave executable net UNKNOWN.
+
+## Verification and operational boundary
+
+Full regression: 1,234 PASS, including all 1,212 R2 cases and 22 new opening cases;
+zero FAIL/ERROR/SKIP, syntax errors, network attempts or real orders. The original
+1,203 cases are retained. Operating flags, budgets, journals, protected holdings
+and receipts must match their preflight hashes. Source-only deployment requires
+STOP/OFF, a backup and hash verification. A new direct user LIVE approval is
+required for this BUILD; no previous receipt is copied and no worker is started.
+Fresh broker/WS/open-market readiness remains a user's approved preflight task.
+
+---
+
+# Preserved V1.5 preopen continuation-proof checkpoint (2026-10-14)
 
 BUILD: `V1.5-risk2-watch12-bc20M-nightquality-r2-20261014`.
 Base: `c6450f1`; same branch `fix/v1.5-night-quality-20261014`.

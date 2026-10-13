@@ -76,4 +76,6 @@ def observe_candidates(cfg, auto, position, asof, prior=None):
                           position.get('exit_reason') or 'EXISTING_POLICY', qty if position.get('exit_requested') else None)
     state.update(asof=asof.isoformat(), policies=policies, active_policy='AE3',
                  experimental_orders_enabled=False, realized_comparison='UNKNOWN_WITHOUT_BROKER_FILLS')
+    from automation.opening_failure import observe_opening_failure
+    state['opening_failure_observation']=observe_opening_failure(cfg,auto,position,asof)
     return state

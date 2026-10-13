@@ -145,6 +145,35 @@ def qualify_raw(engine,rows,stamp,is_raw_phase=False):
         }
     engine.source_qualification=new_qual
 
+def apply_qualified_progress(engine,lookup,rows,result,readiness,cfg,auto,stamp):
+    """Feed already verified opening candidates to the existing FOCUS selector.
+
+    A partial batch cannot demote unprocessed incumbents. RAW, metadata UNKNOWN,
+    stale results and diagnostic virtual signals never grant WATCH eligibility.
+    """
+    try:source=datetime.fromisoformat(result['source_observed_at'])
+    except (KeyError,TypeError,ValueError):return rows,None
+    if (not supported(stamp) or not '09:00:00'<=stamp.strftime('%H:%M:%S')<'09:10:00'
+            or source.tzinfo is None or source.date()!=stamp.date()
+            or not -1<=(stamp-source).total_seconds()<=auto.scan_seconds*3):return rows,None
+    verified=[r for r in result.get('rows',[]) if r.get('status')=='ELIGIBLE'
+              and r.get('market_status',{}).get('pass') is True
+              and r.get('affordability',{}).get('entry_eligible') is True]
+    if not verified:return rows,None
+    pool={r['code']:dict(r) for r in rows}
+    for sym,row in lookup.items():pool.setdefault(sym,dict(row))
+    for row in verified:pool[row['code']]=dict(row)
+    merged=list(pool.values())
+    selection=resolve_radar_focus(engine,lookup,merged,[],readiness,cfg,auto,stamp)
+    # Full ranking lineage is retained even when RAW was coalesced in the bounded
+    # two-packet radar queue. One-source fallback is the existing FOCUS permission.
+    raw=[{**r,'fallback_source1':bool(lookup.get(r['code'],{}).get('fallback_source1'))}
+         for r in result.get('raw_rows',[])]
+    qualify_raw(engine,raw,result['source_observed_at'],is_raw_phase=True)
+    timeline=getattr(engine,'observation_timeline',None)
+    if timeline is not None:timeline.raw(raw,stamp)
+    return merged,selection
+
 class SubscriptionState:
     """구독 변경은 소켓/계좌 연결과 별개이며 추가 종목만 새 정규장 틱을 기다린다."""
     def __init__(self,symbols=()):
@@ -186,6 +215,8 @@ class SubscriptionState:
             # Same observation universe, new exchange stream: preserve bars but
             # require a fresh post-subscription tick before any entry.
             self.waiting.update({sym:stamp for sym in desired});self.refresh_pending=True
+            timeline=getattr(engine,'observation_timeline',None)
+            if timeline is not None:timeline.subscription_request(desired,stamp)
             self.transport_failed(engine,detector,feed,stamp)
             engine.event('SUBSCRIPTION_REFRESH',added=[],removed=[],reason_code='EXCHANGE_STREAM_CHANGED',
                          connected=engine.connected,account_ok=engine.account_ok)
@@ -210,6 +241,8 @@ class SubscriptionState:
                 fresh_regular_tick_required=True)
         feed.update_symbols(sorted(desired))
         self.symbols=desired; self.refresh_pending=True
+        timeline=getattr(engine,'observation_timeline',None)
+        if timeline is not None:timeline.subscription_request(added,stamp)
         self.transport_failed(engine,detector,feed,stamp)
         engine.event('SUBSCRIPTION_REFRESH',added=sorted(added),removed=sorted(removed),
             connected=engine.connected,account_ok=engine.account_ok)
@@ -445,6 +478,9 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
             engine.reset_detector=False; engine.account_ok=False; account.request.set()
         engine.connected=True
         if subscriptions is not None:subscriptions.acknowledge()
+        timeline=getattr(engine,'observation_timeline',None)
+        if timeline is not None and subscriptions is not None:
+            timeline.subscription_ack(subscriptions.symbols,received)
         return 0
     accepted=0
     if tr!='REAL': return accepted
@@ -488,7 +524,8 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
             if subscriptions is not None:subscriptions.accepted(t.symbol)
             accepted+=1;engine.last_regular_tick_at=t.time
             timeline=getattr(engine,'observation_timeline',None)
-            if timeline is not None:timeline.tick(t.symbol,t.time,detector.usable_bars(t.symbol),t.price)
+            if timeline is not None:timeline.tick(t.symbol,t.time,detector.usable_bars(t.symbol),t.price,received=received,processed=wall_clock,
+                execution_fresh=0<=(wall_clock-t.time).total_seconds()<=engine.c.stale_seconds)
             if not 0<=(wall_clock-t.time).total_seconds()<=engine.c.stale_seconds:continue
             prices[t.symbol]=t.bid or t.price
             if engine.market=='UNKNOWN': engine.market='3'
@@ -630,6 +667,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     from automation.observation_worker import ObservationWorker
     observation_rest=Rest(replace(effective,live_mode=False),auth_session=rest.auth_session);observation_rest.session_guard=lambda:control_supported(now()) or (getattr(effective,'after_enabled',False) and after_control_supported(now()));observation_rest.diagnostic_only=True
     shadow=ObservationWorker(effective,auto,engine.costs,root,observation_rest)
+    shadow.observer.timeline=engine.observation_timeline
     if auto.entry_context_enabled:shadow.observer.detector.price_context=copy.deepcopy(detector.price_context)
     shadow.start()
     context_worker=None
@@ -724,6 +762,22 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     if result['error']:
                         radar_ok=False; engine.event('RADAR_UNAVAILABLE',**{k:v for k,v in result.items() if k!='time'})
                     else:
+                        if result.get('phase')=='QUALIFIED_PROGRESS':
+                            rows,selection=apply_qualified_progress(engine,lookup,rows,result,
+                                shadow.runtime_view()['evaluations'],effective,auto,now())
+                            if selection is not None:
+                                radar_ok=True;last_radar=time.monotonic()
+                                engine.last_radar_at=datetime.fromisoformat(result['time'])
+                                by_symbol={r['code']:r for r in rows}
+                                focus_promotions.extend(selection.promoted)
+                                engine.candidate_audit.begin(rows,result['time'],result.get('capital_context',{}))
+                                engine.event('FOCUS_SELECTION_APPLIED',basis='OPENING_VERIFIED_PROGRESS',
+                                    promoted=selection.promoted,demoted=selection.demoted,
+                                    next_watch=selection.next_watch,previous_watch=selection.previous_watch,
+                                    primary_reason=selection.primary_reason,applied_at=selection.focus_epoch,
+                                    tier_map=selection.tier_map,priority_tuples=selection.priority_tuples,
+                                    compression_batch_complete=False)
+                            continue
                         if result.get('phase')=='RAW':
                             engine.observation_timeline.raw(result['rows'],datetime.fromisoformat(result['time']))
                             qualify_raw(engine,result['rows'],result['time'],is_raw_phase=True)
@@ -891,6 +945,8 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     atomic_json(root/'runtime/candidate_summary.json',summary)
                     engine.save(); reporter.submit(rows,engine.s); last_report=time.monotonic()
                 if time.monotonic()-last_heartbeat>=1:
+                    for stage in engine.observation_timeline.drain_events():
+                        engine.event('OPENING_PIPELINE_STAGE',**stage)
                     engine.observation_timeline.save(now())
                     sess_name=engine.current_session()
                     phase_str=market_phase(now(),live_approved=getattr(engine,'after_live_authorized',False))
