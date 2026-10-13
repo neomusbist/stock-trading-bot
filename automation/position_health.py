@@ -91,9 +91,16 @@ class PositionDataHealth:
         self.waiting.pop(symbol,None)
         self.account.position_symbols=frozenset(set(self.account.position_symbols)-{symbol})
         # A quote is not a trade/bar: no MFE/trailing/warmup changes, and no fabricated tick.
-        emergency=min(p['stop']-tick_size(p['stop']),floor_tick(p['stop']*(1-e.c.structural_buffer)))
-        if bid<=emergency:
+        if e.a.confirmed_invalidation_enabled and p.get('signal',{}).get('invalidation_policy'):
+            from automation.exit_plan import invalidation_lines
+            emergency=invalidation_lines(e.c,e.a,p)['emergency']
+            trigger_fresh=age<=e.c.stale_seconds or confirmed
+        else:
+            emergency=min(p['stop']-tick_size(p['stop']),floor_tick(p['stop']*(1-e.c.structural_buffer)))
+            trigger_fresh=True
+        if trigger_fresh and bid<=emergency:
             e.request_exit(symbol,'호가 급락/유동성 붕괴')
+        if hasattr(e,'refresh_exit_state'):e.refresh_exit_state(symbol)
         return True
 
     def confirm_unchanged_book(self,symbol,book,current):

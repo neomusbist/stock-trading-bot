@@ -19,6 +19,7 @@
   "stable_position_book_confirmation": false,
   "confirmed_box_direction": false,
   "confirmed_structure_protection": false,
+  "exit_plan_reward_guard_enabled": false,
   "pullback_min_rise": 0.008,
   "pullback_max_retrace": 0.65,
   "pullback_volume_ratio": 0.75,

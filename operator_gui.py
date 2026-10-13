@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QLabel,QPushButt
     QTableWidgetItem,QHeaderView,QPlainTextEdit,QMessageBox,QDialog,QLineEdit,QFormLayout,QInputDialog,QProgressBar,QMenu)
 from operator_ui_service import (UserOperations, CANDIDATE_FIELDS, GATE_NAMES, money, presentation,
     start_block, human_decision, result_text, candidate_display, candidate_wait_reason,
-    format_observation_age, human_blocker_reason, extract_important_events, context_description)
+    format_observation_age, human_blocker_reason, extract_important_events, context_description,exit_plan_text)
 from operator_service import decision_line, read_json
 from local_diagnostics import redact
 
@@ -306,6 +306,7 @@ class MainWindow(QMainWindow):
         # Tab 0: 트레이딩 칵핏
         cockpit_widget=QWidget(); cockpit_layout=QVBoxLayout(cockpit_widget); cockpit_layout.setContentsMargins(0,4,0,0)
         cockpit_split=QSplitter(Qt.Orientation.Vertical); cockpit_layout.addWidget(cockpit_split)
+        self.cockpit_split=cockpit_split;self._plan_positions_visible=False
 
         bot_box=QGroupBox('봇 운용 포지션'); bot_b_layout=QVBoxLayout(bot_box)
         self.bot_board=table(['종목','보유수량 (Setup)','진입 평균가','현재가','초기 무효화','현재 보호선','대응 상태','청산 조건'])
@@ -314,6 +315,10 @@ class MainWindow(QMainWindow):
         self.bot_empty_label=QLabel('현재 봇이 보유 중인 포지션이 없습니다. (신규 진입 탐색 대기)')
         self.bot_empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter); self.bot_empty_label.setStyleSheet('color:#64748b;font-size:13px;padding:12px;')
         bot_b_layout.addWidget(self.bot_empty_label)
+        self.exit_plan_details=QPlainTextEdit();self.exit_plan_details.setReadOnly(True)
+        self.exit_plan_details.setMinimumHeight(240)
+        self.exit_plan_details.setToolTip('엔진이 저장한 청산 계획입니다. 목표가·종가 구조선·즉시 비상선은 서로 다른 조건입니다.')
+        bot_b_layout.addWidget(self.exit_plan_details)
         cockpit_split.addWidget(bot_box)
 
         cand_box=QGroupBox('실시간 감시 후보 종목 (WATCH / SHADOW)'); cand_b_layout=QVBoxLayout(cand_box)
@@ -502,6 +507,11 @@ class MainWindow(QMainWindow):
         rows_to_table(self.bot_board,bot_rows)
         self.bot_board.setVisible(bool(bot_pos))
         self.bot_empty_label.setVisible(not bool(bot_pos))
+        self.exit_plan_details.setVisible(bool(bot_pos))
+        self.exit_plan_details.setPlainText('\n\n'.join(exit_plan_text(r,bool(s.get('trading_on'))) for r in bot_pos))
+        if bool(bot_pos)!=self._plan_positions_visible:
+            self.cockpit_split.setSizes([340,220,160] if bot_pos else [110,250,180])
+            self._plan_positions_visible=bool(bot_pos)
 
         board=s.get('candidate_board',[])
         items=[]

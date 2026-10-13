@@ -390,6 +390,32 @@ def position_invalidation_lines(position,enabled=False):
     return policy['structural_stop'],hard,True
 
 
+def exit_plan_text(row,order_permission=False):
+    """Format persisted engine values. No GUI target/protection/PnL calculation."""
+    v=row.get('exit_state') or {};plan=v.get('plan') or {};lines=v.get('lines') or {}
+    data=v.get('market_data') or {}
+    if not plan:return '청산 계획: 엔진의 새 청산 상태 기록 대기. 기존 보호 정책은 유지합니다.'
+    target=money(plan.get('target')) if plan.get('target_status')!='UNKNOWN' else 'UNKNOWN / 가격구조 근거 부족'
+    rr=plan.get('net_reward_risk');rr_text=f'{rr:.2f}' if isinstance(rr,(int,float)) else 'UNKNOWN'
+    orders='허용' if order_permission and v.get('order_allowed') else '차단 / 계좌·운영 상태 확인 필요'
+    quote='신선한 매수호가' if data.get('quote_fresh') else '별도 재확인된 동일 호가' if data.get('standing_fresh') else '판단 대기 / 호가 오래됨'
+    deadline=plan.get('flatten_at') or '당일 강제청산 없음 (설정 확인)'
+    return '\n'.join([
+        f"진입 이유: Setup {plan.get('setup','?')} · {plan.get('entry_logic','미확인')} | 청산 정책: AE3",
+        f"진입 평균가 {money(plan.get('entry'))} | 최초 구조 무효화 {money(plan.get('initial_invalidation'))} | 최초 비상선 {money(plan.get('initial_emergency'))}",
+        f"현재 {'완성봉 종가 구조선' if lines.get('close_based') else '체결가 보호선'} {money(lines.get('active_structure'))} | 즉시 비상선 {money(lines.get('emergency'))}",
+        f"예상 목표가 {target} · {plan.get('target_action')} | 비용 포함 예상 손익비 {rr_text}",
+        f"목표 근거: {plan.get('target_basis','판단 대기')} | 확인된 저항 {money(plan.get('confirmed_resistance'))}",
+        f"1R 가격 {money(plan.get('one_r_price'))} | 보호 발동가격 {money(plan.get('profit_activation_price'))} | 이익보호 {v.get('protection_status','판단 대기')} | {plan.get('profit_activation')}",
+        f"최고 기록가 {money(v.get('highest'))} | 최대 유리 움직임(MFE) {money(v.get('mfe_per_share'))}/주 | 추세 {v.get('trend_status','판단 불가')}",
+        f"지금 보유하는 이유: {v.get('hold_reason','엔진 판단 대기')}",
+        f"다음 매도 조건: {v.get('next_exit','엔진 판단 대기')}",
+        f"예상 순손익 {money(v.get('estimated_net_pnl'))} · {quote} | 잔여 위험 추정 {money(v.get('remaining_risk_estimate'))} (급락 체결손실 상한 아님)",
+        f"최종 청산 {deadline} · {plan.get('session')} / {plan.get('venue')} · 거래 종료 {plan.get('market_close')} | 주문 {orders} | 미체결 {v.get('pending_orders',0)}건",
+        '목표가 매도 예약 주문 없음. 예상 손익은 체결·비용 확정 전 추정이며, 새 익절 후보는 관찰 전용입니다.'
+    ])
+
+
 class UserOperations(OperatorService):
     """기존 서비스 상속: 시작/STOP/진단과 별도 명시 자본 승인을 연결한다."""
     def snapshot(self):
@@ -448,16 +474,21 @@ class UserOperations(OperatorService):
         s['candidate_performance']=radar.get('performance',{}) if s['process']['running'] and 0<=age(radar.get('time'),self.clock())<=auto.scan_seconds*3 else {}
         s['bot_positions']=[]
         for sym,p in state.get('positions',{}).items():
-            current=next((r.get('current_price') for r in reversed(rows) if r.get('symbol')==sym and r.get('current_price')),None)
+            from automation.exit_plan import display_state
+            view=display_state(p.get('exit_state'),self.clock(),cfg.stale_seconds)
+            current=view.get('market_data',{}).get('current')
             structural,protective,close_based=position_invalidation_lines(p,auto.confirmed_invalidation_enabled)
+            if view.get('lines'):
+                structural=view['lines']['initial_structure'];close_based=view['lines']['close_based']
+                protective=view['lines']['emergency'] if close_based else view['lines']['active_structure']
             s['bot_positions'].append({'symbol':sym,'name':p.get('signal',{}).get('name') or sym,'entry':p.get('avg'),'current':current,'quantity':p.get('qty'),
                 'setup':p.get('pattern'),'invalidation':structural,'protection':protective,'high':p.get('high'),
                 'MFE':p.get('high',p['avg'])-p['avg'],'MAE':p['avg']-p.get('low',p['avg']),
-                'risk':max(0,p['avg']-protective+p['avg']*auto.commission_buy+protective*(auto.commission_sell+auto.sell_tax+cfg.exit_slippage_fraction))*p['qty'],
+                'risk':view.get('remaining_risk_estimate'),'exit_state':view,
                 'exit_mode':'수량 확인 필요 / 자동청산 보류' if p.get('qty_blocked') else '청산 대기' if p.get('exit_requested') else '구조 / 수익 보호',
                 'protection_evidence':p.get('protection_evidence'),'data_health':p.get('data_health'),
-                'hold_reason':'장부·실계좌 수량 불일치. HTS에서 보유·미체결 확인 필요' if p.get('qty_blocked') else p.get('exit_reason') if p.get('exit_requested') else '구조선은 완성봉 종가로 확인; 비상선은 즉시 보호' if close_based else '현재 보호선 위; 강제청산 시각 전',
-                'next_exit':(f"완성봉 종가 ≤ {max(structural,p['stop'])} / 현재 보호·비상선 {protective}원 즉시 이탈" if close_based else f"체결가 ≤ {p['stop']} / 호가 비상선 이탈")+f" / {auto.after_force_flatten_start if p.get('signal',{}).get('session')=='AFTER' else auto.force_flatten_start} 강제청산 / 시세 재확인 실패 / 중단 청산 요청"})
+                'hold_reason':'장부·실계좌 수량 불일치. HTS에서 보유·미체결 확인 필요' if p.get('qty_blocked') else p.get('exit_reason') if p.get('exit_requested') else view.get('hold_reason','엔진 청산 상태 대기'),
+                'next_exit':view.get('next_exit','엔진 청산 조건 기록 대기 / 기존 보호 유지')})
         s['active_error']=s['current_error'] not in {'현재 오류 미확인 / 과거 기록은 상세보기','기록 없음 (정상 연결을 뜻하지 않음)'}
         s['protection_rows']=[{'symbol':sym,'policy':'HARD_LOCK / 자동매매 금지' if sym in HARD_LOCKS else p,
              'breakeven':BREAKEVEN_EXITS.get(sym)} for sym,p in EXISTING_POLICIES.items()]

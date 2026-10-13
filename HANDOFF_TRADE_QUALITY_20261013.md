@@ -1,3 +1,73 @@
+# V1.5 exit plan and completed-bar wiring checkpoint
+
+BUILD: `V1.5-risk2-watch12-bc20M-exitplan-20261013`, based on preserved AE3 `718a7ae`.
+The operating policy remains AE3. Targets are entry/reassessment hypotheses, not
+resting sell orders or automatic profit-taking instructions.
+
+## Actual defects and fixes
+
+The real receiver checked only `confirmed_structure_protection` before supplying
+protection bars. The installed AE3 setting had that flag OFF while completed-close
+invalidation and AFTER failed-rebound protection were ON. It also supplied the
+legacy `completed` high/low buffer rather than PatternDetector's genuine completed
+OHLCV history. Direct method tests did not expose either wiring defect.
+
+The corrected receiver delivers only usable, actually observed, completed post-fill
+OHLCV bars. A fresh decision cannot use delayed/future/partial candles. The complete
+receiver-to-mock-broker path now confirms both close invalidation with the old flag
+OFF and the AFTER failed rebound below one-R. Quote-only protection now uses the
+same separately risk-sized emergency line as the tick/close policy; touching a
+nearer soft line with a book alone cannot substitute for close confirmation.
+
+The engine creates an exit plan before an order, rebases it to actual average fills,
+and stores the active lines, activation/one-R prices, highest observed trade, MFE,
+conditional failures, deadline, fresh-bid estimated net PnL and order safety state.
+The GUI reads that state, distinguishes hypotheses from triggers, expires stale
+prices and never presents an old decision-log price as a fresh executable quote.
+The plan panel is read-only. Completed fills preserve their plans and diagnostics;
+realized net PnL continues to use the broker-authoritative AE3 accounting.
+
+## Hypotheses and evidence limits
+
+A: target full exit. B: integer partial exit and remaining structure tracking.
+C: target reassessment with confirmed structure. D: higher-low trailing before
+one-R. E: current AE3. A-D are observation/replay only: no broker order path exists.
+One share cannot be split; two/three shares are diagnosed as 1+1 or 1+2. Actual
+fixed/minimum cost and executable alternative fills remain unknown.
+
+Frozen evidence covers 22 trades on four dates. Six have broker-confirmed costs,
+with six recorded positive trades across the complete mixed-cost sample. No initial
+target was reached by the saved observed high; incomplete price coverage prevents
+claiming the target never traded. Only two later-received reference timelines are
+available, both explicitly counterfactual. The AFTER reference failure first appears
+at 16:59; exact executable alternative prices/profits are unknown. No new policy's
+expectancy or historical winner-retention rate is established.
+
+The optional cost-inclusive RR guard refuses 21/22 historical entries, including
+all six recorded winners under the current-cost counterfactual. It remains OFF.
+Tests also show a before-one-R pivot break followed by normal strong recovery:
+early structure trailing is therefore not enabled just because it is implementable.
+
+## Verification and operating handoff
+
+Release regression: 1,154 PASS; FAIL/ERROR/SKIP 0; 140 Python syntax files valid;
+network attempts 0; actual orders 0; operating program starts 0. The 43 dedicated
+cases include genuine receiver wiring, stable/old quotes, accounting provenance,
+normal recovery counterexamples, quantity constraints and six real-widget checks.
+The old mocked runner fixture was changed to use the actual OHLCV getter; it no
+longer assumes the legacy high/low container has a close. No test was removed.
+
+Before application require stopped/flat/no-pending/no-UNKNOWN state, protected
+holding comparison, immutable ledger/config/approval hashes, source backup and
+baseline comparison. Preserve all risk budgets and user receipts. Apply only the
+reviewed source delta and verify file hashes and effective flags in a fresh GUI.
+Do not approve LIVE, start a worker, copy a receipt or reset a journal. The direct
+new-BUILD LIVE approval remains the user's action. Runtime evidence/backups stay
+outside Git. File-lock PermissionError root cause remains a separate unresolved
+operating limitation; passing offline tests does not prove its absence in LIVE.
+
+---
+
 # Broker PnL settlement checkpoint
 
 BUILD `V1.5-risk2-watch12-bc20M-structuralAE3-20261013` preserves structuralAE2's entry, AFTER failure and explicit external-close recovery changes. Its new accounting path makes reported broker fees and taxes authoritative after a confirmed matching fill. Entry-risk reservations still use modeled costs until actual charges exist.

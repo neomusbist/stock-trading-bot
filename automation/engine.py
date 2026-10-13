@@ -271,6 +271,10 @@ class AutonomousEngine(ExistingExits,Engine):
             'efficiency':gate(signal.get('efficiency',{}).get('decision')=='TRADE',efficiency=signal.get('efficiency'))}
 
     def entry_market_reason(self,signal,quantity,fallback=None,phase='PRE_INTENT'):
+        if self.a.exit_plan_reward_guard_enabled:
+            from automation.exit_plan import build_plan
+            signal['exit_plan']=build_plan(self.c,self.a,signal,quantity=quantity)
+            if not signal['exit_plan']['reward_guard_pass']:return 'EXIT_PLAN_REWARD_UNKNOWN_OR_LOW'
         if self.a.structural_breakout_enabled and signal.get('pattern')=='A':
             from automation.structural_breakout import structural_breakout
             try:
@@ -455,6 +459,12 @@ class AutonomousEngine(ExistingExits,Engine):
         signal.update(entry_build_id=BUILD_ID,entry_strategy_version=STRATEGY_VERSION,
                       entry_strategy_experiment=STRATEGY_EXPERIMENT)
         signal['planned_qty']=qty
+        from automation.exit_plan import build_plan
+        signal['exit_plan']=build_plan(self.c,self.a,signal,quantity=qty)
+        if self.a.exit_plan_reward_guard_enabled and not signal['exit_plan']['reward_guard_pass']:
+            self.decisions.emit('ENTRY_EVAL',tick.symbol,'NO_BUY','EXIT_PLAN_REWARD_UNKNOWN_OR_LOW',
+                {'exit_plan_reward':gate(False,plan=signal['exit_plan'])},signal=signal,price=tick.price)
+            return None
         self.entry_tick=tick
         self.s['automation']['strategy']='ENTER'
         self.entry_intent=signal
@@ -632,6 +642,10 @@ class AutonomousEngine(ExistingExits,Engine):
         if o['side']=='BUY':
             self.s['positions'][o['symbol']]['entry_qty']+=delta
             self.s['positions'][o['symbol']]['last_entry_fill_at']=self.clock().isoformat()
+            p=self.s['positions'][o['symbol']]
+            from automation.exit_plan import build_plan
+            p['exit_plan']=build_plan(self.c,self.a,p['signal'],p['avg'],p['qty'],True)
+            self.refresh_exit_state(o['symbol'])
         elif o['symbol'] not in self.s['positions']:
             self.s['automation']['last_exit'][o['symbol']]=self.clock().isoformat()
             fragments=[t for t in self.s['trades'] if t['trade_id']==self.s['trades'][-1]['trade_id']]
@@ -661,6 +675,8 @@ class AutonomousEngine(ExistingExits,Engine):
             entry_build_id=p['signal'].get('entry_build_id'),exit_build_id=BUILD_ID,
             exit_strategy_version=STRATEGY_VERSION,entry_strategy_experiment=p['signal'].get('entry_strategy_experiment'),
             protection_evidence=p.get('protection_evidence'),data_health=p.get('data_health'),
+            exit_plan=p.get('exit_plan'),exit_state=p.get('exit_state'),
+            profit_policy_observation=p.get('profit_policy_observation'),
             exit_trigger_evidence=p.get('exit_trigger_evidence'),
             opportunity_timing=p['signal'].get('opportunity_timing'),
             name=p['signal'].get('name') or self.names.get(trade['symbol']),setup=p['pattern'],
@@ -677,7 +693,6 @@ class AutonomousEngine(ExistingExits,Engine):
 
     def observe_protection_bar(self,symbol,bar):
         """Retain real post-entry bars; AFTER burst failure needs bounded recent history."""
-        if not (self.a.confirmed_structure_protection or self.a.confirmed_invalidation_enabled):return
         p=self.s['positions'].get(symbol)
         if not p:return
         from automation.trade_quality import complete_sequence
@@ -690,7 +705,8 @@ class AutonomousEngine(ExistingExits,Engine):
         stamp=b['time'].isoformat()
         previous=p.get('protection_bars',[])
         if previous and stamp<=previous[-1]['time']:return
-        p['protection_bars']=(previous+[{**b,'time':stamp}])[-(30 if self.a.after_momentum_failure_enabled and p.get('signal',{}).get('session')=='AFTER' else 3):]
+        p['protection_bars']=(previous+[{**b,'time':stamp}])[-30:]
+        p['last_complete_bar_at']=stamp
         policy=p.get('signal',{}).get('invalidation_policy')
         if self.a.confirmed_invalidation_enabled and policy:
             soft=max(policy['structural_stop'],p.get('confirmed_soft_stop',policy['structural_stop']))
@@ -702,7 +718,30 @@ class AutonomousEngine(ExistingExits,Engine):
                 failed,evidence=after_momentum_failure(p,self.clock())
                 p['after_momentum_evidence']=evidence
                 if failed is True:self.request_exit(symbol,'AFTER 급등 후 반등 실패 확인')
+        self.refresh_exit_state(symbol)
         self.save()
+
+    def refresh_exit_state(self,symbol):
+        p=self.s['positions'].get(symbol)
+        if not p or p.get('ownership','BOT')!='BOT':return
+        from automation.exit_plan import state_for_position
+        from automation.exit_candidates import observe_candidates
+        allowed=self.can_exit(symbol,p) and self.account_ok and (not self.c.live_mode or time.monotonic()-self.last_account<=self.c.reconcile_seconds*3)
+        p['exit_state']=state_for_position(self.c,self.a,p,self.clock(),len(self.active_orders(symbol)),allowed)
+        key=[p.get('last_complete_bar_at'),p.get('target_touch',{}).get('time'),bool(p.get('exit_requested')),p['qty']]
+        previous=p.get('profit_policy_observation',{})
+        if previous.get('source_key')!=key:
+            p['profit_policy_observation']=observe_candidates(self.c,self.a,p,self.clock(),previous)
+            p['profit_policy_observation']['source_key']=key
+
+    def position_price_updated(self,p,t):
+        from automation.exit_plan import fresh
+        if not t.regular or not fresh(t.time,self.clock(),self.c.stale_seconds):return
+        p['last_trade_time']=t.time.isoformat();p['last_trade_price']=t.price
+        target=p.get('exit_plan',{}).get('target')
+        if target is not None and t.price>=target and not p.get('target_touch'):
+            p['target_touch']={'time':t.time.isoformat(),'price':t.price,'basis':'RECEIVED_TRADE'}
+        self.refresh_exit_state(t.symbol)
 
     def protection(self,p,price,completed_low):
         if self.a.confirmed_structure_protection or (self.a.confirmed_invalidation_enabled and p.get('signal',{}).get('invalidation_policy')):
@@ -741,6 +780,7 @@ class AutonomousEngine(ExistingExits,Engine):
                 'protection':p.get('protection_evidence'),
                 'invalidation':p.get('invalidation_evidence'),
                 'after_momentum':p.get('after_momentum_evidence')})
+            p['exit_trigger_evidence']['exit_state']=deepcopy(p.get('exit_state'))
         return super().request_exit(symbol,reason)
 
     def reconcile(self,snapshot,fills=()):
@@ -968,6 +1008,7 @@ class AutonomousEngine(ExistingExits,Engine):
                     p['after_entry_peak']={'price':t.price,'time':t.time.isoformat()}
                 p['last_tick']=self.clock().isoformat();p['low']=min(p['low'],t.price)
                 p['high'],p['stop']=self.protection(p,t.price,completed_low)
+                self.position_price_updated(p,t)
             soft=max(policy['structural_stop'],p['stop'])
             p['confirmed_soft_stop']=soft
             hard=max(p['initial_stop'],floor_tick(soft-policy['noise_band']))
@@ -989,6 +1030,7 @@ class AutonomousEngine(ExistingExits,Engine):
         if p: self.position_eval(t.symbol,p,t.price)
 
     def position_eval(self,sym,p,price=None):
+        self.refresh_exit_state(sym)
         allowed=self.can_exit(sym,p) and self.account_ok and (not self.c.live_mode or time.monotonic()-self.last_account<=self.c.reconcile_seconds*3)
         requested=p.get('exit_requested',False)
         gates={'exit_requested':gate(requested,reason=p.get('exit_reason'),time=self.clock().strftime('%H:%M:%S'),flatten=self.a.force_flatten_start,allow_overnight=self.a.ALLOW_OVERNIGHT),

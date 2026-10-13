@@ -216,6 +216,7 @@ class StructureProtectionTests(unittest.TestCase):
 
     def test_real_runner_delivers_completed_bars_before_tick_protection(self):
         self.enable();d=Mock();d.ingest.return_value=True;d.completed={health_fixture.SYM:self.pivot()}
+        d.usable_bars.return_value=self.pivot()  # actual OHLCV source; legacy completed has high/low only
         t=self.tick(7340)
         packet={'trnm':'REAL','data':[{'type':'0B','item':health_fixture.SYM,'_observation_tick':(self.clock,t),'values':{}}]}
         with patch('automation.runner.now',return_value=self.clock):

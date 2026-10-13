@@ -365,6 +365,7 @@ class Engine:
         previous=p['stop']; p['last_tick']=self.clock().isoformat()
         p['low']=min(p['low'],t.price)
         p['high'],p['stop']=self.protection(p,t.price,completed_low)
+        self.position_price_updated(p,t)
         # 보호선은 변경 즉시 저장. 나머지 틱 통계는 초당 한 번 체크포인트한다.
         if p['stop']>previous or time.monotonic()-self.last_checkpoint>=1:
             self.save(); self.last_checkpoint=time.monotonic()
@@ -379,6 +380,10 @@ class Engine:
         elif t.bid > 0 and t.bid <= emergency_bid_stop:
             self.request_exit(t.symbol, '호가 급락/유동성 붕괴')
         self.drive_exits({t.symbol:t.bid or t.price})
+
+    def position_price_updated(self,position,tick):
+        """Continuous engine can publish its exit plan before the checkpoint."""
+        pass
 
     def position_data_stale(self,symbol,position,current):
         # V1 fallback; the continuous runner supplies its quote/transport watchdog.

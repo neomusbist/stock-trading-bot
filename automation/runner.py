@@ -493,8 +493,12 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
             prices[t.symbol]=t.bid or t.price
             if engine.market=='UNKNOWN': engine.market='3'
             finished=list(detector.completed.get(t.symbol,[]))
-            if getattr(engine.a,'confirmed_structure_protection',False) and protected:
-                for bar in finished[-3:]:engine.observe_protection_bar(t.symbol,bar)
+            if protected:
+                # Core's legacy completed buffer has high/low only. Structural
+                # exits require the genuine completed OHLCV observation history.
+                previous=positions[t.symbol].get('last_complete_bar_at','')
+                for bar in detector.usable_bars(t.symbol)[-30:]:
+                    if bar['time'].isoformat()>previous:engine.observe_protection_bar(t.symbol,bar)
             engine.on_tick(t,finished[-1]['low'] if finished else None)
             health=getattr(engine,'position_health',None)
             if protected and health is not None:health.trade_seen(t.symbol,t)

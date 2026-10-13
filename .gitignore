@@ -131,3 +131,4 @@ operator_*approval*.json
 # Reviewed trading-quality handoff and frozen-input replay (outputs stay private).
 !/HANDOFF_TRADE_QUALITY_20261013.md
 !/tools/trade_quality_replay.py
+!/tools/exit_policy_replay.py

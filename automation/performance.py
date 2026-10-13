@@ -13,11 +13,21 @@ def completed_trades(fragments):
         for field in ('gross_pnl','commission','tax','entry_value'):
             values=[r.get(field) for r in rows]
             totals[field]=sum(values) if all(isinstance(x,(int,float)) for x in values) else None
-        out.append({**last,'trade_id':key,'qty':sum(r['qty'] for r in rows),
+        quantity=sum(r['qty'] for r in rows);net=sum(r['pnl_estimate'] for r in rows);mfe=max(r['MFE'] for r in rows)
+        target=last.get('signal',{}).get('target')
+        confirmed=all(r.get('pnl_source')=='BROKER_QUERY' for r in rows)
+        out.append({**last,'trade_id':key,'qty':quantity,'pnl_source':'BROKER_QUERY' if confirmed else 'MIXED_OR_ESTIMATED',
             **totals,'net_pnl':sum(r['pnl_estimate'] for r in rows),
             'exit_price':sum(r['exit']*r['qty'] for r in rows)/sum(r['qty'] for r in rows) if all(isinstance(r.get('exit'),(int,float)) for r in rows) and sum(r['qty'] for r in rows)>0 else None,
             'pnl_estimate':sum(r['pnl_estimate'] for r in rows),'fee_estimate':sum(r.get('fee_actual',r.get('fee_estimate',0)) for r in rows),
-            'MFE':max(r['MFE'] for r in rows),'MAE':max(r['MAE'] for r in rows)})
+            'MFE':mfe,'MAE':max(r['MAE'] for r in rows),
+            'mfe_capture_fraction':net/(mfe*quantity) if mfe>0 and quantity>0 else None,
+            'mfe_capture_basis':'BROKER_CONFIRMED_NET' if confirmed else 'ESTIMATED_COST_NET',
+            'recorded_target_reached':last['entry']+mfe>=target if isinstance(target,(int,float)) and target>last['entry'] else None,
+            'target_reached':True if isinstance(target,(int,float)) and target>last['entry'] and last['entry']+mfe>=target else None,
+            'price_history_complete':all(r.get('price_history_complete') is True for r in rows),
+            'beyond_initial_target':max(0,last['entry']+mfe-target) if isinstance(target,(int,float)) and target>last['entry'] else None,
+            'post_target_drawdown':'UNKNOWN_WITHOUT_TIME_ORDERED_PRICE_HISTORY'})
     return sorted(out,key=lambda r:r['closed'])
 
 def summary(rows):
@@ -27,7 +37,16 @@ def summary(rows):
     for r in rows:
         streak=streak+1 if r['pnl_estimate']<0 else 0; maximum=max(maximum,streak)
     avgwin=mean(wins) if wins else None; avgloss=-mean(losses) if losses else None
+    actual=[r for r in rows if r.get('pnl_source')=='BROKER_QUERY']
+    capture=[r['mfe_capture_fraction'] for r in actual if r.get('mfe_capture_fraction') is not None]
+    targets=[r['recorded_target_reached'] for r in rows if r.get('recorded_target_reached') is not None]
+    covered=[r['recorded_target_reached'] for r in rows if r.get('price_history_complete') is True and r.get('recorded_target_reached') is not None]
     return {'count':len(rows),'win_rate':len(wins)/len(rows) if rows else None,
+        'broker_confirmed_count':len(actual),'broker_net_expectancy_krw':mean(r['pnl_estimate'] for r in actual) if actual else None,
+        'broker_mfe_capture_fraction':mean(capture) if capture else None,
+        'observed_target_reach_rate':sum(targets)/len(targets) if targets else None,
+        'target_reach_rate':sum(covered)/len(covered) if covered else None,'target_known_count':len(targets),
+        'target_coverage_note':'관측 최고가 기준; 이력 누락 시 전체 목표 도달률은 UNKNOWN',
         'average_win':avgwin,'average_loss':avgloss,'payoff':avgwin/avgloss if avgwin is not None and avgloss else None,
         'net_expectancy_krw':mean(r['pnl_estimate'] for r in rows) if rows else None,
         'average_holding_seconds':mean(r['holding_seconds'] for r in rows) if rows else None,

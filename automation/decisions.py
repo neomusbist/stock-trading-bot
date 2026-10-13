@@ -1,9 +1,9 @@
 """events.jsonl에 동일 스키마로 기록하는 작은 어댑터. 새 DB나 매 틱 로그 없음."""
 import json
 import math
-STRATEGY_VERSION='V1.5-structural-context-brokerpnl-20261013'
-BUILD_ID='V1.5-risk2-watch12-bc20M-structuralAE3-20261013'
-STRATEGY_EXPERIMENT='20261007-risk2-daily4-dynamiccap-watch12-accelA-bc20M-bclose20261008-dailyoverride20261012-context-optin-matched-rest-hold-box-direction-pivot-protection-v15entry-feedcatchup-structuralB-structuralAE3-close-invalidation-after-failed-rebound-brokerpnl'
+STRATEGY_VERSION='V1.5-structural-exitplan-20261013'
+BUILD_ID='V1.5-risk2-watch12-bc20M-exitplan-20261013'
+STRATEGY_EXPERIMENT='20261007-risk2-daily4-dynamiccap-watch12-accelA-bc20M-bclose20261008-dailyoverride20261012-context-optin-matched-rest-hold-box-direction-pivot-protection-v15entry-feedcatchup-structuralB-structuralAE3-close-invalidation-after-failed-rebound-brokerpnl-exitplan-ohlcv-wiring-shared-emergency'
 
 def check_experiment_consistency(cfg, build_id=BUILD_ID, experiment=STRATEGY_EXPERIMENT):
     """BUILD_ID 또는 STRATEGY_EXPERIMENT에 risk2/daily4가 적혀 있는데
@@ -67,7 +67,8 @@ class DecisionLog:
         state=('EXIT_PENDING' if p.get('exit_requested') else 'BOT_POSITION') if p else e.policy.mode
         if sig.get('ownership')=='EXISTING_POLICY': state='EXTERNAL_POLICY_PENDING' if e.active_orders(symbol) else 'EXTERNAL_POLICY_HOLD'
         signature=json.dumps([state,decision,reason,p.get('stop'),p.get('qty'),
-                              {k:v['result'] for k,v in gates.items()},sig.get('pattern')],sort_keys=True)
+                              {k:v['result'] for k,v in gates.items()},sig.get('pattern'),
+                              p.get('exit_state',{}).get('protection_status'),p.get('exit_state',{}).get('trend_status')],sort_keys=True)
         stamp=e.clock().timestamp(); prev=self.last.get(key)
         if not force and prev and prev[0]==signature and stamp-prev[1]<e.a.decision_snapshot_seconds: return
         self.last[key]=(signature,stamp)
@@ -107,6 +108,8 @@ class DecisionLog:
             invalidation_price=p.get('initial_stop',sig.get('stop')),protection_price=p.get('stop'),
             highest_price=p.get('high'),lowest_price=p.get('low'),
             protection_evidence=p.get('protection_evidence'),data_health=p.get('data_health'),
+            exit_plan=p.get('exit_plan',sig.get('exit_plan')),exit_state=p.get('exit_state'),
+            profit_policy_observation=p.get('profit_policy_observation'),
             actual_orderable_cash=e.available_cash,approved_cap=e.a.capital_limit,effective_auto_cap=e.auto_available_capital(),calculated_available_capital=e.watch_budget(),
             MFE=p.get('high')-entry if p.get('high') is not None and entry is not None else None,
             MAE=entry-p.get('low') if p.get('low') is not None and entry is not None else None,
