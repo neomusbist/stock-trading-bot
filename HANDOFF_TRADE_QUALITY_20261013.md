@@ -1,4 +1,40 @@
-# V1.5 overnight judgment checkpoint (2026-10-14)
+# V1.5 preopen continuation-proof checkpoint (2026-10-14)
+
+BUILD: `V1.5-risk2-watch12-bc20M-nightquality-r2-20261014`.
+Base: `c6450f1`; same branch `fix/v1.5-night-quality-20261014`.
+Strategy version and thresholds remain `V1.5-structural-continuation-20261014`.
+
+The requested preopen audit reproduced a final-order source mismatch. Local
+confirmed continuation is qualified from received decision candles, but the
+engine recomputed it from reference candles. A benign same-time REST/live volume
+or OHLC revision refused a valid local signal. Conversely, missing or incomplete
+decision snapshots could pass when reference candles remained valid.
+
+The minimal engine correction selects the same source as the detector: received
+`decision_bar_snapshot` for `LOCAL_CONFIRMED_CONTINUATION`, reference snapshots for
+the existing reference-qualified continuation mode. Identical continuation proof
+comparison remains mandatory. Structural support/stop/ceiling evidence still uses
+the original references; stale/missing structure, future receipt, incomplete live
+signal, stale executable quote, insufficient RR and a target above the known
+session ceiling remain rejected. No strategy, threshold, exit, risk or account
+policy is relaxed.
+
+Nine dedicated cases cover matching sources, independent volume/OHLC revisions
+through the actual receiver and fake broker, missing/stale structure, old REST
+metadata with fresh complete bars, incomplete received candles, future receipt,
+stale live quotes, and session-ceiling/RR rejection at the receiver/order boundary.
+Failure-before evidence is private: all nine run against c6450f1 reproduce the
+three expected source-parity failures. Final full regression: 1,212 PASS, zero
+FAIL/ERROR/SKIP/network attempts, including the original 1,203 plus nine new cases.
+
+The invalid-source acceptance is a safety defect, so the correction has a distinct
+R2 BUILD for the user's next direct approval. Preserve all protected operating
+files and remain STOP/OFF. Deployment/hash/Git verification is recorded privately;
+this checkpoint does not grant LIVE approval or claim fresh broker readiness.
+
+---
+
+# Preserved V1.5 overnight judgment checkpoint (2026-10-14)
 
 BUILD: `V1.5-risk2-watch12-bc20M-nightquality-r1-20261014`.
 Branch: `fix/v1.5-night-quality-20261014`; base `d602fc8`.

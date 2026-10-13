@@ -292,7 +292,12 @@ class AutonomousEngine(ExistingExits,Engine):
                 acceleration=signal['evaluation_gates'].get('acceleration',{})
                 if acceleration.get('values',{}).get('mode')=='CONFIRMED_CONTINUATION':
                     from automation.structural_breakout import confirmed_continuation
-                    sustained,continuation=confirmed_continuation(signal['reference_bar_snapshot'],stamp,self.c.min_price_gain)
+                    # Revalidate the exact source used by the detector. Local A
+                    # uses received signal candles; references still prove its
+                    # support/ceiling above and cannot substitute for those bars.
+                    bars=(signal.get('decision_bar_snapshot') if signal.get('entry_basis')=='LOCAL_CONFIRMED_CONTINUATION'
+                          else signal.get('reference_bar_snapshot'))
+                    sustained,continuation=confirmed_continuation(bars,stamp,self.c.min_price_gain)
                     if sustained is not True or acceleration.get('result')!='PASS' or acceleration['values'].get('continuation')!=continuation:
                         return 'CONTINUATION_PROOF_MISSING_OR_INVALID'
             except (KeyError,TypeError,ValueError,ZeroDivisionError):return 'BREAKOUT_STRUCTURE_PROOF_MISSING_OR_INVALID'
