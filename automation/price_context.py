@@ -13,8 +13,8 @@ from automation.market_context import trend_window
 
 
 class PriceContext:
-    def __init__(self, limit=256):
-        self.limit=limit;self.rows=OrderedDict();self.day=None
+    def __init__(self, limit=256,bar_limit=30):
+        self.limit=limit;self.bar_limit=bar_limit;self.rows=OrderedDict();self.day=None
 
     def bootstrap(self,signals,asof,stale_seconds=5):
         """Recover only already stored, pre-entry, complete references on this day.
@@ -33,7 +33,7 @@ class PriceContext:
         for stamp,sig in sorted(usable,key=lambda p:p[0]):
             for raw in sorted(sig.get('decision_bar_snapshot',[]),key=lambda b:b.get('time','')):
                 try:
-                    bar={**raw,'time':datetime.fromisoformat(raw['time'])}
+                    bar={**raw,'time':datetime.fromisoformat(raw['time']),'venue':sig.get('venue')}
                     added+=bool(self.record(sig['symbol'],bar,stamp,stale_seconds))
                 except (KeyError,TypeError,ValueError):continue
         return {'recovered_complete_references':added,'symbols':len(self.rows),
@@ -48,10 +48,17 @@ class PriceContext:
         if any(type(bar.get(k)) not in (int,float) or not math.isfinite(bar[k]) or bar[k]<=0
                for k in ('open','high','low','close')):return False
         if not bar['low']<=min(bar['open'],bar['close'])<=max(bar['open'],bar['close'])<=bar['high']:return False
-        row=self.rows.setdefault(symbol,{'bars':deque(maxlen=30),'peaks':deque(maxlen=128),
+        row=self.rows.setdefault(symbol,{'bars':deque(maxlen=self.bar_limit),'peaks':deque(maxlen=128),
             'first_observed_at':stamp.isoformat(),'last_complete_at':None})
+        venue=bar.get('venue')
+        if venue:
+            if row.get('context_venue') not in (None,venue):
+                self.rows.pop(symbol,None)
+                return self.record(symbol,bar,asof,stale_seconds)
+            row['context_venue']=venue
         if row['bars'] and stamp<=row['bars'][-1]['time']:return False
         row['bars'].append({k:deepcopy(bar[k]) for k in ('time','open','high','low','close')})
+        if self.bar_limit>30 and 'volume' in bar:row['bars'][-1]['volume']=bar['volume']
         row['last_complete_at']=(stamp+timedelta(minutes=1)).isoformat()
         # Retain the reference and its clearance evidence. A completed close over
         # an already confirmed peak retires that resistance; a later pullback
@@ -67,6 +74,26 @@ class PriceContext:
         self.rows.move_to_end(symbol)
         while len(self.rows)>self.limit:self.rows.popitem(last=False)
         return True
+
+    def merge_history(self,symbol,bars,received,venue):
+        """REST references do not populate Detector.history, buffers or observation_start."""
+        if self.day!=received.date():self.rows.clear();self.day=received.date()
+        prior=self.rows.get(symbol)
+        if prior and prior.get('context_venue')!=venue:prior=None
+        merged={b['time']:dict(b) for b in bars}
+        last_rest=max(merged,default=None)
+        if prior:merged.update({b['time']:dict(b) for b in prior['bars'] if last_rest is None or b['time']>last_rest})
+        self.rows.pop(symbol,None)
+        for stamp in sorted(merged):self.record(symbol,merged[stamp],received)
+        if symbol in self.rows:
+            self.rows[symbol].update(context_venue=venue,history_received_at=received.isoformat())
+
+    def reference_bars(self,symbol,asof,venue=None):
+        row=self.rows.get(symbol) if self.day==asof.date() else None
+        if not row or (venue and row.get('context_venue')!=venue):return []
+        received=row.get('history_received_at')
+        if received and datetime.fromisoformat(received)>asof:return []
+        return [deepcopy(b) for b in row['bars'] if b['time']+timedelta(minutes=1)<=asof]
 
     def snapshot(self,symbol,tick,entry):
         row=self.rows.get(symbol) if self.day==tick.time.date() else None
@@ -88,6 +115,8 @@ class PriceContext:
         src=source.rows[symbol]
         if self.day is not None and self.day!=source.day:return
         self.day=source.day;dst=self.rows.get(symbol)
+        if dst and src.get('context_venue') and dst.get('context_venue')!=src['context_venue']:
+            self.rows.pop(symbol,None);dst=None
         if dst is None:self.rows[symbol]=deepcopy(src)
         else:
             bars={b['time']:b for b in list(dst['bars'])+list(src['bars'])}
@@ -110,9 +139,12 @@ class PriceContext:
                             and (not peak.get('cleared_at') or cleared<peak['cleared_at'])):
                         peak.update(cleared_at=cleared,cleared_by_close=bar['close'])
                         break
-            dst['bars']=deque([bars[k] for k in sorted(bars)][-30:],maxlen=30)
+            dst['bars']=deque([bars[k] for k in sorted(bars)][-self.bar_limit:],maxlen=self.bar_limit)
             dst['peaks']=deque([peaks[k] for k in sorted(peaks)][-128:],maxlen=128)
             dst['first_observed_at']=min(dst['first_observed_at'],src['first_observed_at'])
             dst['last_complete_at']=max(dst['last_complete_at'],src['last_complete_at'])
+            if src.get('history_received_at'):
+                dst['history_received_at']=max(dst.get('history_received_at',''),src['history_received_at'])
+                dst['context_venue']=src.get('context_venue')
         self.rows.move_to_end(symbol)
         while len(self.rows)>self.limit:self.rows.popitem(last=False)

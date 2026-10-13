@@ -16,7 +16,8 @@ GATE_NAMES={'warmup':'관측 준비','acceleration':'가속','liquidity':'거래
     'structure':'일봉 구조','market_status':'종목상태','pattern':'Setup','breakout':'돌파','chase':'추격 거리',
     'invalidation':'무효화 거리','risk_reward':'보상/위험','resistance':'상단 여유','economic':'비용/효율',
     'policy':'운영 승인','session':'거래시간','connection_account':'계좌/통신','tick':'시세 신선도',
-    'repeat_slots':'재진입/보유한도','risk_quantity':'위험수량','pullback_structure':'눌림 지지 확인'}
+    'repeat_slots':'재진입/보유한도','risk_quantity':'위험수량','pullback_structure':'눌림 지지 확인',
+    'breakout_structure':'돌파 범위 지지·기존 고점 확인'}
 CANDIDATE_FIELDS={'raw_candidates':'원시 후보','affordable':'1주 매수 가능',
     'unaffordable':'1주 매수 불가','affordability_unknown_or_observation':'자본확인 불가 / 관찰',
     'liquidity_fail':'유동성 탈락','spread_fail':'호가 간격 탈락','structure_fail':'구조 탈락',
@@ -92,6 +93,9 @@ SETUP_WAIT_REASONS={
     'ENTRY_CONTEXT_PROOF_MISSING_OR_INVALID':'장중 저항 검사 근거 미확인',
     'ENTRY_CONTEXT_RR_CHANGED':'주문 직전 상승 여유 변경',
     'PULLBACK_STRUCTURE_FAIL':'눌림 지지 확인 또는 가격 여유 부족',
+    'BREAKOUT_STRUCTURE_FAIL':'이전 가격구조 부족 또는 돌파 지지 미확인',
+    'BREAKOUT_STRUCTURE_PROOF_MISSING_OR_INVALID':'주문 직전 돌파 지지 근거 변경',
+    'BREAKOUT_REFERENCE_NOT_KNOWN_AT_SIGNAL':'매수 판단 당시 확인되지 않은 과거 시세',
     'PULLBACK_STRUCTURE_PROOF_MISSING_OR_INVALID':'주문 직전 눌림 지지 근거 변경',
     'PULLBACK_STRUCTURE_SPREAD_CHANGED':'주문 직전 호가 간격 확대',
     'PULLBACK_ENTRY_BOOK_STALE':'주문 직전 호가 시각 지연',
@@ -377,6 +381,15 @@ def start_block(s):
     elif s['mode']=='STOP' and not s.get('guided_start'): return '관찰 재개는 0원·실주문 비활성 상태의 조회 대기 전환이 필요합니다.'
     return ''
 
+def position_invalidation_lines(position,enabled=False):
+    policy=position.get('signal',{}).get('invalidation_policy')
+    if not enabled or not policy:return position.get('initial_stop'),position.get('stop'),False
+    from core.util import floor_tick
+    soft=max(policy['structural_stop'],position.get('stop',position['initial_stop']))
+    hard=max(position['initial_stop'],floor_tick(soft-policy['noise_band']))
+    return policy['structural_stop'],hard,True
+
+
 class UserOperations(OperatorService):
     """기존 서비스 상속: 시작/STOP/진단과 별도 명시 자본 승인을 연결한다."""
     def snapshot(self):
@@ -436,14 +449,15 @@ class UserOperations(OperatorService):
         s['bot_positions']=[]
         for sym,p in state.get('positions',{}).items():
             current=next((r.get('current_price') for r in reversed(rows) if r.get('symbol')==sym and r.get('current_price')),None)
+            structural,protective,close_based=position_invalidation_lines(p,auto.confirmed_invalidation_enabled)
             s['bot_positions'].append({'symbol':sym,'name':p.get('signal',{}).get('name') or sym,'entry':p.get('avg'),'current':current,'quantity':p.get('qty'),
-                'setup':p.get('pattern'),'invalidation':p.get('initial_stop'),'protection':p.get('stop'),'high':p.get('high'),
+                'setup':p.get('pattern'),'invalidation':structural,'protection':protective,'high':p.get('high'),
                 'MFE':p.get('high',p['avg'])-p['avg'],'MAE':p['avg']-p.get('low',p['avg']),
-                'risk':max(0,p['avg']-p['stop']+p['avg']*auto.commission_buy+p['stop']*(auto.commission_sell+auto.sell_tax+cfg.exit_slippage_fraction))*p['qty'],
+                'risk':max(0,p['avg']-protective+p['avg']*auto.commission_buy+protective*(auto.commission_sell+auto.sell_tax+cfg.exit_slippage_fraction))*p['qty'],
                 'exit_mode':'수량 확인 필요 / 자동청산 보류' if p.get('qty_blocked') else '청산 대기' if p.get('exit_requested') else '구조 / 수익 보호',
                 'protection_evidence':p.get('protection_evidence'),'data_health':p.get('data_health'),
-                'hold_reason':'장부·실계좌 수량 불일치. HTS에서 보유·미체결 확인 필요' if p.get('qty_blocked') else p.get('exit_reason') if p.get('exit_requested') else '현재 보호선 위; 강제청산 시각 전',
-                'next_exit':f"체결가 ≤ {p['stop']} / 호가 비상선 이탈 / {auto.after_force_flatten_start if p.get('signal',{}).get('session')=='AFTER' else auto.force_flatten_start} 강제청산 / 시세 재확인 실패 / 중단 청산 요청"})
+                'hold_reason':'장부·실계좌 수량 불일치. HTS에서 보유·미체결 확인 필요' if p.get('qty_blocked') else p.get('exit_reason') if p.get('exit_requested') else '구조선은 완성봉 종가로 확인; 비상선은 즉시 보호' if close_based else '현재 보호선 위; 강제청산 시각 전',
+                'next_exit':(f"완성봉 종가 ≤ {max(structural,p['stop'])} / 현재 보호·비상선 {protective}원 즉시 이탈" if close_based else f"체결가 ≤ {p['stop']} / 호가 비상선 이탈")+f" / {auto.after_force_flatten_start if p.get('signal',{}).get('session')=='AFTER' else auto.force_flatten_start} 강제청산 / 시세 재확인 실패 / 중단 청산 요청"})
         s['active_error']=s['current_error'] not in {'현재 오류 미확인 / 과거 기록은 상세보기','기록 없음 (정상 연결을 뜻하지 않음)'}
         s['protection_rows']=[{'symbol':sym,'policy':'HARD_LOCK / 자동매매 금지' if sym in HARD_LOCKS else p,
              'breakeven':BREAKEVEN_EXITS.get(sym)} for sym,p in EXISTING_POLICIES.items()]

@@ -2,7 +2,7 @@
 import json
 import time
 import math
-from datetime import datetime
+from datetime import datetime,timedelta
 from pathlib import Path
 from core.engine import Engine, TERMINAL
 from core.broker import Rejected
@@ -271,6 +271,27 @@ class AutonomousEngine(ExistingExits,Engine):
             'efficiency':gate(signal.get('efficiency',{}).get('decision')=='TRADE',efficiency=signal.get('efficiency'))}
 
     def entry_market_reason(self,signal,quantity,fallback=None,phase='PRE_INTENT'):
+        if self.a.structural_breakout_enabled and signal.get('pattern')=='A':
+            from automation.structural_breakout import structural_breakout
+            try:
+                stamp=datetime.fromisoformat(signal['time'])
+                received=signal.get('reference_received_at')
+                if received and datetime.fromisoformat(received)>stamp:return 'BREAKOUT_REFERENCE_NOT_KNOWN_AT_SIGNAL'
+                quote=signal['evaluation_gates']['spread']['values']
+                passed,evidence=structural_breakout(signal.get('reference_bar_snapshot'),stamp,signal,self.c,signal['limit'],quote['bid'],quote['ask'])
+                proof=signal['evaluation_gates'].get('breakout_structure')
+                if (passed is not True or proof!={'result':'PASS','values':{'enabled':True,**evidence}}
+                        or signal.get('invalidation_policy')!={'enabled':True,**evidence}
+                        or signal['stop']!=evidence['emergency_stop'] or signal['target']>evidence['target_ceiling']
+                        or (signal['target']-signal['limit'])/(signal['limit']-signal['stop'])<self.c.min_reward_risk):
+                    return 'BREAKOUT_STRUCTURE_PROOF_MISSING_OR_INVALID'
+                acceleration=signal['evaluation_gates'].get('acceleration',{})
+                if acceleration.get('values',{}).get('mode')=='CONFIRMED_CONTINUATION':
+                    from automation.structural_breakout import confirmed_continuation
+                    sustained,continuation=confirmed_continuation(signal['reference_bar_snapshot'],stamp,self.c.min_price_gain)
+                    if sustained is not True or acceleration.get('result')!='PASS' or acceleration['values'].get('continuation')!=continuation:
+                        return 'CONTINUATION_PROOF_MISSING_OR_INVALID'
+            except (KeyError,TypeError,ValueError,ZeroDivisionError):return 'BREAKOUT_STRUCTURE_PROOF_MISSING_OR_INVALID'
         """No I/O: recheck latest receiver state immediately before a BUY leaves the process."""
         if self.a.structural_pullback_enabled and signal.get('pattern')=='B':
             from automation.structural_pullback import structural_pullback
@@ -278,9 +299,10 @@ class AutonomousEngine(ExistingExits,Engine):
                 proof=signal.get('evaluation_gates',{}).get('pullback_structure',{})
                 values=proof.get('values',{})
                 passed,evidence=structural_pullback(signal.get('decision_bar_snapshot'),datetime.fromisoformat(signal['time']),
-                    signal,self.c,signal['limit'],values.get('bid'),values.get('ask'))
+                    signal,self.c,signal['limit'],values.get('bid'),values.get('ask'),close_policy=self.a.confirmed_invalidation_enabled)
                 if (passed is not True or proof!={'result':'PASS','values':{'enabled':True,**evidence}}
-                        or signal['stop']!=evidence['buffered_stop']
+                        or signal['stop']!=evidence.get('emergency_stop',evidence['buffered_stop'])
+                        or self.a.confirmed_invalidation_enabled and signal.get('invalidation_policy')!={'enabled':True,**evidence}
                         or evidence['target_ceiling'] is not None and signal['target']>evidence['target_ceiling']
                         or signal['target']>signal['projection']
                         or (signal['target']-signal['limit'])/(signal['limit']-signal['stop'])<self.c.min_reward_risk):
@@ -340,8 +362,12 @@ class AutonomousEngine(ExistingExits,Engine):
             tick_venue=getattr(tick,'venue',None),tick_depth_source=getattr(tick,'depth_source',None),
             spread=(tick.ask-tick.bid)/tick.price if tick.price>0 else None)
         if not tick.regular or not 0<=age<=self.c.stale_seconds:return 'ENTRY_MARKET_DATA_STALE'
-        if self.a.structural_pullback_enabled and signal.get('pattern')=='B':
-            if tick.ask-tick.bid>signal['evaluation_gates']['pullback_structure']['values']['buffer_amount']:
+        b_structure=self.a.structural_pullback_enabled and signal.get('pattern')=='B'
+        a_structure=self.a.structural_breakout_enabled and signal.get('pattern')=='A'
+        if b_structure or a_structure:
+            planned_buffer=(signal['evaluation_gates']['pullback_structure']['values']['buffer_amount'] if b_structure
+                            else signal['evaluation_gates']['breakout_structure']['values']['buffer'])
+            if tick.ask-tick.bid>planned_buffer:
                 return 'PULLBACK_STRUCTURE_SPREAD_CHANGED'
             if provider:
                 try:
@@ -352,7 +378,7 @@ class AutonomousEngine(ExistingExits,Engine):
                 except (KeyError,TypeError,ValueError):return 'PULLBACK_ENTRY_BOOK_UNAVAILABLE'
                 if not 0<=book_age<=self.c.stale_seconds:return 'PULLBACK_ENTRY_BOOK_STALE'
                 if ask>signal['limit']:return 'ENTRY_QUOTE_ABOVE_LIMIT'
-                if ask-bid>signal['evaluation_gates']['pullback_structure']['values']['buffer_amount']:
+                if ask-bid>planned_buffer:
                     return 'PULLBACK_STRUCTURE_SPREAD_CHANGED'
         breakout=signal.get('evaluation_gates',{}).get('breakout',{}).get('values',{}).get('breakout')
         # Legacy core synthetic signals have no geometry. The real runner always
@@ -651,7 +677,7 @@ class AutonomousEngine(ExistingExits,Engine):
 
     def observe_protection_bar(self,symbol,bar):
         """Keep at most three real completed post-entry bars in the existing position journal."""
-        if not self.a.confirmed_structure_protection:return
+        if not (self.a.confirmed_structure_protection or self.a.confirmed_invalidation_enabled):return
         p=self.s['positions'].get(symbol)
         if not p:return
         from automation.trade_quality import complete_sequence
@@ -665,10 +691,16 @@ class AutonomousEngine(ExistingExits,Engine):
         previous=p.get('protection_bars',[])
         if previous and stamp<=previous[-1]['time']:return
         p['protection_bars']=(previous+[{**b,'time':stamp}])[-3:]
+        policy=p.get('signal',{}).get('invalidation_policy')
+        if self.a.confirmed_invalidation_enabled and policy:
+            soft=max(policy['structural_stop'],p.get('confirmed_soft_stop',policy['structural_stop']))
+            p['last_invalidation_bar']={'time':stamp,'close':b['close'],'structural_stop':soft}
+            if b['time']==self.clock().replace(second=0,microsecond=0)-timedelta(minutes=1) and b['close']<=soft:
+                self.request_exit(symbol,'확정봉 종가의 구조적 무효화')
         self.save()
 
     def protection(self,p,price,completed_low):
-        if self.a.confirmed_structure_protection:
+        if self.a.confirmed_structure_protection or (self.a.confirmed_invalidation_enabled and p.get('signal',{}).get('invalidation_policy')):
             from automation.trade_quality import confirmed_protection
             high,stop,evidence=confirmed_protection(self.c,self.a,p,price,self.clock())
             evidence['effective_stop']=stop
@@ -916,7 +948,27 @@ class AutonomousEngine(ExistingExits,Engine):
     def on_tick(self,t,completed_low=None):
         self.names.setdefault(t.symbol,None)
         previous=self.s['positions'].get(t.symbol,{}).get('stop')
-        super().on_tick(t,completed_low)
+        p=self.s['positions'].get(t.symbol)
+        policy=p.get('signal',{}).get('invalidation_policy') if p else None
+        if p and self.a.confirmed_invalidation_enabled and policy:
+            trade_fresh=0<=(self.clock()-t.time).total_seconds()<=self.c.stale_seconds
+            if trade_fresh:
+                p['last_tick']=self.clock().isoformat();p['low']=min(p['low'],t.price)
+                p['high'],p['stop']=self.protection(p,t.price,completed_low)
+            soft=max(policy['structural_stop'],p['stop'])
+            p['confirmed_soft_stop']=soft
+            hard=max(p['initial_stop'],floor_tick(soft-policy['noise_band']))
+            quote=p.get('last_quote',{})
+            try:quote_fresh=0<=(self.clock()-datetime.fromisoformat(quote['time'])).total_seconds()<=self.c.stale_seconds
+            except (KeyError,TypeError,ValueError):quote_fresh=False
+            bid=quote.get('bid',0) if quote_fresh else 0
+            p['invalidation_evidence']={'checked_at':self.clock().isoformat(),'structural_stop':soft,
+                'emergency_stop':hard,'fresh_price':t.price if trade_fresh else None,'fresh_bid':bid,'trigger':'COMPLETE_CLOSE_OR_EMERGENCY'}
+            if trade_fresh and t.price<=hard or bid>0 and bid<=hard:self.request_exit(t.symbol,'계좌 위험으로 수량 계산한 비상선 이탈')
+            if p['stop']>previous or time.monotonic()-self.last_checkpoint>=1:
+                self.save();self.last_checkpoint=time.monotonic()
+            self.drive_exits({t.symbol:t.bid or t.price})
+        else:super().on_tick(t,completed_low)
         p=self.s['positions'].get(t.symbol)
         if p and previous is not None and p.get('stop',0)>previous:
             self.decisions.emit('PROTECTION_UPDATE',t.symbol,'HOLD','PROTECTION_RAISED',

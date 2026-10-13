@@ -195,8 +195,32 @@ class RadarWorker:
             if r['code'] not in self.status_waiting:
                 self.status_waiting[r['code']]=self.status_sequence;self.status_sequence+=1
         active=self.status_priority_symbols
-        return sorted(items,key=lambda r:(r['code'] not in active,r['code'] not in self.radar.watch,
+        ordered=sorted(items,key=lambda r:(r['code'] not in active,r['code'] not in self.radar.watch,
                                          self.status_waiting[r['code']]))
+        if not self.a.structural_breakout_enabled:return ordered
+        moving=[]
+        for row in ordered:
+            sym=row['code'];status=self.status_cache.get(sym)
+            # A valid fresh cache never uses one of the reserved admission slots.
+            if status and status.get('checked_at'):
+                try:
+                    if 0<=(now()-date_time.fromisoformat(status['checked_at'])).total_seconds()<=self.a.scan_seconds*3:continue
+                except (ValueError,TypeError):pass
+            gain=row.get('discovery_context',{}).get('last_cycle_return')
+            gain=gain if type(gain) in (float,int) and gain>0 else 0
+            try:
+                first=row.get('first_raw_at') or row.get('discovery_context',{}).get('first_raw_at')
+                recent=0<=(now()-date_time.fromisoformat(first)).total_seconds()<=2*self.a.scan_seconds
+            except (TypeError,ValueError):recent=False
+            rising_rank=any(type(d.get('values',{}).get('flu_rt')) in (float,int) and d['values']['flu_rt']>0 for d in row['source_details'].values())
+            if sym not in active and sym not in self.radar.watch and (gain>0 or recent and rising_rank):
+                moving.append((gain,-self.status_waiting[sym],sym))
+        slots=min(4,max(1,self.a.max_scan_charts//5))
+        hot={sym for _,_,sym in sorted(moving,reverse=True)[:slots]}
+        # Incumbent deadlines, then bounded movers, then the original aging FIFO.
+        # DynamicRadar still checks affordability and all status/structure gates.
+        return sorted(ordered,key=lambda r:(r['code'] not in active,
+            r['code'] not in self.radar.watch,r['code'] not in hot,self.status_waiting[r['code']]))
 
     def get_cached_metadata(self,symbol):
         day=now().date()

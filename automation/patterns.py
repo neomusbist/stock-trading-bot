@@ -30,7 +30,7 @@ class PatternDetector(Detector):
         self.last_gap_reason={}
         self.observation_start={}; self.observation_session={}
         self._state_lock=RLock()
-        self.price_context=PriceContext()
+        self.price_context=PriceContext(bar_limit=120 if auto.intraday_context_enabled or auto.structural_breakout_enabled else 30)
 
     @observation_locked
     def reset(self):
@@ -61,7 +61,7 @@ class PatternDetector(Detector):
         minute=t.time.replace(second=0,microsecond=0); b=self.current.get(t.symbol)
         if b and b['time']!=minute:
             # Prior confirmed references are distinct from consecutive signal bars.
-            self.price_context.record(t.symbol,b,t.time,self.cfg.stale_seconds)
+            self.price_context.record(t.symbol,{**b,'venue':getattr(self.cfg,'after_default_venue','SOR') if t.time.strftime('%H:%M:%S')>=self.a.after_prep_start else 'KRX'},t.time,self.cfg.stale_seconds)
             if (minute-b['time']).total_seconds()==60:
                 self.history.setdefault(t.symbol,deque(maxlen=30)).append(b)
             else:
@@ -266,10 +266,16 @@ class PatternDetector(Detector):
             trial_gates={**common,**price_gates}
             if name=='A':
                 trial_gates['acceleration']=gates['acceleration']
+                if self.a.structural_breakout_enabled and price_gates.get('breakout_structure',{}).get('result')=='PASS' and gates['acceleration']['result']!='PASS':
+                    from automation.structural_breakout import confirmed_continuation
+                    venue=watch.get('venue') or (getattr(self.cfg,'after_default_venue','SOR') if is_after else 'KRX')
+                    sustained,proof=confirmed_continuation(self.price_context.reference_bars(t.symbol,t.time,venue),t.time,self.cfg.min_price_gain)
+                    if sustained is True:
+                        trial_gates['acceleration']=gate(True,**gates['acceleration']['values'],mode='CONFIRMED_CONTINUATION',continuation=proof)
                 if bars and len(bars)>=2:
                     swing_low=min(b['low'] for b in bars)
                     extension=(t.price-swing_low)/swing_low if swing_low>0 else 0
-                    if extension>0.07:
+                    if extension>0.07 and trial_gates['acceleration'].get('values',{}).get('mode')!='CONFIRMED_CONTINUATION':
                         ratio=gates['acceleration']['values'].get('ratio')
                         min_ratio=gates['acceleration']['values'].get('min_ratio',self.cfg.min_turnover_ratio)
                         if ratio is not None and ratio<min_ratio*1.2:
@@ -335,8 +341,9 @@ class PatternDetector(Detector):
             if 'box_direction' in price_gates:gates['box_direction']=price_gates['box_direction']
             if 'box_origin' in price_gates:gates['box_origin']=price_gates['box_origin']
             if 'pullback_structure' in price_gates:gates['pullback_structure']=price_gates['pullback_structure']
+            if 'breakout_structure' in price_gates:gates['breakout_structure']=price_gates['breakout_structure']
             gates['liquidity']=trial['gates']['liquidity']
-            gates['acceleration']={**gates['acceleration'],'required':name=='A','scope':'ENTRY_GATE' if name=='A' else 'OBSERVATION_ONLY'}
+            gates['acceleration']={**(trial['gates']['acceleration'] if name=='A' else gates['acceleration']),'required':name=='A','scope':'ENTRY_GATE' if name=='A' else 'OBSERVATION_ONLY'}
             gates['pattern']=gate(True,setup=name,acceleration_required=name=='A')
             venue=watch.get('venue') or (getattr(c,'after_default_venue','SOR') if is_after else 'KRX')
             # Observation can establish only a one-share depth prerequisite.
@@ -346,6 +353,13 @@ class PatternDetector(Detector):
                 'evaluation_gates':gates,'setup_trials':trials,'acceleration_required':name=='A',
                 'market_context':context,'discovery_context':watch.get('discovery_context'),
                 'price_context':price_gates.get('entry_context',{}).get('values'),
+                **({'reference_bar_snapshot':[{**{k:b[k] for k in ('open','high','low','close')},**({'volume':b['volume']} if 'volume' in b else {}),'time':b['time'].isoformat()}
+                      for b in self.price_context.reference_bars(t.symbol,t.time,venue)],
+                    'reference_received_at':self.price_context.rows.get(t.symbol,{}).get('history_received_at'),
+                    'invalidation_policy':price_gates.get('breakout_structure',{}).get('values')}
+                   if name=='A' and self.a.structural_breakout_enabled else {}),
+                **({'invalidation_policy':price_gates['pullback_structure']['values']}
+                   if name=='B' and self.a.structural_pullback_enabled and self.a.confirmed_invalidation_enabled else {}),
                 'decision_bar_snapshot':[{**{k:b.get(k) for k in ('open','high','low','close','volume')},
                     **({k:b[k] for k in ('first_second','gap_reason') if k in b} if self.a.structural_pullback_enabled else {}),
                     'time':b['time'].isoformat()} for b in bars[-(30 if self.a.structural_pullback_enabled else max(12,2*self.a.box_min_bars+2) if self.a.fresh_box_basis_enabled else 12):]],
@@ -397,14 +411,28 @@ class PatternDetector(Detector):
         structural=None;structural_pass=None
         if self.a.structural_pullback_enabled and setup['pattern']=='B':
             from automation.structural_pullback import structural_pullback
-            structural_pass,structural=structural_pullback(bars,t.time,setup,c,limit,t.bid,t.ask)
-            if structural.get('buffered_stop') is not None:stop=structural['buffered_stop']
+            structural_pass,structural=structural_pullback(bars,t.time,setup,c,limit,t.bid,t.ask,close_policy=self.a.confirmed_invalidation_enabled)
+            if structural.get('buffered_stop') is not None:stop=structural.get('emergency_stop',structural['buffered_stop'])
             if structural.get('target_ceiling') is not None:target=min(target,structural['target_ceiling'])
+        breakout_evidence=None;breakout_pass=None
+        if self.a.structural_breakout_enabled and setup['pattern']=='A':
+            from automation.structural_breakout import structural_breakout
+            venue=watch.get('venue') or (getattr(c,'after_default_venue','SOR') if after_supported(t.time) else 'KRX')
+            breakout_pass,breakout_evidence=structural_breakout(self.price_context.reference_bars(t.symbol,t.time,venue),t.time,setup,c,limit,t.bid,t.ask)
+            if breakout_evidence.get('emergency_stop') is not None:stop=breakout_evidence['emergency_stop']
+            if breakout_evidence.get('target_ceiling') is not None:
+                target=breakout_evidence['target_ceiling']
+                if resistance is not None and resistance>limit:target=min(target,resistance)
         distance=(limit-stop)/limit if limit>0 else None
         rr=(target-limit)/(limit-stop) if limit>stop else None
         horizon=getattr(self.a,'horizon_'+setup['pattern'].lower()+'_minutes')
         score=efficiency(limit,stop,target,min(1.,0.4+0.1*len(watch.get('source_details',{}))),horizon,self.costs,self.a.min_efficiency_score)
         invalidation_pass=bool(distance is not None and 0<stop<limit and c.min_stop_fraction<=distance<=c.max_stop_fraction)
+        structure_sized=(breakout_pass is True or structural_pass is True and self.a.confirmed_invalidation_enabled)
+        if structure_sized:
+            # Price distance is not account risk. The unchanged final risk gate
+            # sizes from the emergency stop or refuses even a single share.
+            invalidation_pass=bool(distance is not None and 0<stop<limit and distance>=c.min_stop_fraction)
         if getattr(self.a, 'chase_quality_filter', False) and distance is not None:
             min_dist = getattr(self.a, 'min_stop_distance_fraction', 0.012)
             if distance < min_dist:
@@ -425,7 +453,9 @@ class PatternDetector(Detector):
                 ask=t.ask,entry=limit,reason='BREAKOUT_QUOTE_NOT_CONFIRMED' if t.price>breakout and limit<=breakout else None),
             'chase':gate(t.ask/breakout-1<=c.max_chase,chase=t.ask/breakout-1,max_chase=c.max_chase,ask=t.ask),
             'invalidation':gate(invalidation_pass if distance is not None else None,
-                entry=limit,stop=stop,distance_pct=distance,min_pct=c.min_stop_fraction,max_pct=c.max_stop_fraction),
+                entry=limit,stop=stop,distance_pct=distance,min_pct=c.min_stop_fraction,
+                max_pct=None if structure_sized else c.max_stop_fraction,
+                **({'upper_bound_basis':'ACCOUNT_RISK_AND_INTEGER_QUANTITY'} if structure_sized else {})),
             'risk_reward':gate(None if rr is None else rr>=c.min_reward_risk,calculated_rr=rr,required_rr=c.min_reward_risk,target=target),
             'resistance':gate(watch.get('status') in {'ELIGIBLE','WATCH','RESERVE'} and (setup['pattern']!='B' or watch.get('resistance_room_pass') is not False),resistance_room_pass=watch.get('resistance_room_pass'),resistance=resistance,
                 distance_pct=resistance/limit-1 if resistance is not None and limit>0 else None,min_room=c.min_resistance_room),
@@ -436,6 +466,7 @@ class PatternDetector(Detector):
                 enabled=True,reason='CONFIRMED_INTRADAY_RESISTANCE_RR' if peak and (rr is None or rr<c.min_reward_risk) else None,
                 original_target=original_target,target=target,required_rr=c.min_reward_risk,calculated_rr=rr,**references)
         if structural is not None:result['pullback_structure']=gate(structural_pass,enabled=True,**structural)
+        if breakout_evidence is not None:result['breakout_structure']=gate(breakout_pass,enabled=True,**breakout_evidence)
         if self.a.fresh_box_basis_enabled and setup['pattern']=='C':
             from automation.trade_quality import fresh_box_basis
             passed,evidence=fresh_box_basis(bars,t.time,self.a.box_min_bars,self.a.box_max_range)

@@ -595,7 +595,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     atomic_json(folder/'session_settings.json',{'config':asdict(cfg),'effective_config':asdict(effective),'automation':asdict(auto)})
     detector=PatternDetector(effective,auto,engine.costs)
     detector.continuous_observation=True
-    if auto.entry_context_enabled:
+    if auto.entry_context_enabled or auto.structural_breakout_enabled:
         saved=[p.get('signal',{}) for p in engine.s['trades']]
         saved.extend(o.get('signal') or {} for o in engine.s['orders'].values() if o.get('side')=='BUY')
         references=detector.price_context.bootstrap(saved,now(),effective.stale_seconds)
@@ -628,6 +628,12 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     shadow=ObservationWorker(effective,auto,engine.costs,root,observation_rest)
     if auto.entry_context_enabled:shadow.observer.detector.price_context=copy.deepcopy(detector.price_context)
     shadow.start()
+    context_worker=None
+    if auto.intraday_context_enabled:
+        from automation.intraday_context import IntradayContextWorker
+        context_rest=Rest(replace(effective,live_mode=False),auth_session=rest.auth_session)
+        context_rest.diagnostic_only=True;context_rest.session_guard=observation_rest.session_guard
+        context_worker=IntradayContextWorker(context_rest);context_worker.start()
     shadow_state={};observation_drops=0
     lookup={}; rows=[]; by_symbol={}; prices={}; counts={'ticks':0,'radar_cycles':0,'account_checks':0,'subscription_acks':0}
     engine._last_eval_frame={}
@@ -800,6 +806,22 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 shadow.set_capital(context)
                 radar.observation_allowed=not bool(engine.s['positions'] or engine.active_orders())
                 radar.status_priority_symbols=frozenset(lookup)
+                if context_worker:
+                    from automation.intraday_context import context_targets
+                    venue=effective.after_default_venue if after_supported(now()) else 'KRX'
+                    reference_targets=context_targets(lookup,shadow.runtime_view().get('evaluations',{}),venue,now()) if in_session else {}
+                    context_worker.set_targets(reference_targets)
+                    while not context_worker.q.empty():
+                        packet=context_worker.q.get_nowait()
+                        sym=packet['symbol'];received=datetime.fromisoformat(packet['received_at'])
+                        if sym not in reference_targets or packet['venue']!=venue or received.date()!=now().date():continue
+                        if not packet.get('error'):
+                            if sym in lookup:
+                                with detector._state_lock:detector.price_context.merge_history(sym,packet['bars'],received,venue)
+                            with shadow.observer.detector._state_lock:shadow.observer.detector.price_context.merge_history(sym,packet['bars'],received,venue)
+                        engine.event('INTRADAY_REFERENCE_READY' if not packet.get('error') else 'INTRADAY_REFERENCE_PENDING',
+                            symbol=sym,venue=venue,received_at=packet['received_at'],known_bars=len(packet['bars']),
+                            source='REST_REFERENCE',restored_signal_bars=0,restored_warmup=False,error=packet.get('error'))
                 shadow_state=shadow.runtime_view();radar.radar.momentum=shadow_state.get('evaluations',{})
                 desired=set(lookup)|set(engine.s['positions'])|{o['symbol'] for o in engine.active_orders()}
                 desired.update(set(engine.s['automation']['existing'])&(set(BREAKEVEN_EXITS)|({TEST_RELEASE_SYMBOL} if legacy_test_release_enabled() else set())))
@@ -908,6 +930,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
         fatal=type(e).__name__; engine.event('WORKER_FATAL',**error_record(e)); raise
     finally:
         shadow.close()
+        if context_worker:context_worker.close()
         if data_active: feed.close(); radar.close(); account.close()
         if engine.candidate_audit.started:
             summary=engine.candidate_audit.summary(now().isoformat(),engine.capital_context())

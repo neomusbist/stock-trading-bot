@@ -9,7 +9,7 @@ from automation.trade_quality import complete_sequence
 from automation.price_context import PriceContext
 
 
-def structural_pullback(raw, asof, setup, cfg, entry, bid, ask):
+def structural_pullback(raw, asof, setup, cfg, entry, bid, ask,close_policy=False):
     evidence={'asof':asof.isoformat(),'entry':entry,'bid':bid,'ask':ask,
               'policy':'CONFIRMED_PULLBACK_FLOOR_AND_KNOWN_OVERHEAD'}
     size=min(len(raw or ()),30)
@@ -46,6 +46,9 @@ def structural_pullback(raw, asof, setup, cfg, entry, bid, ask):
         buffer_amount=buffer,buffered_stop=stop,spread=spread,median_pullback_range=median(ranges),
         noise_risk_floor=noise,stop_distance=entry-stop,nearest_confirmed_peak=reference,target_ceiling=ceiling,
         coverage='PREDECISION_COMPLETED_BARS_ONLY',missing_earlier_history='UNKNOWN')
+    if close_policy:
+        band=max(median(ranges),spread,tick_size(entry))
+        evidence.update(structural_stop=stop,noise_band=band,emergency_stop=floor_tick(stop-band))
     if recovered is None:return False,{**evidence,'reason':'PULLBACK_SUPPORT_NOT_CONFIRMED'}
     # A failed earlier floor and descending pivots require a completed reclaim.
     lows=[]

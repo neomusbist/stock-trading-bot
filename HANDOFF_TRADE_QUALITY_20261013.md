@@ -1,5 +1,56 @@
 # V1.5 entry-quality development result — 2026-10-13
 
+## Structural AE checkpoint
+
+BUILD `V1.5-risk2-watch12-bc20M-structuralAE-20261013` extends the preserved B checkpoint.
+The release regression has 1,072 PASS, FAIL/ERROR/SKIP 0, 130 syntax files checked,
+and no network attempts, operating program starts or real test orders. There are
+35 new independent tests in `tests/test_structural_a_exit.py`.
+
+Actual archived evidence showed an affordable rising RAW candidate repeatedly
+blocked by STATUS_SCAN_LIMIT before WATCH evaluation. Existing FIFO admission is
+retained; at most four status slots favor objectively moving or recently discovered
+rising candidates after incumbent deadlines. The original API status quota,
+affordability, security/status and final order checks remain mandatory.
+
+`IntradayContextWorker` uses the existing shared auth/rate session in read-only
+diagnostic mode, at most one request every five seconds and fourteen targets:
+the twelve WATCH slots plus at most two fresh preliminary SHADOW setups. This
+does not enlarge subscriptions, RAW or WATCH. Reference history is bounded to
+120 completed bars, matched to the requested venue, and never restores realtime
+tick buffers, completed signal bars or warmup. Empty NXT responses remain
+NO_HISTORY rather than fake candles. Receipt time and market candle time differ.
+
+New A proof requires known prior structure, an independently confirmed range
+floor/recovery, executable buffer and an older uncleared resistance cap. A sustained
+route can replace the burst-ratio prerequisite only with three completed rising
+closes, strictly rising lows, nondecreasing positive volume, structural proof and
+unchanged fresh quote/liquidity/order/risk gates. It is not a generic ratio relaxation.
+
+New A/B positions separate a completed-close structural line from an immediate
+emergency line. Quantity and reward/risk use the latter plus existing costs and
+modeled exit slippage. Valid structure may exceed the old three-percent price
+distance ceiling, but integer quantity must still fit account and daily risk budgets;
+even one affordable share is refused if its risk is too large. Legacy price caps are
+unchanged when proof/flags are absent. No existing position is retroactively widened.
+Confirmed profitable post-entry pivots, not one tick or one candle low, may raise
+protection. Quote/trade timestamps are checked before an emergency trigger.
+The GUI distinguishes the structural close line and current protective emergency line.
+
+The late-entry incident is refused both with inadequate original history and with
+completed prior market history: available reward at the old high is too small for
+the confirmed range risk. Earlier sustained structure can qualify in a market-only
+counterfactual, but missing historical live quotes, tick windows and status completion
+mean an actual early order or profit is not established. Stored market-only replay
+and raw broker evidence stay outside Git. Independent profitable A/B sample size
+and realized expectancy remain insufficient. C entry/exit policy and market-index
+regime behavior are outside this release's new policy.
+
+Release integration must preserve journal, approval records, account settings and
+current daily risk override; require flat/no-pending/no-UNKNOWN broker comparison,
+backup, hash verification and the user's direct approval for the new BUILD.
+The private handoff and deployment evidence contain operational status.
+
 ## Structural B checkpoint
 
 Branch: `fix/v1.5-structural-b-20261013`, based on `d4c0647`.
