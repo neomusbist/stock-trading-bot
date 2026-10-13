@@ -116,9 +116,13 @@ class PatternDetector(Detector):
             if retrace < min_retrace or len(pull) < 2:
                 return None, 'PULLBACK_SHALLOW_OR_UNCONFIRMED', evidence
             if len(bars) >= 10:
-                session_high = max(b['high'] for b in bars)
+                observed_high = max(b['high'] for b in bars)
+                # This bounded usable-bar window is not the exchange's day high.
+                evidence.update(drawdown_reference_high=observed_high,
+                                drawdown_reference_scope='USABLE_BAR_WINDOW',
+                                drawdown_reference_bars=len(bars))
                 max_drawdown = getattr(self.a, 'pullback_max_drawdown_from_high', 0.05)
-                if session_high > 0 and (session_high - peak) / session_high > max_drawdown:
+                if observed_high > 0 and (observed_high - peak) / observed_high > max_drawdown:
                     return None, 'DOWNTREND_REBOUND_NOT_PULLBACK', evidence
                 if len(bars) >= 15:
                     ma_window = min(len(bars), 20)

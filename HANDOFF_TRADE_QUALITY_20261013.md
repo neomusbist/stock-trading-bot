@@ -1,5 +1,61 @@
 # V1.5 entry-quality development result — 2026-10-13
 
+## Feed catch-up checkpoint
+
+Branch: `fix/v1.5-exit-lifecycle-20261013`, based on `e49a18b` (including
+`633c09c` and `a43352d`). BUILD: `V1.5-risk2-watch12-bc20M-feedcatchup-20261013`.
+
+The operating source comparison confirmed that SHADOW depth isolation and
+the observation continuity changes were absent from the running source. The
+receiver cached all books, but diagnostic SHADOW books also occupied the main
+order/position queue. The outer runner consumed only one message per iteration,
+repeating subscription, account and status work between messages. A retained
+data-exit incident recorded consumer lag exceeding forty seconds alongside a
+recent receiver heartbeat; the later transport-disconnected state triggered the
+existing emergency exit. The exact transport failure was not retained and is
+not inferred from the consumer lag.
+
+This checkpoint adds bounded FIFO catch-up (64 messages or 50 milliseconds),
+yielding at REG/ERROR/DISCONNECTED barriers. Prices and fills are neither
+coalesced nor reordered. Receiver-time history can populate past bars; stale
+frames cannot cause current orders or price exits. Account reconciliation and
+the existing watchdog run after each bounded batch. This is a processing-path
+change, not evidence of improved financial expectancy.
+
+The five-percent pullback reference is now explicitly described as the bounded
+usable-bar window, not an exchange day high. Its decision threshold is unchanged.
+GUI release labeling preserves V1.5. Three release-identity expectations were
+updated without weakening old-approval rejection or risk assertions. The first
+full run found a captured default-clock error in the new helper; runtime clock
+resolution was corrected, and the final full run must pass before deployment.
+
+Five dedicated tests cover FIFO prices/fills, transport barriers, bounded yield,
+stale-history/no-order behavior and fresh evaluation after a backlog. Existing
+price-stop, quote-emergency, quiet-book, REST verification, loss-budget and
+continuous-trading counterexamples remain required in the full suite.
+
+Frozen price-gate replay covers eighteen completed records across three dates:
+eleven have decision bars and seven are UNKNOWN. With the actual operating
+origin/direction flags, old and new price gates agree on all eleven; no alternate
+fills or replacement profits are inferred. Full post-entry trade/book/bar streams
+are not retained, so alternate structural/profit/partial-exit prices and expectancy
+remain UNKNOWN. Private evidence and broker/order identifiers stay outside Git.
+
+Final offline regression: **1,025 PASS**, zero failures/errors/skips, 125 syntax
+files, zero syntax errors, zero network attempts and zero actual orders. The
+operating source, account reconciliation and new BUILD approval are separate
+checks; this result alone does not authorize orders.
+
+Deployment preserves current settings, daily loss, orders and the user's latest
+date-specific risk override. It must not restore an earlier budget snapshot.
+Keep `chase_quality_filter`, `resilient_protection_enabled` and
+`confirmed_structure_protection` OFF unless separately validated and approved.
+Existing origin/direction/priority flags remain as configured. A new BUILD cannot
+reuse or fabricate an old authorization receipt; finish account reconciliation,
+backup, source hash verification and read-only readiness before direct user LIVE
+approval. Record final regression, commit, deployment and process results in the
+private handoff.
+
 Base: V1.4 `abb29815ca114fc0ce50babc4035f15236a64ba5`.
 Branch: `feat/v1.5-entry-quality-20261013`.
 Status: verified development checkpoint; no operating deployment, LIVE approval, restart or real orders.

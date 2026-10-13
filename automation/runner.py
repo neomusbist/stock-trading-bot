@@ -409,6 +409,26 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
     account.need_fills=bool(engine.active_orders())
     return o
 
+def drain_feed(feed, consume, *, clock=None, monotonic=None,
+               max_messages=64, max_seconds=.05):
+    """Bounded FIFO catch-up; never coalesce prices, fills or connection barriers.
+
+    The outer loop reconciles accounts, refreshes subscriptions and writes UI
+    snapshots. Doing all of that between every queued quote can make a healthy
+    receiver unusable. Yield at the existing transport barriers so reconciliation
+    and the watchdog still run before any later connection's data is consumed.
+    """
+    clock=clock or now;monotonic=monotonic or time.monotonic
+    started=monotonic();count=0;lag=0.
+    while count<max_messages and (not count or monotonic()-started<max_seconds):
+        try:received,message=feed.q.get(timeout=.25) if not count else feed.q.get(block=False)
+        except queue.Empty:break
+        lag=max(0.,(clock()-received).total_seconds())
+        consume(received,message,lag);count+=1
+        if message.get('trnm') in {'ERROR','DISCONNECTED','REG'}:break
+    return count,lag
+
+
 def process_message(engine,detector,message,received,symbols,lookup,radar,prices,account,radar_ok,subscriptions=None):
     tr=message.get('trnm')
     if tr in {'ERROR','DISCONNECTED'}:
@@ -812,10 +832,11 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         engine.feed_queue_size = raw_qs if isinstance(raw_qs, (int, float)) else 0
                     except Exception:
                         engine.feed_queue_size = 0
-                    received,message=feed.q.get(timeout=.25)
-                    engine.event_loop_lag=max(0,(now()-received).total_seconds())
-                    if message.get('trnm')=='REG' and message.get('return_code') in (0,'0'): counts['subscription_acks']+=1
-                    counts['ticks']+=process_message(engine,detector,message,received,real_symbols,lookup,radar,prices,account,radar_ok and not smoke_ended,subscriptions)
+                    def consume_frame(received,message,lag):
+                        engine.event_loop_lag=lag
+                        if message.get('trnm')=='REG' and message.get('return_code') in (0,'0'):counts['subscription_acks']+=1
+                        counts['ticks']+=process_message(engine,detector,message,received,real_symbols,lookup,radar,prices,account,radar_ok and not smoke_ended,subscriptions)
+                    drain_feed(feed,consume_frame)
                 except queue.Empty:
                     if not in_session: time.sleep(.25)
                 position_health.prune()
