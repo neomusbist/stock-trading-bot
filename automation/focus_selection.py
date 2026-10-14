@@ -61,6 +61,12 @@ def calculate_tier(gates: dict, setup_trials: list, row: dict = None) -> int:
     if not gates:
         return TIER_RANK_ONLY
 
+    # An incomplete observation is UNKNOWN, not measured weakness. Otherwise
+    # the first tick demotes a warming incumbent below every unobserved row,
+    # causing repeated unsubscribe/reset before its second complete minute.
+    if 'warmup' in gates and gates['warmup'].get('result') != 'PASS':
+        return TIER_RANK_ONLY
+
     # An explicitly evaluated B/C uses its existing price gates; acceleration is observational.
     independent=[t for t in (setup_trials or []) if t.get('setup') in {'B','C'}
         and t.get('acceleration_required') is False and t.get('candidate_generated') is True]
@@ -68,7 +74,7 @@ def calculate_tier(gates: dict, setup_trials: list, row: dict = None) -> int:
     independent=[t for t in independent if t.get('gates',{}).get('liquidity',{}).get('result')=='PASS']
     # A formed box/pullback with impossible RR, invalidation or costs is not
     # geometry readiness. Only the actual breakout can still be waiting.
-    price_keys={'invalidation','chase','risk_reward','resistance','economic','entry_context','box_direction','box_origin'}
+    price_keys={'invalidation','chase','risk_reward','resistance','economic','entry_context','box_direction','box_origin','box_structure'}
     viable=[t for t in independent if all(v.get('result')=='PASS' for k,v in t.get('gates',{}).items()
         if k in price_keys)]
     blocked_geometry=bool(independent and not viable)
@@ -111,7 +117,15 @@ def calculate_tier(gates: dict, setup_trials: list, row: dict = None) -> int:
         return TIER_GEOMETRY_BASE_READY
     return TIER_MOMENTUM_BASE_READY
 
-def candidate_priority_tuple(row: dict, tier: int, is_existing: bool = False) -> tuple:
+def unviable_price_geometry(info: dict) -> bool:
+    if type(info.get('price_blocked')) is bool:return info['price_blocked']
+    formed=[t for t in info.get('setup_trials',[]) if t.get('candidate_generated')]
+    price_keys={'invalidation','risk_reward','economic','resistance','box_direction','box_origin',
+                'box_structure','pullback_structure','breakout_structure'}
+    return bool(formed and all(any(v.get('result')=='FAIL' for k,v in t.get('gates',{}).items()
+                                  if k in price_keys) for t in formed))
+
+def candidate_priority_tuple(row: dict, tier: int, is_existing: bool = False, price_blocked: bool = False) -> tuple:
     """우선순위 튜플: (tier, -effective_score, incumbent_tie, overhead_share, symbol)
     - tier: 0 (SIGNAL_READY) ~ 4 (FRESH_WEAK). 작을수록 우선.
     - effective_score: discovery_score 또는 score.
@@ -124,7 +138,22 @@ def candidate_priority_tuple(row: dict, tier: int, is_existing: bool = False) ->
     score = float(raw_score if raw_score is not None else 0.0)
     effective_score = score + (2.0 if is_existing else 0.0)
     overhead = float(row.get('overhead_share_estimate', 0.0) or 0.0)
-    return (tier, -effective_score, 0 if is_existing else 1, overhead, row.get('code', ''))
+    # UNKNOWN observation is not evidence of superiority over measured weakness.
+    # Both compete on the existing discovery score/hysteresis until a candidate
+    # actually reaches momentum/geometry/signal readiness (tiers 0..2).
+    competition_tier=tier if price_blocked else min(tier,TIER_RANK_ONLY)
+    return (competition_tier, -effective_score, 0 if is_existing else 1, overhead, row.get('code', ''))
+
+def readiness_tier(info: dict, row: dict, clock_iso: str = '') -> int:
+    """Reuse the full evaluation tier in both radar and committed focus."""
+    if clock_iso and info.get('timestamp'):
+        try:
+            age=(datetime.fromisoformat(clock_iso)-datetime.fromisoformat(info['timestamp'])).total_seconds()
+            if not 0<=age<=15: return TIER_RANK_ONLY
+        except (ValueError,TypeError):return TIER_RANK_ONLY
+    tier=info.get('tier')
+    if type(tier) is int and tier in TIER_NAMES:return tier
+    return calculate_tier(info.get('gates',{}),info.get('setup_trials',[]),row)
 
 def select_focus(
     current_watch: Dict[str, dict],
@@ -177,14 +206,11 @@ def select_focus(
     for r in eligible_candidates:
         sym = r['code']
         r_info = readiness_map.get(sym, {})
-        if clock_iso and r_info.get('timestamp'):
-            try:fresh=0<=(datetime.fromisoformat(clock_iso)-datetime.fromisoformat(r_info['timestamp'])).total_seconds()<=15
-            except (ValueError,TypeError):fresh=False
-            if not fresh:r_info={}
-        tier = r_info['tier'] if 'tier' in r_info else calculate_tier(r_info.get('gates', {}), r_info.get('setup_trials', []), r)
+        tier = readiness_tier(r_info,r,clock_iso)
         tier_map[sym] = tier
         is_existing = (sym in prev_watch_symbols)
-        priority_tuples[sym] = candidate_priority_tuple(r, tier, is_existing=is_existing)
+        priority_tuples[sym] = candidate_priority_tuple(r, tier, is_existing=is_existing,
+            price_blocked=tier==TIER_FRESH_WEAK and unviable_price_geometry(r_info))
 
     # 정렬: (tier, -effective_score, incumbent_tie, overhead, symbol)
     eligible_candidates.sort(key=lambda r: priority_tuples[r['code']])

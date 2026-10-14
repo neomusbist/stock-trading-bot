@@ -365,6 +365,7 @@ class PatternDetector(Detector):
             if 'box_origin' in price_gates:gates['box_origin']=price_gates['box_origin']
             if 'pullback_structure' in price_gates:gates['pullback_structure']=price_gates['pullback_structure']
             if 'breakout_structure' in price_gates:gates['breakout_structure']=price_gates['breakout_structure']
+            if 'box_structure' in price_gates:gates['box_structure']=price_gates['box_structure']
             gates['liquidity']=trial['gates']['liquidity']
             gates['acceleration']={**(trial['gates']['acceleration'] if name=='A' else gates['acceleration']),'required':name=='A','scope':'ENTRY_GATE' if name=='A' else 'OBSERVATION_ONLY'}
             gates['pattern']=gate(True,setup=name,acceleration_required=name=='A')
@@ -383,6 +384,8 @@ class PatternDetector(Detector):
                    if name=='A' and self.a.structural_breakout_enabled else {}),
                 **({'invalidation_policy':price_gates['pullback_structure']['values']}
                    if name=='B' and self.a.structural_pullback_enabled and self.a.confirmed_invalidation_enabled else {}),
+                **({'invalidation_policy':price_gates['box_structure']['values']}
+                   if name=='C' and self.a.fresh_box_basis_enabled and self.a.confirmed_invalidation_enabled else {}),
                 'decision_bar_snapshot':[{**{k:b.get(k) for k in ('open','high','low','close','volume')},
                     **({k:b[k] for k in ('first_second','gap_reason') if k in b} if self.a.structural_pullback_enabled else {}),
                     'time':b['time'].isoformat()} for b in bars[-(30 if self.a.structural_pullback_enabled else max(12,2*self.a.box_min_bars+2) if self.a.fresh_box_basis_enabled else 12):]],
@@ -446,12 +449,20 @@ class PatternDetector(Detector):
             if breakout_evidence.get('target_ceiling') is not None:
                 target=breakout_evidence['target_ceiling']
                 if resistance is not None and resistance>limit:target=min(target,resistance)
+        box_evidence=None;box_pass=None
+        if setup['pattern']=='C' and self.a.fresh_box_basis_enabled and self.a.confirmed_invalidation_enabled:
+            from automation.structural_box import structural_box
+            known_high=(self.after_prior_high if after_supported(t.time) else self.prior_high).get(t.symbol)
+            setup={**setup,'prior_session_high':known_high}
+            box_pass,box_evidence=structural_box(bars,t.time,setup,c,self.a,limit,t.bid,t.ask)
+            if box_evidence.get('emergency_stop') is not None:stop=box_evidence['emergency_stop']
+            if box_evidence.get('target_ceiling') is not None:target=min(target,box_evidence['target_ceiling'])
         distance=(limit-stop)/limit if limit>0 else None
         rr=(target-limit)/(limit-stop) if limit>stop else None
         horizon=getattr(self.a,'horizon_'+setup['pattern'].lower()+'_minutes')
         score=efficiency(limit,stop,target,min(1.,0.4+0.1*len(watch.get('source_details',{}))),horizon,self.costs,self.a.min_efficiency_score)
         invalidation_pass=bool(distance is not None and 0<stop<limit and c.min_stop_fraction<=distance<=c.max_stop_fraction)
-        structure_sized=(breakout_pass is True or structural_pass is True and self.a.confirmed_invalidation_enabled)
+        structure_sized=(breakout_pass is True or structural_pass is True and self.a.confirmed_invalidation_enabled or box_pass is True)
         if structure_sized:
             # Price distance is not account risk. The unchanged final risk gate
             # sizes from the emergency stop or refuses even a single share.
@@ -490,6 +501,7 @@ class PatternDetector(Detector):
                 original_target=original_target,target=target,required_rr=c.min_reward_risk,calculated_rr=rr,**references)
         if structural is not None:result['pullback_structure']=gate(structural_pass,enabled=True,**structural)
         if breakout_evidence is not None:result['breakout_structure']=gate(breakout_pass,enabled=True,**breakout_evidence)
+        if box_evidence is not None:result['box_structure']=gate(box_pass,enabled=True,**box_evidence)
         if self.a.fresh_box_basis_enabled and setup['pattern']=='C':
             from automation.trade_quality import fresh_box_basis
             passed,evidence=fresh_box_basis(bars,t.time,self.a.box_min_bars,self.a.box_max_range)

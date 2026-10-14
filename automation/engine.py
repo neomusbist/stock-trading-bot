@@ -318,6 +318,21 @@ class AutonomousEngine(ExistingExits,Engine):
                     return 'PULLBACK_STRUCTURE_PROOF_MISSING_OR_INVALID'
             except (KeyError,TypeError,ValueError,ZeroDivisionError):return 'PULLBACK_STRUCTURE_PROOF_MISSING_OR_INVALID'
         if self.a.fresh_box_basis_enabled and signal.get('pattern')=='C':
+            if self.a.confirmed_invalidation_enabled:
+                from automation.structural_box import structural_box
+                try:
+                    values=signal['evaluation_gates']['spread']['values']
+                    proof=signal['evaluation_gates']['box_structure']
+                    # Carry the exact known session ceiling used by the detector.
+                    setup={**signal,'prior_session_high':proof['values'].get('known_prior_session_high')}
+                    passed,evidence=structural_box(signal.get('decision_bar_snapshot'),datetime.fromisoformat(signal['time']),
+                        setup,self.c,self.a,signal['limit'],values['bid'],values['ask'])
+                    if (passed is not True or proof!={'result':'PASS','values':{'enabled':True,**evidence}}
+                            or signal.get('invalidation_policy')!={'enabled':True,**evidence}
+                            or signal['stop']!=evidence['emergency_stop'] or signal['target']>evidence['target_ceiling']
+                            or (signal['target']-signal['limit'])/(signal['limit']-signal['stop'])<self.c.min_reward_risk):
+                        return 'BOX_STRUCTURE_PROOF_MISSING_OR_INVALID'
+                except (KeyError,TypeError,ValueError,ZeroDivisionError):return 'BOX_STRUCTURE_PROOF_MISSING_OR_INVALID'
             from automation.trade_quality import fresh_box_basis
             try:
                 passed,evidence=fresh_box_basis(signal.get('decision_bar_snapshot'),datetime.fromisoformat(signal['time']),self.a.box_min_bars,self.a.box_max_range)

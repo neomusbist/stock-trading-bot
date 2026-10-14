@@ -271,7 +271,11 @@ class ObservationAuditTests(unittest.TestCase):
         self.addCleanup(worker.close);worker.start();worker.deliver(Tick('999990',self.start,1000,100,100,1001,999),self.start)
         deadline=time.monotonic()+1
         while not worker.ticks.empty() and time.monotonic()<deadline:time.sleep(.01)
-        worker.close();self.assertNotIn('999990',worker.observer.detector.last);self.assertFalse(worker.state().get('evaluations'))
+        worker.close()
+        # Healthy receiver-time data can be retained as history. Consumer delay
+        # still forbids a current virtual signal or readiness publication.
+        self.assertIn('999990',worker.observer.detector.last)
+        self.assertFalse(worker.state().get('evaluations'))
     def test_concurrent_snapshot_read_does_not_lock_shadow_writer(self):
         from operator_service import read_json
         worker=ObservationWorker(self.cfg,self.auto,self.costs,self.root);worker.clock=lambda:self.start

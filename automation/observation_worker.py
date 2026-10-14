@@ -16,7 +16,7 @@ from automation.shadow_observation import ShadowObserver
 from core.settings import now
 from automation.observation_settings import load_observation
 from automation.radar import observation_structure
-from automation.focus_selection import FocusNotification,calculate_tier
+from automation.focus_selection import FocusNotification,calculate_tier,unviable_price_geometry
 
 class ObservationWorker:
     def __init__(self,cfg,auto,costs,root,rest=None,limit=32):
@@ -41,6 +41,7 @@ class ObservationWorker:
             momentum={'timestamp':data['timestamp'],'gates':{key:{'result':data.get('gates',{}).get(key,{}).get('result')}
                 for key in ('acceleration','liquidity')}}
             momentum['tier']=calculate_tier(data.get('gates',{}),data.get('setup_trials',[]))
+            momentum['price_blocked']=unviable_price_geometry(data)
             with self.lock:
                 self.snapshot.setdefault('evaluations',{})[data['symbol']]=record
                 self.runtime_snapshot['evaluations'][data['symbol']]=momentum
@@ -168,7 +169,9 @@ class ObservationWorker:
         self.observer.update(merged,ready)
         with self.lock:
             selected=set(self.observer.rows)
-            self.runtime_snapshot={'symbols':tuple(selected),'evaluations':{s:v for s,v in self.runtime_snapshot['evaluations'].items() if s in selected}}
+            # Subscription retention consumes this ranked order. A set loses
+            # it and can evict stronger warm observations for arbitrary symbols.
+            self.runtime_snapshot={'symbols':tuple(self.observer.rows),'evaluations':{s:v for s,v in self.runtime_snapshot['evaluations'].items() if s in selected}}
             self.snapshot['evaluations']={s:v for s,v in self.snapshot.get('evaluations',{}).items() if s in selected}
             self.snapshot.update(timestamp=ready.isoformat(),source_observed_at=source_stamp.isoformat(),symbols=list(self.observer.rows),rows=list(self.observer.rows.values()),
                 capital=dict(capital),limit=self.observer.limit,actual_order_permission=False,SHADOW_ONLY=True)

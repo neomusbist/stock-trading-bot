@@ -104,11 +104,15 @@ class ShadowObserver:
   row=self.rows.get(t.symbol)
   if not row:return
   old=self.detector.last.get(t.symbol);reset=bool(old and (t.time-old.time).total_seconds()>self.cfg.stale_seconds)
-  if not self.detector.ingest(t,received):return
+  # Genuine receiver-time frames may build historical bars while the consumer
+  # catches up. They cannot publish a current signal/readiness when stale.
+  if not self.detector.ingest(t,transport_received or received):return
+  execution_fresh=0<=(received-t.time).total_seconds()<=self.cfg.stale_seconds
   timeline=getattr(self,'timeline',None)
   if timeline is not None:timeline.tick(t.symbol,t.time,self.detector.usable_bars(t.symbol),t.price,
-      received=transport_received or received,processed=received)
+       received=transport_received or received,processed=received,execution_fresh=execution_fresh)
   self.first[t.symbol].setdefault('first_tick_at',received.isoformat())
+  if not execution_fresh:return
   if reset and not self.detector.continuous_observation:self.event('SHADOW_DATA_RESET',received,symbol=t.symbol,reason='STALE_TICK_GAP',gap_seconds=(t.time-old.time).total_seconds())
   previous=self.last_log.get(t.symbol)
   if previous and (received-previous[0]).total_seconds()<self.eval_seconds:return

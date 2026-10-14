@@ -48,6 +48,7 @@ class AccountWorker:
         self.external_symbols=set();self.external_prices={};self.last_book={};self.book_queries={}
         self.position_symbols=frozenset()
         self.position_context={}
+        self.settlement_pending=False;self.settlement_interval=60.;self.last_fill_query=float('-inf')
         self.observation_settings=ObservationSettings()
         self.last_query_started=0.
         self.min_query_interval=1.0
@@ -66,7 +67,9 @@ class AccountWorker:
             started=time.monotonic(); query_started_at=now().isoformat()
             self.last_query_started=started
             try:
-                fills=self.rest.fills() if self.need_fills else []
+                fills_due=self.need_fills or (self.settlement_pending and started-self.last_fill_query>=self.settlement_interval)
+                fills=self.rest.fills() if fills_due else []
+                if fills_due:self.last_fill_query=started
                 snapshot=self.rest.snapshot()
                 snapshot['query_started_at']=query_started_at
                 snapshot['books']={}
@@ -290,8 +293,8 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
                 else:remaining.append(item)
             for item in remaining:feed.observation_q.put_nowait(item)
         feed.configure_observation(priority,observed,sink)
-    for index,(_,tick) in enumerate(promoted):
-        detector.ingest(tick,now())
+    for index,(received,tick) in enumerate(promoted):
+        detector.ingest(tick,received)
         if critical and (index+1)%64==0:engine.timer(engine.prices)
     if promoted:
         engine.event('OBSERVATION_PREWARM_HANDOFF',symbols=sorted(promotions),queued_ticks=len(promoted),
@@ -299,7 +302,7 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
     for _ in range(64):
         try:observed_at,tick=feed.observation_q.get_nowait()
         except queue.Empty:break
-        if tick.symbol in observed and tick.symbol not in priority and tick.symbol not in critical:detector.ingest(tick,now())
+        if tick.symbol in observed and tick.symbol not in priority and tick.symbol not in critical:detector.ingest(tick,observed_at)
     return drops,priority
 
 def apply_focus_selection(engine,lookup,by_symbol,selection):
@@ -368,6 +371,27 @@ def latest_evaluation_watch(watch,radar,symbol):
         # Malformed status is not fresh normal-status evidence.
         view['market_status']={'pass':None,'reason_code':'MARKET_STATUS_UNKNOWN'}
     return view
+
+def pending_broker_settlement(state):
+    """A terminal sell still needs actual charges; modeled PnL is not settlement."""
+    day=state.get('day','')
+    return any(t.get('completed') and str(t.get('closed','')).startswith(day)
+               and t.get('pnl_source')!='BROKER_QUERY' for t in state.get('trades',[]))
+
+def focus_readiness(detector,shadow_readiness,stamp):
+    """WATCH ticks are routed to main; rank them by their own full evaluation."""
+    from automation.focus_selection import calculate_tier,unviable_price_geometry
+    result=dict(shadow_readiness)
+    with detector._state_lock:
+        for sym,evaluation in detector.last_eval.items():
+            tick_at=evaluation.get('time')
+            if not isinstance(tick_at,datetime) or not 0<=(stamp-tick_at).total_seconds()<=15:continue
+            gates=evaluation.get('gates',{})
+            result[sym]={'timestamp':tick_at.isoformat(),
+                'tier':calculate_tier(gates,evaluation.get('trials',[])),
+                'price_blocked':unviable_price_geometry({'setup_trials':evaluation.get('trials',[])}),
+                'gates':{k:{'result':gates.get(k,{}).get('result')} for k in ('acceleration','liquidity')}}
+    return result
 
 def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_evaluated_frame=None):
     if not watch or not engine.connected: return None
@@ -651,6 +675,8 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
         rank_rest=Rest(effective,auth_session=rest.auth_session); account_rest=Rest(effective,auth_session=rest.auth_session)
         for client in (rest,rank_rest,account_rest): client.session_guard=lambda:control_supported(now()) or (getattr(effective,'after_enabled',False) and after_control_supported(now()))
         account_worker=AccountWorker(account_rest,effective.reconcile_seconds);account_worker.observation_settings=observation_settings
+        account_worker.settlement_pending=pending_broker_settlement(engine.s)
+        account_worker.settlement_interval=auto.scan_seconds
         radar_worker=RadarWorker(effective,auto,policy,rank_rest,root)
         radar_worker.observation_sink=lambda rows,stamp,capital:shadow.submit(rows,stamp,capital)
         radar_worker.observation_allowed=not bool(engine.s['positions'] or engine.active_orders())
@@ -756,6 +782,8 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         if kill_requested_at is not None and result['started']<kill_requested_at: engine.kill_checked=False
                         if engine.kill_checked: kill_requested_at=None
                     account.need_fills=bool(engine.active_orders())
+                    account.settlement_pending=pending_broker_settlement(engine.s)
+                    account.settlement_interval=auto.scan_seconds
                 focus_promotions=[]
                 while in_session and not radar.q.empty():
                     result=radar.q.get_nowait()
@@ -764,7 +792,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     else:
                         if result.get('phase')=='QUALIFIED_PROGRESS':
                             rows,selection=apply_qualified_progress(engine,lookup,rows,result,
-                                shadow.runtime_view()['evaluations'],effective,auto,now())
+                                focus_readiness(detector,shadow.runtime_view()['evaluations'],now()),effective,auto,now())
                             if selection is not None:
                                 radar_ok=True;last_radar=time.monotonic()
                                 engine.last_radar_at=datetime.fromisoformat(result['time'])
@@ -792,7 +820,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         prior_watch=set(lookup)
                         rows=result['rows'];radar_ok=True;engine.last_radar_at=datetime.fromisoformat(result['time'])
                         selection=resolve_radar_focus(engine,lookup,rows,result['watch'],
-                            shadow.runtime_view().get('evaluations',{}),effective,auto,now())
+                            focus_readiness(detector,shadow.runtime_view().get('evaluations',{}),now()),effective,auto,now())
                         focus_promotions.extend(selection.promoted)
                         if selection.applied:
                             engine.event('FOCUS_SELECTION_APPLIED',promoted=selection.promoted,demoted=selection.demoted,
@@ -837,7 +865,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         continue
                     focus_dirty=True
                 if focus_dirty:
-                    readiness=shadow.runtime_view().get('evaluations',{})
+                    readiness=focus_readiness(detector,shadow.runtime_view().get('evaluations',{}),now())
                     selection=select_focus(
                         current_watch=lookup,
                         candidates=rows,
@@ -880,7 +908,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         engine.event('INTRADAY_REFERENCE_READY' if not packet.get('error') else 'INTRADAY_REFERENCE_PENDING',
                             symbol=sym,venue=venue,received_at=packet['received_at'],known_bars=len(packet['bars']),
                             source='REST_REFERENCE',restored_signal_bars=0,restored_warmup=False,error=packet.get('error'))
-                shadow_state=shadow.runtime_view();radar.radar.momentum=shadow_state.get('evaluations',{})
+                shadow_state=shadow.runtime_view();radar.radar.momentum=focus_readiness(detector,shadow_state.get('evaluations',{}),now())
                 desired=set(lookup)|set(engine.s['positions'])|{o['symbol'] for o in engine.active_orders()}
                 desired.update(set(engine.s['automation']['existing'])&(set(BREAKEVEN_EXITS)|({TEST_RELEASE_SYMBOL} if legacy_test_release_enabled() else set())))
                 if (readiness_check or (in_session and not supported(now()))) and not desired:desired.add('005930')  # 조회 증거용; HARD_LOCK 종목은 WATCH/주문 대상이 아니다.

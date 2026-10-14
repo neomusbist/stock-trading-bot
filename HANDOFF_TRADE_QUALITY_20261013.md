@@ -623,3 +623,50 @@ Oct08 provides ten ENTRY_CANDIDATE records on an independent date. Three C candi
 3. Compare normal pullbacks versus structural failure using complete post-entry bars and executable quotes; do not remove emergency exit or widen loss budgets as a substitute.
 4. Validate candidate coverage across prices/source intersections without increasing live subscriptions or API budget blindly.
 5. Integrate reviewed development commits and other agent results; stamp a new BUILD, package only approved code, and request explicit deployment and direct user LIVE approval separately. This result is **not deployed** and does not claim LIVE readiness or profitability.
+# Oct 14 opening R4: live observation and Setup C repair
+
+Base: opening R3 commit `2574146`. Work branch: `fix/v1.5-opening-live-20261014`.
+BUILD: `V1.5-risk2-watch12-bc20M-opening-r4-20261014`.
+
+The live opening path was connected and order-enabled, but candidate churn repeatedly
+discarded actual observation. Consumer-time validation also rejected healthy receiver-time
+history in the SHADOW and prewarm routes. WATCH evaluations were missing from FOCUS
+readiness because WATCH ticks are routed to main, while selection read only SHADOW results.
+Radar separately recalculated a compact two-gate record and lost its full B/C tier.
+
+The repair preserves genuine receiver-time candles without publishing stale signals;
+merges fresh full main evaluations into ranking; preserves ranked subscription order;
+and treats incomplete warmup as UNKNOWN. UNKNOWN and measured weak candidates compete
+on the existing discovery score and incumbent hysteresis. Actual momentum/geometry/signal
+readiness retains priority. Status, affordability, source qualification, entry gates and
+the final executable quote/order guard remain required. No faster API polling was added.
+
+Setup C now obeys the already enabled confirmed-invalidation contract. Its base must
+have a completed support confirmation. A completed expanding impulse cannot supply the
+missing fifth consolidation bar. Structural price is buffered by actual spread/tick,
+with a separate emergency line derived from observed base ranges. Reward/risk and integer
+quantity use that emergency line; missing support or insufficient room refuses entry.
+Known overhead caps the target. The final order boundary reproduces the same candle proof,
+ceiling and stop. This uses no fixed percentage widening, no future candles and no new
+AE3 profit rule. The core emergency and completed-close exit paths are reused.
+
+The position cockpit uses a scrollable detail body and a stable single-row table height,
+so an opening position cannot force the table and detail labels to paint over each other.
+Completed sells with unconfirmed charges now receive bounded broker settlement reads,
+including at restart. These run at the existing radar interval when no order is pending;
+active-order reconciliation retains its existing frequency. Missing charges remain UNKNOWN.
+
+Validation: 25 dedicated cases plus the existing 1,234 regressions, 1,259 total. The cases
+cover the actual pre-entry C candle counterexample, a normal valid C trade, full mock order
+proof, structural touch vs complete close, immediate emergency, stale data, queue history,
+ranking, final quote refusal and actual GUI geometry. Two BUILD identity expectations
+and one outdated SHADOW-history expectation were corrected without deleting tests.
+
+Limits: no complete receiver tape exists for every missed opening candidate. Saved pool
+re-evaluation is not a new subscription/BUY replay and cannot establish reduced churn,
+early executable entries or improved profitability. Actual post-approval tick freshness,
+candidate residence, complete-bar coverage and useful signal latency still need measurement.
+Private live logs, account snapshots, receipts, GUI captures and deployment backups stay
+outside Git. LIVE was stopped through the official STOP path; no account-risk reset or
+automatic LIVE approval is authorized. Deploy source only after regression and preservation
+checks. A changed BUILD requires the user's direct GUI approval before LIVE can resume.

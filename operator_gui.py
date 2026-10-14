@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt, QTimer, QObject, Signal, QRunnable, QThreadPool
 from PySide6.QtGui import QFont,QFontDatabase,QAction,QKeySequence
 from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QLabel,QPushButton,
     QVBoxLayout,QHBoxLayout,QGridLayout,QGroupBox,QSplitter,QTabWidget,QTableWidget,
-    QTableWidgetItem,QHeaderView,QPlainTextEdit,QMessageBox,QDialog,QLineEdit,QFormLayout,QInputDialog,QProgressBar,QMenu)
+    QTableWidgetItem,QHeaderView,QPlainTextEdit,QMessageBox,QDialog,QLineEdit,QFormLayout,QInputDialog,QProgressBar,QMenu,QScrollArea)
 from operator_ui_service import (UserOperations, CANDIDATE_FIELDS, GATE_NAMES, money, presentation,
     start_block, human_decision, result_text, candidate_display, candidate_wait_reason,
     format_observation_age, human_blocker_reason, extract_important_events, context_description,exit_plan_text,exit_plan_presentation)
@@ -308,9 +308,14 @@ class MainWindow(QMainWindow):
         cockpit_split=QSplitter(Qt.Orientation.Vertical); cockpit_layout.addWidget(cockpit_split)
         self.cockpit_split=cockpit_split;self._plan_positions_visible=False
 
-        bot_box=QGroupBox('봇 운용 포지션'); bot_b_layout=QVBoxLayout(bot_box)
+        bot_box=QGroupBox('봇 운용 포지션');bot_outer=QVBoxLayout(bot_box)
+        self.bot_scroll=QScrollArea();self.bot_scroll.setWidgetResizable(True)
+        self.bot_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        bot_content=QWidget();bot_b_layout=QVBoxLayout(bot_content);bot_b_layout.setContentsMargins(0,0,0,0)
+        self.bot_scroll.setWidget(bot_content);bot_outer.addWidget(self.bot_scroll)
+        cockpit_split.setChildrenCollapsible(False)
         self.bot_board=table(['종목','보유수량 (Setup)','진입 평균가','현재가','최초 구조 무효화','비상선 / 체결가 보호선','대응 상태','청산 조건'])
-        self.bot_board.setMaximumHeight(80)
+        self.bot_board.setFixedHeight(80);self.bot_board.setWordWrap(False)
         self.bot_board.setToolTip('예상손실은 최초 체결가부터 현재 보호선까지 비용·설정 슬리피지를 포함한 추정액입니다. 급락 실제손실 상한은 아닙니다.')
         bot_b_layout.addWidget(self.bot_board)
         self.bot_empty_label=QLabel('현재 봇이 보유 중인 포지션이 없습니다. (신규 진입 탐색 대기)')
