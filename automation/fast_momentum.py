@@ -1,35 +1,25 @@
-"""
-Fast and Early Momentum Entry Strategy (R6)
-Captures early momentum entries without requiring 2-5 completed 1-minute bars.
-
-Design & Architectural Boundaries:
-- Works directly on streaming real-time ticks, order books, and micro-windows (10s ~ 60s).
-- Evaluates 4 distinct market regimes:
-    A: EARLY_MOMENTUM (Aggressive early buying flow, tight spread, Net RR >= 1.5) -> ACCEPT
-    B: EXTENDED_IMPULSE_CHASE (Late-stage exhaustion, over-extended, chase > 0.3%) -> REJECT
-    C: FALSE_BREAKOUT_QUOTE_SPOOF (Low volume micro-spike, wide spread, quote trap) -> REJECT
-    D: DOWNTREND_COUNTER_BOUNCE (Dead-cat bounce within intraday bear trend) -> REJECT
-- Dedicated opening phases:
-    09:00~09:02 (OPENING_EARLY): Tick/depth flow, no 1-min completed bar requirement.
-    09:02~09:05 (OPENING_BUILD): Micro-range + 1st bar low protection.
-    09:05~09:15 (OPENING_STABILIZE): Smooth transition to regular tape.
-    09:15+      (REGULAR): Standard intraday early momentum.
-- Signal TTL (15s) and strict chase protection (MAX_CHASE_EXCEEDED).
-- 3-tier exit structure:
-    1. Invalidation Stop (micro-swing base)
-    2. Account Risk Limit (max 2% per trade)
-    3. Emergency Plunge Stop (instant market exit)
-    + Momentum Stall Exit (early scratch if momentum stalls within 60~120s)
-    + Break-even lock at +1R.
-"""
+"""Causal FAST research only: no broker, LIVE authorization or price forecasts."""
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Any
-from collections import deque
+from typing import Dict, Any
+from collections import deque, Counter
+from statistics import median
 import math
-
 from core.util import floor_tick, tick_size
-from automation.session import supported, after_supported, KST
+from automation.session import supported, after_supported
+
+
+def number(value):
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def stamp(value):
+    try:
+        value = datetime.fromisoformat(value) if isinstance(value, str) else value
+        return value if isinstance(value, datetime) and value.tzinfo is not None else None
+    except ValueError:
+        return None
+
 
 @dataclass
 class FastSignal:
@@ -50,525 +40,346 @@ class FastSignal:
     ttl_seconds: float = 15.0
     max_chase_fraction: float = 0.003
     max_chase_price: float = 0.0
-    reason: str = "EARLY_MOMENTUM_ENTRY"
+    reason: str = 'EARLY_MOMENTUM_ENTRY'
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         if not self.max_chase_price:
-            self.max_chase_price = self.limit * (1.0 + self.max_chase_fraction)
+            self.max_chase_price = self.limit * (1 + self.max_chase_fraction)
 
-    def is_expired(self, current_time: datetime, current_ask: float) -> Tuple[bool, str]:
-        elapsed = (current_time - self.created_at).total_seconds()
+    def is_expired(self, current_time, current_ask):
+        now = stamp(current_time)
+        if now is None or stamp(self.created_at) is None or not number(current_ask) or current_ask <= 0:
+            return True, 'SIGNAL_CLOCK_OR_QUOTE_UNKNOWN'
+        elapsed = (now - self.created_at).total_seconds()
+        if elapsed < 0 or now.date() != self.created_at.date():
+            return True, 'SIGNAL_CLOCK_OR_DAY_MISMATCH'
         if elapsed > self.ttl_seconds:
-            return True, f"SIGNAL_TTL_EXPIRED ({elapsed:.1f}s > {self.ttl_seconds}s)"
+            return True, f'SIGNAL_TTL_EXPIRED ({elapsed:.1f}s > {self.ttl_seconds}s)'
         if current_ask > self.max_chase_price:
-            return True, f"MAX_CHASE_EXCEEDED (ask {current_ask:.0f} > max {self.max_chase_price:.0f})"
-        return False, ""
+            return True, f'MAX_CHASE_EXCEEDED (ask {current_ask:.0f} > max {self.max_chase_price:.0f})'
+        return False, ''
 
 
 class MicroTape:
-    """Tracks a rolling window of ticks (up to 120 seconds) for a single symbol."""
-    def __init__(self, max_seconds: float = 120.0):
+    """Accepted regular prints; neutral prints are never invented buying volume."""
+    def __init__(self, max_seconds=120.0, stale_seconds=5):
         self.max_seconds = max_seconds
-        self.ticks = deque()  # (timestamp, price, volume, is_uptick, bid, ask)
+        self.stale_seconds = stale_seconds
+        self.ticks = deque()  # time,price,volume,direction,bid,ask; legacy six-field footprint
+        self.metadata = deque()
+        self.rejections = Counter()
+        self.last_rejection = None
+        self.last_cumulative = None
+        self.day = None
+        self.symbol = None
+        self.reset_reason = None
 
-    def ingest(self, t) -> None:
-        last_price = self.ticks[-1][1] if self.ticks else t.price
-        is_uptick = t.price >= last_price
-        bid = getattr(t, 'bid', 0.0) or t.price
-        ask = getattr(t, 'ask', 0.0) or t.price
-        self.ticks.append((t.time, t.price, t.volume, is_uptick, bid, ask))
-        self._prune(t.time)
+    def reset(self, reason='EXPLICIT_GAP'):
+        self.ticks.clear(); self.metadata.clear()
+        self.last_cumulative = None; self.day = None; self.symbol = None
+        self.reset_reason = reason
 
-    def _prune(self, current_time: datetime) -> None:
+    def _reject(self, reason):
+        self.last_rejection = reason; self.rejections[reason] += 1
+        return False
+
+    def ingest(self, t, received=None, coverage_gap=False):
+        at = stamp(getattr(t, 'time', None)); receipt = stamp(received) if received is not None else at
+        price = getattr(t, 'price', None); volume = getattr(t, 'volume', None)
+        if at is None or receipt is None or at.date() != receipt.date():
+            return self._reject('TRADE_OR_RECEIPT_TIME_UNKNOWN')
+        if not getattr(t, 'regular', True) or not number(price) or price <= 0 or not number(volume) or volume <= 0:
+            return self._reject('INVALID_REGULAR_TRADE')
+        if not 0 <= (receipt - at).total_seconds() <= self.stale_seconds:
+            return self._reject('STALE_OR_FUTURE_RECEIPT')
+        if self.ticks and at < self.ticks[-1][0]:return self._reject('OUT_OF_ORDER_TRADE')
+        if self.symbol is not None and self.symbol != t.symbol:return self._reject('SYMBOL_MISMATCH')
+        if self.day is not None and at.date() != self.day:self.reset('TRADING_DAY_CHANGED')
+        if coverage_gap:self.reset('EXPLICIT_COVERAGE_GAP')
+        cumulative = getattr(t, 'cumulative', None)
+        if cumulative is not None:
+            if not number(cumulative) or cumulative <= 0:return self._reject('INVALID_CUMULATIVE_VOLUME')
+            if self.last_cumulative is not None and cumulative <= self.last_cumulative:
+                return self._reject('DUPLICATE_OR_REVERSED_CUMULATIVE_VOLUME')
+        bid = getattr(t, 'bid', None); ask = getattr(t, 'ask', None)
+        fingerprint = (at, price, volume, bid, ask, cumulative)
+        if self.metadata and self.metadata[-1]['fingerprint'] == fingerprint:return self._reject('DUPLICATE_TRADE')
+        previous = self.ticks[-1][1] if self.ticks else None
+        direction = None if previous is None else 1 if price > previous else -1 if price < previous else 0
+        self.ticks.append((at, price, volume, direction, bid, ask))
+        self.metadata.append(dict(received_at=receipt, book_time=stamp(getattr(t, 'book_time', None)),
+            bid_qty=getattr(t, 'bid_qty', None), ask_qty=getattr(t, 'ask_qty', None),
+            depth_available=getattr(t, 'depth_available', None), fingerprint=fingerprint))
+        self.day = at.date(); self.symbol = t.symbol; self.last_rejection = None
+        if cumulative is not None:self.last_cumulative = cumulative
+        self._prune(at)
+        return True
+
+    def _prune(self, current_time):
         cutoff = current_time - timedelta(seconds=self.max_seconds)
         while self.ticks and self.ticks[0][0] < cutoff:
-            self.ticks.popleft()
+            self.ticks.popleft(); self.metadata.popleft()
 
-    def metrics(self, current_time: datetime) -> Dict[str, Any]:
-        self._prune(current_time)
-        if not self.ticks:
-            return {}
+    def metrics(self, current_time):
+        now = stamp(current_time)
+        if now is None:return {}
+        self._prune(now)
+        eligible = [(row, meta) for row, meta in zip(self.ticks, self.metadata)
+                    if row[0] <= now and meta['received_at'] <= now and row[0].date() == now.date()]
+        if not eligible:return {}
+        result = {'ticks_count': len(eligible), 'latest_time': eligible[-1][0][0],
+            'receipt_time': eligible[-1][1]['received_at'], 'last_price': eligible[-1][0][1],
+            'last_bid': eligible[-1][0][4], 'last_ask': eligible[-1][0][5],
+            'book_time': eligible[-1][1]['book_time'],
+            'data_fresh': 0 <= (now - eligible[-1][0][0]).total_seconds() <= self.stale_seconds,
+            'direction_basis': 'TICK_RULE_PROXY_NOT_AGGRESSOR_ID', 'reset_reason': self.reset_reason}
+        for seconds in (10, 30, 60):
+            rows = [r for r, _ in eligible if r[0] >= now - timedelta(seconds=seconds)]
+            volume = sum(r[2] for r in rows); turnover = sum(r[1] * r[2] for r in rows)
+            result.update({f'ticks_{seconds}': len(rows), f'volume_{seconds}': volume, f'turnover_{seconds}': turnover})
+            if seconds in (30, 60):
+                # First print has unknown direction. Subsequent neutral prints
+                # remain in the denominator and count as neither buying nor selling.
+                comparable = sum(r[2] for r in rows if r[3] is not None)
+                up = sum(r[2] for r in rows if r[3] == 1); down = sum(r[2] for r in rows if r[3] == -1)
+                result.update({f'uptick_ratio_{seconds}': up / comparable if comparable else 0.,
+                    f'downtick_ratio_{seconds}': down / comparable if comparable else 0.,
+                    f'neutral_volume_{seconds}': sum(r[2] for r in rows if r[3] == 0),
+                    f'p_min_{seconds}': min((r[1] for r in rows), default=eligible[-1][0][1]),
+                    f'p_max_{seconds}': max((r[1] for r in rows), default=eligible[-1][0][1])})
+            if seconds == 30:result['vwap_30'] = turnover / volume if volume else eligible[-1][0][1]
+        bid, ask = result['last_bid'], result['last_ask']
+        result['spread'] = (ask - bid) / bid if number(bid) and number(ask) and 0 < bid <= ask else None
+        return result
 
-        now_t = current_time
-        t10 = now_t - timedelta(seconds=10)
-        t30 = now_t - timedelta(seconds=30)
-        t60 = now_t - timedelta(seconds=60)
-
-        vol_10, to_10, ticks_10 = 0, 0.0, 0
-        vol_30, to_30, ticks_30 = 0, 0.0, 0
-        vol_60, to_60, ticks_60 = 0, 0.0, 0
-        uptick_vol_30 = 0
-        downtick_vol_30 = 0
-        uptick_vol_60 = 0
-        downtick_vol_60 = 0
-
-        p_min_30 = float('inf')
-        p_max_30 = float('-inf')
-        p_min_60 = float('inf')
-        p_max_60 = float('-inf')
-
-        vwap_num_30 = 0.0
-        last_bid, last_ask = self.ticks[-1][4], self.ticks[-1][5]
-
-        for stamp, p, v, is_up, b, a in self.ticks:
-            to = p * v
-            if stamp >= t10:
-                vol_10 += v
-                to_10 += to
-                ticks_10 += 1
-            if stamp >= t30:
-                vol_30 += v
-                to_30 += to
-                ticks_30 += 1
-                vwap_num_30 += to
-                if is_up:
-                    uptick_vol_30 += v
-                else:
-                    downtick_vol_30 += v
-                if p < p_min_30: p_min_30 = p
-                if p > p_max_30: p_max_30 = p
-            if stamp >= t60:
-                vol_60 += v
-                to_60 += to
-                ticks_60 += 1
-                if is_up:
-                    uptick_vol_60 += v
-                else:
-                    downtick_vol_60 += v
-                if p < p_min_60: p_min_60 = p
-                if p > p_max_60: p_max_60 = p
-
-        tot_vol_30 = uptick_vol_30 + downtick_vol_30
-        uptick_ratio_30 = uptick_vol_30 / tot_vol_30 if tot_vol_30 > 0 else 0.5
-
-        tot_vol_60 = uptick_vol_60 + downtick_vol_60
-        uptick_ratio_60 = uptick_vol_60 / tot_vol_60 if tot_vol_60 > 0 else 0.5
-
-        vwap_30 = vwap_num_30 / vol_30 if vol_30 > 0 else self.ticks[-1][1]
-        spread = (last_ask - last_bid) / last_bid if (last_bid > 0 and last_ask >= last_bid) else 0.0
-
-        return {
-            'ticks_count': len(self.ticks),
-            'ticks_10': ticks_10,
-            'turnover_10': to_10,
-            'volume_10': vol_10,
-            'ticks_30': ticks_30,
-            'turnover_30': to_30,
-            'volume_30': vol_30,
-            'ticks_60': ticks_60,
-            'turnover_60': to_60,
-            'volume_60': vol_60,
-            'uptick_ratio_30': uptick_ratio_30,
-            'uptick_ratio_60': uptick_ratio_60,
-            'downtick_ratio_30': 1.0 - uptick_ratio_30,
-            'p_min_30': p_min_30 if p_min_30 != float('inf') else self.ticks[-1][1],
-            'p_max_30': p_max_30 if p_max_30 != float('-inf') else self.ticks[-1][1],
-            'p_min_60': p_min_60 if p_min_60 != float('inf') else self.ticks[-1][1],
-            'p_max_60': p_max_60 if p_max_60 != float('-inf') else self.ticks[-1][1],
-            'vwap_30': vwap_30,
-            'spread': spread,
-            'last_bid': last_bid,
-            'last_ask': last_ask,
-            'last_price': self.ticks[-1][1],
-            'latest_time': self.ticks[-1][0],
-        }
+    def structure(self, asof, exclude_decision=True):
+        """An earlier rise and higher micro-low must already have rebounded."""
+        rows = [r for r in self.ticks if r[0] <= asof and r[0].date() == asof.date()]
+        if exclude_decision and rows:rows = rows[:-1]
+        turns = []
+        for row in rows:
+            if not turns or row[1] != turns[-1][1]:turns.append(row)
+        evidence = {'basis': 'PREDECISION_OBSERVED_PULLBACK_REBOUND', 'asof': asof.isoformat(),
+                    'price_points': len(turns), 'synthetic_bars_used': False}
+        for i in range(len(turns) - 2, 0, -1):
+            left, low, right = turns[i - 1:i + 2]
+            if not left[1] > low[1] < right[1]:continue
+            peak_i = max(range(i), key=lambda n: turns[n][1]); peak = turns[peak_i]
+            if peak_i == 0:continue
+            origin = min(turns[:peak_i], key=lambda r: r[1])
+            if low[1] <= origin[1] or any(r[1] < low[1] for r in turns[i + 1:]):continue
+            noise = median([abs(b[1] - a[1]) for a, b in zip(turns, turns[1:])])
+            return {**evidence, 'pass': True, 'support': low[1], 'support_at': low[0].isoformat(),
+                'confirmation_at': right[0].isoformat(), 'breakout': peak[1], 'breakout_at': peak[0].isoformat(),
+                'origin': origin[1], 'origin_at': origin[0].isoformat(), 'observed_noise': noise}
+        return {**evidence, 'pass': False, 'reason': 'CONFIRMED_MICRO_SUPPORT_UNKNOWN'}
 
 
 class FastMomentumStrategy:
-    """
-    R6 Fast & Early Momentum Entry Strategy.
-    Integrates micro-tape dynamics, 4-regime classification, opening phase gates,
-    strict Net RR >= 1.5, TTL management, and 3-tier exit logic.
-    """
+    """SHADOW hypothesis; a signal is not order authorization, fill or expectancy."""
     def __init__(self, cfg=None, auto=None, costs=None):
-        self.cfg = cfg
-        self.auto = auto
-        if costs is None:
-            self.costs = {'buy': 0.00015, 'sell': 0.00015, 'tax': 0.002, 'entry_slippage': 0.002, 'exit_slippage': 0.003}
-        elif isinstance(costs, dict):
-            self.costs = dict(costs)
-        else:
-            self.costs = {
-                'buy': getattr(costs, 'buy', 0.00015),
-                'sell': getattr(costs, 'sell', 0.00015),
-                'tax': getattr(costs, 'tax', 0.0020),
-                'entry_slippage': getattr(costs, 'entry_slippage', 0.0020),
-                'exit_slippage': getattr(costs, 'exit_slippage', 0.0030),
-            }
-        self.tapes: Dict[str, MicroTape] = {}
-        self.active_signals: Dict[str, FastSignal] = {}
-        self.last_exit_by_symbol: Dict[str, datetime] = {}
-        self.cooldown_seconds: float = 900.0  # 15 minutes cooldown after exit
+        self.cfg = cfg; self.auto = auto
+        self.costs = dict(buy=getattr(auto, 'commission_buy', .00015),
+            sell=getattr(auto, 'commission_sell', .00015), tax=getattr(auto, 'sell_tax', .002),
+            entry_slippage=getattr(cfg, 'entry_slippage_fraction', .002), exit_slippage=getattr(cfg, 'exit_slippage_fraction', .003))
+        if costs is not None:
+            self.costs.update(costs if isinstance(costs, dict) else {key: getattr(costs, key) for key in self.costs})
+        if any(not number(v) or not 0 <= v < 1 for v in self.costs.values()):raise ValueError('invalid proportional cost assumption')
+        if sum(self.costs[k] for k in ('sell', 'tax', 'exit_slippage')) >= 1:raise ValueError('invalid sell proceeds model')
+        self.tapes = {}; self.active_signals = {}; self.last_exit_by_symbol = {}; self.last_evaluation = {}
+        self.cooldown_seconds = getattr(auto, 'cooldown_seconds', 900.)
 
-    def get_tape(self, symbol: str) -> MicroTape:
-        if symbol not in self.tapes:
-            self.tapes[symbol] = MicroTape(max_seconds=120.0)
+    def get_tape(self, symbol):
+        if symbol not in self.tapes:self.tapes[symbol] = MicroTape(stale_seconds=getattr(self.cfg, 'stale_seconds', 5))
         return self.tapes[symbol]
 
-    def ingest_tick(self, t) -> None:
-        self.get_tape(t.symbol).ingest(t)
+    def ingest_tick(self, t, received=None, coverage_gap=False):
+        accepted = self.get_tape(t.symbol).ingest(t, received, coverage_gap)
+        if not accepted:self._note(t, 'UNKNOWN', self.get_tape(t.symbol).last_rejection)
+        return accepted
 
-    def determine_phase(self, stamp: datetime) -> str:
-        s = stamp.strftime('%H:%M:%S')
-        if '09:00:00' <= s < '09:02:00':
-            return 'OPENING_EARLY'
-        elif '09:02:00' <= s < '09:05:00':
-            return 'OPENING_BUILD'
-        elif '09:05:00' <= s < '09:15:00':
-            return 'OPENING_STABILIZE'
-        elif '09:15:00' <= s < '15:10:00':
-            return 'REGULAR'
-        elif '15:40:00' <= s < '20:00:00':
-            return 'AFTER'
+    def forget(self, symbol, reason='OBSERVATION_COVERAGE_LOST'):
+        self.tapes.pop(symbol, None); self.active_signals.pop(symbol, None); self.last_evaluation.pop(symbol, None)
+
+    def reset(self, reason='OBSERVATION_COVERAGE_LOST'):
+        for symbol in list(self.tapes):self.forget(symbol, reason)
+
+    def record_exit(self, symbol, filled_at):
+        at = stamp(filled_at)
+        if at is None:raise ValueError('full exit fill requires aware timestamp')
+        self.last_exit_by_symbol[symbol] = at; self.active_signals.pop(symbol, None)
+
+    def _note(self, t, status, reason, **details):
+        self.last_evaluation[t.symbol] = dict(time=t.time.isoformat(), status=status, reason=reason,
+            actual_order_permission=False, SHADOW_ONLY=True, **details)
+
+    def determine_phase(self, at):
+        s = at.strftime('%H:%M:%S')
+        if '09:00:00' <= s < '09:02:00':return 'OPENING_EARLY'
+        if '09:02:00' <= s < '09:05:00':return 'OPENING_BUILD'
+        if '09:05:00' <= s < '09:15:00':return 'OPENING_STABILIZE'
+        if '09:15:00' <= s < '15:10:00':return 'REGULAR'
+        if '15:40:00' <= s < '20:00:00':return 'AFTER'
         return 'OFF_SESSION'
 
-    def classify_regime(
-        self,
-        t,
-        m: Dict[str, Any],
-        phase: str,
-        watch: Dict[str, Any],
-    ) -> Tuple[str, str, Dict[str, Any]]:
-        """
-        Classifies current micro-price-action into Regimes A, B, C, or D.
-        Returns: (regime_code, reason_code, details)
-        """
-        p = t.price
-        bid = m.get('last_bid', p)
-        ask = m.get('last_ask', p)
-        spread = m.get('spread', 0.0)
+    def classify_regime(self, t, m, phase, watch):
+        spread = m.get('spread'); maximum = .004 if phase == 'OPENING_EARLY' else .0035
+        if spread is None:return 'C', 'EXECUTABLE_QUOTE_UNKNOWN', {}
+        if spread > maximum:return 'C', 'FALSE_BREAKOUT_WIDE_SPREAD', {'spread': spread, 'max_spread': maximum}
+        minimum = 4 if phase == 'OPENING_EARLY' else 6
+        if m.get('ticks_10', 0) < minimum:return 'C', 'FALSE_BREAKOUT_INSUFFICIENT_TICK_VELOCITY', {'min_ticks': minimum}
+        turnover = 3000000. if phase == 'OPENING_EARLY' else 5000000.
+        if m.get('turnover_10', 0) < turnover:return 'C', 'FALSE_BREAKOUT_INSUFFICIENT_TURNOVER', {'min_turnover': turnover}
+        reference = watch.get('reference_price') or watch.get('first_raw_price')
+        if number(reference) and reference > 0 and t.price < reference * .985 and m['p_max_60'] < reference * .990:
+            return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'reference': reference}
+        extension = t.price / m['p_min_60'] - 1; limit = .022 if phase == 'OPENING_EARLY' else .020
+        if extension > limit:return 'B', 'EXTENDED_IMPULSE_CHASE_OVEREXTENDED', {'extension': extension}
+        if m['uptick_ratio_30'] < .55:return 'B', 'EXTENDED_IMPULSE_MOMENTUM_EXHAUSTION', {'uptick_ratio_30': m['uptick_ratio_30']}
+        if m['uptick_ratio_30'] < (.62 if phase == 'OPENING_EARLY' else .65):
+            return 'C', 'INSUFFICIENT_UPTICK_DOMINANCE', {'uptick_ratio_30': m['uptick_ratio_30']}
+        if t.price < m['p_max_30'] - tick_size(t.price):return 'C', 'MICRO_BREAKOUT_NOT_AT_PEAK', {}
+        return 'A', 'EARLY_MOMENTUM_FLOW_PROXY', {}
 
-        # 1. Regime C Check: False breakout / Quote spoof / Illiquid spike
-        max_allowed_spread = 0.0040 if phase == 'OPENING_EARLY' else 0.0035
-        if spread > max_allowed_spread:
-            return 'C', 'FALSE_BREAKOUT_WIDE_SPREAD', {'spread': spread, 'max_spread': max_allowed_spread}
+    def _quote(self, t, now, quantity=1, side='BOTH'):
+        at = stamp(getattr(t, 'time', None)); book = stamp(getattr(t, 'book_time', None)); age = getattr(self.cfg, 'stale_seconds', 5)
+        if not getattr(t, 'regular', True):return 'NONREGULAR_TRADE_NOT_EXECUTABLE'
+        if at is None or not 0 <= (now - at).total_seconds() <= age:return 'CURRENT_TRADE_STALE_OR_FUTURE'
+        bid, ask = getattr(t, 'bid', None), getattr(t, 'ask', None)
+        if not number(bid) or not number(ask) or not 0 < bid <= ask:return 'EXECUTABLE_QUOTE_UNKNOWN'
+        if book is None or book.date() != now.date() or not 0 <= (now - book).total_seconds() <= age:
+            return 'BOOK_TIMESTAMP_UNKNOWN_OR_STALE'
+        if getattr(t, 'depth_available', None) is not True:return 'EXECUTABLE_DEPTH_UNKNOWN'
+        names = ('bid_qty',) if side == 'SELL' else ('ask_qty', 'bid_qty')
+        if any(not number(getattr(t, name, None)) or getattr(t, name) < quantity for name in names):
+            return 'FULL_QUANTITY_DEPTH_INSUFFICIENT'
+        return None
 
-        min_ticks = 4 if phase == 'OPENING_EARLY' else 6
-        if m.get('ticks_10', 0) < min_ticks:
-            return 'C', 'FALSE_BREAKOUT_INSUFFICIENT_TICK_VELOCITY', {'ticks_10': m.get('ticks_10', 0), 'min_ticks': min_ticks}
+    def calculate_invalidation_and_target(self, t, m, watch, capital_limit=81300., risk_budget=1626., asof=None):
+        reject = lambda reason, **extra: dict(**{'pass': False}, reason=reason, **extra)
+        now = stamp(asof) if asof is not None else stamp(t.time)
+        if now is None:return reject('DECISION_TIME_UNKNOWN')
+        if not number(capital_limit) or not number(risk_budget) or capital_limit <= 0 or risk_budget <= 0:
+            return reject('AVAILABLE_CAPITAL_OR_RISK_UNKNOWN')
+        reason = self._quote(t, now)
+        if reason:return reject(reason)
+        structure = self.get_tape(t.symbol).structure(now)
+        if not structure['pass']:return reject(structure['reason'], structure=structure)
+        entry = t.ask; breakout = structure['breakout']; support = structure['support']
+        if t.price <= breakout or entry <= breakout:return reject('PREDECISION_REACTION_HIGH_NOT_BROKEN', structure=structure)
+        if entry / breakout - 1 > .003:return reject('MAX_CHASE_EXCEEDED', breakout=breakout, entry=entry)
+        overhead = watch.get('resistance'); known_at = stamp(watch.get('resistance_asof') or watch.get('observed_at'))
+        if not number(overhead) or overhead <= entry or known_at is None or known_at > now or known_at.date() != now.date():
+            return reject('KNOWN_OVERHEAD_TARGET_UNAVAILABLE', structure=structure)
+        # Never move a structural line to a fixed percentage or solve a target
+        # backwards from desired RR. Size from the separately derived hard line.
+        buffer = max(tick_size(support), t.ask - t.bid, support * getattr(self.cfg, 'structural_buffer', .001))
+        stop = floor_tick(support - buffer)
+        noise = max(structure['observed_noise'], t.ask - t.bid, tick_size(support))
+        emergency = floor_tick(stop - noise); target = floor_tick(overhead)
+        if not 0 < emergency < stop < entry < target:return reject('INVALID_STRUCTURAL_PRICE_GEOMETRY', structure=structure)
+        entry_fill = entry * (1 + self.costs['entry_slippage'])
+        buy_outlay = entry_fill * (1 + self.costs['buy'])
+        sell_multiplier = (1 - self.costs['exit_slippage']) * (1 - self.costs['sell'] - self.costs['tax'])
+        # Prices use ask and exit-bid hypotheses; spread is already inside these
+        # prices and is not charged again as a separate percentage fee.
+        reward = target * sell_multiplier - buy_outlay
+        risk = buy_outlay - emergency * sell_multiplier
+        net_rr = reward / risk if risk > 0 else None
+        geometry = dict(entry=entry, stop=stop, emergency=emergency, target=target,
+            net_rr=net_rr, gross_rr=(target - entry) / (entry - emergency),
+            reward_net_per_share=reward, risk_net_per_share=risk, risk_budget=risk_budget,
+            target_basis='KNOWN_RESISTANCE_CEILING_NOT_PRICE_FORECAST', target_known_at=known_at.isoformat(),
+            structural_evidence=structure, buffer=buffer, noise_band=noise,
+            cost_basis='ASK_AND_EXIT_BID_PLUS_PROPORTIONAL_FEES_TAX_SLIPPAGE_ONCE',
+            costs=dict(self.costs), entry_is_filled=False, modeled_entry=entry_fill)
+        minimum = getattr(self.cfg, 'min_reward_risk', 1.5)
+        if net_rr is None or net_rr < minimum:return reject('NET_REWARD_RISK_LOW', min_net_rr=minimum, **geometry)
+        risk_qty = math.floor(risk_budget / risk); cash_qty = math.floor(capital_limit / buy_outlay)
+        quantity = min(risk_qty, cash_qty)
+        if quantity <= 0:return reject('RISK_ZERO_QUANTITY', max_shares_by_risk=risk_qty, max_shares_by_cap=cash_qty, **geometry)
+        reason = self._quote(t, now, quantity)
+        if reason:return reject(reason, quantity=quantity, **geometry)
+        return dict(**{'pass': True}, quantity=quantity, **geometry)
 
-        min_turnover_10s = 3_000_000.0 if phase == 'OPENING_EARLY' else 5_000_000.0
-        if m.get('turnover_10', 0.0) < min_turnover_10s:
-            return 'C', 'FALSE_BREAKOUT_INSUFFICIENT_TURNOVER', {'turnover_10': m.get('turnover_10', 0.0), 'min_turnover': min_turnover_10s}
-
-        # 2. Regime D Check: Downtrend counter-bounce
-        ref_price = watch.get('reference_price') or watch.get('first_raw_price')
-        if ref_price and ref_price > 0:
-            if p < ref_price * 0.985 and m.get('p_max_60', p) < ref_price * 0.990:
-                # Stock is trading significantly below opening/reference price with weak bounces
-                return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'price': p, 'ref_price': ref_price}
-
-        # 3. Regime B Check: Extended impulse chase (e.g. Pan Ocean late chase)
-        # If price has already run up too far from micro-low within 60s without consolidation:
-        p_min_60 = m.get('p_min_60', p)
-        if p_min_60 > 0:
-            impulse_extension = (p - p_min_60) / p_min_60
-            max_extension = 0.022 if phase == 'OPENING_EARLY' else 0.020  # Max 2.0% - 2.2% from micro-low
-            if impulse_extension > max_extension:
-                return 'B', 'EXTENDED_IMPULSE_CHASE_OVEREXTENDED', {
-                    'extension': impulse_extension,
-                    'max_extension': max_extension,
-                    'p_min_60': p_min_60,
-                    'price': p
-                }
-
-        # If buying pressure is already exhausted (uptick volume ratio falling below 55% at high):
-        if m.get('uptick_ratio_30', 0.5) < 0.55:
-            return 'B', 'EXTENDED_IMPULSE_MOMENTUM_EXHAUSTION', {
-                'uptick_ratio_30': m.get('uptick_ratio_30', 0.5),
-                'required': 0.55
-            }
-
-        # 4. Regime A Check: Early Momentum
-        min_uptick_ratio = 0.62 if phase == 'OPENING_EARLY' else 0.65
-        if m.get('uptick_ratio_30', 0.5) < min_uptick_ratio:
-            return 'C', 'INSUFFICIENT_UPTICK_DOMINANCE', {
-                'uptick_ratio_30': m.get('uptick_ratio_30', 0.5),
-                'required': min_uptick_ratio
-            }
-
-        # Micro-breakout: price must be at or within 1 tick of the 30s high
-        p_max_30 = m.get('p_max_30', p)
-        ts = tick_size(p)
-        if p < (p_max_30 - ts):
-            return 'C', 'MICRO_BREAKOUT_NOT_AT_PEAK', {'price': p, 'p_max_30': p_max_30}
-
-        return 'A', 'EARLY_MOMENTUM_CONFIRMED', {}
-
-    def calculate_invalidation_and_target(
-        self,
-        t,
-        m: Dict[str, Any],
-        watch: Dict[str, Any],
-        capital_limit: float = 81300.0,
-        risk_budget: float = 1626.0  # 2% of 81,300
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Calculates stop (invalidation), emergency line, realistic target, Net RR, and position quantity.
-        Enforces strict Net RR >= 1.5 including commissions, taxes, and slippage.
-        """
-        p = t.price
-        entry_price = getattr(t, 'ask', 0.0) or p
-        ts = tick_size(p)
-
-        # 1. Invalidation Stop: Just below the 30s micro-low (or VWAP)
-        micro_low = m.get('p_min_30', p)
-        structural_stop = floor_tick(micro_low - ts)
-
-        # Bounds on risk distance: minimum 0.7%, maximum 2.0%
-        risk_dist = entry_price - structural_stop
-        if risk_dist <= 0 or (risk_dist / entry_price) < 0.007:
-            structural_stop = floor_tick(entry_price * (1.0 - 0.009))  # Default 0.9% risk
-            risk_dist = entry_price - structural_stop
-
-        if (risk_dist / entry_price) > 0.022:
-            structural_stop = floor_tick(entry_price * (1.0 - 0.018))  # Cap risk at 1.8%
-            risk_dist = entry_price - structural_stop
-
-        emergency_stop = floor_tick(structural_stop - max(2 * ts, structural_stop * 0.005))
-
-        # 2. Cost parameters and net risk
-        comm_buy = self.costs.get('buy', 0.00015)
-        comm_sell = self.costs.get('sell', 0.00015)
-        tax = self.costs.get('tax', 0.0020)
-        entry_slip = self.costs.get('entry_slippage', 0.0020)
-        exit_slip = self.costs.get('exit_slippage', 0.0030)
-        cost_buy = comm_buy + entry_slip
-        cost_sell = comm_sell + tax + exit_slip
-
-        risk_net_per_share = (
-            entry_price - structural_stop
-            + entry_price * comm_buy
-            + structural_stop * cost_sell
-        )
-        if risk_net_per_share <= 0:
-            return None
-
-        min_net_rr = getattr(self.cfg, 'min_reward_risk', 1.5) if self.cfg else 1.5
-
-        # Minimum target price required to achieve Net RR >= min_net_rr
-        target_for_min_net_rr = floor_tick(
-            (min_net_rr * risk_net_per_share + entry_price * (1.0 + cost_buy)) / (1.0 - cost_sell) + ts
-        )
-        projected_target = max(floor_tick(entry_price + 2.5 * risk_dist), target_for_min_net_rr)
-
-        # Check resistance ceiling from watch / intraday peak
-        resistance = watch.get('resistance')
-        if resistance and resistance > entry_price:
-            # If resistance is overhead, target cannot exceed resistance
-            target_price = min(float(resistance), projected_target)
-        else:
-            target_price = projected_target
-
-        if target_price <= entry_price:
-            return None
-
-        # 3. Cost-inclusive Net RR calculation
-        reward_net_per_share = (
-            target_price * (1.0 - cost_sell)
-            - entry_price * (1.0 + cost_buy)
-        )
-        net_rr = reward_net_per_share / risk_net_per_share
-        gross_rr = (target_price - entry_price) / risk_dist
-
-        if net_rr < min_net_rr:
-            return {
-                'pass': False,
-                'reason': 'NET_REWARD_RISK_LOW',
-                'net_rr': net_rr,
-                'min_net_rr': min_net_rr,
-                'gross_rr': gross_rr,
-                'entry': entry_price,
-                'stop': structural_stop,
-                'target': target_price
-            }
-
-        # 4. Sizing
-        # Risk per share
-        max_shares_by_risk = math.floor(risk_budget / risk_net_per_share) if risk_net_per_share > 0 else 0
-        max_shares_by_cap = math.floor(capital_limit / (entry_price * (1.0 + comm_buy + entry_slip)))
-        qty = min(max_shares_by_risk, max_shares_by_cap)
-
-        if qty <= 0:
-            return {
-                'pass': False,
-                'reason': 'RISK_ZERO_QUANTITY',
-                'max_shares_by_risk': max_shares_by_risk,
-                'max_shares_by_cap': max_shares_by_cap,
-                'entry': entry_price
-            }
-
-        return {
-            'pass': True,
-            'entry': entry_price,
-            'stop': structural_stop,
-            'emergency': emergency_stop,
-            'target': target_price,
-            'quantity': qty,
-            'net_rr': net_rr,
-            'gross_rr': gross_rr,
-            'reward_net_per_share': reward_net_per_share,
-            'risk_net_per_share': risk_net_per_share,
-        }
-
-    def evaluate(
-        self,
-        t,
-        watch: Dict[str, Any],
-        capital_limit: float = 81300.0,
-        risk_budget: float = 1626.0,
-        ingest: bool = True
-    ) -> Optional[FastSignal]:
-        """
-        Main entry evaluation for FAST momentum.
-        Returns a FastSignal if Regime A conditions and risk-reward checks pass; otherwise None.
-
-        ingest=False means the caller already fed EVERY received tick through
-        ingest_tick() (ShadowObserver does this before its evaluation throttle).
-        Evaluating on a throttled subset of ticks starves the MicroTape and makes the
-        tick-velocity / turnover regime gates structurally unreachable.
-        """
-        if ingest:
-            self.ingest_tick(t)
-        tape = self.get_tape(t.symbol)
-        m = tape.metrics(t.time)
-        if not m or m.get('ticks_count', 0) < 4:
-            return None
-
-        # Cooldown check: prevent immediate re-entry into same symbol after exit
-        last_exit = self.last_exit_by_symbol.get(t.symbol)
-        if last_exit and (t.time - last_exit).total_seconds() < self.cooldown_seconds:
-            return None
-
+    def evaluate(self, t, watch, capital_limit=81300., risk_budget=1626., ingest=True, received=None):
+        now = stamp(received) if received is not None else stamp(t.time)
+        if now is None:return None
+        if ingest and not self.ingest_tick(t, received):return None
+        tape = self.get_tape(t.symbol); m = tape.metrics(now)
+        if not m or not m['data_fresh']:
+            self._note(t, 'UNKNOWN', 'CURRENT_MICRO_TAPE_UNAVAILABLE'); return None
+        reason = self._quote(t, now)
+        if reason:self._note(t, 'UNKNOWN', reason); return None
+        if m['latest_time'] != t.time or m['last_price'] != t.price:
+            self._note(t, 'UNKNOWN', 'CURRENT_TRADE_NOT_IN_ACCEPTED_TAPE'); return None
+        exited = self.last_exit_by_symbol.get(t.symbol)
+        if exited and exited.date() == now.date() and 0 <= (now - exited).total_seconds() < self.cooldown_seconds:
+            self._note(t, 'REJECT', 'SAME_SYMBOL_FILLED_EXIT_COOLDOWN'); return None
         phase = self.determine_phase(t.time)
-        if phase == 'OFF_SESSION':
-            return None
-
-        # Regime classification
+        if phase == 'OFF_SESSION' or not (supported(t.time) or after_supported(t.time)):
+            self._note(t, 'REJECT', 'OFF_SESSION'); return None
         regime, reason, details = self.classify_regime(t, m, phase, watch)
-        if regime != 'A':
-            # Not an early momentum setup (could be B, C, or D)
+        if regime != 'A':self._note(t, 'REJECT', reason, regime=regime, details=details); return None
+        geometry = self.calculate_invalidation_and_target(t, m, watch, capital_limit, risk_budget, asof=now)
+        if not geometry.get('pass'):
+            self._note(t, 'UNKNOWN' if 'UNKNOWN' in geometry['reason'] or 'UNAVAILABLE' in geometry['reason'] else 'REJECT', geometry['reason'], geometry=geometry)
             return None
+        signal = FastSignal(symbol=t.symbol, name=watch.get('name', t.symbol), limit=geometry['entry'],
+            stop=geometry['stop'], emergency=geometry['emergency'], target=geometry['target'], quantity=geometry['quantity'],
+            net_reward_risk=geometry['net_rr'], gross_reward_risk=geometry['gross_rr'], reward_net_per_share=geometry['reward_net_per_share'],
+            risk_net_per_share=geometry['risk_net_per_share'], regime='A', phase=phase, created_at=now,
+            max_chase_price=geometry['structural_evidence']['breakout'] * 1.003,
+            extra=dict(metrics=m, geometry=geometry, actual_order_permission=False, SHADOW_ONLY=True,
+                       profitability_proven=False, strategy_policy='CAUSAL_FAST_RESEARCH'))
+        self.active_signals[t.symbol] = signal
+        self._note(t, 'SIGNAL', 'CAUSAL_FAST_RESEARCH_CANDIDATE', geometry=geometry)
+        return signal
 
-        # Calculate stops, targets, net RR and quantity
-        geom = self.calculate_invalidation_and_target(
-            t, m, watch,
-            capital_limit=capital_limit,
-            risk_budget=risk_budget
-        )
-        if not geom or not geom.get('pass'):
-            return None
-
-        sig = FastSignal(
-            symbol=t.symbol,
-            name=watch.get('name', t.symbol),
-            limit=geom['entry'],
-            stop=geom['stop'],
-            target=geom['target'],
-            emergency=geom['emergency'],
-            quantity=geom['quantity'],
-            net_reward_risk=geom['net_rr'],
-            gross_reward_risk=geom['gross_rr'],
-            reward_net_per_share=geom['reward_net_per_share'],
-            risk_net_per_share=geom['risk_net_per_share'],
-            regime='A',
-            phase=phase,
-            created_at=t.time,
-            ttl_seconds=15.0,
-            max_chase_fraction=0.003,
-            reason='EARLY_MOMENTUM_ENTRY',
-            extra={'metrics': m, 'geometry': geom}
-        )
-        self.active_signals[t.symbol] = sig
-        return sig
-
-    def evaluate_exit(
-        self,
-        position: Dict[str, Any],
-        t,
-        current_time: datetime
-    ) -> Tuple[bool, str, Dict[str, Any]]:
-        """
-        Tailored Exit Logic for FAST Momentum:
-        1. Tier 1: Invalidation line (micro-swing stop)
-        2. Tier 2: Account risk limit (unrealized loss >= 2%)
-        3. Tier 3: Emergency plunge stop
-        4. Momentum Stall Exit (early scratch if momentum stalls within 60~120s)
-        5. Profit Protection: Lock break-even at +1R, trail at +1.5R.
-        """
-        p = t.price
-        sym = position.get('symbol', t.symbol)
-        entry = position.get('avg', position.get('entry', p))
-        qty = position.get('qty', 1)
-        stop = position.get('stop', entry * 0.985)
-        emergency = position.get('emergency', stop * 0.995)
-        opened_at_str = position.get('opened')
-        opened_at = datetime.fromisoformat(opened_at_str) if isinstance(opened_at_str, str) else current_time
-        holding_seconds = (current_time - opened_at).total_seconds()
-
-        # Track MFE (Maximum Favorable Excursion)
-        highest = position.setdefault('highest_price', p)
-        if p > highest:
-            position['highest_price'] = p
-            highest = p
-
-        # Dynamic Profit Lock & Trailing Stop:
-        # If gain reached >= 1.8%, lock profit at minimum +1.8% or trail 0.8% below highest peak
-        mfe_pct = (highest - entry) / entry if entry > 0 else 0.0
-        if mfe_pct >= 0.018:
-            lock_stop = floor_tick(max(entry * 1.018, highest * 0.992))
-            if lock_stop > position.get('stop', 0):
-                position['stop'] = lock_stop
-                position['profit_locked'] = True
-
-        # Check if price hit the locked profit stop
-        if position.get('profit_locked') and p <= position['stop']:
-            self.last_exit_by_symbol[sym] = current_time
-            return True, 'PROFIT_LOCK_EXIT', {'price': p, 'stop': position['stop'], 'highest': highest}
-
-        # Tier 3: Emergency plunge
-        if p <= emergency:
-            self.last_exit_by_symbol[sym] = current_time
-            return True, 'EMERGENCY_PLUNGE_EXIT', {'price': p, 'emergency': emergency}
-
-        # Tier 1: Invalidation Stop
-        if p <= stop:
-            self.last_exit_by_symbol[sym] = current_time
-            return True, 'INVALIDATION_STOP_EXIT', {'price': p, 'stop': stop}
-
-        # Tier 2: Account Risk Limit (max 2% of capital)
-        unrealized_loss = (entry - p) * qty
-        max_allowed_loss = 1626.0  # 2% of 81,300 KRW
-        if unrealized_loss >= max_allowed_loss:
-            self.last_exit_by_symbol[sym] = current_time
-            return True, 'ACCOUNT_RISK_LIMIT_EXIT', {'loss': unrealized_loss, 'limit': max_allowed_loss}
-
-        # Micro-metrics from tape
-        tape = self.get_tape(sym)
-        m = tape.metrics(current_time)
-
-        # Early Momentum Stall Exit:
-        # If holding for >= 60 seconds, price hasn't moved into profit (p < entry + 0.3*(entry-stop)),
-        # and selling pressure is dominant (downtick ratio >= 65%), exit early to minimize loss!
-        if holding_seconds >= 60.0:
-            r_gain = (p - entry) / max(1.0, entry - stop)
-            if r_gain < 0.3 and m.get('downtick_ratio_30', 0.0) >= 0.65:
-                self.last_exit_by_symbol[sym] = current_time
-                return True, 'MOMENTUM_STALL_SCRATCH_EXIT', {
-                    'holding_seconds': holding_seconds,
-                    'r_gain': r_gain,
-                    'downtick_ratio_30': m.get('downtick_ratio_30', 0.0)
-                }
-
-        # Profit Protection:
-        # If price reached >= 1.0R, active stop should be moved to break-even + cost
-        r_dist = entry - stop
-        if r_dist > 0 and (p - entry) >= r_dist:
-            comm_tax_buf = entry * 0.003  # Cover roundtrip costs
-            breakeven_stop = floor_tick(entry + comm_tax_buf)
-            if breakeven_stop > stop:
-                position['stop'] = breakeven_stop
-                position['profit_locked'] = True
-
-        return False, 'HOLD', {'holding_seconds': holding_seconds, 'price': p}
+    def evaluate_exit(self, position, t, current_time):
+        now = stamp(current_time); opened = stamp(position.get('opened'))
+        entry = position.get('avg', position.get('entry')); qty = position.get('qty')
+        initial_stop = position.get('initial_stop', position.get('stop')); emergency = position.get('emergency')
+        evidence = dict(actual_order_permission=False, SHADOW_ONLY=True, profitability_proven=False)
+        if now is None or opened is None or now < opened or not all(number(v) and v > 0 for v in (entry, qty, initial_stop, emergency)):
+            return False, 'EXIT_PRICE_OR_RISK_UNKNOWN', evidence
+        if position.get('symbol', t.symbol) != t.symbol:return False, 'EXIT_SYMBOL_MISMATCH', evidence
+        reason = self._quote(t, now, qty, side='SELL')
+        if reason:return False, reason, evidence
+        bid = t.bid
+        if bid <= emergency:return True, 'EMERGENCY_PLUNGE_EXIT', {**evidence, 'bid': bid, 'emergency': emergency}
+        allowance = position.get('risk_budget')
+        # Executed avg already includes entry slippage. Current bid is executable;
+        # additional exit slippage is a hypothesis, not a second spread deduction.
+        modeled_exit = bid * (1 - self.costs['exit_slippage'])
+        modeled_loss = (entry * (1 + self.costs['buy']) - modeled_exit * (1 - self.costs['sell'] - self.costs['tax'])) * qty
+        if number(allowance) and allowance > 0 and modeled_loss >= allowance:
+            return True, 'ACCOUNT_RISK_LIMIT_EXIT', {**evidence, 'modeled_loss': modeled_loss, 'risk_budget': allowance, 'bid': bid}
+        rows = [r for r in self.get_tape(t.symbol).ticks if opened <= r[0] <= t.time]
+        def below(line):
+            return (len(rows) >= 2 and rows[-2][0] < rows[-1][0] == t.time
+                    and rows[-1][1] <= line and rows[-2][1] <= line and bid <= line)
+        protection = position.get('protection_stop')
+        if number(protection) and below(protection):
+            return True, 'PROFIT_LOCK_EXIT', {**evidence, 'bid': bid, 'stop': protection, 'basis': 'CONFIRMED_POST_FILL_HIGHER_LOW_FAILED'}
+        if below(initial_stop):return True, 'INVALIDATION_STOP_EXIT', {**evidence, 'bid': bid, 'stop': initial_stop, 'basis': 'TWO_INDEPENDENT_TRADE_BREACHES'}
+        turns = []
+        for row in rows:
+            if not turns or row[1] != turns[-1][1]:turns.append(row)
+        highs = []; lows = []
+        for left, center, right in zip(turns, turns[1:], turns[2:]):
+            if center[1] > max(left[1], right[1]):highs.append(center)
+            if center[1] < min(left[1], right[1]):lows.append(center)
+        if len(highs) >= 2 and lows and highs[-1][1] < highs[-2][1] and below(lows[-1][1]):
+            return True, 'MOMENTUM_FAILURE_EXIT', {**evidence, 'bid': bid, 'failed_rebound_high': highs[-1][1], 'floor': lows[-1][1]}
+        initial_r = entry - emergency
+        if initial_r > 0 and t.price - entry >= initial_r and lows:
+            floor = lows[-1][1]
+            buffer = max(tick_size(floor), t.ask - t.bid, floor * getattr(self.cfg, 'structural_buffer', .001))
+            line = floor_tick(floor - buffer)
+            cost_floor = entry * (1 + self.costs['buy']) / ((1 - self.costs['sell'] - self.costs['tax']) * (1 - self.costs['exit_slippage']))
+            if cost_floor < line < bid and line > (protection if number(protection) else 0):
+                position['protection_stop'] = line; position['profit_locked'] = True
+        return False, 'HOLD', {**evidence, 'holding_seconds': (now - opened).total_seconds(), 'bid': bid,
+                               'risk_budget_known': number(allowance) and allowance > 0}

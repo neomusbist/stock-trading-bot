@@ -318,6 +318,14 @@ def presentation(s):
     else:
         market='08시 사전 준비 / 09시 개장 증거 대기' if s.get('control_supported') and not s['supported'] else '운영시간 밖' if not s['supported'] else '신규진입 마감' if clock.strftime('%H:%M:%S')>=s.get('entry_cutoff','15:05:00') else '관찰 중 · 신규매수 종료' if clock.strftime('%H:%M:%S')>=eff_cutoff else '신규거래 시간 / 정규장 확인' if s.get('market_confirmed') else '신규거래 시간 / 시장 현재성 미확인'
     safety='HALT — 안전중단' if s.get('halt') else '주의 — 보호정책 확인 필요' if not s['hard_ok'] else '주의 — 불명확 주문' if s['uncertain'] else '주의 — 현재 오류' if s.get('active_error') else '주의 — 프로세스 응답 지연' if running and s['process'].get('managed') and not s['process'].get('process_heartbeat_fresh') else '주의 — 계좌 / 실시간 확인 필요' if running and (not s.get('account_fresh') or s['websocket']!='현재 연결 정상') else '정상 / 계좌·실시간 연결 확인' if (s['supported'] or s.get('after_supported')) and s.get('account_fresh') and s['websocket']=='현재 연결 정상' else '로컬 상태 정상 / 실계좌 미확인'
+    if running and mode=='LIVE' and not s.get('trading_on') and not s.get('halt') and s['hard_ok'] and not s['uncertain'] and not s.get('active_error'):
+        labels={'FRESH_REGULAR_TICK_NOT_READY':'시세 수신 대기','ACCOUNT_FRESH_NOT_READY':'계좌 조회 지연',
+            'EVENT_LOOP_LAG':'시세 처리 지연','QUEUE_BUFFER':'수신 자료 처리 대기','WS_SOURCE_SILENT':'현재 체결 수신 없음',
+            'READINESS_UNKNOWN':'주문 준비 증거 미확인','HEARTBEAT_NOT_CURRENT':'감시 상태 갱신 대기',
+            'WEBSOCKET_REG_ACK_NOT_READY':'실시간 연결 확인 대기'}
+        reasons=s.get('order_off_reasons',[])
+        shown=[labels[r] for r in reasons if r in labels]
+        if shown:safety='주문 대기 — '+', '.join(dict.fromkeys(shown))
     return operation,market,safety
 
 def candidate_display(s):
@@ -505,20 +513,8 @@ class UserOperations(OperatorService):
         from automation.readiness import authorization_valid
         valid,missing=authorization_valid(self.root,cfg,auto,policy,self.clock())
         s['daily_authorization_valid']=valid;s['authorization_missing']=missing
-        s['readiness']=hb.get('readiness',{})
-        ready_ok=s['readiness'].get('order_ready')
-        if ready_ok is None:
-            ready_state=s['readiness'].get('state')
-            ready_missing=s['readiness'].get('missing',[])
-            ready_source=s['readiness'].get('tick_lag_source')
-            ready_age=s['readiness'].get('regular_tick_age')
-            ready_ok=(ready_state=='OPEN_READY') or (
-                ready_missing==['FRESH_REGULAR_TICK_NOT_READY']
-                and ready_source=='WS_SOURCE_SILENT'
-                and isinstance(ready_age,(int,float))
-                and ready_age<=cfg.stale_seconds*2
-                and hb.get('connected')
-            ) if 'readiness' in hb else True
+        ready_ok=s.get('order_ready',False)
+        if not valid:s.setdefault('order_off_reasons',[]).extend('DAILY_AUTHORIZATION_'+str(reason) for reason in missing)
         if not valid or not ready_ok or hb.get('fatal') or not s.get('trading_on'):s['trading_on']=False
         s['guided_start']=True;s['build_id']=BUILD_ID
         s['decision_rows']=[r for r in s['decision_rows'] if r.get('primary_reason_code')!='ONE_SHARE_UNAFFORDABLE' and r.get('state')!='EXTERNAL_POLICY_HOLD']

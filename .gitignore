@@ -123,6 +123,10 @@ operator_*approval*.json
 !/audit/r6_final_20261014/**
 !/audit/r6_claude_independent/
 !/audit/r6_claude_independent/**
+!/HANDOFF_TO_ANTIGRAVITY.md
+# Runtime bytecode remains local even below an explicitly reviewed audit folder.
+**/__pycache__/
+**/*.pyc
 /backup/
 /backups/
 /comparison/

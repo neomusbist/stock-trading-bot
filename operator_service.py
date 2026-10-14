@@ -260,19 +260,8 @@ class OperatorService:
         is_after_entry=getattr(cfg,'after_enabled',False) and after_entry_supported(self.clock())
         curr_sess=current_session(self.clock())
         after_live=bool(policy.get('after_live_authorized')) and cfg.live_mode
-        ready_ok=hb.get('readiness',{}).get('order_ready')
-        if ready_ok is None:
-            ready_state=hb.get('readiness',{}).get('state')
-            ready_missing=hb.get('readiness',{}).get('missing',[])
-            ready_source=hb.get('readiness',{}).get('tick_lag_source')
-            ready_age=hb.get('readiness',{}).get('regular_tick_age')
-            ready_ok=(ready_state=='OPEN_READY') or (
-                ready_missing==['FRESH_REGULAR_TICK_NOT_READY']
-                and ready_source=='WS_SOURCE_SILENT'
-                and isinstance(ready_age,(int,float))
-                and ready_age<=cfg.stale_seconds*2
-                and hb.get('connected')
-            ) if 'readiness' in hb else True
+        from automation.runner import heartbeat_order_readiness
+        ready=heartbeat_order_readiness(hb,cfg,self.clock());ready_ok=ready['order_ready']
         trading_on=bool(configured and fresh and hb.get('connected') and hb.get('account_ok') and ready_ok and not state.get('halt') and not counts['uncertain'] and is_reg)
         if curr_sess=='AFTER' and configured and after_live and fresh and hb.get('connected') and hb.get('account_ok') and ready_ok and not state.get('halt') and not counts['uncertain'] and is_after_entry:
             trading_on=True
@@ -297,7 +286,16 @@ class OperatorService:
             'halt':state.get('halt') or '', 'halt_info':state.get('halt_info',{}),
             'order_loop':'RUNNING' if process['running'] else 'NOT RUNNING',
             'process':process,'live_configured':bool(configured),
-            'trading_on':trading_on,
+            'trading_on':trading_on,'order_ready':ready_ok,'readiness':ready,
+            'order_off_reasons':([] if trading_on else ready.get('off_reasons',[])
+                +(['LIVE_NOT_CONFIGURED'] if not configured else [])
+                +(['WORKER_HEARTBEAT_NOT_CURRENT'] if not fresh else [])
+                +(['ACCOUNT_NOT_CURRENT'] if not hb.get('account_ok') else [])
+                +(['WEBSOCKET_NOT_CONNECTED'] if not hb.get('connected') else [])
+                +(['OUTSIDE_TRADING_WINDOW'] if not (is_reg or is_after_entry) else [])
+                +(['AFTER_LIVE_NOT_AUTHORIZED'] if curr_sess=='AFTER' and not after_live else [])
+                +(['HALT_ACTIVE'] if state.get('halt') else [])
+                +(['UNKNOWN_ORDER'] if counts['uncertain'] else [])),
             'candidate_count':len(watch.get('items',[])) if fresh and watch.get('asof')==self.clock().date().isoformat() else 0,
             'position_count':sum(len(s['positions']) for _,s in self.states()),
             'last_decision':(('최근 기록: ' if fresh else '과거 기록: ')+str((decisions[-1].get('timestamp') or decisions[-1].get('time') or '')[:10])+' '+decision_line(decisions[-1])) if decisions else '아직 판단 기록 없음',

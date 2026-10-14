@@ -3,7 +3,8 @@ Unit and Integration Tests for R6 Fast Momentum Strategy (automation/fast_moment
 """
 import unittest
 from datetime import datetime, timedelta
-from types import SimpleNamespace
+from core.strategy import Tick
+from tests.test_r6_fast_repair import ticks, watch
 
 from automation.fast_momentum import FastMomentumStrategy, FastSignal, MicroTape
 from automation.session import KST
@@ -14,13 +15,17 @@ class TestFastMomentumStrategy(unittest.TestCase):
         self.base_time = datetime(2026, 10, 14, 9, 1, 0, tzinfo=KST)
 
     def _tick(self, symbol="005930", price=70000.0, volume=100, delta_seconds=0, bid=None, ask=None):
-        t = SimpleNamespace(
+        stamp = self.base_time + timedelta(seconds=delta_seconds)
+        t = Tick(
             symbol=symbol,
             price=float(price),
             volume=int(volume),
-            time=self.base_time + timedelta(seconds=delta_seconds),
+            cumulative=int((delta_seconds+1)*volume),
+            time=stamp,
             bid=float(bid or price - 50),
-            ask=float(ask or price + 50)
+            ask=float(ask or price + 50),
+            bid_qty=10000, ask_qty=10000, depth_available=True,
+            book_time=stamp, depth_source='SIMULATED_QUOTE'
         )
         return t
 
@@ -38,27 +43,12 @@ class TestFastMomentumStrategy(unittest.TestCase):
         self.assertEqual(m['p_max_30'], 70950.0)
 
     def test_regime_a_early_momentum_entry(self):
-        """Regime A: Aggressive early buying with tight spread -> emits valid signal."""
-        # Feed 10 ticks of building volume and upward ticks
-        for s in range(10):
-            t = self._tick(
-                price=50000.0 + s * 50,
-                volume=300,
-                delta_seconds=s * 2,
-                bid=50000.0 + s * 50,
-                ask=50050.0 + s * 50
-            )
-            self.strategy.ingest_tick(t)
-
-        watch = {'name': '유효후보', 'reference_price': 49800.0, 'resistance': 52500.0}
-        last_t = self._tick(
-            price=50450.0,
-            volume=500,
-            delta_seconds=19,
-            bid=50450.0,
-            ask=50500.0
-        )
-        sig = self.strategy.evaluate(last_t, watch, capital_limit=81300.0, risk_budget=1626.0)
+        """Independent causal support and a timestamped ceiling permit an early candidate."""
+        data = ticks(start=self.base_time)
+        for t in data:
+            self.strategy.ingest_tick(t, t.time)
+        sig = self.strategy.evaluate(data[-1], watch(at=self.base_time), capital_limit=81300.0,
+                                     risk_budget=1626.0, ingest=False, received=data[-1].time)
 
         self.assertIsNotNone(sig)
         self.assertEqual(sig.regime, 'A')
@@ -164,33 +154,16 @@ class TestFastMomentumStrategy(unittest.TestCase):
         phase = self.strategy.determine_phase(early_time)
         self.assertEqual(phase, 'OPENING_EARLY')
 
-        for s in range(6):
-            t = SimpleNamespace(
-                symbol="000660",
-                price=180000.0 + s * 200,
-                volume=50,
-                time=early_time + timedelta(seconds=s * 3),
-                bid=180000.0 + s * 200,
-                ask=180100.0 + s * 200
-            )
-            self.strategy.ingest_tick(t)
-
-        watch = {'name': 'SK하이닉스', 'reference_price': 179500.0}
-        last_t = SimpleNamespace(
-            symbol="000660",
-            price=181000.0,
-            volume=80,
-            time=early_time + timedelta(seconds=16),
-            bid=181000.0,
-            ask=181200.0
-        )
-        # Sizing with larger capital to allow 1 share of 180k
-        sig = self.strategy.evaluate(last_t, watch, capital_limit=250000.0, risk_budget=5000.0)
+        data = ticks(start=early_time)
+        for t in data:
+            self.strategy.ingest_tick(t, t.time)
+        sig = self.strategy.evaluate(data[-1], watch(at=early_time), capital_limit=81300.0,
+                                     risk_budget=1626.0, ingest=False, received=data[-1].time)
         self.assertIsNotNone(sig)
         self.assertEqual(sig.phase, 'OPENING_EARLY')
 
     def test_exit_plan_invalidation_and_scratch(self):
-        """3-tier exit: Stop loss, emergency plunge, and momentum stall scratch."""
+        """Confirmed soft breach, immediate executable hard breach, and failed rebound."""
         pos = {
             'symbol': '005930',
             'entry': 70000.0,
@@ -205,31 +178,34 @@ class TestFastMomentumStrategy(unittest.TestCase):
         should_exit, reason, _ = self.strategy.evaluate_exit(pos, t_hold, self.base_time + timedelta(seconds=30))
         self.assertFalse(should_exit)
 
-        # 2. Invalidation stop exit
+        # A single touch holds; a second independent print confirms the breach.
         t_stop = self._tick(price=69200.0, delta_seconds=40)
+        self.strategy.ingest_tick(t_stop, t_stop.time)
         should_exit, reason, _ = self.strategy.evaluate_exit(pos, t_stop, self.base_time + timedelta(seconds=40))
+        self.assertFalse(should_exit)
+        t_stop2 = self._tick(price=69150.0, delta_seconds=41)
+        self.strategy.ingest_tick(t_stop2, t_stop2.time)
+        should_exit, reason, _ = self.strategy.evaluate_exit(pos, t_stop2, t_stop2.time)
         self.assertTrue(should_exit)
         self.assertEqual(reason, 'INVALIDATION_STOP_EXIT')
 
         # 3. Emergency plunge exit
-        t_emg = self._tick(price=68900.0, delta_seconds=40)
-        should_exit, reason, _ = self.strategy.evaluate_exit(pos, t_emg, self.base_time + timedelta(seconds=40))
+        t_emg = self._tick(price=68900.0, delta_seconds=42)
+        should_exit, reason, _ = self.strategy.evaluate_exit(pos, t_emg, t_emg.time)
         self.assertTrue(should_exit)
         self.assertEqual(reason, 'EMERGENCY_PLUNGE_EXIT')
 
-        # 4. Momentum stall scratch exit after 60s
-        # Simulate heavy downticks in the tape
-        for s in range(10):
-            t_down = self._tick(price=70000.0 - s * 20, volume=150, delta_seconds=60 + s)
-            self.strategy.ingest_tick(t_down)
-
-        t_stall = self._tick(price=69850.0, delta_seconds=75)
-        should_exit, reason, _ = self.strategy.evaluate_exit(pos, t_stall, self.base_time + timedelta(seconds=75))
+        # A lower rebound high and two prints below its floor are causal evidence.
+        self.strategy = FastMomentumStrategy()
+        for s, price in enumerate([70000, 70200, 70050, 70150, 70040, 70030]):
+            t_down = self._tick(price=price, volume=150, delta_seconds=60+s)
+            self.strategy.ingest_tick(t_down, t_down.time)
+        should_exit, reason, _ = self.strategy.evaluate_exit(pos, t_down, t_down.time)
         self.assertTrue(should_exit)
-        self.assertEqual(reason, 'MOMENTUM_STALL_SCRATCH_EXIT')
+        self.assertEqual(reason, 'MOMENTUM_FAILURE_EXIT')
 
-    def test_profit_protection_lock_at_one_r(self):
-        """Profit protection moves stop to break-even at +1R."""
+    def test_profit_protection_requires_confirmed_post_fill_structure(self):
+        """An excursion alone holds; a later confirmed higher low can protect profit."""
         pos = {
             'symbol': '005930',
             'entry': 70000.0,
@@ -238,12 +214,20 @@ class TestFastMomentumStrategy(unittest.TestCase):
             'emergency': 69000.0,
             'opened': self.base_time.isoformat()
         }
-        # Price hits 70,800 (+800 KRW > 1R)
-        t_profit = self._tick(price=70800.0, delta_seconds=30)
+        t_profit = self._tick(price=71100.0, delta_seconds=30)
+        self.strategy.ingest_tick(t_profit, t_profit.time)
         should_exit, reason, _ = self.strategy.evaluate_exit(pos, t_profit, self.base_time + timedelta(seconds=30))
         self.assertFalse(should_exit)
+        self.assertFalse(pos.get('profit_locked', False))
+        self.assertEqual(pos['stop'], 69300)
+        for s, price in enumerate([71500, 71200, 71600], 31):
+            t_profit = self._tick(price=price, delta_seconds=s)
+            self.strategy.ingest_tick(t_profit, t_profit.time)
+            outcome = self.strategy.evaluate_exit(pos, t_profit, t_profit.time)
+        self.assertFalse(outcome[0])
         self.assertTrue(pos.get('profit_locked'))
-        self.assertGreater(pos['stop'], 70000.0, "Stop must be moved above entry price to lock profit")
+        self.assertGreater(pos['protection_stop'], 70000)
+        self.assertEqual(pos['stop'], 69300)
 
 
 if __name__ == '__main__':

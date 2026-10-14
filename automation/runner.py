@@ -620,9 +620,82 @@ class ReadOnlyPilotPolicy:
         if command not in {'STOP','KILL'}:raise ValueError('조회 실행에 권한을 부여할 수 없습니다.')
         self.state['mode']='STOP'
 
+def order_ready_from_evidence(readiness,stale_seconds,connected):
+    """One data-readiness rule; this never grants approval or symbol authority."""
+    if not isinstance(readiness,dict) or not connected:return False
+    if readiness.get('order_ready') is False:return False
+    age=readiness.get('regular_tick_age')
+    if type(age) not in (int,float) or not 0<=age:return False
+    missing=readiness.get('missing',[])
+    return bool((readiness.get('state')=='OPEN_READY' and not missing and age<=stale_seconds)
+                or (missing==['FRESH_REGULAR_TICK_NOT_READY']
+                    and readiness.get('tick_lag_source')=='WS_SOURCE_SILENT'
+                    and age<=stale_seconds*2))
+
+def heartbeat_order_readiness(heartbeat,cfg,stamp):
+    """Age saved evidence for a read-only display, without inventing permission.
+
+    Engine snapshots remain the authority. The GUI can revoke an expired
+    heartbeat but cannot revive a snapshot that the engine marked OFF.
+    """
+    import math
+    original=heartbeat.get('readiness')
+    if not isinstance(original,dict) or not original:
+        return {'order_ready':False,'state':'UNKNOWN','missing':['READINESS_UNKNOWN'],'off_reasons':['READINESS_UNKNOWN']}
+    ready=copy.deepcopy(original)
+    try:
+        issued=datetime.fromisoformat(heartbeat['time']);elapsed=(stamp-issued).total_seconds()
+        if issued.tzinfo is None or issued.date()!=stamp.date() or not 0<=elapsed<=10:raise ValueError('heartbeat expired')
+    except (KeyError,ValueError,TypeError):
+        ready.update(order_ready=False,off_reasons=['HEARTBEAT_NOT_CURRENT']);return ready
+    age=ready.get('regular_tick_age')
+    if type(age) in (int,float) and math.isfinite(age):age+=elapsed
+    else:age=None
+    try:
+        last=datetime.fromisoformat(ready['last_regular_tick_at'])
+        actual_age=(stamp-last).total_seconds()
+        if last.tzinfo is None or last.date()!=stamp.date() or actual_age<0:raise ValueError('invalid tick stamp')
+        age=max(age,actual_age) if age is not None else actual_age
+    except KeyError:pass  # Older snapshots can carry an age relative to heartbeat time.
+    except (TypeError,ValueError):age=None
+    ready['regular_tick_age']=age
+    if ready.get('order_ready') is False:
+        ready['off_reasons']=list(ready.get('off_reasons') or ready.get('missing') or ['ENGINE_DATA_NOT_READY'])
+        return ready
+    missing=list(ready.get('missing',[]))
+    if age is None or not 0<=age<=cfg.stale_seconds:
+        if 'FRESH_REGULAR_TICK_NOT_READY' not in missing:missing.append('FRESH_REGULAR_TICK_NOT_READY')
+        ready['state']='WAITING';ready['missing']=missing
+        loop_lag=ready.get('event_loop_lag_seconds',heartbeat.get('event_loop_lag_seconds'))
+        queue_size=ready.get('feed_queue_depth',heartbeat.get('feed_queue_depth'))
+        if type(loop_lag) in (int,float) and loop_lag>1:ready['tick_lag_source']='EVENT_LOOP_LAG'
+        elif type(queue_size) in (int,float) and queue_size>5:ready['tick_lag_source']='QUEUE_BUFFER'
+        elif type(loop_lag) in (int,float) and type(queue_size) in (int,float):ready['tick_lag_source']='WS_SOURCE_SILENT'
+        elif ready.get('tick_lag_source')!='WS_SOURCE_SILENT':ready['tick_lag_source']='READINESS_LAG_UNKNOWN'
+    account_age=ready.get('account_age_seconds')
+    if type(account_age) in (int,float) and account_age+elapsed>cfg.reconcile_seconds*3:
+        if 'ACCOUNT_FRESH_NOT_READY' not in missing:missing.append('ACCOUNT_FRESH_NOT_READY')
+        ready.update(state='WAITING',missing=missing)
+    ready['order_ready']=order_ready_from_evidence(ready,cfg.stale_seconds,heartbeat.get('connected') is True)
+    ready['off_reasons']=[] if ready['order_ready'] else list(ready.get('missing') or ['ENGINE_DATA_NOT_READY'])
+    if not ready['order_ready'] and ready.get('tick_lag_source'):ready['off_reasons'].append(ready['tick_lag_source'])
+    return ready
+
+def record_order_readiness_transition(engine,ready):
+    signature=(ready['order_ready'],tuple(ready.get('off_reasons',[])),ready.get('tick_lag_source'))
+    if signature==getattr(engine,'last_order_readiness_signature',None):return False
+    engine.last_order_readiness_signature=signature
+    engine.event('ORDER_READINESS_CHANGED',order_ready=ready['order_ready'],
+        reason_codes=ready.get('off_reasons',[]),readiness=ready,
+        authority_scope='GLOBAL_DATA_ONLY_SYMBOL_QUOTE_RISK_APPROVAL_STILL_REQUIRED',actual_order_permission=False)
+    return True
+
 def readiness_snapshot(engine,counts,radar_ok,stamp,detector=None):
     """증거를 평가한다. 경과 초 수나 전략 완성봉 수를 readiness 조건으로 쓰지 않는다."""
     sess=getattr(engine,'current_session',lambda:current_session(stamp))()
+    feed=getattr(engine,'readiness_feed',None)
+    transport_failed=getattr(feed,'transport_failed',False) is True
+    connected=engine.connected and not transport_failed
     is_after=sess=='AFTER'
     if is_after:
         in_control=getattr(engine.c,'after_enabled',False) and after_control_supported(stamp)
@@ -648,7 +721,7 @@ def readiness_snapshot(engine,counts,radar_ok,stamp,detector=None):
             tick_lag_source='WS_SOURCE_SILENT'
     radar_at=getattr(engine,'last_radar_at',None)
     radar_current=radar_ok and radar_at is not None and supported(radar_at) and radar_at.date()==stamp.date()
-    gates={'control_session':in_control,'websocket_reg_ack':bool(engine.connected and counts['subscription_acks']>0),
+    gates={'control_session':in_control,'websocket_reg_ack':bool(connected and counts['subscription_acks']>0),
            'account_fresh':engine.capital_account_valid(),'safe_state':not engine.s['halt'] and not any(o.get('status')=='UNKNOWN' for o in engine.active_orders())}
     if in_market:
         if is_after:
@@ -657,17 +730,18 @@ def readiness_snapshot(engine,counts,radar_ok,stamp,detector=None):
             gates.update(observation_session=True,regular_market=engine.market=='3',fresh_regular_tick=fresh_tick,radar_pipeline=radar_current)
     missing=[key.upper()+'_NOT_READY' for key,passed in gates.items() if not passed]
     state=('OPEN_READY' if in_market else 'PREOPEN_READY') if not missing else 'WAITING'
-    order_ready=(state=='OPEN_READY') or (
-        missing==['FRESH_REGULAR_TICK_NOT_READY']
-        and tick_lag_source=='WS_SOURCE_SILENT'
-        and isinstance(tick_age,(int,float))
-        and tick_age<=engine.c.stale_seconds*2
-        and engine.connected
-    )
-    return {'state':state,'order_ready':order_ready,'phase':assessment(stamp)['phase'],'gates':gates,'missing':missing,
+    ready={'state':state,'phase':assessment(stamp)['phase'],'gates':gates,'missing':missing,
             'regular_epoch':stamp.replace(hour=9,minute=0,second=0,microsecond=0).isoformat(),
             'last_regular_tick_at':last.isoformat() if last else None,'regular_tick_age':tick_age,
-            'tick_lag_source':tick_lag_source,'market_pending':not in_market,'strategy_warmup_separate':True}
+            'tick_lag_source':tick_lag_source,'market_pending':not in_market,'strategy_warmup_separate':True,
+            'asof':stamp.isoformat(),'event_loop_lag_seconds':getattr(engine,'event_loop_lag',None),
+            'feed_queue_depth':getattr(engine,'feed_queue_size',None),'transport_failure_seen':transport_failed}
+    if type(getattr(engine,'last_account',None)) in (int,float):
+        ready['account_age_seconds']=max(0,time.monotonic()-engine.last_account)
+    ready['order_ready']=order_ready_from_evidence(ready,engine.c.stale_seconds,connected)
+    ready['off_reasons']=[] if ready['order_ready'] else list(missing or ['MARKET_NOT_OPEN'])
+    if not ready['order_ready'] and tick_lag_source:ready['off_reasons'].append(tick_lag_source)
+    return ready
 
 def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness_check=False):
     root=Path(root); auto=load_automation(root/'automation.json'); policy=Policy(root/'runtime/automation_policy.json')
@@ -718,7 +792,8 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
         account_worker.settlement_interval=auto.scan_seconds
         radar_worker=RadarWorker(effective,auto,policy,rank_rest,root)
         bind_candidate_observation(radar_worker,lambda:shadow,engine)
-        return (radar_worker,account_worker,Feed(rest,sorted(symbols)))
+        realtime_feed=Feed(rest,sorted(symbols));engine.readiness_feed=realtime_feed
+        return (radar_worker,account_worker,realtime_feed)
     symbols=set(engine.s['positions'])|{o['symbol'] for o in engine.active_orders()}
     subscriptions=SubscriptionState(symbols); priority_symbols=set(symbols)
     observation_retention=ObservationRetention();retained_observation=set()
@@ -999,6 +1074,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     summary['refresh_seconds']=auto.scan_seconds
                     atomic_json(root/'runtime/candidate_summary.json',summary);last_board=time.monotonic()
                 ready=readiness_snapshot(engine,counts,radar_ok,now(),detector)
+                record_order_readiness_transition(engine,ready)
                 if ready['state']!=getattr(engine,'last_readiness_state',None):
                     engine.event('READINESS_CHANGED',readiness=ready);engine.last_readiness_state=ready['state']
                 if readiness_check and ready['state'] in {'PREOPEN_READY','OPEN_READY'}:smoke_ended=True
@@ -1036,7 +1112,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         'session':hb_session,'market_phase':phase_str,'venue':getattr(engine,'after_default_venue','SOR') if sess_name=='AFTER' else 'KRX',
                         'session_classification':assessment(now())['classification'],'readiness':ready,'build_id':BUILD_ID,'strategy_experiment':STRATEGY_EXPERIMENT,
                         'pid':os.getpid(),'identity':process_identity(os.getpid()),
-                        'account_ok':engine.account_ok,'radar_ok':radar_ok,'connected':engine.connected,
+                        'account_ok':engine.account_ok,'radar_ok':radar_ok,'connected':ready['gates']['websocket_reg_ack'],
                         'subscription_refresh_pending':subscriptions.refresh_pending,'subscription_tick_waiting':sorted(subscriptions.waiting),
                         'watch_observation':{s:dict(engine.observation_timeline.rows.get(s,{})) for s in lookup},
                         'feed_queue_depth':getattr(engine,'feed_queue_size',None),'event_loop_lag_seconds':getattr(engine,'event_loop_lag',None),
