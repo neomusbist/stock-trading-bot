@@ -79,7 +79,7 @@ def build_plan(cfg, auto, signal, entry=None, quantity=None, filled=False):
                   '신선한 호가·체결의 비상선 이탈', '실제 전역 데이터 장애 확인', 'STOP_FLAT/KILL 청산 요청']
     if burst: conditions.append('AFTER 급등 후 낮은 반등 및 3개 확정봉 하락 실패')
     deadline = (auto.after_force_flatten_start if session == 'AFTER' else auto.force_flatten_start) if not auto.ALLOW_OVERNIGHT else None
-    return {'version': 1, 'setup': setup, 'entry_logic': {'A': '관측 돌파 또는 확정 상승 지속', 'B': '상승 후 확인된 눌림 회복', 'C': '관측 박스 돌파'}.get(setup, '진입 근거 미확인'),
+    return {'version': 1, 'setup': setup, 'entry_logic': {'A': '관측 돌파 또는 확정 상승 지속', 'B': '상승 후 확인된 눌림 회복', 'C': '관측 박스 돌파', 'FAST': '실시간 마이크로 구조 모멘텀 진입'}.get(setup, '진입 근거 미확인'),
             'entry': entry, 'quantity': quantity, 'entry_basis': 'ACTUAL_AVERAGE_FILL' if filled else 'ORDER_LIMIT',
             'initial_invalidation': structure, 'initial_emergency': stop, 'initial_price_risk': risk,
             'one_r_price': entry+risk if valid_risk else None,

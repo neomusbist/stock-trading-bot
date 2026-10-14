@@ -60,6 +60,75 @@ class FastSignal:
             return True, f'MAX_CHASE_EXCEEDED (ask {current_ask:.0f} > max {self.max_chase_price:.0f})'
         return False, ''
 
+    def to_engine_signal(self, watch=None):
+        watch = watch or {}
+        g = self.extra.get('geometry', {})
+        structure = g.get('structural_evidence', {})
+        eff = {
+            'decision': 'TRADE',
+            'score': self.net_reward_risk,
+            'basis': 'CAUSAL_FAST_MICRO_REACTION',
+            'cost_per_share': self.reward_net_per_share,
+            'reward_after_cost': self.reward_net_per_share,
+            'risk_per_share': self.risk_net_per_share,
+            'inputs': {
+                'entry': self.limit,
+                'stop': self.stop,
+                'target': self.target,
+                'confidence': 0.8,
+                'planned_minutes': 10
+            }
+        }
+        gates = {
+            'breakout': {'result': 'PASS', 'values': {'breakout': structure.get('breakout', self.limit)}},
+            'invalidation': {'result': 'PASS', 'values': {'entry': self.limit, 'stop': self.stop, 'emergency': self.emergency}},
+            'risk_reward': {'result': 'PASS', 'values': {'target': self.target, 'net_rr': self.net_reward_risk}},
+            'liquidity': {'result': 'PASS', 'values': {'turnover': structure.get('turnover', 0)}},
+            'acceleration': {'result': 'PASS', 'values': {'mode': 'FAST_MICRO_MOMENTUM'}, 'required': False},
+            'pattern': {'result': 'PASS', 'values': {'setup': 'FAST'}, 'required': False},
+        }
+        invalidation_policy = {
+            'policy_name': 'FAST_MICRO_STRUCTURE',
+            'enabled': True,
+            'structural_stop': self.stop,
+            'emergency_stop': self.emergency,
+            'noise_band': g.get('noise_band', max(1.0, self.limit - self.stop)),
+            'breakout_level': structure.get('breakout', self.limit),
+            'support_level': structure.get('support', self.stop),
+            'origin_level': structure.get('origin', self.stop),
+        }
+        return {
+            'symbol': self.symbol,
+            'name': self.name,
+            'pattern': 'FAST',
+            'limit': self.limit,
+            'stop': self.stop,
+            'emergency': self.emergency,
+            'target': self.target,
+            'planned_qty': self.quantity,
+            'net_reward_risk': self.net_reward_risk,
+            'gross_reward_risk': self.gross_reward_risk,
+            'time': self.created_at.isoformat(),
+            'signal_detected_at': self.created_at.isoformat(),
+            'ttl_seconds': self.ttl_seconds,
+            'max_chase_price': self.max_chase_price,
+            'regime': self.regime,
+            'phase': self.phase,
+            'efficiency': eff,
+            'evaluation_gates': gates,
+            'invalidation_policy': invalidation_policy,
+            'source_count': watch.get('source_count', 1),
+            'fallback_source1': bool(watch.get('fallback_source1', True)),
+            'market_state': '3',
+            'session': self.phase if self.phase in ('REGULAR', 'AFTER') else 'REGULAR',
+            'venue': watch.get('venue') or 'KRX',
+            'SHADOW_ONLY': self.extra.get('SHADOW_ONLY', False),
+            'actual_order_permission': self.extra.get('actual_order_permission', True),
+            'diagnostic_only': False,
+            'profitability_proven': False,
+            'strategy_version': 'V1.6-fast-momentum-live',
+        }
+
 
 class MicroTape:
     """Accepted regular prints; neutral prints are never invented buying volume."""
@@ -211,8 +280,10 @@ class FastMomentumStrategy:
         self.last_exit_by_symbol[symbol] = at; self.active_signals.pop(symbol, None)
 
     def _note(self, t, status, reason, **details):
-        self.last_evaluation[t.symbol] = dict(time=t.time.isoformat(), status=status, reason=reason,
-            actual_order_permission=False, SHADOW_ONLY=True, **details)
+        record = dict(time=t.time.isoformat(), status=status, reason=reason,
+                      actual_order_permission=False, SHADOW_ONLY=True)
+        record.update(details)
+        self.last_evaluation[t.symbol] = record
 
     def determine_phase(self, at):
         s = at.strftime('%H:%M:%S')
@@ -303,7 +374,7 @@ class FastMomentumStrategy:
         if reason:return reject(reason, quantity=quantity, **geometry)
         return dict(**{'pass': True}, quantity=quantity, **geometry)
 
-    def evaluate(self, t, watch, capital_limit=81300., risk_budget=1626., ingest=True, received=None):
+    def evaluate(self, t, watch, capital_limit=81300., risk_budget=1626., ingest=True, received=None, live_authorized=False):
         now = stamp(received) if received is not None else stamp(t.time)
         if now is None:return None
         if ingest and not self.ingest_tick(t, received):return None
@@ -326,15 +397,20 @@ class FastMomentumStrategy:
         if not geometry.get('pass'):
             self._note(t, 'UNKNOWN' if 'UNKNOWN' in geometry['reason'] or 'UNAVAILABLE' in geometry['reason'] else 'REJECT', geometry['reason'], geometry=geometry)
             return None
+        actual_order = bool(live_authorized)
         signal = FastSignal(symbol=t.symbol, name=watch.get('name', t.symbol), limit=geometry['entry'],
             stop=geometry['stop'], emergency=geometry['emergency'], target=geometry['target'], quantity=geometry['quantity'],
             net_reward_risk=geometry['net_rr'], gross_reward_risk=geometry['gross_rr'], reward_net_per_share=geometry['reward_net_per_share'],
             risk_net_per_share=geometry['risk_net_per_share'], regime='A', phase=phase, created_at=now,
             max_chase_price=geometry['structural_evidence']['breakout'] * 1.003,
-            extra=dict(metrics=m, geometry=geometry, actual_order_permission=False, SHADOW_ONLY=True,
-                       profitability_proven=False, strategy_policy='CAUSAL_FAST_RESEARCH'))
+            extra=dict(metrics=m, geometry=geometry,
+                       actual_order_permission=actual_order,
+                       SHADOW_ONLY=not actual_order,
+                       profitability_proven=False,
+                       strategy_policy='FAST_LIVE_CANDIDATE' if actual_order else 'CAUSAL_FAST_RESEARCH'))
         self.active_signals[t.symbol] = signal
-        self._note(t, 'SIGNAL', 'CAUSAL_FAST_RESEARCH_CANDIDATE', geometry=geometry)
+        self._note(t, 'SIGNAL', 'FAST_LIVE_CANDIDATE' if actual_order else 'CAUSAL_FAST_RESEARCH_CANDIDATE',
+                   geometry=geometry, actual_order_permission=actual_order, SHADOW_ONLY=not actual_order)
         return signal
 
     def evaluate_exit(self, position, t, current_time):

@@ -33,6 +33,8 @@ class AutonomousEngine(ExistingExits,Engine):
         self.books={}; self.external_open_orders=[]; self.external_qty_mismatch=set()
         self.names={'005930':'삼성전자','017900':'광전자','052260':'현대바이오랜드','267320':'나인테크'}; self.market_status={}
         self.decisions=DecisionLog(self)
+        from automation.fast_momentum import FastMomentumStrategy
+        self.fast_strategy=FastMomentumStrategy(cfg,auto,self.costs)
         # 설정 변경은 잔고/미체결이 없는 때만 허용. 변경 이력을 보존한다.
         path=Path(folder)/'state.json'
         boot_clock=clock
@@ -483,6 +485,31 @@ class AutonomousEngine(ExistingExits,Engine):
         signal.update(entry_build_id=BUILD_ID,entry_strategy_version=STRATEGY_VERSION,
                       entry_strategy_experiment=STRATEGY_EXPERIMENT)
         signal['planned_qty']=qty
+        sig_time_raw = signal.get('signal_detected_at') or signal.get('time')
+        if sig_time_raw:
+            try:
+                sig_dt = datetime.fromisoformat(sig_time_raw)
+                latency = max(0.0, (self.clock() - sig_dt).total_seconds())
+                signal['entry_latency_seconds'] = latency
+                ttl = signal.get('ttl_seconds', 15.0)
+                if latency > ttl:
+                    gates['signal_latency'] = gate(False, latency=latency, ttl=ttl)
+                    self.decisions.emit('ENTRY_EVAL', tick.symbol, 'NO_BUY', f'SIGNAL_TTL_EXPIRED ({latency:.1f}s > {ttl}s)',
+                                        gates, signal=signal, price=tick.price, extra={'quantity': qty})
+                    self.event('NO_TRADE', symbol=tick.symbol, reason=f'SIGNAL_TTL_EXPIRED ({latency:.1f}s > {ttl}s)', latency=latency, ttl=ttl)
+                    return None
+            except (ValueError, TypeError):
+                pass
+        max_chase = signal.get('max_chase_price')
+        if max_chase and tick.ask > max_chase:
+            gates['max_chase'] = gate(False, ask=tick.ask, max_chase_price=max_chase)
+            self.decisions.emit('ENTRY_EVAL', tick.symbol, 'NO_BUY', f'MAX_CHASE_EXCEEDED (ask {tick.ask} > max {max_chase})',
+                                gates, signal=signal, price=tick.price, extra={'quantity': qty})
+            self.event('NO_TRADE', symbol=tick.symbol, reason='MAX_CHASE_EXCEEDED', ask=tick.ask, max_chase=max_chase)
+            return None
+        if 'entry_latency_seconds' in signal:
+            self.event('ENTRY_LATENCY_RECORDED', symbol=tick.symbol, latency_seconds=signal['entry_latency_seconds'],
+                       ttl_seconds=signal.get('ttl_seconds', 15.0), ask=tick.ask, limit=signal['limit'])
         from automation.exit_plan import build_plan
         signal['exit_plan']=build_plan(self.c,self.a,signal,quantity=qty)
         if self.a.exit_plan_reward_guard_enabled and not signal['exit_plan']['reward_guard_pass']:
@@ -659,6 +686,11 @@ class AutonomousEngine(ExistingExits,Engine):
         sig=o['signal']; p.update(ownership='BOT',trade_id=o['local'],pattern=sig.get('pattern','A'),
             entry_hour=self.clock().strftime('%H'),market_state=self.market,signal=sig,
             entry_qty=0,stop_history=[{'time':self.clock().isoformat(),'stop':p['stop']}])
+        if sig.get('pattern') == 'FAST':
+            p.update(emergency=sig.get('emergency', p['stop']),
+                     risk_budget=sig.get('account_risk_budget_krw') or sig.get('risk_budget'),
+                     target=sig.get('target'),
+                     opened=self.clock().isoformat())
         p.update(first_fill_at=self.clock().isoformat(),last_entry_fill_at=self.clock().isoformat())
 
     def fill_applied(self,o,delta,price):
@@ -672,6 +704,9 @@ class AutonomousEngine(ExistingExits,Engine):
             self.refresh_exit_state(o['symbol'])
         elif o['symbol'] not in self.s['positions']:
             self.s['automation']['last_exit'][o['symbol']]=self.clock().isoformat()
+            if hasattr(self, 'fast_strategy') and self.fast_strategy is not None:
+                try: self.fast_strategy.record_exit(o['symbol'], self.clock())
+                except Exception: pass
             fragments=[t for t in self.s['trades'] if t['trade_id']==self.s['trades'][-1]['trade_id']]
             pnl=sum(t['pnl_estimate'] for t in fragments)
             self.s['automation']['consecutive_losses']=self.s['automation']['consecutive_losses']+1 if pnl<0 else 0
@@ -1026,6 +1061,14 @@ class AutonomousEngine(ExistingExits,Engine):
         previous=self.s['positions'].get(t.symbol,{}).get('stop')
         p=self.s['positions'].get(t.symbol)
         policy=p.get('signal',{}).get('invalidation_policy') if p else None
+        if p and (p.get('pattern') == 'FAST' or p.get('signal', {}).get('pattern') == 'FAST'):
+            if hasattr(self, 'fast_strategy') and self.fast_strategy is not None:
+                self.fast_strategy.ingest_tick(t, received=self.clock())
+                should_exit, exit_reason, exit_evidence = self.fast_strategy.evaluate_exit(p, t, self.clock())
+                if p.get('protection_stop') and p['protection_stop'] > p.get('stop', 0):
+                    p['stop'] = p['protection_stop']
+                if should_exit:
+                    self.request_exit(t.symbol, f'FAST_{exit_reason}')
         if p and self.a.confirmed_invalidation_enabled and policy:
             trade_fresh=0<=(self.clock()-t.time).total_seconds()<=self.c.stale_seconds
             if trade_fresh:

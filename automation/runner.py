@@ -442,6 +442,20 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
     engine.names[t.symbol]=watch.get('name')
     engine.market_status[t.symbol]=watch.get('market_status',{'pass':None,'reason_code':'MARKET_STATUS_UNKNOWN'})
     sig=detector.signal(t,watch)
+    if not sig and getattr(engine.a, 'fast_momentum_enabled', False) and getattr(engine, 'fast_strategy', None) is not None:
+        is_live = (engine.policy.mode == 'LIVE' and
+                   bool(engine.policy.state.get('live_authorized')) and
+                   bool(engine.c.live_mode))
+        fast_sig = engine.fast_strategy.evaluate(
+            t, watch,
+            capital_limit=engine.auto_available_capital(),
+            risk_budget=engine.risk_equity() * engine.c.risk_fraction,
+            ingest=False,
+            received=engine.clock(),
+            live_authorized=is_live
+        )
+        if fast_sig is not None:
+            sig = fast_sig.to_engine_signal(watch)
     if not sig:
         gates=detector.evaluation_gates(t,watch)
         failed=[k for k,v in gates.items() if v['result']=='FAIL']
@@ -449,29 +463,30 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
             gates,price=t.price,extra={'failed_gates':failed,'signal_detected':False,'setup_trials':detector.last_eval.get(t.symbol,{}).get('trials',[])})
         return None
     sig['name']=watch.get('name')
-    from automation.entry_timing import annotate_signal
-    annotate_signal(engine,detector,watch,sig)
     sig['fallback_source1']=bool(watch.get('fallback_source1'))
-    bars=radar.cache.get((t.time.date(),t.symbol))
-    if not bars:
-        engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','HISTORY_UNAVAILABLE',
-            detector.evaluation_gates(t,watch),signal=sig,price=t.price)
-        return None
-    fresh=structure(bars,sig['limit'],replace(engine.c,max_recent_range=.99,min_resistance_room=0 if sig['pattern'] in {'A','C'} else engine.c.min_resistance_room),t.time.date())
-    if fresh.get('status')!='ELIGIBLE':
-        from automation.decisions import gate
-        engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','STRUCTURE_REJECTED',
-            {'structure':gate(False,**fresh)},signal=sig,price=t.price)
-        engine.event('NO_TRADE',symbol=t.symbol,reason=fresh['reason']); return None
-    sig=detector.signal(t,{**watch,**fresh})
-    if not sig:
-        engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','FRESH_STRUCTURE_SIGNAL_NOT_READY',
-            detector.evaluation_gates(t,{**watch,**fresh}),price=t.price,
-            extra={'signal_detected':False,'setup_trials':detector.last_eval.get(t.symbol,{}).get('trials',[])})
-        return None
-    sig['name']=watch.get('name')
-    annotate_signal(engine,detector,watch,sig)
-    sig['fallback_source1']=bool(watch.get('fallback_source1'))
+    if sig.get('pattern') != 'FAST':
+        from automation.entry_timing import annotate_signal
+        annotate_signal(engine,detector,watch,sig)
+        bars=radar.cache.get((t.time.date(),t.symbol))
+        if not bars:
+            engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','HISTORY_UNAVAILABLE',
+                detector.evaluation_gates(t,watch),signal=sig,price=t.price)
+            return None
+        fresh=structure(bars,sig['limit'],replace(engine.c,max_recent_range=.99,min_resistance_room=0 if sig['pattern'] in {'A','C'} else engine.c.min_resistance_room),t.time.date())
+        if fresh.get('status')!='ELIGIBLE':
+            from automation.decisions import gate
+            engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','STRUCTURE_REJECTED',
+                {'structure':gate(False,**fresh)},signal=sig,price=t.price)
+            engine.event('NO_TRADE',symbol=t.symbol,reason=fresh['reason']); return None
+        sig=detector.signal(t,{**watch,**fresh})
+        if not sig:
+            engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','FRESH_STRUCTURE_SIGNAL_NOT_READY',
+                detector.evaluation_gates(t,{**watch,**fresh}),price=t.price,
+                extra={'signal_detected':False,'setup_trials':detector.last_eval.get(t.symbol,{}).get('trials',[])})
+            return None
+        sig['name']=watch.get('name')
+        annotate_signal(engine,detector,watch,sig)
+        sig['fallback_source1']=bool(watch.get('fallback_source1'))
     for sym,p in (list(engine.s['positions'].items()) if engine.a.replacement_enabled else []):
         if sym==t.symbol or p.get('exit_requested'): continue
         history=radar.cache.get((t.time.date(),sym)); price=prices.get(sym)
@@ -576,6 +591,8 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
                     health=getattr(engine,'position_health',None)
                     if health is not None:health.trade_seen(t.symbol,t)
                 continue
+            if hasattr(engine, 'fast_strategy') and engine.fast_strategy is not None:
+                engine.fast_strategy.ingest_tick(t, received)
             if subscriptions is not None:subscriptions.accepted(t.symbol)
             accepted+=1;engine.last_regular_tick_at=t.time
             timeline=getattr(engine,'observation_timeline',None)
@@ -771,6 +788,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     engine.candidate_audit.refresh_seconds=auto.scan_seconds
     atomic_json(folder/'session_settings.json',{'config':asdict(cfg),'effective_config':asdict(effective),'automation':asdict(auto)})
     detector=PatternDetector(effective,auto,engine.costs)
+    detector.fast_strategy=engine.fast_strategy
     detector.continuous_observation=True
     if auto.entry_context_enabled or auto.structural_breakout_enabled:
         saved=[p.get('signal',{}) for p in engine.s['trades']]
