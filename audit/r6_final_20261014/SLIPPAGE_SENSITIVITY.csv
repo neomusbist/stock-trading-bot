@@ -1,0 +1,5 @@
+adverse_ticks,total_trades,wins,losses,win_rate_pct,total_gross_pnl,total_costs,total_net_pnl,profit_factor,max_drawdown_krw,verdict
+0,8,4,4,50.0%,"+2,486.8","4,385.2","+1,104.8",1.42,"1,337.6",PROFIT
+1,8,3,5,37.5%,+650.9,"4,361.4",-723.2,0.79,"1,617.1",LOSS
+2,8,3,5,37.5%,"-1,001.1","4,273.8","-2,347.3",0.46,"2,539.6",LOSS
+3,8,2,6,25.0%,"-2,740.2","4,269.4","-4,084.7",0.24,"4,084.7",LOSS

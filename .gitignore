@@ -58,6 +58,8 @@
 !/cleanup_audit_trail.json
 !/GUI_PERFORMANCE_REPORT.md
 !/tools/benchmark_gui_performance.py
+!/audit/
+!/audit/**
 
 # Explicit exclusions remain effective even with later allow rules.
 .env
@@ -114,8 +116,8 @@ operator_*approval*.json
 *.pyo
 /.coverage
 **/.pytest_cache/
-**/.ruff_cache/
-/audit/
+!/audit/r6_final_20261014/
+!/audit/r6_final_20261014/**
 /backup/
 /backups/
 /comparison/

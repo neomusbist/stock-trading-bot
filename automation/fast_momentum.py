@@ -184,7 +184,18 @@ class FastMomentumStrategy:
     def __init__(self, cfg=None, auto=None, costs=None):
         self.cfg = cfg
         self.auto = auto
-        self.costs = costs or {'buy': 0.00015, 'sell': 0.00015, 'tax': 0.002, 'entry_slippage': 0.002, 'exit_slippage': 0.003}
+        if costs is None:
+            self.costs = {'buy': 0.00015, 'sell': 0.00015, 'tax': 0.002, 'entry_slippage': 0.002, 'exit_slippage': 0.003}
+        elif isinstance(costs, dict):
+            self.costs = dict(costs)
+        else:
+            self.costs = {
+                'buy': getattr(costs, 'buy', 0.00015),
+                'sell': getattr(costs, 'sell', 0.00015),
+                'tax': getattr(costs, 'tax', 0.0020),
+                'entry_slippage': getattr(costs, 'entry_slippage', 0.0020),
+                'exit_slippage': getattr(costs, 'exit_slippage', 0.0030),
+            }
         self.tapes: Dict[str, MicroTape] = {}
         self.active_signals: Dict[str, FastSignal] = {}
         self.last_exit_by_symbol: Dict[str, datetime] = {}
