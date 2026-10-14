@@ -157,6 +157,12 @@ class Engine:
     def quantity(self,signal,equity,cash,remaining):
         return size(self.c,signal['limit'],signal['stop'],equity,cash,remaining)
 
+    def pending_buy_reservation(self,buys=None):
+        # Filled shares already reduced ledger cash in cumulative_fill().
+        # Only the remaining live order quantity still reserves new cash.
+        buys=self.active_orders(side='BUY') if buys is None else buys
+        return sum(max(0,o['qty']-o['filled'])*o['limit']*(1+self.c.roundtrip_cost_fraction) for o in buys)
+
     def buy_fee(self,amount): return amount*self.c.roundtrip_cost_fraction/2
 
     def sell_fee(self,amount): return amount*self.c.roundtrip_cost_fraction/2
@@ -226,7 +232,7 @@ class Engine:
         buys=self.active_orders(side='BUY')
         if len(set(self.s['positions'])|{o['symbol'] for o in buys})>=c.max_positions:
             self.diagnostic('internal_reject_count'); return None
-        reserved=sum(o['qty']*o['limit']*(1+c.roundtrip_cost_fraction) for o in buys)
+        reserved=self.pending_buy_reservation(buys)
         used_risk=sum(max(0,p['avg']-p['stop']+p['avg']*(c.roundtrip_cost_fraction+c.exit_slippage_fraction))*p['qty'] for p in self.s['positions'].values())
         used_risk+=sum((o['limit']-o['signal']['stop']+o['limit']*(c.roundtrip_cost_fraction+c.exit_slippage_fraction))*(o['qty']-o['filled']) for o in buys)
         equity=self.risk_equity()

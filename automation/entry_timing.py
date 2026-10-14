@@ -16,7 +16,7 @@ def timeline_locked(method):
 class ObservationTimeline:
     """Small day-specific evidence file, never a restored trading/approval state."""
     def __init__(self,path=None):
-        self.path=path;self.day=None;self.rows=OrderedDict();self.saved_at=None
+        self.path=path;self.day=None;self.rows=OrderedDict();self.saved_at=None;self.validated_through=None
         self.lock=RLock();self.events=deque(maxlen=4096)
         if path:
             import json
@@ -28,12 +28,18 @@ class ObservationTimeline:
 
     @timeline_locked
     def row(self,symbol,stamp):
-        if self.day!=stamp.date():self.rows.clear();self.events.clear();self.day=stamp.date();self.saved_at=None
+        if self.day!=stamp.date():
+            self.rows.clear();self.events.clear();self.day=stamp.date();self.saved_at=None;self.validated_through=None
+        # ACK/RAW callbacks carry their original receiver/source time and can
+        # arrive after a later processing timestamp has already been recorded.
+        # Only actual callback stamps advance this watermark; persisted fields
+        # never make a future timestamp valid on first load.
+        if self.validated_through is None or stamp>self.validated_through:self.validated_through=stamp
         row=self.rows.setdefault(symbol,{})
         # Reject corrupt/future/previous-day persisted times, rather than
         # projecting them into today's chronology.
         for key in list(row):
-            if key.endswith('_at') and known_stamp(row[key],stamp) is None:row.pop(key)
+            if key.endswith('_at') and known_stamp(row[key],self.validated_through) is None:row.pop(key)
         self.rows.move_to_end(symbol)
         while len(self.rows)>8192:self.rows.popitem(last=False)
         return row
@@ -109,10 +115,14 @@ class ObservationTimeline:
             a=known_stamp(row.get(left),stamp);b=known_stamp(row.get(right),stamp)
             value=(datetime.fromisoformat(b)-datetime.fromisoformat(a)).total_seconds() if a and b else None
             return value if value is not None and value>=0 else None
+        def asof_row(row):
+            result={k:v for k,v in row.items() if not k.endswith('_at') or known_stamp(v,stamp) is not None}
+            if 'last_normal_tick_at' in row and 'last_normal_tick_at' not in result:result.pop('last_trade_price',None)
+            return result
         return {'asof':stamp.isoformat(),'regular_epoch':stamp.replace(hour=9,minute=0,second=0,microsecond=0).isoformat(),
             'actual_order_permission':False,'restored_warmup':False,
-            'symbols':{s:{**r,
-                'observed_before_watch':bool(r.get('first_tick_received_at') and r.get('first_watch_at')
+            'symbols':{s:{**asof_row(r),
+                'observed_before_watch':bool(known_stamp(r.get('first_tick_received_at'),stamp) and known_stamp(r.get('first_watch_at'),stamp)
                     and r['first_tick_received_at']<r['first_watch_at']),
                 'latency_seconds':{
                 'raw_to_watch':delay(r,'first_raw_at','first_watch_at'),

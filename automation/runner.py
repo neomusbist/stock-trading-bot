@@ -131,6 +131,22 @@ def request_capital_refresh(engine,account,in_session):
         return True
     return False
 
+def submit_candidate_observation(engine,shadow,rows,stamp,capital):
+    """Keep cached observation live while orders/positions reserve API priority.
+
+    Holding a position must not suppress the early RAW packet entirely. The
+    existing worker can admit fresh verified metadata without REST; unfamiliar
+    or stale rows remain UNKNOWN until the ordinary radar verifies them.
+    """
+    worker=shadow() if callable(shadow) else shadow
+    if worker is None: return
+    worker.submit(rows,stamp,capital,
+                  allow_metadata=not bool(engine.s['positions'] or engine.active_orders()))
+
+def bind_candidate_observation(radar,shadow,engine):
+    radar.observation_sink=lambda rows,stamp,capital:submit_candidate_observation(engine,shadow,rows,stamp,capital)
+    radar.observation_allowed=True
+
 def qualify_raw(engine,rows,stamp,is_raw_phase=False):
     engine.source_qualification_seen=True
     current_qual=getattr(engine,'source_qualification',{})
@@ -686,6 +702,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
         raise ValueError('조회 검사는 0원·ARMED·live_mode=false·시험매도 승인 비활성 상태에 한정')
     if policy.mode=='OFF' and not engine.s['positions'] and not engine.active_orders():
         engine.event('OFF'); return {'mode':'OFF','real_orders_sent':0}
+    shadow=None
     def clients():
         rank_rest=Rest(effective,auth_session=rest.auth_session); account_rest=Rest(effective,auth_session=rest.auth_session)
         for client in (rest,rank_rest,account_rest): client.session_guard=lambda:control_supported(now()) or (getattr(effective,'after_enabled',False) and after_control_supported(now()))
@@ -693,8 +710,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
         account_worker.settlement_pending=pending_broker_settlement(engine.s)
         account_worker.settlement_interval=auto.scan_seconds
         radar_worker=RadarWorker(effective,auto,policy,rank_rest,root)
-        radar_worker.observation_sink=lambda rows,stamp,capital:shadow.submit(rows,stamp,capital)
-        radar_worker.observation_allowed=not bool(engine.s['positions'] or engine.active_orders())
+        bind_candidate_observation(radar_worker,lambda:shadow,engine)
         return (radar_worker,account_worker,Feed(rest,sorted(symbols)))
     symbols=set(engine.s['positions'])|{o['symbol'] for o in engine.active_orders()}
     subscriptions=SubscriptionState(symbols); priority_symbols=set(symbols)
@@ -711,6 +727,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     shadow.observer.timeline=engine.observation_timeline
     if auto.entry_context_enabled:shadow.observer.detector.price_context=copy.deepcopy(detector.price_context)
     shadow.start()
+    bind_candidate_observation(radar,shadow,engine)
     context_worker=None
     if auto.intraday_context_enabled:
         from automation.intraday_context import IntradayContextWorker
@@ -864,7 +881,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                                         market_status=row.get('market_status'),overhead_share=row.get('overhead_share_estimate'),
                                         resistance=row.get('resistance'))},price=row.get('reference_price'))
                         context=engine.capital_context()
-                        shadow.submit(rows,result['time'],context,allow_metadata=not bool(engine.s['positions'] or engine.active_orders()))
+                        submit_candidate_observation(engine,shadow,rows,result['time'],context)
                         engine.event('CANDIDATE_LATENCY',**result.get('performance',{}))
                         last_radar=time.monotonic(); counts['radar_cycles']+=1
                         engine.event('RADAR_UPDATED',watch=list(lookup),changes={'added':sorted(set(lookup)-prior_watch),'removed':sorted(prior_watch-set(lookup))},rank_changes=result['changes'])
@@ -905,7 +922,6 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     radar.request.set()
                 radar.capital_context=context; radar.available_capital=context['entry_budget']
                 shadow.set_capital(context)
-                radar.observation_allowed=not bool(engine.s['positions'] or engine.active_orders())
                 radar.status_priority_symbols=frozenset(lookup)
                 if context_worker:
                     from automation.intraday_context import context_targets

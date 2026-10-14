@@ -29,6 +29,7 @@
 !/run.bat
 !/test.bat
 !/operator_menu.cmd
+!/run_capacity_experiments.py
 !/core/*.py
 !/automation/*.py
 !/tests/test_*.py

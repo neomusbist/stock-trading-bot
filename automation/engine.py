@@ -142,6 +142,10 @@ class AutonomousEngine(ExistingExits,Engine):
     def buy_fee(self,amount): return self.costs.buy_fee(amount)
     def sell_fee(self,amount): return self.costs.sell_fee(amount)
 
+    def pending_buy_reservation(self,buys=None):
+        buys=self.active_orders(side='BUY') if buys is None else buys
+        return sum(max(0,o['qty']-o['filled'])*o['limit']*(1+self.a.commission_buy) for o in buys)
+
     def quantity(self,signal,equity,cash,remaining):
         return self.quantity_details(signal,equity,cash,remaining)['quantity']
 
@@ -245,13 +249,13 @@ class AutonomousEngine(ExistingExits,Engine):
     def watch_budget(self):
         if not self.capital_account_valid(): return 0
         exposure=sum(p['qty']*p['avg'] for p in self.s['positions'].values() if p.get('ownership','BOT')=='BOT')
-        reserved=sum((o['qty']-o['filled'])*o['limit']*(1+self.a.commission_buy) for o in self.active_orders(side='BUY'))
+        reserved=self.pending_buy_reservation()
         return max(0,min(self.available_cash,self.s['cash'],self.a.capital_limit-exposure,
                          self.risk_equity()*self.c.max_position_fraction)-reserved)
 
     def entry_gates(self,signal,tick):
         sym=tick.symbol; buys=self.active_orders(side='BUY'); equity=self.risk_equity()
-        reserved=sum(o['qty']*o['limit']*(1+self.c.roundtrip_cost_fraction) for o in buys)
+        reserved=self.pending_buy_reservation(buys)
         used=sum(max(0,p['avg']-p.get('stop',p['avg'])+p['avg']*(self.c.roundtrip_cost_fraction+self.c.exit_slippage_fraction))*p['qty'] for p in self.s['positions'].values() if p.get('ownership','BOT')=='BOT')
         used+=sum((o['limit']-(o.get('signal') or {}).get('stop',o['limit'])+o['limit']*(self.c.roundtrip_cost_fraction+self.c.exit_slippage_fraction))*(o['qty']-o['filled']) for o in buys)
         remaining=self.daily_risk_budget(equity)-self.s['daily_loss']-used
@@ -621,7 +625,7 @@ class AutonomousEngine(ExistingExits,Engine):
             finally:self._guard_intent=None
             if reason or not self.entry_window() or not self.connected or not self.account_ok or self.s['halt']:
                 raise Rejected(reason or '시장/계좌/연결 조건 미충족')
-            other=sum((o['qty']-o['filled'])*o['limit']*(1+self.a.commission_buy) for o in self.active_orders(side='BUY') if o is not intents[0])
+            other=self.pending_buy_reservation([o for o in self.active_orders(side='BUY') if o is not intents[0]])
             exposure=sum(p['qty']*p['avg'] for p in self.s['positions'].values() if p.get('ownership','BOT')=='BOT')
             available=min(self.available_cash,self.s['cash'],max(0,self.a.capital_limit-exposure))-other
             if qty*limit*(1+self.a.commission_buy)>available: raise Rejected('승인 자본/현금 초과')
