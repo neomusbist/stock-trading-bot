@@ -417,13 +417,20 @@ class FastMomentumStrategy:
         t,
         watch: Dict[str, Any],
         capital_limit: float = 81300.0,
-        risk_budget: float = 1626.0
+        risk_budget: float = 1626.0,
+        ingest: bool = True
     ) -> Optional[FastSignal]:
         """
         Main entry evaluation for FAST momentum.
         Returns a FastSignal if Regime A conditions and risk-reward checks pass; otherwise None.
+
+        ingest=False means the caller already fed EVERY received tick through
+        ingest_tick() (ShadowObserver does this before its evaluation throttle).
+        Evaluating on a throttled subset of ticks starves the MicroTape and makes the
+        tick-velocity / turnover regime gates structurally unreachable.
         """
-        self.ingest_tick(t)
+        if ingest:
+            self.ingest_tick(t)
         tape = self.get_tape(t.symbol)
         m = tape.metrics(t.time)
         if not m or m.get('ticks_count', 0) < 4:

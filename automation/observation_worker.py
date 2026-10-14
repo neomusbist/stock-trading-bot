@@ -19,42 +19,90 @@ from automation.radar import observation_structure
 from automation.focus_selection import FocusNotification,calculate_tier,unviable_price_geometry
 
 class TickLogger:
-    """Buffered lossless JSONL logger for raw SHADOW ticks with automatic 64MB rotation."""
-    def __init__(self, log_path: Path, max_bytes: int = 64 * 1024 * 1024):
-        self.path = log_path
+    """Buffered JSONL logger for raw SHADOW ticks.
+
+    Guarantees (see tests/test_r6_independent_audit.py):
+    - rotated files are numbered .1, .2, ... and are NEVER deleted by the logger;
+    - a failed write keeps the rows in memory (bounded by max_buffer_rows) instead of silently
+      discarding them; every failure/drop is counted in stats();
+    - each row carries the tick time (exchange) and the local receive time separately, plus the
+      best-level quote quantities that the receiver actually provides (no deeper book exists).
+    """
+    def __init__(self, log_path: Path, max_bytes: int = 64 * 1024 * 1024, max_buffer_rows: int = 200_000):
+        self.path = Path(log_path)
         self.max_bytes = max_bytes
+        self.max_buffer_rows = max_buffer_rows
         self.buffer = []
         self.last_flush = time.monotonic()
+        self.retry_after = 0.0
+        self.rows_logged = 0
+        self.rows_written = 0
+        self.rows_dropped = 0
+        self.write_errors = 0
+        self.rotations = 0
+        self.last_error = ''
+
+    @staticmethod
+    def _iso(value):
+        return value.isoformat() if hasattr(value, 'isoformat') else (None if value is None else str(value))
 
     def log(self, tick, received):
         self.buffer.append({
             'symbol': getattr(tick, 'symbol', ''),
-            'time': tick.time.isoformat() if hasattr(tick.time, 'isoformat') else str(tick.time),
+            'time': self._iso(tick.time),
+            'received': self._iso(received),
             'price': getattr(tick, 'price', 0.0),
             'volume': getattr(tick, 'volume', 0),
+            'cumulative': getattr(tick, 'cumulative', None),
             'bid': getattr(tick, 'bid', 0.0),
             'ask': getattr(tick, 'ask', 0.0),
-            'received': received.isoformat() if hasattr(received, 'isoformat') else str(received),
+            'bid_qty': getattr(tick, 'bid_qty', None),
+            'ask_qty': getattr(tick, 'ask_qty', None),
+            'depth_available': getattr(tick, 'depth_available', None),
+            'depth_source': getattr(tick, 'depth_source', None),
+            'book_time': self._iso(getattr(tick, 'book_time', None)),
+            'venue': getattr(tick, 'venue', None),
+            'regular': getattr(tick, 'regular', None),
+            'vi_active': getattr(tick, 'vi_active', None),
         })
+        self.rows_logged += 1
+        overflow = len(self.buffer) - self.max_buffer_rows
+        if overflow > 0:
+            del self.buffer[:overflow]
+            self.rows_dropped += overflow
         if len(self.buffer) >= 50 or time.monotonic() - self.last_flush >= 1.0:
             self.flush()
 
-    def flush(self):
+    def flush(self, force: bool = False) -> bool:
         if not self.buffer:
-            return
+            return True
+        if not force and time.monotonic() < self.retry_after:
+            return False
         try:
             if self.path.exists() and self.path.stat().st_size >= self.max_bytes:
-                rotated = self.path.with_name(self.path.name + '.1')
-                if rotated.exists():
-                    rotated.unlink()
-                self.path.rename(rotated)
+                index = 1
+                while self.path.with_name(f'{self.path.name}.{index}').exists():
+                    index += 1
+                self.path.rename(self.path.with_name(f'{self.path.name}.{index}'))
+                self.rotations += 1
             payload = '\n'.join(json.dumps(row, ensure_ascii=False) for row in self.buffer) + '\n'
             with open(self.path, 'a', encoding='utf-8') as f:
                 f.write(payload)
-        except Exception:
-            pass
+        except Exception as error:
+            self.write_errors += 1
+            self.last_error = f'{type(error).__name__}: {error}'[:200]
+            self.retry_after = time.monotonic() + 1.0
+            return False
+        self.rows_written += len(self.buffer)
         self.buffer.clear()
         self.last_flush = time.monotonic()
+        self.retry_after = 0.0
+        return True
+
+    def stats(self) -> dict:
+        return {'rows_logged': self.rows_logged, 'rows_written': self.rows_written, 'rows_buffered': len(self.buffer),
+                'rows_dropped': self.rows_dropped, 'write_errors': self.write_errors, 'rotations': self.rotations,
+                'last_error': self.last_error}
 
 class ObservationWorker:
     def __init__(self,cfg,auto,costs,root,rest=None,limit=32):
@@ -252,13 +300,13 @@ class ObservationWorker:
                     self.observer.tick(t,self.clock(),transport_received=received);self.tick_ms=(time.perf_counter()-started)*1000
                 if time.monotonic()-last_save>=2:
                     self.tick_logger.flush()
-                    snapshot=self.state();snapshot['performance']={'prepare_ms':self.prepare_ms,'last_eval_ms':self.tick_ms,'metadata_calls':self.apis,'queue_depth':self.ticks.qsize(),'dropped':self.dropped}
+                    snapshot=self.state();snapshot['performance']={'prepare_ms':self.prepare_ms,'last_eval_ms':self.tick_ms,'metadata_calls':self.apis,'queue_depth':self.ticks.qsize(),'dropped':self.dropped,'tick_logger':self.tick_logger.stats()}
                     atomic_json(self.folder/'shadow_snapshot.json',snapshot);last_save=time.monotonic()
             except Exception as error:self.record_error(error)
     def start(self):self.metadata_thread.start();self.thread.start()
     def close(self):
         self.stop.set()
-        try:self.tick_logger.flush()
-        except Exception:pass
         for thread in (self.thread,self.metadata_thread):
             if thread.ident is not None:thread.join(timeout=1)
+        try:self.tick_logger.flush(force=True)
+        except Exception:pass

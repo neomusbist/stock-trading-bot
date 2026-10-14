@@ -1,0 +1,90 @@
+{
+ "abc_decisions_in_archive": {
+  "NO_BUY": 6072
+ },
+ "archive_hash_matches_expected": true,
+ "archive_sha256": "0c698c6ef4c7d9815c83a081d5d81d66205588e120c2e07caaf3f10f2050b50c",
+ "archive_size_bytes": 67132914,
+ "cooldown_net_pnl": {
+  "0": -3237.06,
+  "15": 1469.92,
+  "30": 1469.92,
+  "5": -1827.77
+ },
+ "corrected_baseline": {
+  "adverse_tick_cost": 0.0,
+  "assumed_slippage": 2643.32,
+  "avg_holding_seconds": 219.0,
+  "avg_loss": -711.84,
+  "avg_net_per_trade": 209.99,
+  "avg_win": 901.36,
+  "closed_trades": 7,
+  "commissions_and_tax": 1216.76,
+  "estimated_exit_reference_trades": 3,
+  "gross_pnl_at_observed": 5330.0,
+  "losses": 3,
+  "max_drawdown_krw": 753.59,
+  "net_pnl": 1469.92,
+  "profit_factor": 1.6883,
+  "trades_exceeding_2pct_risk": 0,
+  "unresolved_trades": 1,
+  "win_rate": 0.5714,
+  "wins": 4
+ },
+ "corrected_counters": {
+  "unresolved_at_tape_end": 1
+ },
+ "distinct_symbols": 178,
+ "first_event": "2026-10-14T14:21:21.079035+09:00",
+ "identity_mismatches": 0,
+ "identity_rows": 23,
+ "last_event": "2026-10-14T14:52:49.552486+09:00",
+ "legacy_reproduction": {
+  "adverse_tick_cost": 0.0,
+  "assumed_slippage": 3003.2,
+  "avg_holding_seconds": 192.3,
+  "avg_loss": -662.46,
+  "avg_net_per_trade": 138.1,
+  "avg_win": 938.67,
+  "closed_trades": 8,
+  "commissions_and_tax": 1381.99,
+  "estimated_exit_reference_trades": 0,
+  "gross_pnl_at_observed": 5490.0,
+  "losses": 4,
+  "max_drawdown_krw": 1337.57,
+  "net_pnl": 1104.82,
+  "profit_factor": 1.4169,
+  "trades_exceeding_2pct_risk": 0,
+  "unresolved_trades": 0,
+  "win_rate": 0.5,
+  "wins": 4
+ },
+ "load_stats": {
+  "entry_eval": 6072,
+  "lines": 9435,
+  "no_bid_ask": 4540,
+  "price_outside_bid_ask": 38,
+  "same_timestamp_pairs": 0
+ },
+ "proxy_signal_counts": {
+  "deduped_by_symbol_cooldown": 17,
+  "rule_hit_events": 74,
+  "symbols": 14
+ },
+ "round_trips_per_10_minutes_corrected": 2.224,
+ "sensitivity_net_pnl": {
+  "CORRECTED|NEXT_SNAPSHOT|0": -61.41,
+  "CORRECTED|NEXT_SNAPSHOT|1": -1430.04,
+  "CORRECTED|NEXT_SNAPSHOT|2": -2768.03,
+  "CORRECTED|NEXT_SNAPSHOT|3": -3523.01,
+  "CORRECTED|SAME_SNAPSHOT|0": 1469.92,
+  "CORRECTED|SAME_SNAPSHOT|1": -278.17,
+  "CORRECTED|SAME_SNAPSHOT|2": -2116.29,
+  "CORRECTED|SAME_SNAPSHOT|3": -2894.39,
+  "LEGACY_AS_REPORTED_BY_r6_final|SAME_SNAPSHOT|0": 1104.82,
+  "LEGACY_AS_REPORTED_BY_r6_final|SAME_SNAPSHOT|1": -723.16,
+  "LEGACY_AS_REPORTED_BY_r6_final|SAME_SNAPSHOT|2": -2347.27,
+  "LEGACY_AS_REPORTED_BY_r6_final|SAME_SNAPSHOT|3": -4084.66
+ },
+ "window_minutes": 31.47
+}

@@ -109,6 +109,8 @@ class ShadowObserver:
   # Genuine receiver-time frames may build historical bars while the consumer
   # catches up. They cannot publish a current signal/readiness when stale.
   if not self.detector.ingest(t,transport_received or received):return
+  # FAST needs EVERY accepted tick; the evaluation throttle below must not thin its MicroTape.
+  self.fast_strategy.ingest_tick(t)
   execution_fresh=0<=(received-t.time).total_seconds()<=self.cfg.stale_seconds
   timeline=getattr(self,'timeline',None)
   if timeline is not None:timeline.tick(t.symbol,t.time,self.detector.usable_bars(t.symbol),t.price,
@@ -122,7 +124,7 @@ class ShadowObserver:
   sig,gates,trials,history=self.detector.evaluation_snapshot(t,view)
   if sig:
    sig['SHADOW_ONLY']=True;sig['actual_order_permission']=False;sig['diagnostic_only']=True
-  fast_sig=self.fast_strategy.evaluate(t,row,capital_limit=self.capital.get('effective_auto_cap',81300.0),risk_budget=self.capital.get('risk_remaining',1626.0))
+  fast_sig=self.fast_strategy.evaluate(t,row,capital_limit=self.capital.get('effective_auto_cap',81300.0),risk_budget=self.capital.get('risk_remaining',1626.0),ingest=False)
   if fast_sig:
    self.event('SHADOW_FAST_SIGNAL',received,symbol=t.symbol,name=row.get('name'),limit=fast_sig.limit,stop=fast_sig.stop,target=fast_sig.target,emergency=fast_sig.emergency,quantity=fast_sig.quantity,net_reward_risk=fast_sig.net_reward_risk,regime=fast_sig.regime,phase=fast_sig.phase,ttl_seconds=fast_sig.ttl_seconds,max_chase_price=fast_sig.max_chase_price,SHADOW_ONLY=True,actual_order_permission=False)
   usable=[]
