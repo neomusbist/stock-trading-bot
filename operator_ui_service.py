@@ -506,7 +506,20 @@ class UserOperations(OperatorService):
         valid,missing=authorization_valid(self.root,cfg,auto,policy,self.clock())
         s['daily_authorization_valid']=valid;s['authorization_missing']=missing
         s['readiness']=hb.get('readiness',{})
-        if not valid or hb.get('readiness',{}).get('state')!='OPEN_READY' or hb.get('fatal') or not s.get('trading_on'):s['trading_on']=False
+        ready_ok=s['readiness'].get('order_ready')
+        if ready_ok is None:
+            ready_state=s['readiness'].get('state')
+            ready_missing=s['readiness'].get('missing',[])
+            ready_source=s['readiness'].get('tick_lag_source')
+            ready_age=s['readiness'].get('regular_tick_age')
+            ready_ok=(ready_state=='OPEN_READY') or (
+                ready_missing==['FRESH_REGULAR_TICK_NOT_READY']
+                and ready_source=='WS_SOURCE_SILENT'
+                and isinstance(ready_age,(int,float))
+                and ready_age<=cfg.stale_seconds*2
+                and hb.get('connected')
+            ) if 'readiness' in hb else True
+        if not valid or not ready_ok or hb.get('fatal') or not s.get('trading_on'):s['trading_on']=False
         s['guided_start']=True;s['build_id']=BUILD_ID
         s['decision_rows']=[r for r in s['decision_rows'] if r.get('primary_reason_code')!='ONE_SHARE_UNAFFORDABLE' and r.get('state')!='EXTERNAL_POLICY_HOLD']
         shadow=read_json(self.root/'runtime/shadow_snapshot.json',{})

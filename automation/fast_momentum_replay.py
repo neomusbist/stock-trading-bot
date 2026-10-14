@@ -195,8 +195,8 @@ def run_replay(events_path: str, max_capital: float = 81300.0, risk_per_trade: f
             seen.add(bucket)
             deduped_signals.append(s)
 
-    # Simulate Trade Outcome on Future Ticks of 10/14
-    completed_trades = []
+    # Simulate Trade Outcome on Future Ticks of 10/14 with Dynamic Profit Lock
+    all_trades = []
     for sig in deduped_signals:
         sym = sig['symbol']
         series = symbol_price_series.get(sym, [])
@@ -211,6 +211,8 @@ def run_replay(events_path: str, max_capital: float = 81300.0, risk_per_trade: f
         exit_reason = None
         highest_p = entry_p
         lowest_p = entry_p
+        profit_locked = False
+        active_stop = stop_p
 
         # Find future ticks after entry
         future = [(t, p) for t, p in series if t > entry_t]
@@ -218,15 +220,29 @@ def run_replay(events_path: str, max_capital: float = 81300.0, risk_per_trade: f
             if p > highest_p: highest_p = p
             if p < lowest_p: lowest_p = p
 
+            # Check dynamic profit lock (+1.8% MFE)
+            mfe_pct = (highest_p - entry_p) / entry_p * 100.0
+            if mfe_pct >= 1.8:
+                lock_stop = floor_tick(max(entry_p * 1.018, highest_p * 0.992))
+                if lock_stop > active_stop:
+                    active_stop = lock_stop
+                    profit_locked = True
+
             # Check target
             if p >= target_p:
                 exit_p = target_p
                 exit_t = t
                 exit_reason = 'TARGET_REACHED'
                 break
-            # Check stop
-            if p <= stop_p:
-                exit_p = stop_p
+            # Check locked profit stop
+            if profit_locked and p <= active_stop:
+                exit_p = active_stop
+                exit_t = t
+                exit_reason = 'PROFIT_LOCK_1.8PCT'
+                break
+            # Check initial stop loss
+            if p <= active_stop:
+                exit_p = active_stop
                 exit_t = t
                 exit_reason = 'STOP_LOSS'
                 break
@@ -237,7 +253,7 @@ def run_replay(events_path: str, max_capital: float = 81300.0, risk_per_trade: f
                 exit_reason = 'MOMENTUM_STALL_SCRATCH'
                 break
 
-        # If trade did not exit during tape, mark as UNKNOWN / OPEN
+        # If trade did not exit during tape, mark as END_OF_TAPE
         if exit_p is None and future:
             exit_p = future[-1][1]
             exit_t = future[-1][0]
@@ -252,11 +268,13 @@ def run_replay(events_path: str, max_capital: float = 81300.0, risk_per_trade: f
             mfe_pct = (highest_p - entry_p) / entry_p * 100.0
             mae_pct = (entry_p - lowest_p) / entry_p * 100.0
 
-            completed_trades.append({
+            all_trades.append({
                 'symbol': sym,
                 'name': sig['name'],
                 'entry_time': entry_t.strftime('%H:%M:%S'),
                 'exit_time': exit_t.strftime('%H:%M:%S'),
+                'entry_datetime': entry_t,
+                'exit_datetime': exit_t,
                 'entry_price': entry_p,
                 'exit_price': exit_p,
                 'qty': qty,
@@ -272,6 +290,37 @@ def run_replay(events_path: str, max_capital: float = 81300.0, risk_per_trade: f
                 'phase': sig['phase']
             })
 
+    # Sequential Single-Slot Execution Simulation (max_positions = 1)
+    single_slot_trades = []
+    current_pos_end = None
+    last_exit_by_sym = {}
+    cooldown_delta = timedelta(seconds=900)  # 15 min cooldown
+
+    for tr in all_trades:
+        sym = tr['symbol']
+        e_time = tr['entry_datetime']
+
+        # 1. Single Slot Busy Check
+        if current_pos_end is not None and e_time < current_pos_end:
+            continue
+
+        # 2. Cooldown Check
+        last_exit = last_exit_by_sym.get(sym)
+        if last_exit and (e_time - last_exit) < cooldown_delta:
+            continue
+
+        # Trade Executed
+        current_pos_end = tr['exit_datetime']
+        last_exit_by_sym[sym] = tr['exit_datetime']
+        single_slot_trades.append(tr)
+
+    # Format output trades
+    def clean_trade(t):
+        d = dict(t)
+        d.pop('entry_datetime', None)
+        d.pop('exit_datetime', None)
+        return d
+
     results = {
         'total_evaluations': total_evals,
         'abc_strategy': {
@@ -283,13 +332,32 @@ def run_replay(events_path: str, max_capital: float = 81300.0, risk_per_trade: f
             'deduped_signals': len(deduped_signals),
             'regimes': fast_regimes,
             'rejection_reasons_top': sorted(fast_rejections.items(), key=lambda x: x[1], reverse=True)[:10],
-            'completed_trades_count': len(completed_trades),
-            'trades': completed_trades
+            'unconstrained_trades_count': len(all_trades),
+            'unconstrained_trades': [clean_trade(t) for t in all_trades],
+            'single_slot_trades_count': len(single_slot_trades),
+            'single_slot_trades': [clean_trade(t) for t in single_slot_trades],
+            'single_slot_summary': {
+                'total_trades': len(single_slot_trades),
+                'wins': sum(1 for t in single_slot_trades if t['net_pnl'] > 0),
+                'losses': sum(1 for t in single_slot_trades if t['net_pnl'] < 0),
+                'scratches': sum(1 for t in single_slot_trades if -1000 <= t['net_pnl'] <= 0),
+                'win_rate_pct': (sum(1 for t in single_slot_trades if t['net_pnl'] > 0) / len(single_slot_trades) * 100.0) if single_slot_trades else 0.0,
+                'total_gross_pnl': sum(t['gross_pnl'] for t in single_slot_trades),
+                'total_costs': sum(t['costs'] for t in single_slot_trades),
+                'total_net_pnl': sum(t['net_pnl'] for t in single_slot_trades),
+                'profit_factor': (
+                    abs(sum(t['net_pnl'] for t in single_slot_trades if t['net_pnl'] > 0)) /
+                    max(1.0, abs(sum(t['net_pnl'] for t in single_slot_trades if t['net_pnl'] < 0)))
+                ) if single_slot_trades else 0.0
+            }
         }
     }
     return results
 
 if __name__ == '__main__':
-    ev_path = 'C:/Users/MJS/Desktop/주식자동매매/runtime/automation-production/events.jsonl'
+    ev_path = sys.argv[1] if len(sys.argv) > 1 else 'C:/Users/MJS/Desktop/주식자동매매/runtime/automation-production/archive/events.jsonl.20261014-145249-570438.7232.32e27bce'
+    if not os.path.exists(ev_path):
+        ev_path = 'C:/Users/MJS/Desktop/주식자동매매/runtime/automation-production/events.jsonl'
     res = run_replay(ev_path)
     print(json.dumps(res, indent=2, ensure_ascii=False))
+

@@ -657,7 +657,14 @@ def readiness_snapshot(engine,counts,radar_ok,stamp,detector=None):
             gates.update(observation_session=True,regular_market=engine.market=='3',fresh_regular_tick=fresh_tick,radar_pipeline=radar_current)
     missing=[key.upper()+'_NOT_READY' for key,passed in gates.items() if not passed]
     state=('OPEN_READY' if in_market else 'PREOPEN_READY') if not missing else 'WAITING'
-    return {'state':state,'phase':assessment(stamp)['phase'],'gates':gates,'missing':missing,
+    order_ready=(state=='OPEN_READY') or (
+        missing==['FRESH_REGULAR_TICK_NOT_READY']
+        and tick_lag_source=='WS_SOURCE_SILENT'
+        and isinstance(tick_age,(int,float))
+        and tick_age<=engine.c.stale_seconds*2
+        and engine.connected
+    )
+    return {'state':state,'order_ready':order_ready,'phase':assessment(stamp)['phase'],'gates':gates,'missing':missing,
             'regular_epoch':stamp.replace(hour=9,minute=0,second=0,microsecond=0).isoformat(),
             'last_regular_tick_at':last.isoformat() if last else None,'regular_tick_age':tick_age,
             'tick_lag_source':tick_lag_source,'market_pending':not in_market,'strategy_warmup_separate':True}
@@ -743,7 +750,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     engine.readiness_reason=lambda:entry_readiness_reason()
     def entry_readiness_reason():
         ready=readiness_snapshot(engine,counts,radar_ok,now(),detector)
-        if ready['state']!='OPEN_READY':return 'OPEN_READINESS_'+(ready['missing'][0] if ready['missing'] else 'MARKET_NOT_OPEN')
+        if not ready.get('order_ready',ready['state']=='OPEN_READY'):return 'OPEN_READINESS_'+(ready['missing'][0] if ready['missing'] else 'MARKET_NOT_OPEN')
         if cfg.live_mode:
             from automation.readiness import authorization_valid
             valid,reasons=authorization_valid(root,cfg,auto,policy,now(),**engine.authorization_context())

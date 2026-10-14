@@ -18,6 +18,44 @@ from automation.observation_settings import load_observation
 from automation.radar import observation_structure
 from automation.focus_selection import FocusNotification,calculate_tier,unviable_price_geometry
 
+class TickLogger:
+    """Buffered lossless JSONL logger for raw SHADOW ticks with automatic 64MB rotation."""
+    def __init__(self, log_path: Path, max_bytes: int = 64 * 1024 * 1024):
+        self.path = log_path
+        self.max_bytes = max_bytes
+        self.buffer = []
+        self.last_flush = time.monotonic()
+
+    def log(self, tick, received):
+        self.buffer.append({
+            'symbol': getattr(tick, 'symbol', ''),
+            'time': tick.time.isoformat() if hasattr(tick.time, 'isoformat') else str(tick.time),
+            'price': getattr(tick, 'price', 0.0),
+            'volume': getattr(tick, 'volume', 0),
+            'bid': getattr(tick, 'bid', 0.0),
+            'ask': getattr(tick, 'ask', 0.0),
+            'received': received.isoformat() if hasattr(received, 'isoformat') else str(received),
+        })
+        if len(self.buffer) >= 50 or time.monotonic() - self.last_flush >= 1.0:
+            self.flush()
+
+    def flush(self):
+        if not self.buffer:
+            return
+        try:
+            if self.path.exists() and self.path.stat().st_size >= self.max_bytes:
+                rotated = self.path.with_name(self.path.name + '.1')
+                if rotated.exists():
+                    rotated.unlink()
+                self.path.rename(rotated)
+            with open(self.path, 'a', encoding='utf-8') as f:
+                for row in self.buffer:
+                    f.write(json.dumps(row, ensure_ascii=False) + '\n')
+        except Exception:
+            pass
+        self.buffer.clear()
+        self.last_flush = time.monotonic()
+
 class ObservationWorker:
     def __init__(self,cfg,auto,costs,root,rest=None,limit=32):
         self.cfg=cfg; self.auto=auto; self.root=Path(root); self.rest=rest;self.settings=load_observation(root);self.clock=now
@@ -26,6 +64,7 @@ class ObservationWorker:
         self.observer=ShadowObserver(cfg,auto,costs,self.event,limit=limit)
         self.observer.detector.continuous_observation=True
         self.observer.eval_seconds=self.settings.evaluation_seconds
+        self.tick_logger=TickLogger(self.folder/'shadow_ticks.jsonl')
         self.updates=queue.Queue(maxsize=1); self.prepared=queue.Queue(maxsize=1); self.ticks=queue.Queue(maxsize=4096)
         self.focus_notifications=queue.Queue(maxsize=32)
         self.stop=threading.Event(); self.lock=threading.Lock(); self.event_lock=threading.Lock(); self.snapshot={}
@@ -206,16 +245,20 @@ class ObservationWorker:
                 try:t,received=self.ticks.get(timeout=.05)
                 except queue.Empty:t=None
                 if t is not None:
+                    self.tick_logger.log(t, received)
                     self.observer.capital=dict(getattr(self,'current_capital',self.observer.capital))
                     started=time.perf_counter()
                     # 큐 대기도 수신 지연에 포함한다. 오래된 틱으로 가상 신호를 만들지 않는다.
                     self.observer.tick(t,self.clock(),transport_received=received);self.tick_ms=(time.perf_counter()-started)*1000
                 if time.monotonic()-last_save>=2:
+                    self.tick_logger.flush()
                     snapshot=self.state();snapshot['performance']={'prepare_ms':self.prepare_ms,'last_eval_ms':self.tick_ms,'metadata_calls':self.apis,'queue_depth':self.ticks.qsize(),'dropped':self.dropped}
                     atomic_json(self.folder/'shadow_snapshot.json',snapshot);last_save=time.monotonic()
             except Exception as error:self.record_error(error)
     def start(self):self.metadata_thread.start();self.thread.start()
     def close(self):
         self.stop.set()
+        try:self.tick_logger.flush()
+        except Exception:pass
         for thread in (self.thread,self.metadata_thread):
             if thread.ident is not None:thread.join(timeout=1)

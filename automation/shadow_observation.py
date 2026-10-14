@@ -7,6 +7,7 @@ from automation.policy import HARD_LOCKS,BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL
 from automation.decisions import STRATEGY_VERSION
 from automation.focus_selection import calculate_tier, TIER_NAMES
 from automation.observation_retention import observation_residence_seconds
+from automation.fast_momentum import FastMomentumStrategy
 
 def make_evaluation_view(row):
     """구조 view + 당시 원본 row의 메타데이터를 명시적으로 병합한 EvaluationView."""
@@ -31,7 +32,7 @@ def make_evaluation_view(row):
 
 class ShadowObserver:
  def __init__(self,cfg,auto,costs,emit,risk=None,limit=32):
-  self.cfg=cfg;self.auto=auto;self.detector=PatternDetector(cfg,auto,costs);self.emit=emit;self.risk=risk;self.limit=limit;self.rows={};self.first={};self.last_log={};self.previous={}
+  self.cfg=cfg;self.auto=auto;self.detector=PatternDetector(cfg,auto,costs);self.fast_strategy=FastMomentumStrategy(cfg,auto,costs);self.emit=emit;self.risk=risk;self.limit=limit;self.rows={};self.first={};self.last_log={};self.previous={}
   self.capital={};self.epoch=None;self.eval_seconds=2;self.selected_at={};self.latest={};self.detached=set()
   self.last_tier={};self.observation_seq=0;self.detached_at={}
  def event(self,kind,stamp,**data):
@@ -121,6 +122,9 @@ class ShadowObserver:
   sig,gates,trials,history=self.detector.evaluation_snapshot(t,view)
   if sig:
    sig['SHADOW_ONLY']=True;sig['actual_order_permission']=False;sig['diagnostic_only']=True
+  fast_sig=self.fast_strategy.evaluate(t,row,capital_limit=self.capital.get('effective_auto_cap',81300.0),risk_budget=self.capital.get('risk_remaining',1626.0))
+  if fast_sig:
+   self.event('SHADOW_FAST_SIGNAL',received,symbol=t.symbol,name=row.get('name'),limit=fast_sig.limit,stop=fast_sig.stop,target=fast_sig.target,emergency=fast_sig.emergency,quantity=fast_sig.quantity,net_reward_risk=fast_sig.net_reward_risk,regime=fast_sig.regime,phase=fast_sig.phase,ttl_seconds=fast_sig.ttl_seconds,max_chase_price=fast_sig.max_chase_price,SHADOW_ONLY=True,actual_order_permission=False)
   usable=[]
   for bar in reversed(history):
    if bar['first_second']>self.cfg.stale_seconds:break

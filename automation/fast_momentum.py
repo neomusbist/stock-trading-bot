@@ -187,6 +187,8 @@ class FastMomentumStrategy:
         self.costs = costs or {'buy': 0.00015, 'sell': 0.00015, 'tax': 0.002, 'entry_slippage': 0.002, 'exit_slippage': 0.003}
         self.tapes: Dict[str, MicroTape] = {}
         self.active_signals: Dict[str, FastSignal] = {}
+        self.last_exit_by_symbol: Dict[str, datetime] = {}
+        self.cooldown_seconds: float = 900.0  # 15 minutes cooldown after exit
 
     def get_tape(self, symbol: str) -> MicroTape:
         if symbol not in self.tapes:
@@ -416,6 +418,11 @@ class FastMomentumStrategy:
         if not m or m.get('ticks_count', 0) < 4:
             return None
 
+        # Cooldown check: prevent immediate re-entry into same symbol after exit
+        last_exit = self.last_exit_by_symbol.get(t.symbol)
+        if last_exit and (t.time - last_exit).total_seconds() < self.cooldown_seconds:
+            return None
+
         phase = self.determine_phase(t.time)
         if phase == 'OFF_SESSION':
             return None
@@ -473,6 +480,7 @@ class FastMomentumStrategy:
         5. Profit Protection: Lock break-even at +1R, trail at +1.5R.
         """
         p = t.price
+        sym = position.get('symbol', t.symbol)
         entry = position.get('avg', position.get('entry', p))
         qty = position.get('qty', 1)
         stop = position.get('stop', entry * 0.985)
@@ -481,22 +489,45 @@ class FastMomentumStrategy:
         opened_at = datetime.fromisoformat(opened_at_str) if isinstance(opened_at_str, str) else current_time
         holding_seconds = (current_time - opened_at).total_seconds()
 
+        # Track MFE (Maximum Favorable Excursion)
+        highest = position.setdefault('highest_price', p)
+        if p > highest:
+            position['highest_price'] = p
+            highest = p
+
+        # Dynamic Profit Lock & Trailing Stop:
+        # If gain reached >= 1.8%, lock profit at minimum +1.8% or trail 0.8% below highest peak
+        mfe_pct = (highest - entry) / entry if entry > 0 else 0.0
+        if mfe_pct >= 0.018:
+            lock_stop = floor_tick(max(entry * 1.018, highest * 0.992))
+            if lock_stop > position.get('stop', 0):
+                position['stop'] = lock_stop
+                position['profit_locked'] = True
+
+        # Check if price hit the locked profit stop
+        if position.get('profit_locked') and p <= position['stop']:
+            self.last_exit_by_symbol[sym] = current_time
+            return True, 'PROFIT_LOCK_EXIT', {'price': p, 'stop': position['stop'], 'highest': highest}
+
         # Tier 3: Emergency plunge
         if p <= emergency:
+            self.last_exit_by_symbol[sym] = current_time
             return True, 'EMERGENCY_PLUNGE_EXIT', {'price': p, 'emergency': emergency}
 
         # Tier 1: Invalidation Stop
         if p <= stop:
+            self.last_exit_by_symbol[sym] = current_time
             return True, 'INVALIDATION_STOP_EXIT', {'price': p, 'stop': stop}
 
         # Tier 2: Account Risk Limit (max 2% of capital)
         unrealized_loss = (entry - p) * qty
         max_allowed_loss = 1626.0  # 2% of 81,300 KRW
         if unrealized_loss >= max_allowed_loss:
+            self.last_exit_by_symbol[sym] = current_time
             return True, 'ACCOUNT_RISK_LIMIT_EXIT', {'loss': unrealized_loss, 'limit': max_allowed_loss}
 
         # Micro-metrics from tape
-        tape = self.get_tape(position.get('symbol', t.symbol))
+        tape = self.get_tape(sym)
         m = tape.metrics(current_time)
 
         # Early Momentum Stall Exit:
@@ -505,6 +536,7 @@ class FastMomentumStrategy:
         if holding_seconds >= 60.0:
             r_gain = (p - entry) / max(1.0, entry - stop)
             if r_gain < 0.3 and m.get('downtick_ratio_30', 0.0) >= 0.65:
+                self.last_exit_by_symbol[sym] = current_time
                 return True, 'MOMENTUM_STALL_SCRATCH_EXIT', {
                     'holding_seconds': holding_seconds,
                     'r_gain': r_gain,
