@@ -260,8 +260,19 @@ class OperatorService:
         is_after_entry=getattr(cfg,'after_enabled',False) and after_entry_supported(self.clock())
         curr_sess=current_session(self.clock())
         after_live=bool(policy.get('after_live_authorized')) and cfg.live_mode
-        trading_on=bool(configured and fresh and hb.get('connected') and hb.get('account_ok') and (hb.get('readiness',{}).get('state')=='OPEN_READY' if 'readiness' in hb else True) and not state.get('halt') and not counts['uncertain'] and is_reg)
-        if curr_sess=='AFTER' and configured and after_live and fresh and hb.get('connected') and hb.get('account_ok') and hb.get('readiness',{}).get('state')=='OPEN_READY' and not state.get('halt') and not counts['uncertain'] and is_after_entry:
+        ready_state=hb.get('readiness',{}).get('state')
+        ready_missing=hb.get('readiness',{}).get('missing',[])
+        ready_source=hb.get('readiness',{}).get('tick_lag_source')
+        ready_age=hb.get('readiness',{}).get('regular_tick_age')
+        ready_ok=(ready_state=='OPEN_READY') or (
+            ready_missing==['FRESH_REGULAR_TICK_NOT_READY']
+            and ready_source=='WS_SOURCE_SILENT'
+            and isinstance(ready_age,(int,float))
+            and ready_age<=cfg.stale_seconds*2
+            and hb.get('connected')
+        ) if 'readiness' in hb else True
+        trading_on=bool(configured and fresh and hb.get('connected') and hb.get('account_ok') and ready_ok and not state.get('halt') and not counts['uncertain'] and is_reg)
+        if curr_sess=='AFTER' and configured and after_live and fresh and hb.get('connected') and hb.get('account_ok') and ready_ok and not state.get('halt') and not counts['uncertain'] and is_after_entry:
             trading_on=True
         if not (is_reg or is_after):
             order_perm='OUTSIDE_TRADING_WINDOW — V1.1 운영시간 밖, 실주문 불가'
