@@ -81,6 +81,11 @@ class AutonomousEngine(ExistingExits,Engine):
             if carried: self.event('POSITION_REMAINS_AFTER_SESSION',reason_code='OVERNIGHT_RISK',symbols=sorted(carried),message='새 계좌 대조 전 주문 보류')
         self.save()
 
+    def disconnect(self):
+        super().disconnect()
+        if hasattr(self, 'fast_strategy') and self.fast_strategy is not None:
+            self.fast_strategy.reset('DISCONNECT')
+
     @property
     def after_live_authorized(self):
         if hasattr(self, '_after_live_authorized') and self._after_live_authorized is not None:
@@ -179,14 +184,15 @@ class AutonomousEngine(ExistingExits,Engine):
         if not self.is_supported_now(): return 'OUT_OF_SUPPORTED_SESSION'
         if symbol in HARD_LOCKS or self.policy.locked(symbol): return 'HARD_LOCK'
         if symbol in BREAKEVEN_EXITS or (symbol==TEST_RELEASE_SYMBOL and legacy_test_release_enabled()): return 'EXISTING_POLICY_NO_BUY'
+        st=self.market_status.get(symbol,{})
+        if st.get('vi_active') or st.get('single_price_auction'): return 'VI_AUCTION_NO_BUY'
         sess=self.current_session()
         if sess=='AFTER':
             t_str=self.clock().strftime('%H:%M:%S')
             if t_str<getattr(self.a,'after_market_start','16:00:00'): return 'AFTER_PREWARM_NO_BUY'
             if t_str>=getattr(self.a,'after_entry_cutoff','19:45:00'): return 'AFTER_ENTRY_CUTOFF'
             if self.c.live_mode and not self.after_live_authorized: return 'AFTER_LIVE_NOT_AUTHORIZED'
-            status=self.market_status.get(symbol,{})
-            if status.get('vi_active') or status.get('single_price_auction'): return 'VI_AUCTION_NO_BUY'
+            status=st
             if status.get('is_etf_etn') or status.get('after_ineligible'): return 'AFTER_INELIGIBLE_SYMBOL'
             raw_text='|'.join(str((status.get('raw') or {}).get(k) or '') for k in ('state','auditInfo'))
             for bad_kw, r_code in (
@@ -272,7 +278,7 @@ class AutonomousEngine(ExistingExits,Engine):
             'session':gate(self.entry_window(),time=self.clock().strftime('%H:%M:%S'),cutoff=getattr(self.a,'after_entry_cutoff','19:45:00') if self.current_session()=='AFTER' else self.a.new_entry_cutoff,market=self.market),
             'connection_account':gate(self.connected and self.account_ok and not self.s['halt'] and (not self.c.live_mode or time.monotonic()-self.last_account<=self.c.reconcile_seconds*3),connected=self.connected,account_ok=self.account_ok,halt=self.s['halt'],account_age=time.monotonic()-self.last_account),
             'tick':gate(tick.regular and abs((self.clock()-tick.time).total_seconds())<=self.c.stale_seconds,lag=(self.clock()-tick.time).total_seconds(),regular=tick.regular,stale_limit=self.c.stale_seconds),
-            'repeat_slots':gate(not self.entry_failure(sym) and not self.active_orders(sym) and sym not in self.s['positions'] and sym not in self.s['excluded'] and (self.c.max_entries_per_symbol is None or self.s['entries'].get(sym,0)<self.c.max_entries_per_symbol) and self.entry_slots_available() and len(set(self.s['positions'])|{o['symbol'] for o in buys})<self.c.max_positions,entries=self.s['entries'].get(sym,0),symbol_entry_limit=self.c.max_entries_per_symbol,consecutive_losses=self.s['automation']['consecutive_losses'],consecutive_loss_limit=self.a.max_consecutive_losses,daily_entries=sum(self.s['entries'].values()),daily_entry_limit=self.c.max_entries_per_day,daily_entry_limit_enabled=self.c.max_entries_per_day is not None,daily_entry_limit_pass=self.entry_slots_available(),reserved_entry_slots=self.pending_entry_lifecycles(),entry_count_basis=self.s.get('entry_count_basis'),failure_latch=self.entry_failure(sym),slots=len(set(self.s['positions'])|{o['symbol'] for o in buys})),
+            'repeat_slots':gate(not self.entry_failure(sym) and not self.active_orders(sym) and sym not in self.s['positions'] and sym not in self.s['excluded'] and (self.c.max_entries_per_symbol is None or self.s['entries'].get(sym,0)<self.c.max_entries_per_symbol) and self.entry_slots_available() and len(set(self.s['positions'])|{o['symbol'] for o in buys})<(1 if (signal or {}).get('pattern')=='FAST' else self.c.max_positions),entries=self.s['entries'].get(sym,0),symbol_entry_limit=self.c.max_entries_per_symbol,consecutive_losses=self.s['automation']['consecutive_losses'],consecutive_loss_limit=self.a.max_consecutive_losses,daily_entries=sum(self.s['entries'].values()),daily_entry_limit=self.c.max_entries_per_day,daily_entry_limit_enabled=self.c.max_entries_per_day is not None,daily_entry_limit_pass=self.entry_slots_available(),reserved_entry_slots=self.pending_entry_lifecycles(),entry_count_basis=self.s.get('entry_count_basis'),failure_latch=self.entry_failure(sym),slots=len(set(self.s['positions'])|{o['symbol'] for o in buys})),
             'risk_quantity':gate(qty>0,**sizing,equity=equity,remaining_risk=remaining,reserved_cash=reserved,book_cash=self.s['cash'],actual_cash=self.available_cash,entry=signal['limit'],stop=signal['stop'],risk_fraction=self.c.risk_fraction,max_daily_loss_fraction=self.c.max_daily_loss_fraction,allowed_risk_krw=equity*self.c.risk_fraction,remaining_daily_risk_krw=max(0,remaining)),
             'efficiency':gate(signal.get('efficiency',{}).get('decision')=='TRADE',efficiency=signal.get('efficiency'))}
 
@@ -485,8 +491,9 @@ class AutonomousEngine(ExistingExits,Engine):
         signal.update(entry_build_id=BUILD_ID,entry_strategy_version=STRATEGY_VERSION,
                       entry_strategy_experiment=STRATEGY_EXPERIMENT)
         signal['planned_qty']=qty
+        fast_signal = signal.get('pattern') == 'FAST'
         sig_time_raw = signal.get('signal_detected_at') or signal.get('time')
-        if sig_time_raw:
+        if fast_signal and sig_time_raw:
             try:
                 sig_dt = datetime.fromisoformat(sig_time_raw)
                 latency = max(0.0, (self.clock() - sig_dt).total_seconds())
@@ -632,6 +639,9 @@ class AutonomousEngine(ExistingExits,Engine):
         intents=[o for o in self.active_orders(sym,side) if o['status']=='INTENT' and o['qty']==qty and o['limit']==limit]
         if len(intents)!=1: raise Rejected('저장된 봇 주문 의도 없는 직접 주문 차단')
         if side=='BUY':
+            st=self.market_status.get(sym,{})
+            if st.get('vi_active') or st.get('single_price_auction'):
+                raise Rejected('VI_AUCTION_NO_BUY')
             for o in self.s['orders'].values():
                 if o is not intents[0] and o.get('status') in {'UNKNOWN', 'INTENT'}:
                     raise Rejected(f'다른 미해결/INTENT 주문 존재 ({o.get("symbol")}): 신규 매수 차단')
@@ -662,7 +672,8 @@ class AutonomousEngine(ExistingExits,Engine):
             remaining=self.daily_risk_budget()-self.s['daily_loss']-used
             if qty>self.quantity(signal,self.risk_equity(),available,remaining): raise Rejected('주문 경계에서 위험 수량 재검증 실패')
             bot_positions={s for s,p in self.s['positions'].items() if p.get('ownership','BOT')=='BOT'}
-            if len(bot_positions|{o['symbol'] for o in self.active_orders(side='BUY')})>self.c.max_positions: raise Rejected('동시 포지션 초과')
+            max_pos = 1 if (intents[0].get('signal') or {}).get('pattern') == 'FAST' else self.c.max_positions
+            if len(bot_positions|{o['symbol'] for o in self.active_orders(side='BUY')})>max_pos: raise Rejected('동시 포지션 초과')
         else:
             p=self.s['positions'].get(sym)
             if (intents[0].get('signal') or {}).get('ownership')=='EXISTING_POLICY':

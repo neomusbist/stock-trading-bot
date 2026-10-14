@@ -426,6 +426,16 @@ def focus_readiness(detector,shadow_readiness,stamp):
 
 def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_evaluated_frame=None):
     if not watch or not engine.connected: return None
+    if watch.get('status') and watch.get('status') != 'WATCH':
+        from automation.decisions import gate
+        engine.decisions.emit('ENTRY_EVAL', t.symbol, 'NO_BUY', 'CANDIDATE_STATUS_NOT_WATCH',
+                              {'status': gate(False, status=watch.get('status'))}, price=t.price)
+        return None
+    if watch.get('vi_active') or watch.get('single_price_auction') or getattr(t, 'vi_active', False):
+        from automation.decisions import gate
+        engine.decisions.emit('ENTRY_EVAL', t.symbol, 'NO_BUY', 'VI_AUCTION_NO_BUY',
+                              {'market_status': gate(False, vi_active=watch.get('vi_active'), single_price=watch.get('single_price_auction'))}, price=t.price)
+        return None
     if watch.get('observation_only'):
         from automation.decisions import gate
         engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','ACCOUNT_CAPITAL_UNAVAILABLE',
@@ -464,20 +474,36 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
         return None
     sig['name']=watch.get('name')
     sig['fallback_source1']=bool(watch.get('fallback_source1'))
-    if sig.get('pattern') != 'FAST':
+    bars=radar.cache.get((t.time.date(),t.symbol))
+    if not bars:
+        engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','HISTORY_UNAVAILABLE',
+            detector.evaluation_gates(t,watch),signal=sig,price=t.price)
+        return None
+    if sig.get('pattern') == 'FAST':
+        fresh=structure(bars,sig['limit'],replace(engine.c,max_recent_range=999.0,max_overhead_share=1.0,min_resistance_room=0.0),t.time.date())
+        if fresh.get('status')!='ELIGIBLE':
+            from automation.decisions import gate
+            engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','STRUCTURE_REJECTED',
+                {'structure':gate(False,**fresh)},signal=sig,price=t.price)
+            engine.event('NO_TRADE',symbol=t.symbol,reason=fresh['reason']); return None
+    else:
         from automation.entry_timing import annotate_signal
         annotate_signal(engine,detector,watch,sig)
-        bars=radar.cache.get((t.time.date(),t.symbol))
-        if not bars:
-            engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','HISTORY_UNAVAILABLE',
-                detector.evaluation_gates(t,watch),signal=sig,price=t.price)
-            return None
         fresh=structure(bars,sig['limit'],replace(engine.c,max_recent_range=.99,min_resistance_room=0 if sig['pattern'] in {'A','C'} else engine.c.min_resistance_room),t.time.date())
         if fresh.get('status')!='ELIGIBLE':
             from automation.decisions import gate
             engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','STRUCTURE_REJECTED',
                 {'structure':gate(False,**fresh)},signal=sig,price=t.price)
             engine.event('NO_TRADE',symbol=t.symbol,reason=fresh['reason']); return None
+        sig=detector.signal(t,{**watch,**fresh})
+        if not sig:
+            engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','FRESH_STRUCTURE_SIGNAL_NOT_READY',
+                detector.evaluation_gates(t,{**watch,**fresh}),price=t.price,
+                extra={'signal_detected':False,'setup_trials':detector.last_eval.get(t.symbol,{}).get('trials',[])})
+            return None
+        sig['name']=watch.get('name')
+        annotate_signal(engine,detector,watch,sig)
+        sig['fallback_source1']=bool(watch.get('fallback_source1'))
         sig=detector.signal(t,{**watch,**fresh})
         if not sig:
             engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','FRESH_STRUCTURE_SIGNAL_NOT_READY',
@@ -591,7 +617,7 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
                     health=getattr(engine,'position_health',None)
                     if health is not None:health.trade_seen(t.symbol,t)
                 continue
-            if hasattr(engine, 'fast_strategy') and engine.fast_strategy is not None:
+            if getattr(engine.a, 'fast_momentum_enabled', False) and hasattr(engine, 'fast_strategy') and engine.fast_strategy is not None:
                 engine.fast_strategy.ingest_tick(t, received)
             if subscriptions is not None:subscriptions.accepted(t.symbol)
             accepted+=1;engine.last_regular_tick_at=t.time
