@@ -39,6 +39,8 @@
 !/tools/repo_guard.py
 !/tools/setup_local.py
 !/tools/export_source.py
+!/tools/preflight_live_check.py
+!/tools/recovery_guard.py
 
 # Reviewed current sources and public documentation
 !/AUDIT_REPORT.md
