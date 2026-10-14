@@ -90,9 +90,12 @@ def calculate_tier(gates: dict, setup_trials: list, row: dict = None) -> int:
     if blocked_geometry and not other_viable:return TIER_FRESH_WEAK
 
     # 가속 또는 유동성 명시적 FAIL이면 TIER_FRESH_WEAK
+    # B/C가 활발히 평가 중이거나 봉 축적 중인 경우, 가속 FAIL은 B/C에게 결함이 아니다.
+    accumulating_bc = any(t.get('setup') in {'B', 'C'} and t.get('acceleration_required') is False
+                          for t in (setup_trials or []))
     accel = gates.get('acceleration', {}).get('result')
     liq = gates.get('liquidity', {}).get('result')
-    if accel == 'FAIL' or liq == 'FAIL':
+    if (accel == 'FAIL' and not accumulating_bc) or liq == 'FAIL':
         return TIER_FRESH_WEAK
 
     # 공통 gate PASS 여부

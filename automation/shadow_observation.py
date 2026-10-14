@@ -6,6 +6,7 @@ from automation.patterns import PatternDetector
 from automation.policy import HARD_LOCKS,BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL
 from automation.decisions import STRATEGY_VERSION
 from automation.focus_selection import calculate_tier, TIER_NAMES
+from automation.observation_retention import observation_residence_seconds
 
 def make_evaluation_view(row):
     """구조 view + 당시 원본 row의 메타데이터를 명시적으로 병합한 EvaluationView."""
@@ -50,7 +51,7 @@ class ShadowObserver:
     self.event('SHADOW_RAW_DISCOVERED',stamp,symbol=sym,name=row.get('name'),**self.first[sym])
    if row.get('source_count',0)>=1 and row.get('shadow_view',row).get('market_status',{}).get('pass') is True:eligible.append(row)
   # 가장 긴 C 형상의 완성봉 준비시간을 확보한다. 더 강한 새 발견/WATCH는 먼저 수용한다.
-  residence_seconds=max(180,(max(4,self.auto.box_min_bars)+1)*60)
+  residence_seconds=observation_residence_seconds(self.auto)
   def watch_priority(row):
    # RAW is an interim discovery phase, not an explicit focus demotion.
    # Only committed WATCH/RESERVE/SHADOW rows change the remembered role.

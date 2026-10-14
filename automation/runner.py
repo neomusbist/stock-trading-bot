@@ -372,6 +372,21 @@ def latest_evaluation_watch(watch,radar,symbol):
         view['market_status']={'pass':None,'reason_code':'MARKET_STATUS_UNKNOWN'}
     return view
 
+def verified_radar_cache_available(engine,stamp,scan_seconds):
+    """A failed refresh never renews or relaxes the existing qualification TTL."""
+    verified=getattr(engine,'last_radar_at',None)
+    if verified is None or verified.tzinfo is None or stamp.tzinfo is None:return False
+    return (verified.date()==stamp.date() and supported(verified)
+            and 0<=(stamp-verified).total_seconds()<=scan_seconds*3)
+
+def handle_radar_failure(engine,result,stamp,scan_seconds):
+    cached=verified_radar_cache_available(engine,stamp,scan_seconds)
+    engine.event('RADAR_UNAVAILABLE',**{k:v for k,v in result.items() if k!='time'},
+                 verified_cache_available=cached,
+                 verified_cache_at=getattr(engine,'last_radar_at',None),
+                 cached_candidate_checks_unchanged=True)
+    return cached
+
 def pending_broker_settlement(state):
     """A terminal sell still needs actual charges; modeled PnL is not settlement."""
     day=state.get('day','')
@@ -788,7 +803,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 while in_session and not radar.q.empty():
                     result=radar.q.get_nowait()
                     if result['error']:
-                        radar_ok=False; engine.event('RADAR_UNAVAILABLE',**{k:v for k,v in result.items() if k!='time'})
+                        radar_ok=handle_radar_failure(engine,result,now(),auto.scan_seconds)
                     else:
                         if result.get('phase')=='QUALIFIED_PROGRESS':
                             rows,selection=apply_qualified_progress(engine,lookup,rows,result,
@@ -915,11 +930,13 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 real_symbols=set(desired)
                 observed=shadow_state.get('symbols',[])
                 engine.candidate_audit.shadow_count=len(observed)
+                from automation.observation_retention import observation_residence_seconds
+                observation_grace=observation_residence_seconds(auto)
                 desired,observed,retained=observation_retention.select(lookup,real_symbols,observed,now(),
-                    grace_seconds=auto.scan_seconds,capacity=observation_settings.max_symbols)
+                    grace_seconds=observation_grace,capacity=observation_settings.max_symbols)
                 if retained!=retained_observation:
                     engine.event('OBSERVATION_RETENTION',symbols=sorted(retained),
-                        grace_seconds=auto.scan_seconds,subscription_count=len(desired),
+                        grace_seconds=observation_grace,subscription_count=len(desired),
                         capacity=observation_settings.max_symbols,actual_order_permission=False)
                     retained_observation=retained
                 observation_drops,priority_symbols=prewarm_handoff(engine,detector,feed,observed,real_symbols,priority_symbols,observation_drops,shadow.deliver)

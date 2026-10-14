@@ -1,5 +1,9 @@
 """Bounded subscription continuity; retained roles never gain BUY permission."""
 
+def observation_residence_seconds(auto):
+    """Use the existing longest pattern's warmup, including its partial first minute."""
+    return max(180,(max(4,auto.box_min_bars)+1)*60)
+
 class ObservationRetention:
     def __init__(self):self.last_watch={}
 

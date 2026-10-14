@@ -670,3 +670,43 @@ Private live logs, account snapshots, receipts, GUI captures and deployment back
 outside Git. LIVE was stopped through the official STOP path; no account-risk reset or
 automatic LIVE approval is authorized. Deploy source only after regression and preservation
 checks. A changed BUILD requires the user's direct GUI approval before LIVE can resume.
+
+## 2026-10-14 R5: verified observation continuity and radar recovery
+
+BUILD: `V1.5-risk2-watch12-bc20M-observation-r5-20261014`.
+The isolated development branch incorporates the tested selection/high-reference
+changes from local `e0d2f7a`; those source changes were absent from the running R4.
+Its unvalidated default pullback-volume relaxation is excluded: 0.75 is preserved.
+
+ObservationRetention and ShadowObserver share the already-defined residence needed
+for the longest completed-bar pattern, including its initial partial minute.
+Demoted WATCH observation survives a one-cycle ranking change within the existing
+subscription footprint. Critical positions/orders retain priority. Retained
+observations do not acquire entry permission. A genuine unsubscribe/data gap still
+resets history; no missing or historical reference bar is converted to a received
+complete signal bar.
+
+A failed radar refresh keeps only a previously verified, same-day regular-session
+snapshot inside the existing three-scan qualification TTL. Errors do not refresh
+its timestamp. First-cycle, preopen, future and expired snapshots still block.
+Per-symbol source/status, fresh ticks/books, pattern, resistance, risk/reward,
+quantity, account, HALT and approval checks remain in the real order path.
+
+Malformed ranking identities are rejected per row with an API/ordinal reason.
+Valid rows retain their original rank and official source identity; unknown
+exchange suffixes are never normalized into a tradable identity. Whole source
+response failures remain errors. Worker errors now include stage, exact exception
+message and trace instead of only the class name. The old ValueError records do
+not establish its original underlying cause.
+
+Validation: 158 targeted cases; all 1,280 regressions, including all 1,259 R4
+cases, six inherited selection tests and 15 dedicated continuity/cache/parser
+cases. Network attempts zero. Received-bar role-turnover and real-gap resets
+verified; no real orders or live approval during tests. Actual candidate-pool
+counterfactuals are independent decisions with past information, not a complete
+tick/subscription replay or evidence of profitable execution.
+
+AE3, structural invalidation, account risk parameters, order lifecycle, runtime
+journals, broker settlement, manual-protection records and approvals are preserved.
+Release backup/hash verification precedes source deployment. A new BUILD requires
+the user to approve and start through the GUI. Never reuse a receipt or auto-start.

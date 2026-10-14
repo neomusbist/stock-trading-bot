@@ -2,7 +2,7 @@
 import json
 import math
 STRATEGY_VERSION='V1.5-structural-continuation-20261014'
-BUILD_ID='V1.5-risk2-watch12-bc20M-opening-r4-20261014'
+BUILD_ID='V1.5-risk2-watch12-bc20M-observation-r5-20261014'
 STRATEGY_EXPERIMENT='20261007-risk2-daily4-dynamiccap-watch12-accelA-bc20M-bclose20261008-dailyoverride20261012-context-optin-matched-rest-hold-box-direction-pivot-protection-v15entry-feedcatchup-structuralB-structuralAE3-close-invalidation-after-failed-rebound-brokerpnl-exitplan-ohlcv-wiring-shared-emergency-local-confirmed-continuation-day-lineage-policy-attribution-session-ceiling-cap-continuation-source-parity-opening-qualified-progress-observation-receiver-history-warmup-focus-structuralC'
 
 def check_experiment_consistency(cfg, build_id=BUILD_ID, experiment=STRATEGY_EXPERIMENT):

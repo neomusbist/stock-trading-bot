@@ -9,7 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 from candidate_builder import RANKS, bars_from_csv, fetch_bars, structure
 from core.settings import now
-from core.util import code, number, atomic_json, write_csv
+from core.util import code, number, atomic_json, write_csv, exception_details
 from core.broker import Rejected
 from automation.policy import BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL,legacy_test_release_enabled
 from automation.observation_settings import ObservationSettings,load_observation
@@ -30,6 +30,8 @@ def ordinary(symbol,name):
 
 def collect(rest):
     result={}
+    rejected_rows=[]
+    rest.radar_rejected_rows=rejected_rows
     settings=getattr(rest,'radar_observation_settings',None)
     if not isinstance(settings,ObservationSettings):settings=ObservationSettings()
     for api,key,limit,payload in RANKS:
@@ -42,7 +44,15 @@ def collect(rest):
         else:
             rows,_=rest.pages(api,payload,key,path=path,limit=limit)
         for rank,r in enumerate(rows,1):
-            sym=code(r['stk_cd']); name=r['stk_nm']
+            try:
+                if not isinstance(r,dict):raise ValueError('랭킹 행 형식 오류')
+                sym=code(r['stk_cd']); name=r['stk_nm']
+                if not isinstance(name,str) or not name.strip():raise ValueError('종목명 결측')
+            except (KeyError,TypeError,ValueError) as error:
+                # Reject this identity; it must never become a subscription or order.
+                # A malformed row is not evidence that the other verified rows failed.
+                rejected_rows.append({'api':api,'row_number':rank,'reason':str(error)})
+                continue
             if not ordinary(sym,name): continue
             item=result.setdefault(sym,{'code':sym,'name':name,'source_details':{},'reference_price':None})
             detail={'observed_rank':rank,'raw':dict(r),'values':{}}
@@ -114,7 +124,7 @@ class DynamicRadar:
             x['source_deltas']=deltas; x['observed_at']=stamp.isoformat()
             x['delta_period_seconds']=(stamp-old['stamp']).total_seconds() if old else None
             rank_improvement=sum(d['rank_improvement'] or 0 for d in deltas.values())
-            x['discovery_score']=len(sources)*10+sum(1/d['observed_rank'] for d in sources.values())+max(-10,min(10,rank_improvement))
+            x['discovery_score']=len(sources)*10+sum(1/d['observed_rank'] for d in sources.values())+max(0,min(10,rank_improvement))
             afford_started=time.perf_counter();affordable=self.affordable(x);self.affordability_ms+=(time.perf_counter()-afford_started)*1000
             if self.policy.locked(sym): x.update(status='REJECT',reason='HARD_LOCK')
             elif sym in BREAKEVEN_EXITS or (sym==TEST_RELEASE_SYMBOL and legacy_test_release_enabled()): x.update(status='REJECT',reason='EXISTING_POLICY_NO_BUY')
@@ -218,10 +228,11 @@ class RadarWorker:
                 recent=0<=(now()-date_time.fromisoformat(first)).total_seconds()<=2*self.a.scan_seconds
             except (TypeError,ValueError):recent=False
             rising_rank=any(type(d.get('values',{}).get('flu_rt')) in (float,int) and d['values']['flu_rt']>0 for d in row['source_details'].values())
-            if sym not in active and sym not in self.radar.watch and (gain>0 or recent and rising_rank):
-                moving.append((gain,-self.status_waiting[sym],sym))
-        slots=min(4,max(1,self.a.max_scan_charts//5))
-        hot={sym for _,_,sym in sorted(moving,reverse=True)[:slots]}
+            multi_source=len(row.get('source_details',{}))>=2
+            if sym not in active and sym not in self.radar.watch and (gain>0 or (recent and rising_rank) or multi_source):
+                moving.append((gain,len(row.get('source_details',{})),-self.status_waiting[sym],sym))
+        slots=min(self.a.max_scan_charts,max(4,self.a.max_scan_charts-len(active)))
+        hot={sym for *_,sym in sorted(moving,reverse=True)[:slots]}
         # Incumbent deadlines, then bounded movers, then the original aging FIFO.
         # DynamicRadar still checks affordability and all status/structure gates.
         return sorted(ordered,key=lambda r:(r['code'] not in active,
@@ -286,12 +297,14 @@ class RadarWorker:
     def run(self):
         while not self.stop.is_set():
             cycle_started_mono=time.monotonic()
+            stage='RANK_COLLECT'
             try:
                 cycle_started=time.perf_counter()
                 self.timings={'status_ms':0.,'history_ms':0.,'structure_ms':0.}
                 prior_profile=dict(getattr(self.rest,'profile',{}))
                 if self.refresh_account: self.refresh_account()
                 self.fetched=0; self.status_fetched=0; fetch_started=time.perf_counter();items=collect(self.rest)
+                stage='DISCOVERY_CONTEXT'
                 items=self.discovery_context.update(items,now())
                 rank_ms=(time.perf_counter()-fetch_started)*1000
                 self.radar.available_capital=self.available_capital
@@ -307,6 +320,7 @@ class RadarWorker:
                 raw_stamp=now().isoformat()
                 self.emit({'phase':'RAW','time':raw_stamp,'rows':raw_rows,'capital_context':dict(context),'error':None})
                 if self.observation_sink and self.observation_allowed:self.observation_sink(raw_rows,raw_stamp,dict(context))
+                stage='CANDIDATE_COMPRESSION'
                 for sym in sorted(self.extra_symbols): self.evaluate({'code':sym,'reference_price':None})
                 # Refresh incumbent WATCH status within the unchanged API budget first.
                 # A stale/unknown status still fails; query scheduling must not create a gap.
@@ -340,6 +354,9 @@ class RadarWorker:
                     'raw_definition':{'sources':[r[0] for r in RANKS],'basis':'5개 ranking 합집합; 일반주 명칭/종목코드 검사 후 고유종목','hts_0168_equivalence':False,
                         'rank_limit_multiplier':self.observation_settings.rank_limit_multiplier,'max_raw_symbols':self.observation_settings.max_raw_symbols,
                         'expanded_first_page_only':self.observation_settings.rank_limit_multiplier>1}}
+                rejected=getattr(self.rest,'radar_rejected_rows',[])
+                payload['rejected_rank_rows']=rejected if isinstance(rejected,list) else []
+                stage='PUBLICATION'
                 atomic_json(self.root/'runtime/radar_latest.json',payload)
                 write_csv(self.root/'candidate_audit.csv',rows)
                 write_csv(self.root/'symbols_today.csv',watch)
@@ -347,7 +364,8 @@ class RadarWorker:
                 append_jsonl(self.root/'runtime/radar_history.jsonl',payload)
                 self.emit(payload)
             except Exception as e:
-                error={'time':now().isoformat(),'error':str(e) if isinstance(e,Rejected) else type(e).__name__}
+                error={'time':now().isoformat(),**exception_details(e),'stage':stage}
+                if isinstance(e,Rejected):error['error']=str(e)
                 if isinstance(e,Rejected):
                     error.update(api=e.api,raw_response=e.response,
                         return_code=e.response.get('return_code') if e.response else None,

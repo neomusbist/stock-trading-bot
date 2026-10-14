@@ -52,13 +52,17 @@ class PatternDetector(Detector):
         session=(t.time.date(),'AFTER' if after_supported(t.time) else 'REGULAR')
         if t.symbol not in self.observation_start or self.observation_session.get(t.symbol)!=session:
             self.observation_start[t.symbol]=t.time; self.observation_session[t.symbol]=session
+        minute=t.time.replace(second=0,microsecond=0); b=self.current.get(t.symbol)
         if t.time.strftime('%H:%M:%S')>='15:40:00':
-            self.after_prior_high[t.symbol]=self.after_day_high.get(t.symbol,t.price)
+            self.after_prior_high.setdefault(t.symbol,t.price)
+            if b and b['time']!=minute:
+                self.after_prior_high[t.symbol]=self.after_day_high.get(t.symbol,t.price)
             self.after_day_high[t.symbol]=max(t.price,self.after_day_high.get(t.symbol,t.price))
         else:
-            self.prior_high[t.symbol]=self.day_high.get(t.symbol,t.price)
+            self.prior_high.setdefault(t.symbol,t.price)
+            if b and b['time']!=minute:
+                self.prior_high[t.symbol]=self.day_high.get(t.symbol,t.price)
             self.day_high[t.symbol]=max(t.price,self.day_high.get(t.symbol,t.price))
-        minute=t.time.replace(second=0,microsecond=0); b=self.current.get(t.symbol)
         if b and b['time']!=minute:
             # Prior confirmed references are distinct from consecutive signal bars.
             self.price_context.record(t.symbol,{**b,'venue':getattr(self.cfg,'after_default_venue','SOR') if t.time.strftime('%H:%M:%S')>=self.a.after_prep_start else 'KRX'},t.time,self.cfg.stale_seconds)
