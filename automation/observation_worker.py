@@ -48,9 +48,9 @@ class TickLogger:
                 if rotated.exists():
                     rotated.unlink()
                 self.path.rename(rotated)
+            payload = '\n'.join(json.dumps(row, ensure_ascii=False) for row in self.buffer) + '\n'
             with open(self.path, 'a', encoding='utf-8') as f:
-                for row in self.buffer:
-                    f.write(json.dumps(row, ensure_ascii=False) + '\n')
+                f.write(payload)
         except Exception:
             pass
         self.buffer.clear()
