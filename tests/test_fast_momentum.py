@@ -361,6 +361,50 @@ class TestFastMomentumStrategy(unittest.TestCase):
         self.assertEqual(evidence['failed_rebound_high'], 3325.0)
         self.assertEqual(evidence['floor'], 3315.0)
 
+    def test_sm_bexel_1830_trade_review_reproduction(self):
+        """2026-10-15 18:30~18:32 SM Bexel (010580) 22-share trade review:
+        Entry 3,235 KRW, stop 3,220 KRW, emergency 3,220 KRW, target 3,435 KRW.
+        Excursion reached 3,260 KRW (+1.67R, MFE).
+        Pullback to 3,250 KRW (floor), followed by 1-tick bounce to 3,255 KRW (+5 KRW).
+        Then dip to 3,245 KRW.
+        In unpatched code: 3,255 was treated as a lower high (< 3,260) and exited at 3,245.
+        In patched code: The +5 KRW bounce (< 2 * min_step = 10 KRW) is filtered as noise.
+        The bot MUST HOLD at 3,245 KRW and not prematurely exit!
+        """
+        trade_base = datetime(2026, 10, 15, 18, 30, 25, tzinfo=KST)
+        pos = {
+            'symbol': '010580',
+            'entry': 3235.0,
+            'qty': 22,
+            'stop': 3220.0,
+            'emergency': 3220.0,
+            'opened': trade_base.isoformat()
+        }
+        trade_ticks = [
+            (0, 3235.0, 3230.0, 3235.0),   # 18:30:25 entry
+            (8, 3250.0, 3245.0, 3250.0),   # 18:30:33 1R hit
+            (38, 3240.0, 3240.0, 3245.0),  # 18:31:03 dip
+            (68, 3245.0, 3245.0, 3250.0),  # 18:31:33 bounce
+            (95, 3260.0, 3255.0, 3260.0),  # 18:32:00 peak MFE 3260
+            (110, 3250.0, 3250.0, 3255.0), # 18:32:15 pullback to 3250 floor
+            (125, 3255.0, 3250.0, 3255.0), # 18:32:30 1-tick bounce to 3255
+            (135, 3245.0, 3245.0, 3250.0), # 18:32:40 dip to 3245
+            (136, 3245.0, 3245.0, 3250.0), # 18:32:41 second print at 3245 (exit trigger in unpatched)
+        ]
+        strat = FastMomentumStrategy()
+        for idx, (sec, price, bid, ask) in enumerate(trade_ticks):
+            t_stamp = trade_base + timedelta(seconds=sec)
+            t = Tick(symbol='010580', price=price, volume=100, cumulative=(idx + 1) * 100,
+                     time=t_stamp, bid=bid, ask=ask, bid_qty=500, ask_qty=500,
+                     depth_available=True, book_time=t_stamp)
+            strat.ingest_tick(t, t.time)
+
+        should_exit, reason, evidence = strat.evaluate_exit(pos, t, t.time)
+        self.assertFalse(should_exit, "Patched code must filter out 1-tick rebound and hold position!")
+        self.assertEqual(reason, 'HOLD')
+        self.assertEqual(evidence['holding_seconds'], 136.0)
+
 
 if __name__ == '__main__':
     unittest.main()
+
