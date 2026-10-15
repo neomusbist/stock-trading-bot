@@ -299,6 +299,7 @@ class AutonomousEngine(ExistingExits,Engine):
                 if (passed is not True or proof!={'result':'PASS','values':{'enabled':True,**evidence}}
                         or signal.get('invalidation_policy')!={'enabled':True,**evidence}
                         or signal['stop']!=evidence['emergency_stop'] or signal['target']>evidence['target_ceiling']
+                        or signal['target']>signal['projection']
                         or (signal['target']-signal['limit'])/(signal['limit']-signal['stop'])<self.c.min_reward_risk):
                     return 'BREAKOUT_STRUCTURE_PROOF_MISSING_OR_INVALID'
                 acceleration=signal['evaluation_gates'].get('acceleration',{})

@@ -451,7 +451,9 @@ class PatternDetector(Detector):
             breakout_pass,breakout_evidence=structural_breakout(self.price_context.reference_bars(t.symbol,t.time,venue),t.time,setup,c,limit,t.bid,t.ask)
             if breakout_evidence.get('emergency_stop') is not None:stop=breakout_evidence['emergency_stop']
             if breakout_evidence.get('target_ceiling') is not None:
-                target=breakout_evidence['target_ceiling']
+                # A wider invalidation basis can reduce position size, but must
+                # not manufacture reward by raising the pattern's prior target.
+                target=min(target,breakout_evidence['target_ceiling'])
                 if resistance is not None and resistance>limit:target=min(target,resistance)
         box_evidence=None;box_pass=None
         if setup['pattern']=='C' and self.a.fresh_box_basis_enabled and self.a.confirmed_invalidation_enabled:

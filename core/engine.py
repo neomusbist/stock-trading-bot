@@ -307,7 +307,16 @@ class Engine:
                 self.event('CANCEL_CONFIRMED',local=cancel['local'])
             else:
                 sym=code(v['9001'])
+                # Keep broker evidence even when the sender is unknown. Do not
+                # call it a manual order or infer its origin from its side.
+                evidence={'symbol':sym,'order_id':order_id,'original_order_id':original,
+                    'observed_at':self.clock().isoformat(),'origin':'UNKNOWN_NOT_IN_ORDER_JOURNAL',
+                    'fields':{k:str(v[k])[:256] for k in
+                        ('9203','904','9001','907','905','913','900','901','902','903','908','909','910','911','919') if k in v}}
+                history=self.s.setdefault('unowned_order_events',[])
+                history.append(evidence);del history[:-100]
                 self.s['excluded']=sorted(set(self.s['excluded'])|{sym}); self.save()
+                self.event('UNOWNED_ORDER_EVENT',**evidence)
                 if sym in self.s['positions']:
                     self.s['positions'][sym]['qty_blocked']=True
                     self.halt('관리 종목에 외부 주문 감지: 계좌 대조 필요')
