@@ -315,11 +315,15 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
     if promoted:
         engine.event('OBSERVATION_PREWARM_HANDOFF',symbols=sorted(promotions),queued_ticks=len(promoted),
             SHADOW_ONLY=True,actual_order_permission=False)
-    for _ in range(64):
-        try:observed_at,tick=feed.observation_q.get_nowait()
-        except queue.Empty:break
-        if tick.symbol in observed and tick.symbol not in priority and tick.symbol not in critical:detector.ingest(tick,observed_at)
-    return drops,priority
+    drained = 0
+    drain_deadline = time.monotonic() + 0.01
+    while drained < 512 and time.monotonic() < drain_deadline:
+        try: observed_at, tick = feed.observation_q.get_nowait()
+        except queue.Empty: break
+        drained += 1
+        if tick.symbol in observed and tick.symbol not in priority and tick.symbol not in critical:
+            detector.ingest(tick, observed_at)
+    return drops, priority
 
 def apply_focus_selection(engine,lookup,by_symbol,selection):
     """main thread에서 WATCH 자격 표시만 동기화한다. detector/주문 상태는 바꾸지 않는다."""
