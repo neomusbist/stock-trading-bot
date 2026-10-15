@@ -36,6 +36,10 @@ REASONS={'AUTO_CAP_ZERO':'승인한도 0원','HARD_LOCK':'자동매매 금지 �
  'ACCOUNT_NOT_OK':'계좌 대조 미완료','CONNECTION_NOT_OK':'실시간 연결 미확인','HALT_ACTIVE':'안전중단 사유 유지',
  'ACCOUNT_RECONCILE_STALE':'계좌 대조 기록 오래됨','ONE_SHARE_UNAFFORDABLE':'승인자본·현금으로 비용 포함 1주 매수 불가'}
 
+def resolve_python():
+    venv = Path.home() / 'Documents/PythonEnvs/stock-trading-bot/Scripts/python.exe'
+    return str(venv) if venv.exists() else sys.executable
+
 def read_json(path,default=None):
     if not path.exists(): return default
     return read_json_retry(path,encoding='utf-8-sig')
@@ -363,7 +367,7 @@ class OperatorService:
         flags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0
         log=self.root/'runtime/operator_console.txt'; log.parent.mkdir(parents=True,exist_ok=True)
         with log.open('a',encoding='utf-8') as output:
-            p=subprocess.run([sys.executable,'-X','utf8',str(self.root/'main.py'),*args],cwd=self.root,stdin=subprocess.DEVNULL,
+            p=subprocess.run([resolve_python(),'-X','utf8',str(self.root/'main.py'),*args],cwd=self.root,stdin=subprocess.DEVNULL,
                 stdout=output,stderr=subprocess.STDOUT,timeout=timeout,creationflags=flags)
         return p.returncode
     def start_command(self,args):
@@ -373,7 +377,7 @@ class OperatorService:
         log=self.root/'runtime/operator_console.txt'; log.parent.mkdir(parents=True,exist_ok=True)
         entry='main.py' if args else 'supervisor.py'
         with log.open('a',encoding='utf-8') as output:
-            self.child=subprocess.Popen([sys.executable,'-X','utf8',str(self.root/entry),*args],cwd=self.root,
+            self.child=subprocess.Popen([resolve_python(),'-X','utf8',str(self.root/entry),*args],cwd=self.root,
                 stdin=subprocess.DEVNULL,stdout=output,stderr=subprocess.STDOUT,creationflags=flags)
         return self.child
     def launch_continuous(self):
@@ -393,7 +397,7 @@ class OperatorService:
             from core.event_log import rotate_if_large
             rotate_if_large(log)  # No active writer: duplicate-run and idle checks above.
             with log.open('a',encoding='utf-8') as output:
-                self.child=subprocess.Popen([sys.executable,'-X','utf8',str(self.root/'operator_runner.py'),'--token',token,'--purpose',purpose],
+                self.child=subprocess.Popen([resolve_python(),'-X','utf8',str(self.root/'operator_runner.py'),'--token',token,'--purpose',purpose],
                     cwd=self.root,stdin=subprocess.DEVNULL,stdout=output,stderr=subprocess.STDOUT,creationflags=flags)
             deadline=self.monotonic()+8
             while self.monotonic()<deadline:

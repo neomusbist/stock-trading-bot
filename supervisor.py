@@ -9,11 +9,15 @@ from core.util import ProcessLock,atomic_json
 from automation.policy import Policy
 from automation.runner import user_command
 
+def resolve_python():
+    venv = Path.home() / 'Documents/PythonEnvs/stock-trading-bot/Scripts/python.exe'
+    return str(venv) if venv.exists() else sys.executable
+
 def main():
     with ProcessLock(ROOT/'runtime/supervisor.lock'):
         policy=Policy(ROOT/'runtime/automation_policy.json'); failures=0
         while True:
-            child=subprocess.Popen([sys.executable,'-X','utf8',str(ROOT/'main.py'),*sys.argv[1:]],cwd=ROOT,
+            child=subprocess.Popen([resolve_python(),'-X','utf8',str(ROOT/'main.py'),*sys.argv[1:]],cwd=ROOT,
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name=='nt' else 0)
             launched=time.monotonic()
             while child.poll() is None:
