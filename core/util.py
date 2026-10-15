@@ -29,12 +29,12 @@ def code(value):
 _json_locks = {}
 _json_locks_guard = threading.Lock()
 
-def atomic_json(path, value):
+def atomic_json(path, value, fsync=True):
     key=os.path.normcase(str(Path(path).absolute()))
     with _json_locks_guard: lock=_json_locks.setdefault(key,threading.RLock())
-    with lock: _atomic_json(path,value)
+    with lock: _atomic_json(path,value,fsync=fsync)
 
-def _atomic_json(path, value):
+def _atomic_json(path, value, fsync=True):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     # Windows reader handles may briefly prevent replacement. Each writer owns
@@ -45,7 +45,8 @@ def _atomic_json(path, value):
         with os.fdopen(fd,'w',encoding='utf-8') as f:
             json.dump(value,f,ensure_ascii=False,indent=2,allow_nan=False)
             f.flush()
-            os.fsync(f.fileno())
+            if fsync:
+                os.fsync(f.fileno())
         for attempt in range(6):
             try:
                 os.replace(tmp,path)

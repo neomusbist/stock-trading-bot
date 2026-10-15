@@ -293,22 +293,23 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
         for sym in demotions:
             shadow_detector.handoff_from(detector, sym)
     promoted=[]
-    # emit도 같은 lock을 쓰므로 인계 경계 이후의 새 WATCH 틱은 REAL 큐로 간다.
     with getattr(feed,'subscription_lock',nullcontext()):
         if feed.observation_drops!=drops:
             drops=feed.observation_drops
             for sym in observed-set(prior_priority)-critical:detector.forget(sym)
             engine.event('OBSERVATION_DATA_GAP',SHADOW_ONLY=True,dropped=drops,data_action='RESET_PREWARM',actual_order_permission=False)
-        if promotions:
-            remaining=[]
-            for _ in range(feed.observation_q.qsize()):
-                try:item=feed.observation_q.get_nowait()
-                except queue.Empty:break
-                feed.observation_q.task_done()
-                if item[1].symbol in promotions:promoted.append(item)
-                else:remaining.append(item)
-            for item in remaining:feed.observation_q.put_nowait(item)
         feed.configure_observation(priority,observed,sink)
+    if promotions and hasattr(feed, 'observation_q'):
+        remaining=[]
+        for _ in range(feed.observation_q.qsize()):
+            try:item=feed.observation_q.get_nowait()
+            except queue.Empty:break
+            feed.observation_q.task_done()
+            if item[1].symbol in promotions:promoted.append(item)
+            else:remaining.append(item)
+        for item in remaining:
+            try: feed.observation_q.put_nowait(item)
+            except queue.Full: break
     for index,(received,tick) in enumerate(promoted):
         detector.ingest(tick,received)
         if critical and (index+1)%64==0:engine.timer(engine.prices)
@@ -543,7 +544,7 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
     return o
 
 def drain_feed(feed, consume, *, clock=None, monotonic=None,
-               max_messages=64, max_seconds=.05):
+               max_messages=64, max_seconds=.05, timeout=.25):
     """Bounded FIFO catch-up; never coalesce prices, fills or connection barriers.
 
     The outer loop reconciles accounts, refreshes subscriptions and writes UI
@@ -554,7 +555,7 @@ def drain_feed(feed, consume, *, clock=None, monotonic=None,
     clock=clock or now;monotonic=monotonic or time.monotonic
     started=monotonic();count=0;lag=0.
     while count<max_messages and (not count or monotonic()-started<max_seconds):
-        try:received,message=feed.q.get(timeout=.25) if not count else feed.q.get(block=False)
+        try:received,message=feed.q.get(timeout=timeout) if not count else feed.q.get(block=False)
         except queue.Empty:break
         lag=max(0.,(clock()-received).total_seconds())
         consume(received,message,lag);count+=1
@@ -977,7 +978,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         if 'source_observed_at' in result or any('source_count' in row for row in result['rows']):qualify_raw(engine,result['rows'],result.get('source_observed_at',result['time']),is_raw_phase=False)
                         if engine.candidate_audit.started:
                             summary=engine.candidate_audit.summary(now().isoformat(),engine.capital_context())
-                            atomic_json(root/'runtime/candidate_summary.json',summary)
+                            atomic_json(root/'runtime/candidate_summary.json',summary,fsync=False)
                             engine.event('CANDIDATE_CYCLE_SUMMARY',**summary)
                         prior_watch=set(lookup)
                         rows=result['rows'];radar_ok=True;engine.last_radar_at=datetime.fromisoformat(result['time'])
@@ -1003,7 +1004,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         for row in rows:
                             engine.names[row['code']]=row.get('name')
                             engine.market_status[row['code']]=row.get('market_status',{'pass':None,'reason_code':'MARKET_STATUS_UNKNOWN'})
-                            if row.get('status') in {'REJECT','UNKNOWN','RESERVE'}:
+                            if row['code'] in lookup and row.get('status') in {'REJECT','UNKNOWN','RESERVE'}:
                                 from automation.decisions import gate
                                 engine.decisions.emit('ENTRY_EVAL',row['code'],'NO_BUY',row.get('reason') or 'WATCH_CAPACITY_RESERVE',
                                     {'candidate_compression':gate(False,status=row['status'],source_count=row.get('source_count'),
@@ -1107,7 +1108,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         engine.event_loop_lag=lag
                         if message.get('trnm')=='REG' and message.get('return_code') in (0,'0'):counts['subscription_acks']+=1
                         counts['ticks']+=process_message(engine,detector,message,received,real_symbols,lookup,radar,prices,account,radar_ok and not smoke_ended,subscriptions)
-                    drain_feed(feed,consume_frame)
+                    drain_feed(feed,consume_frame,timeout=.02)
                 except queue.Empty:
                     if not in_session: time.sleep(.25)
                 position_health.prune()
@@ -1120,7 +1121,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     summary=engine.candidate_audit.summary(now().isoformat(),engine.capital_context());summary['shadow']=len(observed)
                     summary['raw_definition']='5개 ranking API의 일반주 고유종목 합집합; HTS 0168과 동일 목록은 아님'
                     summary['refresh_seconds']=auto.scan_seconds
-                    atomic_json(root/'runtime/candidate_summary.json',summary);last_board=time.monotonic()
+                    atomic_json(root/'runtime/candidate_summary.json',summary,fsync=False);last_board=time.monotonic()
                 ready=readiness_snapshot(engine,counts,radar_ok,now(),detector)
                 record_order_readiness_transition(engine,ready)
                 if ready['state']!=getattr(engine,'last_readiness_state',None):
@@ -1134,7 +1135,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     done=not engine.s['positions'] and not engine.active_orders()
                 if time.monotonic()-last_report>=60:
                     summary=engine.candidate_audit.summary(now().isoformat(),engine.capital_context())
-                    atomic_json(root/'runtime/candidate_summary.json',summary)
+                    atomic_json(root/'runtime/candidate_summary.json',summary,fsync=False)
                     engine.save(); reporter.submit(rows,engine.s); last_report=time.monotonic()
                 if time.monotonic()-last_heartbeat>=1:
                     for stage in engine.observation_timeline.drain_events():
@@ -1166,7 +1167,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         'feed_queue_depth':getattr(engine,'feed_queue_size',None),'event_loop_lag_seconds':getattr(engine,'event_loop_lag',None),
                         'available_capital':min(engine.available_cash,auto.capital_limit),'approved_cap':auto.capital_limit,
                         'bot_cash':engine.s['cash'],'positions':len(engine.s['positions']),'pending':len(engine.active_orders()),
-                        'strategy':'MANAGE' if engine.s['positions'] else 'SCAN' if lookup else 'QUIET','counts':counts})
+                        'strategy':'MANAGE' if engine.s['positions'] else 'SCAN' if lookup else 'QUIET','counts':counts},fsync=False)
                     last_heartbeat=time.monotonic()
                 if done: break
             except KeyboardInterrupt:
@@ -1186,7 +1187,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
         if data_active: feed.close(); radar.close(); account.close()
         if engine.candidate_audit.started:
             summary=engine.candidate_audit.summary(now().isoformat(),engine.capital_context())
-            atomic_json(root/'runtime/candidate_summary.json',summary); engine.event('CANDIDATE_CYCLE_SUMMARY',**summary)
+            atomic_json(root/'runtime/candidate_summary.json',summary,fsync=False); engine.event('CANDIDATE_CYCLE_SUMMARY',**summary)
         engine.save(); reporter.submit(rows,engine.s); reporter.close()
         try:
             atomic_json(folder/'heartbeat.json',{'time':now().isoformat(),'mode':policy.mode,'market':getattr(engine,'market','3'),
@@ -1200,7 +1201,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 'subscription_refresh_pending':False,'subscription_tick_waiting':[],
                 'available_capital':0,'approved_cap':auto.capital_limit,
                 'bot_cash':engine.s.get('cash',0.),'positions':len(engine.s['positions']),'pending':len(engine.active_orders()),
-                'strategy':'STOPPED','counts':counts})
+                'strategy':'STOPPED','counts':counts},fsync=False)
         except Exception: pass
         result={'started':started.isoformat(),'finished':now().isoformat(),'mode':policy.mode,'approved_cap':auto.capital_limit,
                 'counts':counts,'remaining_positions':len(engine.s['positions']),'remaining_orders':len(engine.active_orders()),
