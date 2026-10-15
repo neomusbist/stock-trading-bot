@@ -1,3 +1,76 @@
+# 2026-10-15 후속 사고 수정 인계 — 배포 승인 아님
+
+이 절이 아래 10월 14일 기록보다 최신이다. 이전 기록은 원본 그대로 보존했다.
+
+## 정확한 보존 상태
+
+- 개발 브랜치: `fix/r6-target-cap-incident-20261015`.
+- 기준: 로컬 `f158bb6`의 독립 worktree. 다른 candidate worktree의 미커밋 `automation/runner.py`를 포함하거나 수정하지 않았다.
+- 코드 커밋: `9e09770dc5fcc37256fe3fe1be50c638513c513c`.
+- 현재 문서 포함 HEAD는 `git rev-parse HEAD`로 확인한다. 위 SHA는 실제 소스·신규 테스트의 커밋이다.
+- **GitHub push 미완료**: CLI 자격증명을 사용할 수 없어 실패했다. 연결된 GitHub 조회에서도 기준 f158bb6/0da27dd가 없었다. 기준의 추가 도구 파일 두 개가 기존 공개 허용목록 밖이었고, 그중 하나는 개인 경로를 포함해 전체 기준 소스를 무검사로 우회 게시하지 않았다. 로컬 커밋과 Git bundle로 그대로 이어받을 수 있다.
+- main, 다른 개발 브랜치, 운영본 코드·위험예산·승인 파일은 변경하지 않았다. 운영 Worker는 STOP이며 실제 주문을 제출하지 않았다.
+
+## 확인한 결함과 수정
+
+1. A 구조 무효화선을 더 넓게 계산한 뒤 구조 계산의 목표 상한으로 기존 패턴 목표를 덮어쓰면서 기대 보상이 늘어나는 경로가 있었다. 익명 시점 재현에서 원래 목표 8,060이 8,200이 되고 손익비가 1.17에서 1.51로 높아졌다.
+2. `automation/patterns.py`: 기존 목표·저항과 구조 상한의 최솟값을 사용한다. 더 넓어진 손절을 정당화하려고 목표를 올리지 않는다. 손절거리·위험비율·AE3를 바꾸지 않았다.
+3. `automation/engine.py`: 최종 주문 직전에도 A의 `target <= projection`을 검사한다. 예전의 부풀린 신호를 전달해도 거절한다.
+4. `core/engine.py`: 장부에 없는 실시간 주문을 수신하면 주문번호·원주문번호·선별한 원문 필드를 기록한다. 계좌 FID는 제외하며 최근 100건만 장부에 유지한다. 발신 주체를 수동 주문으로 추측하거나 자동 반영·HALT 해제하지 않는다.
+5. `tests/test_target_cap_incident.py`: 미래봉 없이 7개 전용 검사. 목표 상향 거절, 기존 상한·저항 유지, 실제 detector로 생성한 정상 범위 돌파 통과, 주문 경계 재검사, 미래봉 배제, 외부 주문 증거와 민감 필드 제외.
+
+## 실제 사고에 관한 운영 확인
+
+외부 원장에서 매도 체결이 확인됐지만 사고 전 운영 Worker에는 SELL 의도·청산 요청·주문이 없었다. 신선한 계좌·체결 조회와 복사 장부 모의 반영 후 공식 recovery로 장부 정합성과 HALT를 복구했다. 증권사 수수료·세금으로 정산했으며 장부를 리셋하지 않았다.
+사용자는 HTS 0624에 잔고 편입 자동 −2% 손절이 설정돼 있었다고 후속 확인했다. 가격·시장가 매도·장부 밖 주문과 일치하는 유력 원인이지만 주문매체 원장 대조는 아직 미완료다. 이를 사용자의 직접 수동 매도로 기록하지 않는다.
+HTS의 고정 손절과 봇의 구조적 청산선이 충돌한다. HTS 설정은 임의로 바꾸지 않았으며 자동 LIVE 시작도 하지 않았다.
+
+## 검증과 남은 한계
+
+- 새 전용 검사: **7 PASS**. 기존 운영 코드의 당시 봉·구조·비용 손익비 재현: 별도 5항목 PASS.
+- 전체 검사 1492개: PASS 1473, FAIL 19, ERROR 0, SKIP 0. 네트워크 시도 0, 실제 주문 0.
+- 실패한 19개만 수정 전 f158bb6에서 다시 실행: 13 PASS, 6 FAIL, 0 ERROR. 기존 기준에서도 실패한 6건과 이 패치로 달라진 13건을 BASELINE_COMPARISON.json에 따로 기록했다. 13건에는 A 진입 fixture가 먼저 거절되어 후속 청산 검사까지 도달하지 못한 경우도 포함된다.
+- 기존 테스트 파일·공용 설정은 수정하거나 삭제하지 않았다. 아래 실패를 숨기지 않는다.
+
+- `test_external_book_query_due_boundaries (test_audit_followup.ObservationAuditTests.test_external_book_query_due_boundaries)`
+- `test_far_external_book_queries_reduce_but_near_monitoring_remains (test_audit_followup.ObservationAuditTests.test_far_external_book_queries_reduce_but_near_monitoring_remains)`
+- `test_after_local_continuation_does_not_inherit_the_burst_exit_policy (test_night_judgment_quality.SustainedLocalRiseTests.test_after_local_continuation_does_not_inherit_the_burst_exit_policy)`
+- `test_current_structure_can_form_A_below_an_older_session_high (test_night_judgment_quality.SustainedLocalRiseTests.test_current_structure_can_form_A_below_an_older_session_high)`
+- `test_complete_trade_costs_and_price_band_are_analysis_only (test_policy_update.PolicyUpdateTests.test_complete_trade_costs_and_price_band_are_analysis_only)`
+- `test_final_static_lock_cannot_be_removed_by_old_release_flag (test_preflight.PreflightTests.test_final_static_lock_cannot_be_removed_by_old_release_flag)`
+- `test_old_build_authorization_is_not_reused (test_setup_acceleration.SetupAccelerationTests.test_old_build_authorization_is_not_reused)`
+- `test_meaningful_range_floor_and_noise_sized_hard_line (test_structural_a_exit.EntryStructureTests.test_meaningful_range_floor_and_noise_sized_hard_line)`
+- `test_sustained_rise_is_distinct_from_ten_second_volume_spike (test_structural_a_exit.EntryStructureTests.test_sustained_rise_is_distinct_from_ten_second_volume_spike)`
+- `test_wider_price_structure_is_not_confused_with_account_risk_percent (test_structural_a_exit.EntryStructureTests.test_wider_price_structure_is_not_confused_with_account_risk_percent)`
+- `test_completed_close_below_structure_requests_exit (test_structural_a_exit.ExitAndOrderTests.test_completed_close_below_structure_requests_exit)`
+- `test_fresh_emergency_price_exits_without_waiting_for_close (test_structural_a_exit.ExitAndOrderTests.test_fresh_emergency_price_exits_without_waiting_for_close)`
+- `test_gui_distinguishes_structural_close_line_and_emergency_risk_line (test_structural_a_exit.ExitAndOrderTests.test_gui_distinguishes_structural_close_line_and_emergency_risk_line)`
+- `test_intra_minute_wick_with_recovery_does_not_exit (test_structural_a_exit.ExitAndOrderTests.test_intra_minute_wick_with_recovery_does_not_exit)`
+- `test_new_order_sizes_from_emergency_line_and_keeps_soft_structure (test_structural_a_exit.ExitAndOrderTests.test_new_order_sizes_from_emergency_line_and_keeps_soft_structure)`
+- `test_single_touch_between_structural_and_hard_line_holds (test_structural_a_exit.ExitAndOrderTests.test_single_touch_between_structural_and_hard_line_holds)`
+- `test_stale_completed_bar_does_not_undo_current_recovery (test_structural_a_exit.ExitAndOrderTests.test_stale_completed_bar_does_not_undo_current_recovery)`
+- `test_stale_trade_and_stale_quote_do_not_fake_emergency (test_structural_a_exit.ExitAndOrderTests.test_stale_trade_and_stale_quote_do_not_fake_emergency)`
+- `test_identity_separates_signal_rules_and_risk_experiment (test_v13_risk_identity.V13RiskIdentityTests.test_identity_separates_signal_rules_and_risk_experiment)`
+
+- 정상 수익 거래의 과잉 차단 및 수익성 개선은 미입증이다. 기존 정상 fixture가 작은 패턴 목표를 구조 상한으로 높인다는 가정에 의존했는지 구분해야 한다. 이번 사고 한 건만 막았다고 전략 PASS로 평가하지 않는다.
+- 비용 반영 손익비 검사가 운영 설정에서 OFF였다는 사실도 확인했다. 이 개발 패치는 그 설정을 켜거나 임계값을 바꾸지 않는다. 비용 후 손익비 정책은 별도 검증이 남는다.
+- 마지막 백테스트: 이번 코드 뒤 새 전체 손익 재계산은 하지 않았다. 아래 이전 R6 보고 수치를 이번 패치의 결과로 재사용하지 않는다. 1틱 불리 체결·주문 지연 분석도 이번 패치 뒤 재실행하지 않았다.
+- SHADOW 수집을 이번 작업에서 새로 시작하지 않았다. 기존 수집 기능과 안전 경계는 유지했다. LIVE 배포 없음. 개발 패치는 회귀 영향과 과잉 차단을 해결하기 전 배포 금지.
+
+## Antigravity가 이어서 실행할 순서
+
+1. `git status --short`, `git branch --show-current`, `git rev-parse HEAD`. 이 브랜치 또는 제공된 bundle을 사용하고 다른 미커밋 작업을 지우지 않는다.
+2. 로컬 사고 자료: `%USERPROFILE%\Documents\주식자동매매_개발\live-incident-20261015-396300`. `INCIDENT_REPORT.md`, `OFFLINE_REPLAY_RESULT.json`, `development-full.json`/`.log`, 복구 전 장부와 증권사 응답이 있다. 계좌/주문 원본은 Git에 넣지 않는다.
+3. `python -X utf8 -B -m unittest tests.test_target_cap_incident -v`로 7개 전용 검사를 재현한다.
+4. 전체 회귀 실패를 기존 기준 f158bb6와 비교한다. 정당한 정상 진입을 새 목표 상한이 막는지, 기존 fixture가 보상을 임의로 키우고 있었는지 따로 검증한다. 테스트 기대값만 바꿔 PASS로 만들지 않는다.
+5. HTS 0624 주문매체 기록으로 외부 자동 손절의 실제 출처를 확인한다. 자동매매 재개 시 청산 정책 충돌을 사용자와 명시적으로 정리한다. 자동으로 HTS 손절을 끄거나 과거 주문을 봇 발신으로 바꾸지 않는다.
+6. 정상 상승·얕은 눌림·실패 돌파·근접 저항 사례의 당시 자료로 재현 후 비용·1틱·지연 민감도를 재계산한다. 검증 전 수익성 PASS 또는 LIVE READY 판정 금지.
+7. 전체 검사를 완료하고 별도 새 BUILD 배포·직접 LIVE 승인을 거친다. 기존 승인 영수증·계좌 손실장부를 복사/초기화하지 않는다.
+8. 로컬 `INCIDENT_SOURCE.bundle`을 가져올 때는 `git bundle verify <bundle>` 다음 `git fetch <bundle> fix/r6-target-cap-incident-20261015:fix/r6-target-cap-incident-20261015`를 사용한다. 같은 브랜치가 이미 있으면 reset/force하지 말고 새 이름으로 가져온다. `INCIDENT_SOURCE.patch`는 코드 커밋의 4개 파일만 포함한 별도 적용용 패치다. GitHub 자격증명과 기준 소스 공개 검사를 해결한 후 이 개발 브랜치만 게시한다.
+
+---
+
+<!-- PREVIOUS_R6_HANDOFF -->
 # R6 개발 인계 — 2026-10-14
 
 ## 보존 상태
