@@ -30,17 +30,23 @@ def candles(values,at=AT):
 NORMAL=candles([(9970,9980,9960,9970)]*10+[
     (9980,10030,9970,10010),(10000,10010,9880,9920),
     (9920,10000,9920,10000),(10000,10020,10000,10020),(10010,10020,10000,10010)])
-SETUP={'pattern':'A','breakout':10030,'support':9990,'projection':10110}
+SETUP={'pattern':'A','breakout':10030,'support':9880,'projection':10330}
 CONTINUING=copy.deepcopy(NORMAL)
 CONTINUING[-1].update(open=10020,high=10025,low=10010,close=10025)
 for b,v in zip(CONTINUING[-3:],(100,200,300)):b['volume']=v
 
-def price_gates(raw=NORMAL,entry=10040):
+def price_gates(raw=NORMAL,entry=10040,setup=None):
     d=PatternDetector(CFG,AUTO,COSTS)
     for bar in raw:d.price_context.record('999990',bar,AT)
     tick=Tick('999990',AT,entry,100,1000,entry,entry-10)
     watch={'status':'WATCH','resistance':20000,'source_details':{'a':{},'b':{}}}
-    return d.setup_gates(tick,watch,SETUP,raw[-3:]),d,tick
+    if setup is None:
+        if raw is NORMAL:
+            setup=SETUP
+        else:
+            sup=min(b['low'] for b in raw)
+            setup={'pattern':'A','breakout':10030,'support':sup,'projection':10030+2*(10030-sup)}
+    return d.setup_gates(tick,watch,setup,raw[-3:]),d,tick
 
 class EntryStructureTests(unittest.TestCase):
     def test_meaningful_range_floor_and_noise_sized_hard_line(self):
@@ -103,11 +109,11 @@ class EntryStructureTests(unittest.TestCase):
         gates={'warmup':{'result':'PASS','values':{}},'spread':{'result':'PASS','values':{}},
             'structure':{'result':'PASS','values':{}},'liquidity':{'result':'PASS','values':{'window_turnover':40000000}},
             'acceleration':{'result':'FAIL','values':{'ratio':1.3,'min_ratio':3.,'gain':.002,'min_gain':.003}}}
-        trials=d.setup_trials(t,{'status':'WATCH','resistance':20000,'source_details':{'a':{},'b':{}}},gates,_bars=CONTINUING[-3:])
+        trials=d.setup_trials(t,{'status':'WATCH','resistance':20000,'source_details':{'a':{},'b':{}}},gates,_bars=CONTINUING)
         a=trials[0]
         self.assertTrue(a['entry_ready']);self.assertEqual(a['gates']['acceleration']['values']['mode'],'CONFIRMED_CONTINUATION')
         gates['liquidity']['values']['window_turnover']=10000000
-        self.assertFalse(d.setup_trials(t,{'status':'WATCH','resistance':20000},gates,_bars=CONTINUING[-3:])[0]['entry_ready'])
+        self.assertFalse(d.setup_trials(t,{'status':'WATCH','resistance':20000},gates,_bars=CONTINUING)[0]['entry_ready'])
     def test_flat_floor_fading_volume_and_future_bar_cannot_confirm_continuation(self):
         raw=copy.deepcopy(CONTINUING);raw[-1]['low']=raw[-2]['low']
         self.assertFalse(confirmed_continuation(raw,AT,CFG.min_price_gain)[0])

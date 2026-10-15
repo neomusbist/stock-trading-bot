@@ -33,7 +33,7 @@ class SustainedLocalRiseTests(unittest.TestCase):
 
     def trial(self,d=None,rows=CONTINUING,common=None,watch=None):
         d=d or self.detector(rows)
-        return d.setup_trials(self.tick(),watch or self.watch(),common or self.common(),_bars=rows[-3:])[0]
+        return d.setup_trials(self.tick(),watch or self.watch(),common or self.common(),_bars=rows)[0]
 
     def test_current_structure_can_form_A_below_an_older_session_high(self):
         a=self.trial()
@@ -102,7 +102,7 @@ class SustainedLocalRiseTests(unittest.TestCase):
         d.after_prior_high['999990']=11000
         t=Tick('999990',after,10040,100,1000,10040,10030,venue='SOR')
         watch={**self.watch(),'venue':'SOR'};common=self.common();common['acceleration']['result']='PASS'
-        a=d.setup_trials(t,watch,common,_bars=rows[-3:])[0]
+        a=d.setup_trials(t,watch,common,_bars=rows)[0]
         self.assertTrue(a['entry_ready']);self.assertEqual(a['gates']['acceleration']['values']['mode'],'CONFIRMED_CONTINUATION')
         sig={**a['setup_geometry'],'session':'AFTER','venue':'SOR','limit':10040,'stop':9850,
              'target':10330,'invalidation_policy':a['gates']['breakout_structure']['values'],'evaluation_gates':a['gates']}

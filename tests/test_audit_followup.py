@@ -301,17 +301,34 @@ class ObservationAuditTests(unittest.TestCase):
         first=worker.q.get_nowait();last=worker.q.get_nowait()
         self.assertEqual(last['source_observed_at'],first['time']);self.assertIsNotNone(last['performance']['cycle_ms'])
     def test_far_external_book_queries_reduce_but_near_monitoring_remains(self):
-        rest=Mock();worker=AccountWorker(rest,5);worker.external_symbols={'052260'};worker.external_prices={'052260':5300}
+        with patch.dict('automation.runner.BREAKEVEN_EXITS',{'052260':6000}):
+            rest=Mock();worker=AccountWorker(rest,5);worker.external_symbols={'052260'};worker.external_prices={'052260':5300}
+            rest.snapshot.return_value={'holdings':{'052260':{'qty':13}},'orders':[],'cash':20000,'equity':20000}
+            rest.existing_book.return_value={'time':self.start.isoformat(),'bid':5300,'bid_qty':100}
+            clock=[100.];cycles=[0]
+            def wait(_):
+                clock[0]+=5;cycles[0]+=1
+                if cycles[0]==8:worker.stop.set()
+            worker.request.wait=wait
+            with patch('automation.runner.time.monotonic',side_effect=lambda:clock[0]):worker.run()
+            self.assertEqual(rest.snapshot.call_count,8);self.assertEqual(rest.existing_book.call_count,2)
+            worker.external_prices['052260']=5835;self.assertTrue(worker.book_due('052260',clock[0]))
+
+    def test_hard_lock_symbols_never_generate_external_book_queries(self):
+        from automation.policy import HARD_LOCKS,BREAKEVEN_EXITS
+        rest=Mock();worker=AccountWorker(rest,5)
+        # Verify 052260 is under HARD_LOCKS and BREAKEVEN_EXITS is empty
+        self.assertIn('052260',HARD_LOCKS)
+        self.assertNotIn('052260',BREAKEVEN_EXITS)
+        # When 052260 is in holdings, worker without external_symbols does not query existing_book
         rest.snapshot.return_value={'holdings':{'052260':{'qty':13}},'orders':[],'cash':20000,'equity':20000}
-        rest.existing_book.return_value={'time':self.start.isoformat(),'bid':5300,'bid_qty':100}
         clock=[100.];cycles=[0]
         def wait(_):
             clock[0]+=5;cycles[0]+=1
             if cycles[0]==8:worker.stop.set()
         worker.request.wait=wait
         with patch('automation.runner.time.monotonic',side_effect=lambda:clock[0]):worker.run()
-        self.assertEqual(rest.snapshot.call_count,8);self.assertEqual(rest.existing_book.call_count,2)
-        worker.external_prices['052260']=5835;self.assertTrue(worker.book_due('052260',clock[0]))
+        self.assertEqual(rest.snapshot.call_count,8);self.assertEqual(rest.existing_book.call_count,0)
     def test_diagnostic_client_blocks_mutations_and_defers_http(self):
         with patch.dict('os.environ',{'KIWOOM_APP_KEY':'synthetic-key','KIWOOM_APP_SECRET':'synthetic-secret'}):
             rest=Rest(replace(self.cfg,live_mode=True),opener=Mock())
@@ -336,11 +353,12 @@ class ObservationAuditTests(unittest.TestCase):
             self.assertEqual(main.main(),0)
         self.assertTrue(run.call_args.kwargs['operational_pilot']);self.assertTrue(run.call_args.kwargs['recover_pilot'])
     def test_external_book_query_due_boundaries(self):
-        worker=AccountWorker(Mock(),5);worker.external_prices={'052260':5300};worker.book_queries={'052260':100}
-        self.assertFalse(worker.book_due('052260',110));self.assertTrue(worker.book_due('052260',130))
-        worker.external_prices['052260']=5830;self.assertTrue(worker.book_due('052260',110))
-        worker2=AccountWorker(Mock(),5);worker2.book_queries={'052260':100}
-        self.assertTrue(worker2.book_due('052260',105))
+        with patch.dict('automation.runner.BREAKEVEN_EXITS',{'052260':6000}):
+            worker=AccountWorker(Mock(),5);worker.external_prices={'052260':5300};worker.book_queries={'052260':100}
+            self.assertFalse(worker.book_due('052260',110));self.assertTrue(worker.book_due('052260',130))
+            worker.external_prices['052260']=5830;self.assertTrue(worker.book_due('052260',110))
+            worker2=AccountWorker(Mock(),5);worker2.book_queries={'052260':100}
+            self.assertTrue(worker2.book_due('052260',105))
     def test_new_strong_observation_displaces_weak_multi_source_watch(self):
         radar=DynamicRadar(replace(self.cfg,max_watchlist=1),self.auto,Policy(self.root/'policy'));radar.available_capital=20000
         rows=[]
