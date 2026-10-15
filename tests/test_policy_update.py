@@ -12,6 +12,7 @@ from automation.market_status import assess_status
 from automation.radar import DynamicRadar,RadarWorker
 from automation.runner import AccountWorker
 from core.broker import Rest,Rejected
+from contextlib import contextmanager
 from core.util import atomic_json
 
 class PolicyUpdateTests(unittest.TestCase):
@@ -20,6 +21,16 @@ class PolicyUpdateTests(unittest.TestCase):
     tick=fixture.AutomationTests.tick
     signal=fixture.AutomationTests.signal
     buy=fixture.AutomationTests.buy
+
+    @contextmanager
+    def mock_breakeven(self,symbol='052260',price=5834,max_qty=13):
+        with patch.dict('automation.policy.BREAKEVEN_EXITS',{symbol:price}), \
+             patch.dict('automation.existing.BREAKEVEN_EXITS',{symbol:price}), \
+             patch.dict('automation.policy.BREAKEVEN_MAX_INVENTORY',{symbol:max_qty}), \
+             patch.dict('automation.existing.BREAKEVEN_MAX_INVENTORY',{symbol:max_qty}), \
+             patch('automation.policy.HARD_LOCKS',{'005930','017900'}), \
+             patch('automation.engine.HARD_LOCKS',{'005930','017900'}):
+            yield
 
     def holding(self,sym='052260',qty=3,bid=5840,depth=None,available=None):
         h={'qty':qty,'available':qty if available is None else available,'avg':5800}
@@ -47,20 +58,31 @@ class PolicyUpdateTests(unittest.TestCase):
         self.assertFalse(self.engine.s['orders']); self.assertEqual(self.engine.s['cash'],cash)
         self.assertFalse(self.engine.s['positions']); self.assertFalse(self.engine.s['trades'])
 
-    def test_hyundai_breakeven_rounds_up_to_valid_tick(self):
-        self.holding('052260',bid=5840); cash=self.engine.s['cash']; self.engine.timer()
-        self.assertEqual(self.broker.orders,[('SELL','052260',3,5840)])
-        o=list(self.engine.s['orders'].values())[-1]
-        self.assertNotEqual(o['status'],'FILLED')
-        self.engine.cumulative_fill(o,3,3*5840)
-        self.assertEqual(o['status'],'FILLED'); self.assertEqual(self.engine.s['cash'],cash)
-        self.assertFalse(self.engine.s['positions']); self.assertFalse(self.engine.s['trades'])
-
-    def test_hyundai_below_threshold_no_sell_and_no_average_down(self):
-        self.holding(bid=5830); self.engine.on_tick(self.tick(price=13000,sym='052260')); self.engine.timer()
-        self.assertFalse(self.broker.orders)
+    def test_hyundai_hard_lock_no_new_buy_and_no_exit(self):
+        self.assertTrue(self.policy.locked('052260'))
         self.engine.enter(self.signal('052260'),self.tick(sym='052260'))
         self.assertFalse(self.broker.orders)
+        self.holding('052260',bid=5840); cash=self.engine.s['cash']; self.engine.timer()
+        self.assertEqual(self.broker.orders,[])
+        self.assertFalse(self.engine.s['orders']); self.assertEqual(self.engine.s['cash'],cash)
+        self.assertFalse(self.engine.s['positions']); self.assertFalse(self.engine.s['trades'])
+
+    def test_hyundai_breakeven_rounds_up_to_valid_tick(self):
+        with self.mock_breakeven():
+            self.holding('052260',bid=5840); cash=self.engine.s['cash']; self.engine.timer()
+            self.assertEqual(self.broker.orders,[('SELL','052260',3,5840)])
+            o=list(self.engine.s['orders'].values())[-1]
+            self.assertNotEqual(o['status'],'FILLED')
+            self.engine.cumulative_fill(o,3,3*5840)
+            self.assertEqual(o['status'],'FILLED'); self.assertEqual(self.engine.s['cash'],cash)
+            self.assertFalse(self.engine.s['positions']); self.assertFalse(self.engine.s['trades'])
+
+    def test_hyundai_below_threshold_no_sell_and_no_average_down(self):
+        with self.mock_breakeven():
+            self.holding(bid=5830); self.engine.on_tick(self.tick(price=13000,sym='052260')); self.engine.timer()
+            self.assertFalse(self.broker.orders)
+            self.engine.enter(self.signal('052260'),self.tick(sym='052260'))
+            self.assertFalse(self.broker.orders)
 
     def test_hyundai_opportunity_cost_disconnected_even_live_positive_cap(self):
         self.holding('052260',bid=5840)
@@ -94,24 +116,26 @@ class PolicyUpdateTests(unittest.TestCase):
         self.assertIsNone(self.engine.submit('SELL','052260',3))
 
     def test_partial_external_fill_reconcile_retry_only_remaining(self):
-        snap=self.holding(); self.engine.timer(); o=list(self.engine.s['orders'].values())[-1]
-        self.engine.cumulative_fill(o,1,5840)
-        self.engine.cumulative_fill(o,1,5840)
-        self.assertEqual(self.engine.s['automation']['existing']['052260']['qty'],2)
-        self.assertEqual(len(self.engine.s['automation']['external_exit_fills']),1)
-        self.assertEqual(o['status'],'ACCEPTED')
-        o['status']='CANCEL_SENT'
-        snap['holdings']['052260'].update(qty=2,available=2)
-        self.engine.reconcile(snap); self.engine.timer()
-        self.assertEqual(self.broker.orders[-1],('SELL','052260',2,5840))
+        with self.mock_breakeven():
+            snap=self.holding(); self.engine.timer(); o=list(self.engine.s['orders'].values())[-1]
+            self.engine.cumulative_fill(o,1,5840)
+            self.engine.cumulative_fill(o,1,5840)
+            self.assertEqual(self.engine.s['automation']['existing']['052260']['qty'],2)
+            self.assertEqual(len(self.engine.s['automation']['external_exit_fills']),1)
+            self.assertEqual(o['status'],'ACCEPTED')
+            o['status']='CANCEL_SENT'
+            snap['holdings']['052260'].update(qty=2,available=2)
+            self.engine.reconcile(snap); self.engine.timer()
+            self.assertEqual(self.broker.orders[-1],('SELL','052260',2,5840))
 
     def test_external_duplicate_and_old_account_snapshot_do_not_resell(self):
-        snap=self.holding(); self.engine.timer(); o=list(self.engine.s['orders'].values())[-1]
-        self.engine.submit('SELL','052260',3,5840,o['signal'])
-        self.assertEqual(len(self.broker.orders),1)
-        self.engine.cumulative_fill(o,3,3*5840)
-        self.engine.reconcile(snap); self.engine.timer()
-        self.assertEqual(len(self.broker.orders),1)
+        with self.mock_breakeven():
+            snap=self.holding(); self.engine.timer(); o=list(self.engine.s['orders'].values())[-1]
+            self.engine.submit('SELL','052260',3,5840,o['signal'])
+            self.assertEqual(len(self.broker.orders),1)
+            self.engine.cumulative_fill(o,3,3*5840)
+            self.engine.reconcile(snap); self.engine.timer()
+            self.assertEqual(len(self.broker.orders),1)
 
     def test_ninetech_default_external_holding_not_sold(self):
         self.holding(TEST_RELEASE_SYMBOL,qty=1,bid=2000); self.engine.timer()
@@ -252,11 +276,12 @@ class PolicyUpdateTests(unittest.TestCase):
         self.assertFalse(self.broker.orders)
 
     def test_pending_external_restart_no_second_order(self):
-        snap=self.holding(); self.engine.timer()
-        restored=self.make_engine(); restored.market='3'; restored.connected=True
-        o=list(restored.s['orders'].values())[-1]
-        snap['orders']=[{'ord_no':o['id'],'stk_cd':'052260','oso_qty':str(o['qty']),'cntr_tot_amt':'0'}]
-        restored.reconcile(snap); restored.timer(); self.assertEqual(len(self.broker.orders),1)
+        with self.mock_breakeven():
+            snap=self.holding(); self.engine.timer()
+            restored=self.make_engine(); restored.market='3'; restored.connected=True
+            o=list(restored.s['orders'].values())[-1]
+            snap['orders']=[{'ord_no':o['id'],'stk_cd':'052260','oso_qty':str(o['qty']),'cntr_tot_amt':'0'}]
+            restored.reconcile(snap); restored.timer(); self.assertEqual(len(self.broker.orders),1)
 
     def test_complete_trade_costs_and_price_band_are_analysis_only(self):
         from automation.performance import report

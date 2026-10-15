@@ -1,9 +1,9 @@
 """events.jsonl에 동일 스키마로 기록하는 작은 어댑터. 새 DB나 매 틱 로그 없음."""
 import json
 import math
-STRATEGY_VERSION='V1.5-structural-continuation-20261014'
-BUILD_ID='V1.5-risk2-watch12-bc20M-observation-r5-20261014'
-STRATEGY_EXPERIMENT='20261007-risk2-daily4-dynamiccap-watch12-accelA-bc20M-bclose20261008-dailyoverride20261012-context-optin-matched-rest-hold-box-direction-pivot-protection-v15entry-feedcatchup-structuralB-structuralAE3-close-invalidation-after-failed-rebound-brokerpnl-exitplan-ohlcv-wiring-shared-emergency-local-confirmed-continuation-day-lineage-policy-attribution-session-ceiling-cap-continuation-source-parity-opening-qualified-progress-observation-receiver-history-warmup-focus-structuralC'
+STRATEGY_VERSION='V1.6-fast-live-20261015'
+BUILD_ID='V1.6-risk2-daily4-fast-live-r6-20261015'
+STRATEGY_EXPERIMENT='20261015-risk2-daily4-dynamiccap-watch12-fast-momentum-live-r6'
 
 def check_experiment_consistency(cfg, build_id=BUILD_ID, experiment=STRATEGY_EXPERIMENT):
     """BUILD_ID 또는 STRATEGY_EXPERIMENT에 risk2/daily4가 적혀 있는데

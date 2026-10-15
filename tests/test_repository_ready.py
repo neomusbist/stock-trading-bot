@@ -108,7 +108,7 @@ class RepositoryTests(unittest.TestCase):
         rows=[json.loads(x) for x in (self.root/'book/events.jsonl').read_text(encoding='utf-8').splitlines()]
         self.assertTrue(any(r.get('primary_reason_code')=='NO_BUY_OUTSIDE_SESSION' for r in rows)); self.assertFalse(e.s['halt']); self.assertEqual(broker.orders,[])
         clock[0]=datetime(2026,10,2,9,10,tzinfo=KST); self.assertNotEqual(e.new_entry_reason('999990'),'OUT_OF_SUPPORTED_SESSION'); self.assertFalse(e.s['halt'])
-    def test_hard_locks_preserved(self): self.assertEqual(HARD_LOCKS,{'005930','017900'})
+    def test_hard_locks_preserved(self): self.assertEqual(HARD_LOCKS,{'005930','017900','052260'})
     def test_repo_guard_inspect_patterns_table(self):
         self.assertFalse(guard.inspect('.env.example',b'KIWOOM_APP_KEY=YOUR_APP_KEY\nKIWOOM_APP_SECRET=YOUR_APP_SECRET'))
         self.assertTrue(guard.inspect('runtime/events.jsonl',b'{}'))
