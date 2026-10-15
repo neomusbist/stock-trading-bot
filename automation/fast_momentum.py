@@ -447,7 +447,13 @@ class FastMomentumStrategy:
         for left, center, right in zip(turns, turns[1:], turns[2:]):
             if center[1] > max(left[1], right[1]):highs.append(center)
             if center[1] < min(left[1], right[1]):lows.append(center)
-        if len(highs) >= 2 and lows and highs[-1][1] < highs[-2][1] and below(lows[-1][1]):
+        holding_seconds = (now - opened).total_seconds()
+        diffs = [abs(b[1] - a[1]) for a, b in zip(turns, turns[1:]) if abs(b[1] - a[1]) > 0]
+        min_step = min(tick_size(entry), min(diffs)) if diffs else tick_size(entry)
+        if (holding_seconds >= 45.0 and len(highs) >= 2 and lows and highs[-1][1] < highs[-2][1]
+                and (highs[-2][1] - lows[-1][1]) >= 2 * min_step
+                and (highs[-1][1] - lows[-1][1]) >= 2 * min_step
+                and below(lows[-1][1])):
             return True, 'MOMENTUM_FAILURE_EXIT', {**evidence, 'bid': bid, 'failed_rebound_high': highs[-1][1], 'floor': lows[-1][1]}
         initial_r = entry - emergency
         if initial_r > 0 and t.price - entry >= initial_r and lows:
