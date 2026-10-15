@@ -30,6 +30,7 @@
 !/test.bat
 !/operator_menu.cmd
 !/run_capacity_experiments.py
+!/deploy_release.py
 !/core/*.py
 !/automation/*.py
 !/tests/test_*.py

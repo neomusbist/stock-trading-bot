@@ -1,5 +1,6 @@
 """GUI/간소화 콘솔의 운영 서비스. 전략·주문 API에는 접근하지 않는다."""
 import json
+from pathlib import Path
 from dataclasses import asdict, replace
 from datetime import datetime
 from core.util import ProcessLock, atomic_json
@@ -369,6 +370,9 @@ def board_freshness(row,clock):
 
 def start_block(s):
     if s['process']['running']: return '이미 실행 중입니다.'
+    integrity = s.get('code_integrity') or {}
+    if integrity and not integrity.get('valid', True) and s.get('live_mode'):
+        return f"코드 무결성 불일치: 미검증 또는 구버전 코드로는 시작할 수 없습니다 ({integrity.get('summary', 'UNVERIFIED_MISMATCH')})"
     if not s.get('control_supported',s['supported']): return '운영시간 밖(준비시간 밖)입니다. 08:00 이후 사전 준비/승인, 09:00 이후 증거 확인 뒤 주문 가능합니다.'
     if s.get('halt'): return 'HALT가 활성화되어 있습니다: '+str(s['halt'])
     if not s['hard_ok']: return '삼성전자·광전자 보호정책을 확인해야 합니다.'
@@ -517,6 +521,11 @@ class UserOperations(OperatorService):
         if not valid:s.setdefault('order_off_reasons',[]).extend('DAILY_AUTHORIZATION_'+str(reason) for reason in missing)
         if not valid or not ready_ok or hb.get('fatal') or not s.get('trading_on'):s['trading_on']=False
         s['guided_start']=True;s['build_id']=BUILD_ID
+        from automation.release_integrity import check_runtime_integrity
+        code_root = self.root
+        if not (code_root / 'automation').exists():
+            code_root = Path(__file__).resolve().parent
+        s['code_integrity']=check_runtime_integrity(code_root)
         s['decision_rows']=[r for r in s['decision_rows'] if r.get('primary_reason_code')!='ONE_SHARE_UNAFFORDABLE' and r.get('state')!='EXTERNAL_POLICY_HOLD']
         shadow=read_json(self.root/'runtime/shadow_snapshot.json',{})
         s['shadow_diagnostics']={'snapshot_at':shadow.get('timestamp'),'performance':shadow.get('performance',{}),'last_error_record':redact(shadow.get('last_error'))}

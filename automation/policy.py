@@ -160,8 +160,9 @@ class Policy:
             raise ValueError('주문 기록이 연결된 승인은 취소할 수 없습니다.')
         self.state.pop('test_capital_release',None)    
     
-    def command(self,command,symbol=None,confirmation=None):
+    def command(self,command,symbol=None,confirmation=None,approval_basis=None):
         self.refresh()
+        prev_mode = self.state.get('mode')
         if command=='TEST_CAPITAL_RELEASE':
             self.approve_test_release(symbol,confirmation)
         elif command=='CANCEL_TEST_CAPITAL_RELEASE':
@@ -175,14 +176,47 @@ class Policy:
             self.state['mode']='STOP'
             self.state['live_authorized']=False
             self.state['after_live_authorized']=False
+            try:
+                from automation.release_integrity import record_mode_transition
+                record_mode_transition(
+                    root=self.path.resolve().parent.parent,
+                    from_mode='KILL',
+                    to_mode='STOP',
+                    approval_basis=approval_basis or 'USER_RESET_KILL',
+                    symbol=symbol
+                )
+            except Exception:
+                pass
         elif command in MODES:
             if command=='LIVE':
                 if confirmation!='LIVE': raise ValueError('명시적 LIVE 확인 필요')
+                from automation.release_integrity import check_runtime_integrity
+                code_root = self.path.resolve().parent.parent
+                if not (code_root / 'automation').exists():
+                    code_root = Path(__file__).resolve().parent.parent
+                integrity = check_runtime_integrity(code_root)
+                if not integrity['valid']:
+                    raise ValueError(f"UNVERIFIED_CODE_BLOCKED_FOR_LIVE: 미검증 또는 구버전 코드로는 LIVE를 실행할 수 없습니다: {integrity['reasons']}")
                 self.state['live_authorized']=True
             elif command=='KILL':
                 self.state['live_authorized']=False
                 self.state['after_live_authorized']=False
             self.state['mode']=command
+            if prev_mode != command:
+                try:
+                    from automation.release_integrity import record_mode_transition
+                    rec_root = self.path.resolve().parent.parent
+                    if not (rec_root / 'automation').exists():
+                        rec_root = Path(__file__).resolve().parent.parent
+                    record_mode_transition(
+                        root=rec_root,
+                        from_mode=prev_mode,
+                        to_mode=command,
+                        approval_basis=approval_basis or ('USER_LIVE_CONFIRMATION' if command == 'LIVE' else 'OPERATOR_COMMAND'),
+                        symbol=symbol
+                    )
+                except Exception:
+                    pass
         else: raise ValueError('지원하지 않는 명령')
         self.state['revision']+=1
         self.state['commands'].append({'time':now().isoformat(),'command':command,'symbol':symbol,'revision':self.state['revision']})

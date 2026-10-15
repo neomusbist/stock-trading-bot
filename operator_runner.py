@@ -55,6 +55,8 @@ def run(root=ROOT,clock=now,supervise=None,token=None,purpose='CONTINUOUS'):
         if not control_supported(clock()) and not after_ok: raise ValueError('지원시간 밖: 계속 감시를 시작하지 않습니다.')
         with ProcessLock(root/'runtime/supervisor.lock'),ProcessLock(root/'runtime/process.lock'): pass
         policy=Policy(root/'runtime/automation_policy.json'); initial=policy.mode
+        from automation.release_integrity import check_runtime_integrity
+        integrity = check_runtime_integrity(root)
         if purpose=='CONTINUOUS' and cfg.live_mode:
             from automation.decisions import check_experiment_consistency
             try:
@@ -65,9 +67,19 @@ def run(root=ROOT,clock=now,supervise=None,token=None,purpose='CONTINUOUS'):
                     'finished':clock().isoformat(),'heartbeat':clock().isoformat(),'exit_code':1,
                     'monitor_error':str(e),'error_event':'EXPERIMENT_CONSISTENCY_FAILURE'})
                 raise
+            if policy.mode == 'LIVE' and not integrity['valid']:
+                err_msg = f"UNVERIFIED_CODE_BLOCKED_FOR_LIVE: {integrity['reasons']}"
+                atomic_json(root/'runtime/operator_runner.json',{'pid':os.getpid(),'identity':process_identity(os.getpid()),'token':token,'purpose':purpose,
+                    'started':clock().isoformat(),'initial_mode':initial,'mode':initial,'status':'CRASHED',
+                    'finished':clock().isoformat(),'heartbeat':clock().isoformat(),'exit_code':1,
+                    'monitor_error':err_msg,'error_event':'CODE_INTEGRITY_MISMATCH'})
+                raise ValueError(err_msg)
         record={'pid':os.getpid(),'identity':process_identity(os.getpid()),'token':token,'purpose':purpose,
                 'started':clock().isoformat(),'initial_mode':initial,'mode':initial,'status':'STARTING','heartbeat':clock().isoformat(),
-                'config_hash':cfg.fingerprint(),'auto_hash':auto.fingerprint()}
+                'config_hash':cfg.fingerprint(),'auto_hash':auto.fingerprint(),
+                'code_commit':integrity['commit'],
+                'fast_momentum_hash':integrity['fast_momentum_short_hash'],
+                'code_verified':integrity['valid']}
         path=root/'runtime/operator_runner.json'; atomic_json(path,record)
         done=threading.Event()
         def update():
