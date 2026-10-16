@@ -1,129 +1,140 @@
-# 2026-10-15 후속 사고 수정 인계 — 배포 승인 아님
+# R6 인계 — 2026-10-16
 
-이 절이 아래 10월 14일 기록보다 최신이다. 이전 기록은 원본 그대로 보존했다.
+상태: **부분 완료**. 확인된 시각/청산 경로 결함과 기록 누락은 수정했다. 불리한 진입을 막고 정상 상승을 보유하는 전략의 기대값은 아직 미입증이다. 14:42 한선엔지니어링 재진입 후 신규매수를 공식 STOP했다. 임의로 LIVE를 재개하지 않는다.
 
-## 정확한 보존 상태
+## 1. 작업 위치와 보존
 
-- 개발 브랜치: `fix/r6-target-cap-incident-20261015`.
-- 기준: 로컬 `f158bb6`의 독립 worktree. 다른 candidate worktree의 미커밋 `automation/runner.py`를 포함하거나 수정하지 않았다.
-- 코드 커밋: `9e09770dc5fcc37256fe3fe1be50c638513c513c`.
-- 현재 문서 포함 HEAD는 `git rev-parse HEAD`로 확인한다. 위 SHA는 실제 소스·신규 테스트의 커밋이다.
-- **GitHub push 미완료**: CLI 자격증명을 사용할 수 없어 실패했다. 연결된 GitHub 조회에서도 기준 f158bb6/0da27dd가 없었다. 기준의 추가 도구 파일 두 개가 기존 공개 허용목록 밖이었고, 그중 하나는 개인 경로를 포함해 전체 기준 소스를 무검사로 우회 게시하지 않았다. 로컬 커밋과 Git bundle로 그대로 이어받을 수 있다.
-- main, 다른 개발 브랜치, 운영본 코드·위험예산·승인 파일은 변경하지 않았다. 운영 Worker는 STOP이며 실제 주문을 제출하지 않았다.
+- 개발본: `C:\Users\MJS\Documents\주식자동매매_개발\r6-target-cap-incident-20261015`
+- 운영본: `C:\Users\MJS\Desktop\주식자동매매`
+- 브랜치: `fix/r6-target-cap-incident-20261015`
+- 코드 커밋: **`2f65f8edab6662ef5504810628c74b500d827c52`**
+- 작업 시작 HEAD: `424e89a4491a03caafbe618d634343690fe22056`
+- 문서만 추가한 후속 커밋이 있을 수 있다. 위 해시는 실제 코드 커밋이다. 현재 HEAD는 `git log -2 --oneline`으로 확인한다.
+- GitHub push: **하지 않음**. 이번 요청의 GitHub 작업 금지 범위를 준수했다. main 및 다른 운영 브랜치를 바꾸지 않았다.
+- `2affd6d`는 시작 HEAD의 조상이 아니다. 공통 조상은 `2da04d3c794444b1a1332e8a2f0209bad3227049`다. 커밋 계보만으로 변경 누락을 단정하거나 이 커밋을 통째로 덮어쓰지 않는다. 최신 로컬 파일을 기준으로 작업했다.
+- 기존 미커밋 구조선/비상선 분리와 `tests/test_fast_momentum.py`의 기존 변경을 보존하여 함께 커밋했다. 이 테스트 파일의 기존 EOF 공백 경고는 그대로 두었다.
+- 민감한 운영 설정·계좌·승인 영수증·로그는 커밋하지 않았다. 아래 private 폴더는 Git 저장소 밖이다.
 
-## 확인한 결함과 수정
+## 2. 마지막 긴급 거래: 한선엔지니어링
 
-1. A 구조 무효화선을 더 넓게 계산한 뒤 구조 계산의 목표 상한으로 기존 패턴 목표를 덮어쓰면서 기대 보상이 늘어나는 경로가 있었다. 익명 시점 재현에서 원래 목표 8,060이 8,200이 되고 손익비가 1.17에서 1.51로 높아졌다.
-2. `automation/patterns.py`: 기존 목표·저항과 구조 상한의 최솟값을 사용한다. 더 넓어진 손절을 정당화하려고 목표를 올리지 않는다. 손절거리·위험비율·AE3를 바꾸지 않았다.
-3. `automation/engine.py`: 최종 주문 직전에도 A의 `target <= projection`을 검사한다. 예전의 부풀린 신호를 전달해도 거절한다.
-4. `core/engine.py`: 장부에 없는 실시간 주문을 수신하면 주문번호·원주문번호·선별한 원문 필드를 기록한다. 계좌 FID는 제외하며 최근 100건만 장부에 유지한다. 발신 주체를 수동 주문으로 추측하거나 자동 반영·HALT 해제하지 않는다.
-5. `tests/test_target_cap_incident.py`: 미래봉 없이 7개 전용 검사. 목표 상향 거절, 기존 상한·저항 유지, 실제 detector로 생성한 정상 범위 돌파 통과, 주문 경계 재검사, 미래봉 배제, 외부 주문 증거와 민감 필드 제외.
+| 구분 | 13:25 거래 | 14:42 재진입 |
+|---|---|---|
+| 전략 | B | FAST |
+| 매수/수량 | 16,700원 × 4 | 16,810원 × 4 |
+| 매도 | 16,580원 | 16,760원 |
+| 엔진 장부 보유시간 | 398.953초 | 153.134초 |
+| 증권사 비용 반영 순손익 | -622원 | -354원 |
+| 수수료+세금 | 142원 | 154원 |
+| 초기 구조선/비상선 | 16,610 / 16,580 | 16,760 / 16,750 |
+| 실제 청산 사유 | 호가 급락/유동성 붕괴: 비상선 도달 | FAST_INVALIDATION_STOP_EXIT: 서로 다른 시각의 2체결 + 매수호가가 구조선 이하 |
+| MFE / MAE, 주당 | +50 / -120원 | +10 / -50원 |
 
-## 실제 사고에 관한 운영 확인
+엔진 장부의 개설/종결 시각은 각각 `13:25:20.876714~13:31:59.829657`, `14:42:42.315325~14:45:15.449620`이다. 이는 로컬 장부 계상 시각이며 거래소 체결의 밀리초 시각으로 해석하면 안 된다. 사용자 증권사 체결 알림의 분 단위 시각 및 가격과 일치한다.
 
-외부 원장에서 매도 체결이 확인됐지만 사고 전 운영 Worker에는 SELL 의도·청산 요청·주문이 없었다. 신선한 계좌·체결 조회와 복사 장부 모의 반영 후 공식 recovery로 장부 정합성과 HALT를 복구했다. 증권사 수수료·세금으로 정산했으며 장부를 리셋하지 않았다.
-사용자는 HTS 0624에 잔고 편입 자동 −2% 손절이 설정돼 있었다고 후속 확인했다. 가격·시장가 매도·장부 밖 주문과 일치하는 유력 원인이지만 주문매체 원장 대조는 아직 미완료다. 이를 사용자의 직접 수동 매도로 기록하지 않는다.
-HTS의 고정 손절과 봇의 구조적 청산선이 충돌한다. HTS 설정은 임의로 바꾸지 않았으며 자동 LIVE 시작도 하지 않았다.
+14:42 신호는 `14:42:34.292640`에 생겼다. FAST는 14:41:14의 16,730원에서 시작한 미세 반등, 14:42:07의 16,790원 고점, 14:42:24의 16,780원 눌림 및 14:42:29 반등을 사용했다. 완충은 `max(틱 10, 스프레드 10, 지지×0.1%=16.78)` → 구조선 16,760원, 추가 잡음 10원 → 비상선 16,750원이다. 10초 거래대금은 35,166,380원, 30초 상승 틱 방향 거래량 비율은 0.7062였다. 이는 매수 주도 체결의 직접 식별이 아닌 틱 방향 대용치다.
 
-## 검증과 남은 한계
+**문제:** 80초 정도의 반등을 매수 근거로 사용하면서 목표는 먼 저항 17,850원이었다. 14:26~14:40의 저장된 수신 틱 1,635개에서 14:27의 16,880원 고점을 확인했다. 14:31에도 16,870원 반등 고점이 있었다. 현재 FAST는 기존 PriceContext의 장중 확정 저항/5분 구조를 진입의 필수 근거로 사용하지 않는다. 재시작 뒤 미세 틱 관측은 14:41:02부터였고 FAST 신호에 참고 분봉/장중 맥락이 보존되지 않았다.
 
-- 새 전용 검사: **7 PASS**. 기존 운영 코드의 당시 봉·구조·비용 손익비 재현: 별도 5항목 PASS.
-- 전체 검사 1492개: PASS 1473, FAIL 19, ERROR 0, SKIP 0. 네트워크 시도 0, 실제 주문 0.
-- 실패한 19개만 수정 전 f158bb6에서 다시 실행: 13 PASS, 6 FAIL, 0 ERROR. 기존 기준에서도 실패한 6건과 이 패치로 달라진 13건을 BASELINE_COMPARISON.json에 따로 기록했다. 13건에는 A 진입 fixture가 먼저 거절되어 후속 청산 검사까지 도달하지 못한 경우도 포함된다.
-- 기존 테스트 파일·공용 설정은 수정하거나 삭제하지 않았다. 아래 실패를 숨기지 않는다.
+같은 FAST 비용 가정으로 목표 상한을 16,880원으로 놓으면 순손익비는 **-0.29056**, 저장된 자료로 재구성한 가까운 16,870원 상한은 **-0.34513**이다. 기존 신호의 17,850원 목표 순손익비 5.00294와 다르다. 다만 원래 프로세스가 이 고점을 계속 보유했는지, 모든 구간이 연속 관측됐는지까지는 증명하지 못했다. 재구성은 조건부 비교이며 실제로 이 매수를 차단했을 것이라는 검증 완료 주장이 아니다.
 
-- `test_external_book_query_due_boundaries (test_audit_followup.ObservationAuditTests.test_external_book_query_due_boundaries)`
-- `test_far_external_book_queries_reduce_but_near_monitoring_remains (test_audit_followup.ObservationAuditTests.test_far_external_book_queries_reduce_but_near_monitoring_remains)`
-- `test_after_local_continuation_does_not_inherit_the_burst_exit_policy (test_night_judgment_quality.SustainedLocalRiseTests.test_after_local_continuation_does_not_inherit_the_burst_exit_policy)`
-- `test_current_structure_can_form_A_below_an_older_session_high (test_night_judgment_quality.SustainedLocalRiseTests.test_current_structure_can_form_A_below_an_older_session_high)`
-- `test_complete_trade_costs_and_price_band_are_analysis_only (test_policy_update.PolicyUpdateTests.test_complete_trade_costs_and_price_band_are_analysis_only)`
-- `test_final_static_lock_cannot_be_removed_by_old_release_flag (test_preflight.PreflightTests.test_final_static_lock_cannot_be_removed_by_old_release_flag)`
-- `test_old_build_authorization_is_not_reused (test_setup_acceleration.SetupAccelerationTests.test_old_build_authorization_is_not_reused)`
-- `test_meaningful_range_floor_and_noise_sized_hard_line (test_structural_a_exit.EntryStructureTests.test_meaningful_range_floor_and_noise_sized_hard_line)`
-- `test_sustained_rise_is_distinct_from_ten_second_volume_spike (test_structural_a_exit.EntryStructureTests.test_sustained_rise_is_distinct_from_ten_second_volume_spike)`
-- `test_wider_price_structure_is_not_confused_with_account_risk_percent (test_structural_a_exit.EntryStructureTests.test_wider_price_structure_is_not_confused_with_account_risk_percent)`
-- `test_completed_close_below_structure_requests_exit (test_structural_a_exit.ExitAndOrderTests.test_completed_close_below_structure_requests_exit)`
-- `test_fresh_emergency_price_exits_without_waiting_for_close (test_structural_a_exit.ExitAndOrderTests.test_fresh_emergency_price_exits_without_waiting_for_close)`
-- `test_gui_distinguishes_structural_close_line_and_emergency_risk_line (test_structural_a_exit.ExitAndOrderTests.test_gui_distinguishes_structural_close_line_and_emergency_risk_line)`
-- `test_intra_minute_wick_with_recovery_does_not_exit (test_structural_a_exit.ExitAndOrderTests.test_intra_minute_wick_with_recovery_does_not_exit)`
-- `test_new_order_sizes_from_emergency_line_and_keeps_soft_structure (test_structural_a_exit.ExitAndOrderTests.test_new_order_sizes_from_emergency_line_and_keeps_soft_structure)`
-- `test_single_touch_between_structural_and_hard_line_holds (test_structural_a_exit.ExitAndOrderTests.test_single_touch_between_structural_and_hard_line_holds)`
-- `test_stale_completed_bar_does_not_undo_current_recovery (test_structural_a_exit.ExitAndOrderTests.test_stale_completed_bar_does_not_undo_current_recovery)`
-- `test_stale_trade_and_stale_quote_do_not_fake_emergency (test_structural_a_exit.ExitAndOrderTests.test_stale_trade_and_stale_quote_do_not_fake_emergency)`
-- `test_identity_separates_signal_rules_and_risk_experiment (test_v13_risk_identity.V13RiskIdentityTests.test_identity_separates_signal_rules_and_risk_experiment)`
+13:25 B의 사후 계획 표시에는 비용 반영 손익비 0.67490, `reward_guard_enabled=false`가 남아 있다. FAST와 별도로 B의 비용/목표 검증 정책도 검토해야 한다. 설정을 몰래 켜지 않았다.
 
-- 정상 수익 거래의 과잉 차단 및 수익성 개선은 미입증이다. 기존 정상 fixture가 작은 패턴 목표를 구조 상한으로 높인다는 가정에 의존했는지 구분해야 한다. 이번 사고 한 건만 막았다고 전략 PASS로 평가하지 않는다.
-- 비용 반영 손익비 검사가 운영 설정에서 OFF였다는 사실도 확인했다. 이 개발 패치는 그 설정을 켜거나 임계값을 바꾸지 않는다. 비용 후 손익비 정책은 별도 검증이 남는다.
-- 마지막 백테스트: 이번 코드 뒤 새 전체 손익 재계산은 하지 않았다. 아래 이전 R6 보고 수치를 이번 패치의 결과로 재사용하지 않는다. 1틱 불리 체결·주문 지연 분석도 이번 패치 뒤 재실행하지 않았다.
-- SHADOW 수집을 이번 작업에서 새로 시작하지 않았다. 기존 수집 기능과 안전 경계는 유지했다. LIVE 배포 없음. 개발 패치는 회귀 영향과 과잉 차단을 해결하기 전 배포 금지.
+청산을 늦추거나 손절선을 넓히면 해결된다는 증거는 없다. 새 이익보호 A/B/C 비교도 이 손실 거래의 초기 구조선/모멘텀 실패 청산을 바꾸는 정책이 아니다.
 
-## Antigravity가 이어서 실행할 순서
+## 3. 코드 변경
 
-1. `git status --short`, `git branch --show-current`, `git rev-parse HEAD`. 이 브랜치 또는 제공된 bundle을 사용하고 다른 미커밋 작업을 지우지 않는다.
-2. 로컬 사고 자료: `%USERPROFILE%\Documents\주식자동매매_개발\live-incident-20261015-396300`. `INCIDENT_REPORT.md`, `OFFLINE_REPLAY_RESULT.json`, `development-full.json`/`.log`, 복구 전 장부와 증권사 응답이 있다. 계좌/주문 원본은 Git에 넣지 않는다.
-3. `python -X utf8 -B -m unittest tests.test_target_cap_incident -v`로 7개 전용 검사를 재현한다.
-4. 전체 회귀 실패를 기존 기준 f158bb6와 비교한다. 정당한 정상 진입을 새 목표 상한이 막는지, 기존 fixture가 보상을 임의로 키우고 있었는지 따로 검증한다. 테스트 기대값만 바꿔 PASS로 만들지 않는다.
-5. HTS 0624 주문매체 기록으로 외부 자동 손절의 실제 출처를 확인한다. 자동매매 재개 시 청산 정책 충돌을 사용자와 명시적으로 정리한다. 자동으로 HTS 손절을 끄거나 과거 주문을 봇 발신으로 바꾸지 않는다.
-6. 정상 상승·얕은 눌림·실패 돌파·근접 저항 사례의 당시 자료로 재현 후 비용·1틱·지연 민감도를 재계산한다. 검증 전 수익성 PASS 또는 LIVE READY 판정 금지.
-7. 전체 검사를 완료하고 별도 새 BUILD 배포·직접 LIVE 승인을 거친다. 기존 승인 영수증·계좌 손실장부를 복사/초기화하지 않는다.
-8. 로컬 `INCIDENT_SOURCE.bundle`을 가져올 때는 `git bundle verify <bundle>` 다음 `git fetch <bundle> fix/r6-target-cap-incident-20261015:fix/r6-target-cap-incident-20261015`를 사용한다. 같은 브랜치가 이미 있으면 reset/force하지 말고 새 이름으로 가져온다. `INCIDENT_SOURCE.patch`는 코드 커밋의 4개 파일만 포함한 별도 적용용 패치다. GitHub 자격증명과 기준 소스 공개 검사를 해결한 후 이 개발 브랜치만 게시한다.
+| 파일 | 변경과 범위 |
+|---|---|
+| `core/market_time.py`, `core/realtime.py`, `core/strategy.py` | 거래소 초 단위 시각과 로컬 수신/단조시계 경과시간을 분리. 기존 수신 경계인 최대 1초 선행만 허용. 실제 오래됨·과도한 미래·날짜 오류는 차단 |
+| `automation/engine.py`, `automation/runner.py` | PRE_INTENT/PRE_HTTP 및 ORDER_READY 시각 계산 통일. FAST 임시 이익보호선의 공통 비상선 복사 제거. FAST 실제 수량 호가잔량/신호 TTL/추격 상한 재검사. FAST 최초 신호 시간 및 판단 증거 보존 |
+| `automation/exit_plan.py` | 최초 구조선/비상선 및 FAST 독립 판단 표시. 기존 수치 산출 함수 보존 |
+| `automation/fast_momentum.py` | 입력 지지/반등/거래량 근거를 JSON 안전하게 보존. 실제 10초 거래대금 표시. **공통 경로 수정 후에도 남아 있던 별도 FAST ingest/metrics/structure/quote의 음수 시각 오판을 추가 수정** |
+| `automation/trade_review_capture.py` | 실제 후보 직전/보유 중 틱·호가·실제 완성봉·가격선·주문 이벤트 참조의 제한된 기록. 후보는 메모리 링, 실제 진입 관련 자료만 파일로 승격 |
+| `automation/fast_profit_observation.py` | 기존 FAST A / 확정봉 B / 구조 추적 C를 관찰 전용 비교. 실제 주문에 연결하지 않음 |
+| `automation/profit_review.py`, `automation/profit_review_cli.py` | 동일 수신 순서의 오프라인 이익보호 요소 비교. 지연 후 실제 충분한 잔량의 매수호가로 모델링. 비용/1틱 불리 체결 구분. 불완전 기록은 UNKNOWN. 완성봉은 처리 완료 시각 이후에만 사용 |
+| `automation/entry_frequency_experiments.py` | 기존판, 가속 2.5, 거래대금 20M/15M, 조합, 실제 6개 확정봉 지속 상승 대안을 오프라인 비교. 실험 detector 자체도 엔진 주문 경계 통과 불가 |
+| `automation/fast_entry_context.py` | 기존 PriceContext를 재사용하는 장중 고점 상한/확정 추세 실험. FAST 참고 분봉과 출처를 별도 필드에 보존. LIVE 진입 조건·구조선·주문 권한은 바꾸지 않음 |
+| 관련 전용 테스트 | 시각, 청산 권한, 제한 기록, 실험 주문 금지, 실제 경로 통합 테스트 |
 
----
+`classify_regime`, `calculate_invalidation_and_target`, `evaluate_exit` 함수의 전략 본문 AST는 원래 HEAD와 같다. 입력 시세의 잘못된 시각 거부를 고친 것이며 가속·거래대금·손절·익절 임계값을 조절하지 않았다. 정상 수신 자료가 복원되므로 신호/청산 시점은 달라질 수 있다. 이를 수익성 개선으로 판정하지 않는다.
 
-<!-- PREVIOUS_R6_HANDOFF -->
-# R6 개발 인계 — 2026-10-14
+`tests/test_r6_fast_repair.py`의 미래 시각 반례를 1.000초에서 **1.001초** 선행으로 바로잡았다. 공통 수신기가 허용하는 정확히 1초와 모순되던 반례이며 테스트를 삭제하지 않았다. 새 전용 테스트에서 -0.051, -0.293, 실제 stale, 1.001초 미래, 수신 전 자료 사용 금지를 각각 검증했다.
 
-## 보존 상태
+## 4. 테스트 및 운영 반영
 
-- 개발 브랜치: `fix/r6-work-repair-20261014`.
-- 기준 로컬 커밋: `2affd6dea43dc2c0c03cb22e6e5f397bc5cbde8e`. 그 위의 독립 수정이다. main과 LIVE R5는 병합·교체하지 않았다.
-- 원본 R6 GitHub 브랜치 `feat/v1.6-fast-momentum-r6-20261014` 게시 완료. 원격 HEAD `3ad45e15f76f29edb6bd8dfa1948230a7967daef`의 tree는 원본 `2affd6d`의 `24575c4d9a6e938a48d629bba202594eb66a7f34`와 일치한다.
-- 로컬 CLI 인증을 사용할 수 없어 승인받은 GitHub 연결로 6개 원본 변경을 순서대로 게시했다. 원본 커밋은 로컬에 보존하며 게시 커밋 SHA가 달라졌음을 숨기지 않는다. 이번 수정 브랜치 게시도 성공했고 로컬·원격의 정확한 코드 커밋은 `bfe5dd9ecd61640a07a4753e62c76c36f1c82c0e`로 일치한다. 코드 tree `599e10ec8e1cf1db1a071342cc43b9e4523af4f8`. 기존 로컬 체크포인트 9791b9b/81b27fc는 별도 보존됐다. 이후 인계 문서만 추가하는 커밋의 HEAD는 `git rev-parse HEAD`로 확인한다.
-- 재개 시 가장 먼저 `git branch --show-current`, `git rev-parse HEAD`, `git status --short`를 확인한다. 미커밋 변경을 지우거나 원본 R6로 다시 개발하지 않는다.
+- 이전 검증 묶음: 260 PASS.
+- 기록 기능/주문 경계 추가 후: 299 PASS, 네트워크 시도 0, 실제 주문 0.
+- **최종 코드 변경 뒤 관련 12개 모듈 189 PASS / 실패 0 / 오류 0 / skip 0**, 25.460초. 네트워크를 강제로 차단한 상태에서 실행했다.
+- 전체 회귀검사는 요청에 따라 실행하지 않았다. 299를 최종 전체 회귀 결과라고 표시하면 안 된다.
+- 수신 기록 10,000프레임 계측: 약 0.109ms/프레임. 기록 큐/디스크 I/O는 수신 루프 밖이다.
+- 14:15 기존 시각/FAST 공통 청산 충돌 수정 6개 런타임 파일 배포 및 공식 재시작.
+- 14:40 실제 수량 호가 검증·증거 기록 등 5개 파일 배포 및 공식 재시작. 새 청산/진입 실험은 제외.
+- 15:01:27 공식 STOP 요청: 반복되는 진입 품질 문제가 미해결이므로 자동 재개하지 않음.
+- **15:15:27 추가 FAST 시각 결함만 `automation/fast_momentum.py` 1개 파일에 운영 반영. 재시작하지 않음.** 런타임 무결성 검사 통과.
+- 15:15 실제 증권사 재조회: 봇 보유 0, 미체결 0, UNKNOWN 0, 작업 중 주문 0, HALT 없음. 실제 보유는 기존 수동 보호분과 일치했다.
+- 계좌 위험 2%, 일일 손실 4%, HARD_LOCK `005930/017900/052260`, 기존 장부/승인 영수증/예산 설정을 보존했다.
+- 당일 손실 누계는 **1,743원**, 완료 6거래의 증권사 기준 순합계는 **-197원**. 부분청산 2개를 2거래로 세지 않았다. 이는 백테스트 결과가 아니다.
+- 현재 운영 BUILD는 `V1.6-risk2-daily4-fast-live-r6-20261015` 유지. 기존 승인 기록을 새로 만들거나 초기화하지 않았다.
 
-## 실제 수정
+**개발본 전체를 운영본에 복사하지 않는다.** 개발 runner에는 아직 운영 미반영인 관찰용 참고 맥락 연결이 있다. 개발 capture에도 그 참고 맥락 기록 필드가 추가돼 있다. 실험 모듈들은 운영에 복사하지 않았다. 파일별 차이는 private의 `DEVELOPMENT_OPERATING_DIFF.json`을 확인한다.
 
-- `automation/fast_momentum.py`: 임의의 고정 손절폭·손익비를 맞춘 목표가 제거. 당시 확인된 미시 지지와 알려진 저항, 신선한 실제 호가·잔량, 비용·비상선 위험으로 정수 수량 계산. 단일 정상 무효화선 접촉과 두 독립 체결의 구조 붕괴를 구분. 고정 +1.8% 보호·시간 만료 대신 확정된 진입 후 고저점 구조를 이용한다. FAST는 여전히 SHADOW 전용이다.
-- `automation/shadow_observation.py`, `automation/observation_worker.py`: 모든 유효 틱의 누적과 평가 주기 분리, `shadow_view` 저항/asof 전달 누락 수정, 수신·처리 시각 구분, 구독 공백·큐 유실 초기화, 동시 생산자 sequence 보호, callback 완료 뒤 processed sequence, 비동기 원시 TRADE/BOOK 기록·로테이션·종료 flush.
-- `automation/shadow_fast_runtime.py`: 독립 데이터 전용 진입점. source-root와 LIVE 충돌 검사가 없으면 인증 불허. 주문·계좌 HTTP endpoint 차단. 실제 FAST→후속 신선한 호가 가상 계좌→파일 기록 연결. 데이터 끝 강제청산 금지.
-- `automation/runner.py`, `operator_service.py`, `operator_ui_service.py`: readiness 없는 상태의 ON 기본값 제거, GUI가 읽는 시점의 시세·계좌 나이 재계산, 수신기 실패·적체·지연 반영, 정확한 OFF 사유 로그. 개별 종목 5초 최종 주문 검사 유지.
-- 전용 신규 테스트 4개와 기존 FAST/logger 테스트의 잘못된 가정을 수정했다. 기존 정상 A/B/C·위험·주문 안전장치를 완화하지 않았다.
-- `audit/r6_work_repair_20261014/replay.py`: 기존 snapshot proxy 진입을 고정 비교군으로 남기고 없는 호가를 만들어 체결하지 않음, 누적 손실·승인자본·지연·틱 이동·비용 분리·미실현 구분을 수정. 이 코드를 실제 FAST 백테스트라고 부르지 않는다.
+## 5. 진입 빈도 감사의 확인 범위
 
-## 현재 확인 결과와 한계
+448 RAW → 70 WATCH → FAST 10형상 → 7 intent → 4 접수 → 3 체결은 **12:30 시점**의 수치다. 13:25에는 실제 B 거래가 있었다. A/B/C가 하루 종일 0건이었다고 일반화하지 않는다.
 
-- FAST/SHADOW/기존 fixture/실행 회계 대상 검사: 마지막 64개 PASS, 실패 0, 오류 0, 종료코드 0.
-- 실제 두 운영 서비스와 주문 직전 가짜 브로커 경로: 87 PASS, 네트워크 시도 0. 5/7초 quiet와 12/20초 OFF, 단절·계좌 만료·지연·큐 적체를 구분했다.
-- 최종 개발본 전체 1,430 PASS 및 GitHub와 동일한 코드 커밋의 깨끗한 detached checkout 전체 1,430 PASS, 실패0/오류0/skip0/네트워크시도0/AST오류0/종료0. identity/replay 결과 6개 canonical hash도 일치했다. TEST_RESULTS.json 참조.
-- 원본 오후 파일 SHA-256 `0c698c6ef4c7d9815c83a081d5d81d66205588e120c2e07caaf3f10f2050b50c`, 67,132,914바이트. 실제 구간 14:21:21~14:52:49, 6,072 ENTRY_EVAL. 원시 체결·잔량 tape가 아니다.
-- 원본에서 서산 7,060~7,320원, 엘앤씨바이오 61,700~66,900원 확인. 문제의 7,650~7,720/13,400원대는 이 동일 파일에 없다. 기존 일부 보고의 종목명은 잘못 연결돼 있다. 잘못된 요약의 최초 출처는 미확보이므로 인코딩 탓이라고 단정하지 않는다.
-- 이전 proxy 재현: 기준 +1,469.92원, 1틱 -278.17원, 2틱 -2,116.29원, 3틱 -2,894.39원, 한 snapshot 지연 -61.41원. 실제 FAST 또는 실제 체결의 수익이 아니다.
-- 엄격한 실행·회계 proxy: 기준 2건 청산 -282.139원, 1틱 -471.89원, 2틱 -874.956원, 3틱 -1,238.062원. 1 snapshot 지연 기준 -132.4615원. 종료 시 에스엠벡셀 30주 가상 보유가 남고 마지막 bid가 없어 미실현은 UNKNOWN. 최종 재실행 CSV를 우선한다.
-- 단일 거래일 31분의 snapshot, 호가 누락, 독립 원시 데이터 없음 때문에 새 FAST 수익성·초입 우위·1틱 내성은 UNKNOWN이다. 5~10분당 왕복 1회도 입증되지 않았다.
-- 실제 SHADOW 접속은 마지막 확인 R5 LIVE PID 19568 때문에 `LIVE_WORKER_LOCK_ACTIVE`로 인증 전에 차단됐다. 추가 토큰 발급·실주문·R6 LIVE 배포는 하지 않았다.
-- 사용자가 요청한 HALT는 공식 STOP→신선한 계좌 대조→recover_halt 경로로 해제했다. 당시 일일 손실 1,256원 유지. 이후 R5가 다시 LIVE로 확인됐다. 이 문서의 상태는 확인 시점 기록이므로 재조회한다.
+상위 원인/제약:
 
-## Antigravity 재개 순서
+1. 순위 API 합집합이 탐색 모집단이며 한국 전체 종목의 연속 시세가 아니다. 12:30까지 RAW→WATCH 지연 중앙값 142.13초, p90 2,761.17초였다. 1주 불가 제외 및 상태조회 공정 순환은 이미 있다. WATCH가 되지 않았다는 사실만으로 유효 신호 누락을 판정할 수 없다.
+2. 5개 사전 고정 1분 창의 45종목에서 A/B의 형상 자체가 끝내 만들어지지 않은 종목은 각각 43개였다. 가속 3배만의 문제가 아니다. B/C는 애초 가속 3배가 필수 조건이 아니다. 유동성·warmup·형상·돌파가 복합 작용한다.
+3. FAST 최종 경계에서 서산 -0.051초, 대양금속 -0.293초를 stale로 거절한 것은 확정 결함이다. 반면 호가가 지정가보다 높아진 엑시콘 선행 후보, 기존 미체결 중 중복 신호, 돌파 호가 미확인 및 접수 후 미체결 취소는 구분해야 한다. 추가 FAST 수신 시각 결함이 몇 기회를 더 없앴는지는 아직 정량화하지 못했다.
 
-1. 이 작업 폴더의 현재 HEAD와 미커밋 변경, GitHub 수정 브랜치 존재를 확인한다. 다른 작업공간·main·운영본을 덮어쓰지 않는다.
-2. `python -B -m unittest tests.test_r6_fast_repair tests.test_r6_shadow_runtime tests.test_r6_readiness_repair tests.test_r6_execution_repair tests.test_fast_momentum tests.test_shadow_tick_logger -q`를 실행한다.
-3. 전체 회귀는 Qt offscreen 및 socket 접속 차단 harness로 수행한다. 완료 로그·종료코드·실패가 없으면 PASS로 적지 않는다. `REPRODUCE.md`의 최종 명령을 따른다.
-4. `$env:USERPROFILE\Desktop\주식자동매매\runtime\automation-production\archive\events.jsonl.20261014-145249-570438.7232.32e27bce`를 해시 확인 후 `python -B -m audit.r6_work_repair_20261014.replay "<원본>" --out "<개별 재현 폴더>"`로 재현한다.
-5. SHADOW 실행은 `python -B -m automation.shadow_fast_runtime --check --source-root "<R5 운영 폴더>" --output "<운영 외 독립 SHADOW 폴더>"`부터. R5 실행 중이면 우회·강제 종료·토큰 추가 발급하지 않는다. 사용자가 승인한 공식 STOP과 보유·미체결·UNKNOWN 대조 뒤에만 다음 실데이터 실행을 한다.
-6. 2026-10-15 08:50~09:10 `--seconds 1200`으로 실제 원시 TRADE/BOOK을 수집한다. 파일·구독 ACK·exchange/receiver/processed time·큐 유실·flush·자원 사용을 확인한다. 누락을 감지할 수 있다는 것과 무손실 보장은 다르다.
-7. 실제 FAST를 원시 tape로 재생하여 A/B/C와 발견·관측·신호·후속 호가 적격 시각을 비교한다. 0~3틱 및 1프레임 이상 지연, 비용, 단일 계좌·2%/4%·한 종목을 유지한다. 별도 거래일도 평가하고 손실/수익 양쪽의 과잉 차단을 측정한다.
-8. 수정→전체 회귀→새 clean checkout 재현→민감정보 staged 검사→별도 브랜치 게시. 수익성 미입증 상태에서 LIVE를 테스트 수단으로 사용하지 않는다.
+조건 민감도: 같은 저장 gate 표본에서 기존판/가속 2.5/거래대금 20M·15M/조합 모두 준비 형상 0. 09:25 시점에 상승/보합/하락 및 WATCH/비WATCH로 사전 층화한 12종목, 15분 실제 저장 틱 4,603개에서도 5개 대안 모두 detector episode 0이었다. 3종목은 틱이 없고 SHADOW 기록은 WATCH/보유 구간을 완전히 포함하지 않으므로 **전체 관측 및 손익 검증은 UNKNOWN**이다. 조건을 낮추면 10개 유효 기회를 얻는다는 근거가 아니다.
 
-## 로컬 증거 위치
+기존 4거래 순손익: 엑시콘 +1,102 / 카카오게임즈 -281 / 한선엔지니어링 -486 / 엠케이전자 +444원. 최초 신호 당시의 완전한 틱/호가/확정봉이 없어 진입 품질을 정상이라고 단정하지 않았다. MK는 공통 엔진 오청산을 고쳐도 기존 FAST 이익보호로 12:54:51경 청산하는 재현이므로 수익 보유 능력은 미해결이다.
 
-- 개발: `$env:USERPROFILE\Documents\주식자동매매_개발\r6-work-repair-20261014`.
-- 개인 증거: 같은 상위 폴더의 `r6-work-repair-private-20261014` 및 `r6-work-repair-audit-20261014`. HALT 복구 결과·백업, 원본 이전 replay, KRX 명칭 확인, 전체 검사 harness와 로그를 보존했다. 인증 파일과 계좌 원본은 Git에 넣지 않는다.
-- 저장소 공개 결과: `audit/r6_work_repair_20261014/`.
+보유시간 6거래: 1분 미만 2 / 1~3분 1 / 3~5분 1 / 5분 이상 2. 5분 강제 보유를 추가하지 않는다.
 
-이 인계서는 성공 선언이 아니다. 전체 검사·게시·실접속 미완료는 최종 기록에서 구분한다.
+## 6. 손익/불리 체결/자료 수집의 한계
 
-## 최종 인계 상태
+- 마지막으로 검증한 전체 백테스트 순손익: **UNKNOWN**. 이번 실행에서 전체 백테스트를 수행하지 않았다.
+- 한선 14:42 자료의 이익보호 요소 재현은 0.5초 지연 + 기존 비례 비용/슬리피지 모델에서 약 -475.32원, 추가 1틱 불리 체결은 약 -515.12원이다. 실제 증권사 -354원과 별개다. 새 시각 검사로 수신된 틱을 이용하면 모멘텀 실패가 더 일찍 관측되지만 이는 단일 구성요소 재현이며 실제 체결을 보장하지 않는다.
+- A/B/C는 공통 초기 무효화/모멘텀 위험을 유지하므로 이 손실 사례의 수익보호 변경 효과는 없다. MK 당시 완전한 자료가 없어 B/C 우열도 미판정이다.
+- 제한 기록은 이미 운영 반영돼 14:42 거래의 틱/호가/5개 완성봉을 확보했다. 파일/큐 손실 0인 해당 구간만 확인했다. 모든 과거/모든 감시 종목 자료가 복원된 것은 아니다.
+- 메모리 링: 45초, 종목당 256행, 전체 1MiB. 큐 4MiB/4,096행. 파일 4MiB 단위, 하루 16MiB/전체 64MiB. 한도 도달 시 삭제하지 않고 누락/UNKNOWN을 표시한다.
+- SHADOW/실험 코드는 실행 가능하지만 LIVE Worker를 재개해 수집하지 않는다. 사용자에게 승인된 별도 관찰 실행 경로가 있는지 먼저 확인한다.
 
-**부분 완료**: 실제 코드 수정·GitHub 게시·개발본 및 clean checkout 전수 검사·자료 재현·인계 문서 보존은 완료. 실제 FAST의 독립 시장 수익성, 1틱 체결 내성, 개장 RAW→신호 지연 비교와 증권사 실구독은 미완료다. 10월14일 22:23 인증 없는 --check는 source STOP 상태에서 충돌 검사 PASS/주문 surface false/네트워크0/종료0. 이를 실시간 수신 PASS로 읽지 않는다. 운영 R5는 배포하지 않았고 main은 3c6fb27557fc0c556ce8312a4bd1000dd07f7d7c로 유지했다.
+## 7. 결과/원본 위치
 
-재개 명령: 기존 작업 폴더에서 `git log -5 --oneline`, `git status --short`, `git rev-parse HEAD`, `git rev-parse origin/fix/r6-work-repair-20261014`부터 확인한다. 코드 기준은 bfe5dd9ecd61640a07a4753e62c76c36f1c82c0e이고 이후 문서 커밋은 해당 코드와 동일하다. 다른 LLM의 미커밋 변경을 reset하지 않는다. 위 순서와 SHADOW_RUNBOOK의 조건을 유지해 10월15일 실제 자료 수집·검증을 이어간다.
+공통 private 폴더:
+`C:\Users\MJS\Documents\주식자동매매_개발\r6-entry-review-20261016-private`
+
+- `FINAL_TARGETED.json` / `.log`, `run_final_targeted.py`: 최종 표적 검사.
+- `FINAL_SOURCE_ALLOWLIST.json`: 코드 커밋과 변경 파일 해시.
+- `ENTRY_CAPTURE_DEPLOYMENT.json`, `FAST_CLOCK_DEPLOYMENT.json`, `HANSUN_SAFETY_STOP.json`: 운영 반영/중지 증거.
+- `HANSUN_REVIEW.json`, `HANSUN_1442_CAPTURE_PRIVATE.jsonl`, `HANSUN_1442_ENTRY_PRIVATE.jsonl`: 최신 거래 복기.
+- `HANSUN_1426_1430_SHADOW_PRIVATE.jsonl`, `HANSUN_1430_1440_SHADOW_PRIVATE.jsonl`: 해당 종목의 제한된 진입 전 원본.
+- `FOUR_ENTRY_AUDIT.json`, `FAST_FUNNEL_1230.json`, `FREQUENCY_GATE_SAMPLE.json`, `GATE_SENSITIVITY.json`: 앞선 감사.
+- `FREQUENCY_COHORT.json`, `FREQUENCY_COHORT_TAPE_PRIVATE.jsonl`, `FREQUENCY_VARIANT_REPLAY.json`: 미래 승자를 고르지 않은 비교군/재현.
+- 원본 운영 기록: `C:\Users\MJS\Desktop\주식자동매매\runtime\automation-production\state.json`, `trade-review\trade-review-20261016-0001.jsonl`.
+- 참고 시각/청산 원자료: 형제 `r6-timeguard-20261016-private`, `r6-mk-exit-20261016-private`, `r6-fast-profit-observation-20261016-private`.
+- 마지막 소스 백업: 형제 `r6-operating-fast-clock-backup-20261016-151527`.
+
+계좌 조회 원문이 포함된 PRIVATE 파일/운영 runtime을 GitHub에 올리지 않는다. 전체 로그를 다시 전수 검색하지 않는다.
+
+## 8. 바로 이어서 할 순서/명령
+
+1. 같은 개발 경로를 연다. `git status --short`, `git branch --show-current`, `git log -2 --oneline`으로 보존 상태 확인. 오래된 원격 버전으로 덮어쓰지 않는다.
+2. 운영 STOP·Worker 미실행과 기존 보호 상태를 읽기 전용으로 확인한다. 새 LIVE 승인을 만들거나 자동 시작하지 않는다.
+3. 코드 변경이 필요하면 전용 테스트에 추가한다. 재실행이 필요할 때만 다음 표적 검사를 쓴다(전체 회귀 아님).
+
+```powershell
+Set-Location -LiteralPath 'C:\Users\MJS\Documents\주식자동매매_개발\r6-target-cap-incident-20261015'
+& 'C:\Users\MJS\Documents\PythonEnvs\stock-trading-bot\Scripts\python.exe' -X utf8 -B 'C:\Users\MJS\Documents\주식자동매매_개발\r6-entry-review-20261016-private\run_final_targeted.py'
+```
+
+4. 한선 14:42의 원래 진입과 조건부 장중 저항 상한 대안을 같은 자료로 비교한다. 원래 process에 16,870/16,880원 저항이 유지됐는지 증거가 없으면 UNKNOWN을 유지한다. 후보 재편입/재시작 시 참고 가격 맥락 보존을 설계하되 실시간 warmup 복원과 구분한다.
+5. 기존 PriceContext → FAST 연결 및 `fast_context_observation` 기록을 오프라인/별도 SHADOW에서 확인한다. 현 개발본의 observer는 실제 매수 판단을 바꾸지 않는다. 정상 상승/횡보/하락 비교군과 비용·체결 가능성까지 검증하기 전 LIVE 필터로 승격하지 않는다.
+6. B의 비용 반영 손익비 guard OFF 문제, FAST의 미세 지지 선택과 5분 추세 불일치를 각각 검증한다. 고정 손절폭 확장이나 5분 강제 보유로 대체하지 않는다.
+7. 이익보호 A/B/C는 완전한 보유 구간 자료가 쌓인 동일 거래 집합으로 비교한다. 수신 순서, 실제 봉 처리 완료 시각, 실제 호가 잔량, 비용/1틱/주문 지연을 반영한다. 없는 과거 자료를 생성하지 않는다.
+8. 유효 진입 10건 가설은 충분한 사전 모집단과 연속 관측 자료로 검증한다. 12종목 불완전 SHADOW 재현을 한국 시장 전체 기회 수로 확대 해석하지 않는다.
+9. 새 전략의 실거래 적용은 검증 및 사용자 운영 승인 후 별도 후보로 한다. 이미 배포한 검증된 버그 수정은 유지한다. 위험예산·당일 장부·HARD_LOCK을 초기화하지 않는다.
