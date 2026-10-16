@@ -371,12 +371,27 @@ class FastMomentumStrategy:
         overhead = watch.get('resistance'); known_at = stamp(watch.get('resistance_asof') or watch.get('observed_at'))
         if not number(overhead) or overhead <= entry or known_at is None or known_at > now or known_at.date() != now.date():
             return reject('KNOWN_OVERHEAD_TARGET_UNAVAILABLE', structure=structure)
+        peak = watch.get('nearest_confirmed_peak')
+        intraday_cap = None
+        if peak and isinstance(peak, dict):
+            peak_price = peak.get('price')
+            peak_conf = stamp(peak.get('confirmed_at'))
+            peak_cleared = stamp(peak.get('cleared_at')) if peak.get('cleared_at') else None
+            if (number(peak_price) and peak_price > entry
+                    and peak_conf and peak_conf <= now and peak_conf.date() == now.date()
+                    and (peak_cleared is None or peak_cleared > now)):
+                intraday_cap = peak_price
+                target = floor_tick(min(overhead, peak_price))
+            else:
+                target = floor_tick(overhead)
+        else:
+            target = floor_tick(overhead)
         # Never move a structural line to a fixed percentage or solve a target
         # backwards from desired RR. Size from the separately derived hard line.
         buffer = max(tick_size(support), t.ask - t.bid, support * getattr(self.cfg, 'structural_buffer', .001))
         stop = floor_tick(support - buffer)
         noise = max(structure['observed_noise'], t.ask - t.bid, tick_size(support))
-        emergency = floor_tick(stop - noise); target = floor_tick(overhead)
+        emergency = floor_tick(stop - noise)
         if not 0 < emergency < stop < entry < target:return reject('INVALID_STRUCTURAL_PRICE_GEOMETRY', structure=structure)
         entry_fill = entry * (1 + self.costs['entry_slippage'])
         buy_outlay = entry_fill * (1 + self.costs['buy'])
@@ -390,11 +405,14 @@ class FastMomentumStrategy:
             net_rr=net_rr, gross_rr=(target - entry) / (entry - emergency),
             reward_net_per_share=reward, risk_net_per_share=risk, risk_budget=risk_budget,
             target_basis='KNOWN_RESISTANCE_CEILING_NOT_PRICE_FORECAST', target_known_at=known_at.isoformat(),
+            nearest_confirmed_peak=peak if intraday_cap else None,
             structural_evidence=structure, buffer=buffer, noise_band=noise,
             cost_basis='ASK_AND_EXIT_BID_PLUS_PROPORTIONAL_FEES_TAX_SLIPPAGE_ONCE',
             costs=dict(self.costs), entry_is_filled=False, modeled_entry=entry_fill)
         minimum = getattr(self.cfg, 'min_reward_risk', 1.5)
-        if net_rr is None or net_rr < minimum:return reject('NET_REWARD_RISK_LOW', min_net_rr=minimum, **geometry)
+        if net_rr is None or net_rr < minimum:
+            reason = 'KNOWN_CEILING_NET_REWARD_RISK_LOW' if (intraday_cap and target == floor_tick(intraday_cap)) else 'NET_REWARD_RISK_LOW'
+            return reject(reason, min_net_rr=minimum, **geometry)
         risk_qty = math.floor(risk_budget / risk); cash_qty = math.floor(capital_limit / buy_outlay)
         quantity = min(risk_qty, cash_qty)
         if quantity <= 0:return reject('RISK_ZERO_QUANTITY', max_shares_by_risk=risk_qty, max_shares_by_cap=cash_qty, **geometry)

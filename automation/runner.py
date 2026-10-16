@@ -462,8 +462,14 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
         is_live = (engine.policy.mode == 'LIVE' and
                    bool(engine.policy.state.get('live_authorized')) and
                    bool(engine.c.live_mode))
+        watch_eval = dict(watch)
+        if getattr(detector, 'price_context', None) is not None:
+            ctx_snapshot = detector.price_context.snapshot(t.symbol, t, t.ask)
+            peak = ctx_snapshot.get('nearest_confirmed_peak')
+            if peak:
+                watch_eval['nearest_confirmed_peak'] = peak
         fast_sig = engine.fast_strategy.evaluate(
-            t, watch,
+            t, watch_eval,
             capital_limit=engine.auto_available_capital(),
             risk_budget=engine.risk_equity() * engine.c.risk_fraction,
             ingest=False,
@@ -490,6 +496,13 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
         annotate_signal(engine,detector,watch,sig)
         from automation.fast_entry_context import attach_fast_entry_observation
         attach_fast_entry_observation(sig,detector,t,engine.clock(),engine.c.min_reward_risk)
+        obs = sig.get('fast_context_observation', {})
+        if obs.get('status') == 'REJECT_CANDIDATE':
+            from automation.decisions import gate
+            reason = obs.get('reason', 'FAST_ENTRY_CONTEXT_REJECTED')
+            engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY',reason,
+                {'fast_entry_context':gate(False,**obs)},signal=sig,price=t.price)
+            engine.event('NO_TRADE',symbol=t.symbol,reason=reason); return None
         fresh=structure(bars,sig['limit'],replace(engine.c,max_recent_range=999.0,max_overhead_share=1.0,min_resistance_room=0.0),t.time.date())
         if fresh.get('status')!='ELIGIBLE':
             from automation.decisions import gate
@@ -855,11 +868,19 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     detector=PatternDetector(effective,auto,engine.costs)
     detector.fast_strategy=engine.fast_strategy
     detector.continuous_observation=True
-    if auto.entry_context_enabled or auto.structural_breakout_enabled:
+    if auto.entry_context_enabled or auto.structural_breakout_enabled or auto.intraday_context_enabled or auto.fast_momentum_enabled:
         saved=[p.get('signal',{}) for p in engine.s['trades']]
         saved.extend(o.get('signal') or {} for o in engine.s['orders'].values() if o.get('side')=='BUY')
         references=detector.price_context.bootstrap(saved,now(),effective.stale_seconds)
         engine.event('ENTRY_REFERENCE_RECOVERY',**references)
+        context_cache_path=root/'runtime'/'price_context_cache.json'
+        if context_cache_path.exists():
+            try:
+                import json
+                with open(context_cache_path,'r',encoding='utf-8') as f:cached=json.load(f)
+                recovered=detector.price_context.load_cache(cached,now())
+                if recovered:engine.event('PRICE_CONTEXT_CACHE_RESTORED',recovered_bars=recovered,symbols=len(detector.price_context.rows))
+            except Exception:pass
     # 검사 시간 종료는 STOP과 같으며 LIVE의 시간 제한 검사는 금지한다.
     if seconds and (cfg.live_mode or auto.capital_limit!=0 or policy.mode!='ARMED' or
                     policy.state.get('test_capital_release',{}).get('status') in {'APPROVED','SUBMITTING'}):
@@ -1102,6 +1123,9 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                             if sym in lookup:
                                 with detector._state_lock:detector.price_context.merge_history(sym,packet['bars'],received,venue)
                             with shadow.observer.detector._state_lock:shadow.observer.detector.price_context.merge_history(sym,packet['bars'],received,venue)
+                            try:
+                                atomic_json(root/'runtime'/'price_context_cache.json',detector.price_context.dump_cache())
+                            except Exception:pass
                         engine.event('INTRADAY_REFERENCE_READY' if not packet.get('error') else 'INTRADAY_REFERENCE_PENDING',
                             symbol=sym,venue=venue,received_at=packet['received_at'],known_bars=len(packet['bars']),
                             source='REST_REFERENCE',restored_signal_bars=0,restored_warmup=False,error=packet.get('error'))

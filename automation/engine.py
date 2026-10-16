@@ -295,7 +295,7 @@ class AutonomousEngine(ExistingExits,Engine):
             'efficiency':gate(signal.get('efficiency',{}).get('decision')=='TRADE',efficiency=signal.get('efficiency'))}
 
     def entry_market_reason(self,signal,quantity,fallback=None,phase='PRE_INTENT'):
-        if self.a.exit_plan_reward_guard_enabled:
+        if self.a.exit_plan_reward_guard_enabled or signal.get('pattern') == 'B':
             from automation.exit_plan import build_plan
             signal['exit_plan']=build_plan(self.c,self.a,signal,quantity=quantity)
             if not signal['exit_plan']['reward_guard_pass']:return 'EXIT_PLAN_REWARD_UNKNOWN_OR_LOW'
@@ -426,6 +426,9 @@ class AutonomousEngine(ExistingExits,Engine):
                 if age<0 or detected.date()!=checked_at.date():return 'FAST_SIGNAL_CLOCK_INVALID'
                 if age>ttl:return 'FAST_SIGNAL_TTL_EXPIRED'
                 if tick.ask>ceiling:return 'FAST_MAX_CHASE_EXCEEDED'
+                obs = signal.get('fast_context_observation', {})
+                if obs.get('status') == 'REJECT_CANDIDATE':
+                    return obs.get('reason', 'KNOWN_CEILING_NET_REWARD_RISK_LOW')
             except (KeyError,TypeError,ValueError):return 'FAST_ENTRY_PROOF_MISSING'
         b_structure=self.a.structural_pullback_enabled and signal.get('pattern')=='B'
         a_structure=self.a.structural_breakout_enabled and signal.get('pattern')=='A'
@@ -556,7 +559,7 @@ class AutonomousEngine(ExistingExits,Engine):
                        ttl_seconds=signal.get('ttl_seconds', 15.0), ask=tick.ask, limit=signal['limit'])
         from automation.exit_plan import build_plan
         signal['exit_plan']=build_plan(self.c,self.a,signal,quantity=qty)
-        if self.a.exit_plan_reward_guard_enabled and not signal['exit_plan']['reward_guard_pass']:
+        if (self.a.exit_plan_reward_guard_enabled or signal.get('pattern') == 'B') and not signal['exit_plan']['reward_guard_pass']:
             self.decisions.emit('ENTRY_EVAL',tick.symbol,'NO_BUY','EXIT_PLAN_REWARD_UNKNOWN_OR_LOW',
                 {'exit_plan_reward':gate(False,plan=signal['exit_plan'])},signal=signal,price=tick.price)
             return None

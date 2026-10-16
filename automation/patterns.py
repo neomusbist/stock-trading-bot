@@ -193,15 +193,19 @@ class PatternDetector(Detector):
                'after_prior_high','last','last_gap_reason')
         # Never hold both detector locks: promotion and demotion can run concurrently.
         with source._state_lock:
-            if not any(symbol in getattr(source,key) for key in ('observation_start','history','buffers')):return False
+            has_state=any(symbol in getattr(source,key) for key in ('observation_start','history','buffers'))
+            has_ref=symbol in source.price_context.rows
+            if not (has_state or has_ref):return False
             snapshot={key:(deque(source.buffers[symbol]) if key=='buffers' else
                            source.last[symbol] if key=='last' else deepcopy(getattr(source,key)[symbol]))
                       for key in names if symbol in getattr(source,key)}
             reference=PriceContext();reference.day=source.price_context.day
-            if symbol in source.price_context.rows:
+            if has_ref:
                 reference.rows[symbol]=deepcopy(source.price_context.rows[symbol])
         with self._state_lock:
-            self.price_context.transfer(reference,symbol)
+            if has_ref:
+                self.price_context.transfer(reference,symbol)
+            if not has_state:return True
             src_last=snapshot.get('last');tgt_last=self.last.get(symbol)
             if tgt_last and (src_last is None or (src_last.time,src_last.cumulative)<(tgt_last.time,tgt_last.cumulative)):return False
             src_bars=len(snapshot.get('history',()))
@@ -465,6 +469,14 @@ class PatternDetector(Detector):
             if box_evidence.get('target_ceiling') is not None:target=min(target,box_evidence['target_ceiling'])
         distance=(limit-stop)/limit if limit>0 else None
         rr=(target-limit)/(limit-stop) if limit>stop else None
+        if setup['pattern']=='B':
+            from automation.exit_plan import build_plan
+            b_sig={'limit':limit,'stop':stop,'target':target,'pattern':'B',
+                   'emergency':structural.get('emergency_stop') if structural else None,
+                   'invalidation_policy':{'enabled':True,'structural_stop':stop,'emergency_stop':structural.get('emergency_stop',stop)} if structural else None}
+            b_plan=build_plan(c,self.a,b_sig)
+            if not b_plan.get('reward_guard_pass'):
+                rr=b_plan.get('net_reward_risk') if b_plan.get('net_reward_risk') is not None else 0.0
         horizon=getattr(self.a,'horizon_'+setup['pattern'].lower()+'_minutes')
         score=efficiency(limit,stop,target,min(1.,0.4+0.1*len(watch.get('source_details',{}))),horizon,self.costs,self.a.min_efficiency_score)
         invalidation_pass=bool(distance is not None and 0<stop<limit and c.min_stop_fraction<=distance<=c.max_stop_fraction)

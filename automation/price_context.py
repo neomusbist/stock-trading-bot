@@ -31,7 +31,8 @@ class PriceContext:
             except (KeyError,TypeError,ValueError):continue
         added=0
         for stamp,sig in sorted(usable,key=lambda p:p[0]):
-            for raw in sorted(sig.get('decision_bar_snapshot',[]),key=lambda b:b.get('time','')):
+            snapshots=sig.get('decision_bar_snapshot') or sig.get('fast_reference_bar_snapshot') or []
+            for raw in sorted(snapshots,key=lambda b:b.get('time','')):
                 try:
                     bar={**raw,'time':datetime.fromisoformat(raw['time']),'venue':sig.get('venue')}
                     added+=bool(self.record(sig['symbol'],bar,stamp,stale_seconds))
@@ -148,3 +149,42 @@ class PriceContext:
                 dst['context_venue']=src.get('context_venue')
         self.rows.move_to_end(symbol)
         while len(self.rows)>self.limit:self.rows.popitem(last=False)
+
+    def dump_cache(self):
+        """Serialize current day's observed reference bars and confirmed peaks."""
+        if not self.day:return {}
+        return {
+            'day': self.day.isoformat(),
+            'rows': {
+                sym: {
+                    'bars': [{k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in b.items()} for b in row['bars']],
+                    'peaks': list(row['peaks']),
+                    'first_observed_at': row['first_observed_at'],
+                    'last_complete_at': row['last_complete_at'],
+                    'context_venue': row.get('context_venue'),
+                    'history_received_at': row.get('history_received_at')
+                }
+                for sym, row in self.rows.items()
+            }
+        }
+
+    def load_cache(self, data, asof):
+        """Restore reference bars and peaks from same-day cache without touching tick warmup."""
+        if not data or not data.get('day'):return 0
+        try:
+            cache_day = datetime.fromisoformat(data['day']).date() if isinstance(data['day'], str) else data['day']
+            if cache_day != asof.date():return 0
+        except (TypeError, ValueError):
+            return 0
+        added = 0
+        for sym, row_data in data.get('rows', {}).items():
+            for raw_bar in row_data.get('bars', []):
+                try:
+                    bar = dict(raw_bar)
+                    if isinstance(bar.get('time'), str):
+                        bar['time'] = datetime.fromisoformat(bar['time'])
+                    if bar['time'].date() == asof.date() and bar['time'] + timedelta(minutes=1) <= asof:
+                        added += bool(self.record(sym, bar, asof))
+                except (KeyError, TypeError, ValueError):
+                    continue
+        return added
