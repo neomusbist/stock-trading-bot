@@ -47,13 +47,17 @@ def _atomic_json(path, value, fsync=True):
             f.flush()
             if fsync:
                 os.fsync(f.fileno())
-        for attempt in range(6):
+        for attempt in range(8):
             try:
                 os.replace(tmp,path)
                 break
-            except PermissionError:
-                if attempt==5: raise
-                time.sleep(.01*(2**attempt))
+            except (PermissionError, OSError) as e:
+                winerror = getattr(e, 'winerror', None)
+                if winerror not in (5, 32) and not isinstance(e, PermissionError):
+                    raise
+                if attempt == 7:
+                    raise
+                time.sleep(min(0.5, 0.015 * (2 ** attempt)))
     finally:
         if tmp.exists():
             try: tmp.unlink()

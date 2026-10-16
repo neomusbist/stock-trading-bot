@@ -31,7 +31,7 @@ class AtomicIOTests(unittest.TestCase):
         error=PermissionError(13,'denied',str(self.path))
         with patch('core.util.os.replace',side_effect=error) as replace,patch('core.util.time.sleep'):
             with self.assertRaises(PermissionError): atomic_json(self.path,{'new':1})
-        self.assertEqual(replace.call_count,6); self.assertEqual(read_json(self.path),{'old':1})
+        self.assertEqual(replace.call_count,8); self.assertEqual(read_json(self.path),{'old':1})
         self.assertEqual(list(self.path.parent.glob('*.tmp')),[])
     def test_transient_permission_recovers(self):
         original=os.replace; calls=[]

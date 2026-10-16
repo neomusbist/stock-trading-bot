@@ -1,5 +1,5 @@
 """완성된 봉과 현재까지 수신한 틱만으로 A/B/C 모멘텀 지속 패턴을 판별한다."""
-from datetime import timedelta
+from datetime import datetime, timedelta
 from collections import deque
 from dataclasses import replace
 from copy import deepcopy
@@ -63,19 +63,19 @@ class PatternDetector(Detector):
             if b and b['time']!=minute:
                 self.prior_high[t.symbol]=self.day_high.get(t.symbol,t.price)
             self.day_high[t.symbol]=max(t.price,self.day_high.get(t.symbol,t.price))
+        had_minute_gap = False
         if b and b['time']!=minute:
             # Prior confirmed references are distinct from consecutive signal bars.
             self.price_context.record(t.symbol,{**b,'venue':getattr(self.cfg,'after_default_venue','SOR') if t.time.strftime('%H:%M:%S')>=self.a.after_prep_start else 'KRX'},t.time,self.cfg.stale_seconds)
-            if (minute-b['time']).total_seconds()==60:
-                self.history.setdefault(t.symbol,deque(maxlen=30)).append(b)
-            else:
-                self.history.pop(t.symbol,None)
+            self.history.setdefault(t.symbol,deque(maxlen=30)).append(b)
+            if (minute-b['time']).total_seconds()!=60:
+                had_minute_gap = True
                 self.last_gap_reason[t.symbol]='MISSING_MINUTE'
             b=None
         if b is None:
             start=self.observation_start.get(t.symbol)
             was_observing = start is not None and start <= minute
-            gap_reason=None if (was_observing or t.time.second<=self.cfg.stale_seconds) else 'FIRST_TRADE_AFTER_5S_COVERAGE_UNKNOWN'
+            gap_reason='MISSING_MINUTE' if had_minute_gap else (None if (was_observing or t.time.second<=self.cfg.stale_seconds) else 'FIRST_TRADE_AFTER_5S_COVERAGE_UNKNOWN')
             b={'time':minute,'open':t.price,'high':t.price,'low':t.price,'close':t.price,'volume':0,
                'first_second':0 if was_observing else t.time.second,'last_second':t.time.second,
                'first_trade_time':t.time.isoformat(),'last_trade_time':t.time.isoformat(),
@@ -182,12 +182,36 @@ class PatternDetector(Detector):
                     0<=(stamp-last.time).total_seconds()<=self.cfg.stale_seconds)
 
     @observation_locked
+    def preload_from_context(self, symbol, asof):
+        """PriceContext에 보관된 당일 확정 1분봉이 있고 history가 비어있을 때 유효 완성봉을 안전하게 사전 적재한다."""
+        if not symbol or len(self.history.get(symbol, ())) > 0:
+            return 0
+        row = self.price_context.rows.get(symbol)
+        if not row or not row.get('bars'):
+            return 0
+        bars = [b for b in row['bars'] if isinstance(b.get('time'), datetime) and b['time'].date() == asof.date() and b['time'] + timedelta(minutes=1) <= asof]
+        if not bars:
+            return 0
+        valid_bars = []
+        for i, b in enumerate(bars):
+            if i > 0 and (b['time'] - bars[i-1]['time']).total_seconds() != 60:
+                valid_bars.clear()
+            valid_bars.append(b)
+        if valid_bars:
+            h = self.history.setdefault(symbol, deque(maxlen=30))
+            for b in valid_bars:
+                if b not in h:
+                    h.append(b)
+            return len(valid_bars)
+        return 0
+
+    @observation_locked
     def forget(self,symbol):
         for mapping in (self.buffers,self.minutes,self.completed,self.last,self.history,self.current,self.day_high,self.prior_high,self.after_day_high,self.after_prior_high,self.last_eval,self.observation_start,self.observation_session):mapping.pop(symbol,None)
         self._eval_keys.pop(symbol,None)
 
     def handoff_from(self,source,symbol):
-        if source is None or source is self:return False
+        if source is None or source is self or not hasattr(getattr(source, '_state_lock', None), '__enter__'):return False
         names=('history','buffers','current','minutes','completed','observation_start',
                'observation_session','day_high','prior_high','after_day_high',
                'after_prior_high','last','last_gap_reason')

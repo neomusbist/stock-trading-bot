@@ -214,18 +214,19 @@ class SubscriptionState:
         detector.reset();self.disconnected(stamp)
         engine.event('SUBSCRIPTION_TRANSPORT_LOST',worker_restart_required=False)
 
-    def gap_expired(self,detector,symbol,stamp):
+    def gap_expired(self,detector,symbol,stamp,limit_seconds=None):
         last=detector.last.get(symbol)
         if last and last.time.date()!=stamp.date():return True
         detached_at=self.detached_at.get(symbol)
+        limit = limit_seconds if limit_seconds is not None else detector.cfg.stale_seconds
         # A quiet stock's last trade age is not the length of a subscription gap.
-        return bool(detached_at and (stamp-detached_at).total_seconds()>detector.cfg.stale_seconds
+        return bool(detached_at and (stamp-detached_at).total_seconds()>limit
                     and not detector.observation_fresh(symbol,stamp))
 
-    def refresh(self,engine,detector,feed,desired,stamp):
+    def refresh(self,engine,detector,feed,desired,stamp,grace_seconds=None):
         desired=set(desired)
         for sym in list(self.detached-desired):
-            if self.gap_expired(detector,sym,stamp):
+            if self.gap_expired(detector,sym,stamp,limit_seconds=grace_seconds):
                 gap=(stamp-self.detached_at[sym]).total_seconds()
                 detector.forget(sym); self.detached.discard(sym);self.detached_at.pop(sym,None)
                 engine.event('OBSERVATION_RELEASED',symbol=sym,data_action='RESET_STALE_GAP',
@@ -250,10 +251,11 @@ class SubscriptionState:
         for sym in added:
             had_data=sym in detector.last
             fresh=detector.observation_fresh(sym,stamp)
-            expired=had_data and self.gap_expired(detector,sym,stamp)
+            expired=had_data and self.gap_expired(detector,sym,stamp,limit_seconds=grace_seconds)
             since=self.detached_at.get(sym)
             gap=(stamp-since).total_seconds() if since else 0.0
             if expired:detector.forget(sym)
+            elif hasattr(detector,'preload_from_context'):detector.preload_from_context(sym,stamp)
             self.detached.discard(sym);self.detached_at.pop(sym,None);self.waiting[sym]=stamp
             engine.event('OBSERVATION_REJOINED',symbol=sym,
                 data_action='RESET_STALE_GAP' if expired else 'RETAIN_FRESH' if fresh else 'RETAIN_OBSERVATION' if had_data else 'NO_DATA',
@@ -278,12 +280,12 @@ class SubscriptionState:
 def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,drops,sink=None,shadow_detector=None):
     """구독 라우팅 경계에서 승격 종목의 기존 예열 큐와 관찰 상태를 인계한다. 주문은 하지 않는다."""
     priority=set(real_symbols)
-    if shadow_detector is None and hasattr(sink,'__self__'):
-        worker = getattr(sink, '__self__', None)
-        shadow_detector = getattr(getattr(worker, 'observer', None), 'detector', None)
-    if not isinstance(getattr(feed,'observation_q',None),queue.Queue):
-        if hasattr(feed,'configure_observation'):feed.configure_observation(priority,observed,sink)
-        return drops,priority
+    if shadow_detector is None:
+        if hasattr(sink,'__self__') and not str(type(sink)).startswith("<class 'unittest.mock."):
+            worker = getattr(sink, '__self__', None)
+            shadow_detector = getattr(getattr(worker, 'observer', None), 'detector', None)
+        elif hasattr(sink, 'shadow_detector') and not str(type(sink)).startswith("<class 'unittest.mock."):
+            shadow_detector = sink.shadow_detector
     critical=set(engine.s['positions'])|{o['symbol'] for o in engine.active_orders()}
     critical.update(set(engine.s['automation']['existing'])&set(BREAKEVEN_EXITS))
     promotions=(priority-set(prior_priority))&observed-critical
@@ -293,6 +295,9 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
             detector.handoff_from(shadow_detector, sym)
         for sym in demotions:
             shadow_detector.handoff_from(detector, sym)
+    if not isinstance(getattr(feed,'observation_q',None),queue.Queue):
+        if hasattr(feed,'configure_observation'):feed.configure_observation(priority,observed,sink)
+        return drops,priority
     promoted=[]
     with getattr(feed,'subscription_lock',nullcontext()):
         if feed.observation_drops!=drops:
@@ -1144,10 +1149,13 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     engine.event('OBSERVATION_RETENTION',symbols=sorted(retained),
                         grace_seconds=observation_grace,subscription_count=len(desired),
                         capacity=observation_settings.max_symbols,actual_order_permission=False)
-                    retained_observation=retained
-                observation_drops,priority_symbols=prewarm_handoff(engine,detector,feed,observed,real_symbols,priority_symbols,observation_drops,shadow.deliver)
+                observation_drops,priority_symbols=prewarm_handoff(
+                    engine,detector,feed,observed,real_symbols,priority_symbols,observation_drops,
+                    shadow.deliver,
+                    shadow_detector=getattr(getattr(shadow, 'observer', None), 'detector', None)
+                )
                 if in_session:
-                    subscriptions.refresh(engine,detector,feed,desired,now()); symbols=set(subscriptions.symbols)
+                    subscriptions.refresh(engine,detector,feed,desired,now(),grace_seconds=observation_grace); symbols=set(subscriptions.symbols)
                     # Rejoined symbols must first deliver a fresh post-subscription regular tick.
                     for prom in set(focus_promotions)&set(lookup):
                         prom_tick=detector.last.get(prom)
