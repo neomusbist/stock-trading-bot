@@ -50,7 +50,7 @@ def observe_fast_entry_context(signal,context,asof,minimum_rr):
         confirmed=_stamp(peak['confirmed_at']);peak_at=_stamp(peak['time'])
         available=_stamp(peak.get('available_at',peak['confirmed_at']))
         cleared=_stamp(peak['cleared_at']) if peak.get('cleared_at') else None
-        if (not _positive(peak['price']) or peak['price']<=entry or not peak_at<confirmed<=asof
+        if (not _positive(peak['price']) or peak['price']<entry or not peak_at<confirmed<=asof
                 or not peak_at.date()==confirmed.date()==available.date()==asof.date()
                 or available>asof or (cleared and cleared<=asof)):
             return {**result,'reason':'CONFIRMED_PEAK_UNAVAILABLE_OR_CLEARED'}

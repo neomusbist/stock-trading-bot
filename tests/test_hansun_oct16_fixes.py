@@ -123,6 +123,42 @@ class HansunOct16FixesTests(unittest.TestCase):
             self.assertEqual(geom['target'], 17850)
             self.assertGreaterEqual(geom['net_rr'], 1.5)
 
+    def test_entry_at_exact_peak_price_is_capped_and_rejected(self):
+        """When entry price is exactly at the confirmed peak (16,880 == 16,880), the peak caps the target and rejects."""
+        strategy = FastMomentumStrategy(self.cfg, self.auto, self.costs)
+        symbol = '452280'
+        tape = strategy.get_tape(symbol)
+
+        t0 = self.time - timedelta(seconds=80)
+        tape.ingest(Tick(symbol, t0, 16730, 50, 1000, 16730, 16720, True), t0)
+        tape.ingest(Tick(symbol, t0 + timedelta(seconds=30), 16860, 100, 1150, 16860, 16850, True), t0 + timedelta(seconds=30))
+        tape.ingest(Tick(symbol, t0 + timedelta(seconds=45), 16850, 50, 1200, 16850, 16840, True), t0 + timedelta(seconds=45))
+        tape.ingest(Tick(symbol, t0 + timedelta(seconds=55), 16870, 100, 1300, 16870, 16860, True), t0 + timedelta(seconds=55))
+
+        t_now = self.time
+        current_tick = Tick(symbol, t_now, 16880, 500, 5000, 16880, 16870, True,
+                            ask_qty=100, bid_qty=100, depth_available=True, book_time=t_now)
+        tape.ingest(current_tick, t_now)
+
+        watch_with_peak = {
+            'code': symbol, 'name': '한선엔지니어링',
+            'resistance': 17850, 'resistance_asof': self.time.replace(hour=9, minute=0).isoformat(),
+            'observed_at': self.time.replace(hour=9, minute=0).isoformat(),
+            'nearest_confirmed_peak': {
+                'price': 16880,
+                'time': self.time.replace(minute=27, second=0).isoformat(),
+                'confirmed_at': self.time.replace(minute=29, second=0).isoformat(),
+            }
+        }
+
+        geom = strategy.calculate_invalidation_and_target(
+            current_tick, tape.metrics(t_now), watch_with_peak,
+            capital_limit=81300, risk_budget=1626, asof=t_now
+        )
+        self.assertFalse(geom['pass'])
+        self.assertEqual(geom['reason'], 'KNOWN_CEILING_NET_REWARD_RISK_LOW')
+        self.assertEqual(geom['target'], 16880)
+
     def test_hansun_1325_setup_b_low_net_rr_rejected_at_engine_and_detector(self):
         """13:25 Setup B with gross RR 2.55 but Net RR 0.67 must be rejected."""
         # 1. Test build_plan calculation

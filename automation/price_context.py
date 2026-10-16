@@ -98,7 +98,7 @@ class PriceContext:
 
     def snapshot(self,symbol,tick,entry):
         row=self.rows.get(symbol) if self.day==tick.time.date() else None
-        peaks=[p for p in row['peaks'] if p['price']>entry and p['confirmed_at']<=tick.time.isoformat()
+        peaks=[p for p in row['peaks'] if p['price']>=entry and p['confirmed_at']<=tick.time.isoformat()
             and (not p.get('cleared_at') or p['cleared_at']>tick.time.isoformat())] if row else []
         peak=min(peaks,key=lambda p:p['price']) if peaks else None
         return {'asof':tick.time.isoformat(),'nearest_confirmed_peak':deepcopy(peak),

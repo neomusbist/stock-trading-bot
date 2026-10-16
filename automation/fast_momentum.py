@@ -377,7 +377,7 @@ class FastMomentumStrategy:
             peak_price = peak.get('price')
             peak_conf = stamp(peak.get('confirmed_at'))
             peak_cleared = stamp(peak.get('cleared_at')) if peak.get('cleared_at') else None
-            if (number(peak_price) and peak_price > entry
+            if (number(peak_price) and peak_price >= entry
                     and peak_conf and peak_conf <= now and peak_conf.date() == now.date()
                     and (peak_cleared is None or peak_cleared > now)):
                 intraday_cap = peak_price
@@ -386,6 +386,9 @@ class FastMomentumStrategy:
                 target = floor_tick(overhead)
         else:
             target = floor_tick(overhead)
+        if target <= entry:
+            reason = 'KNOWN_CEILING_NET_REWARD_RISK_LOW' if (intraday_cap and target <= floor_tick(intraday_cap)) else 'NET_REWARD_RISK_LOW'
+            return reject(reason, entry=entry, target=target, nearest_confirmed_peak=peak if intraday_cap else None, structure=structure)
         # Never move a structural line to a fixed percentage or solve a target
         # backwards from desired RR. Size from the separately derived hard line.
         buffer = max(tick_size(support), t.ask - t.bid, support * getattr(self.cfg, 'structural_buffer', .001))
