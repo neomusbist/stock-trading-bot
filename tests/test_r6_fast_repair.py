@@ -126,7 +126,9 @@ class FastRepairTests(unittest.TestCase):
 
     def test_stale_future_and_invalid_trade_timestamps_are_rejected(self):
         tape=MicroTape();t=ticks([1000])[0]
-        for receipt in [t.time-timedelta(seconds=1),t.time+timedelta(seconds=6)]:self.assertFalse(tape.ingest(t,receipt))
+        # Same one-second clock-lead boundary as the main receiver. An excess
+        # lead is invalid; bounded resolution skew is covered separately.
+        for receipt in [t.time-timedelta(seconds=1.001),t.time+timedelta(seconds=6)]:self.assertFalse(tape.ingest(t,receipt))
         self.assertFalse(tape.ingest(replace(t,time=t.time.replace(tzinfo=None)),t.time))
         self.assertEqual(len(tape.ticks),0)
 

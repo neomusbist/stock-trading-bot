@@ -404,7 +404,106 @@ class TestFastMomentumStrategy(unittest.TestCase):
         self.assertEqual(reason, 'HOLD')
         self.assertEqual(evidence['holding_seconds'], 136.0)
 
+    def test_oct16_genomictree_and_hansun_emergency_vs_structural_stop_separation(self):
+        """2026-10-16 live incident reproduction & counter-examples:
+        1. Genomictree (293490): entry 11,000 (limit 11,020), structural_stop 10,960, emergency_stop 10,940, noise_band 20.
+           Normal 0D quote at 09:54:23 with bid=10,960, ask=10,970 must NOT trigger '호가 급락/유동성 붕괴'
+           because emergency_stop is 10,940 (not overwritten by initial_stop=10,960).
+           Genuine plunge to bid=10,940 MUST trigger immediate exit.
+        2. Hansun Engineering (452280): entry 17,180, structural_stop 17,090, emergency_stop 17,070, noise_band 20.
+           Single trade tick at 10:14:55 with price=17,090 and bid=17,110 must NOT trigger
+           '계좌 위험으로 수량 계산한 비상선 이탈' because hard emergency stop is 17,070 (not 17,090).
+           Genuine breach to 17,070 or confirmed 2-tick structural breach at 17,090 MUST trigger immediate exit.
+        """
+        from core.settings import Config
+        from automation.policy import AutomationConfig
+        from automation.exit_plan import invalidation_lines, build_plan
+
+        cfg = Config()
+        auto = AutomationConfig()
+
+        # --- Case A: Genomictree (293490) ---
+        sig_293490 = FastSignal(
+            symbol='293490', name='지노믹트리', limit=11020.0, stop=10960.0,
+            target=11400.0, emergency=10940.0, quantity=6,
+            net_reward_risk=3.67, gross_reward_risk=6.33,
+            reward_net_per_share=325.95, risk_net_per_share=88.91,
+            regime='A', phase='REGULAR',
+            created_at=datetime(2026, 10, 16, 9, 54, 16, tzinfo=KST),
+            extra={'geometry': {'noise_band': 20.0, 'structural_evidence': {'breakout': 10990.0, 'support': 10970.0, 'origin': 10940.0}}}
+        ).to_engine_signal()
+
+        plan_293490 = build_plan(cfg, auto, sig_293490, entry=11000.0, quantity=6, filled=True)
+        self.assertEqual(plan_293490['initial_invalidation'], 10960.0)
+        self.assertEqual(plan_293490['initial_emergency'], 10940.0)
+
+        pos_293490 = {
+            'symbol': '293490', 'ownership': 'BOT', 'pattern': 'FAST',
+            'avg': 11000.0, 'qty': 6, 'initial_stop': 10960.0, 'stop': 10960.0,
+            'emergency': 10940.0, 'opened': '2026-10-16T09:54:18+09:00',
+            'signal': sig_293490,
+        }
+        lines_293490 = invalidation_lines(cfg, auto, pos_293490)
+        self.assertEqual(lines_293490['active_structure'], 10960.0)
+        self.assertEqual(lines_293490['emergency'], 10940.0)
+
+        # Quote bid=10,960 > emergency=10,940 -> holds; bid=10,940 <= emergency=10,940 -> exits
+        self.assertFalse(10960.0 <= lines_293490['emergency'])
+        self.assertTrue(10940.0 <= lines_293490['emergency'])
+
+        # --- Case B: Hansun Engineering (452280) ---
+        t_entry = datetime(2026, 10, 16, 10, 14, 0, tzinfo=KST)
+        sig_452280 = FastSignal(
+            symbol='452280', name='한선엔지니어링', limit=17180.0, stop=17090.0,
+            target=17850.0, emergency=17070.0, quantity=4,
+            net_reward_risk=3.87, gross_reward_risk=7.44,
+            reward_net_per_share=590.96, risk_net_per_share=152.71,
+            regime='A', phase='REGULAR',
+            created_at=t_entry,
+            extra={'geometry': {'noise_band': 20.0, 'structural_evidence': {'breakout': 17150.0, 'support': 17110.0, 'origin': 17070.0}}}
+        ).to_engine_signal()
+
+        plan_452280 = build_plan(cfg, auto, sig_452280, entry=17180.0, quantity=4, filled=True)
+        self.assertEqual(plan_452280['initial_invalidation'], 17090.0)
+        self.assertEqual(plan_452280['initial_emergency'], 17070.0)
+
+        pos_452280 = {
+            'symbol': '452280', 'ownership': 'BOT', 'pattern': 'FAST',
+            'avg': 17180.0, 'qty': 4, 'initial_stop': 17090.0, 'stop': 17090.0,
+            'emergency': 17070.0, 'opened': t_entry.isoformat(),
+            'signal': sig_452280,
+        }
+        lines_452280 = invalidation_lines(cfg, auto, pos_452280)
+        self.assertEqual(lines_452280['active_structure'], 17090.0)
+        self.assertEqual(lines_452280['emergency'], 17070.0)
+
+        # Single trade print at 17,090 with bid=17,110 at 10:14:55:
+        # 1) Neither hard emergency (17,070) nor FAST 2-tick invalidation triggers
+        strat = FastMomentumStrategy(cfg, auto)
+        t_single = Tick(symbol='452280', price=17090.0, volume=10, cumulative=100,
+                        time=t_entry + timedelta(seconds=55), bid=17110.0, ask=17120.0,
+                        bid_qty=100, ask_qty=100, depth_available=True,
+                        book_time=t_entry + timedelta(seconds=55))
+        strat.ingest_tick(t_single, t_single.time)
+        should_exit, reason, _ = strat.evaluate_exit(pos_452280, t_single, t_single.time)
+        self.assertFalse(should_exit)
+        self.assertEqual(reason, 'HOLD')
+        self.assertFalse(t_single.price <= lines_452280['emergency'])
+        self.assertFalse(t_single.bid <= lines_452280['emergency'])
+
+        # 2) Counter-example: genuine emergency plunge to 17,070 exits immediately
+        t_emg = Tick(symbol='452280', price=17070.0, volume=10, cumulative=110,
+                     time=t_entry + timedelta(seconds=56), bid=17070.0, ask=17080.0,
+                     bid_qty=100, ask_qty=100, depth_available=True,
+                     book_time=t_entry + timedelta(seconds=56))
+        strat.ingest_tick(t_emg, t_emg.time)
+        should_exit_emg, reason_emg, _ = strat.evaluate_exit(pos_452280, t_emg, t_emg.time)
+        self.assertTrue(should_exit_emg)
+        self.assertEqual(reason_emg, 'EMERGENCY_PLUNGE_EXIT')
+        self.assertTrue(t_emg.price <= lines_452280['emergency'])
+
 
 if __name__ == '__main__':
     unittest.main()
+
 

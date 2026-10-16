@@ -7,6 +7,7 @@ from datetime import datetime
 from core.settings import ROOT, KST, now
 from core.strategy import Tick
 from core.util import number, code
+from core.market_time import market_freshness
 
 def stream_symbol(value):
     """Exchange suffixes are accepted only at the read-only stream boundary."""
@@ -14,7 +15,7 @@ def stream_symbol(value):
         return code(value[:-3])
     return code(value)
 
-def parse_book(item,received):
+def parse_book(item,received,received_monotonic=None):
     """0D: best prices 41/51, best quantities 61/71, totals 121/125.
     0C provides prices 27/28 only; absent depth is not zero liquidity.
     """
@@ -25,11 +26,12 @@ def parse_book(item,received):
             'ask_qty':int(number(v.get('61') or 0)),'bid_qty':int(number(v.get('71') or 0)),
             'total_ask_qty':int(number(v.get('121') or 0)),'total_bid_qty':int(number(v.get('125') or 0)),
             'time':quote_time.isoformat(),'received_at':received.isoformat(),'source':'0D',
+            'received_monotonic':received_monotonic,
             'raw_fields':{k:v.get(k) for k in ('21','41','51','61','71','121','125')}}
     result['depth_available']=bool(available and 0<result['best_bid']<=result['best_ask'])
     return result
 
-def parse_tick(item,received,book=None,book_stale_seconds=5):
+def parse_tick(item,received,book=None,book_stale_seconds=5,received_monotonic=None):
     v=item['values']; stamp=datetime.strptime(v['20'],'%H%M%S').time()
     dt=datetime.combine(received.date(),stamp,tzinfo=KST)
     # WATCH/main path and SHADOW/fast path must read the same attached book.
@@ -46,10 +48,9 @@ def parse_tick(item,received,book=None,book_stale_seconds=5):
         except (KeyError,TypeError,ValueError):depth_time=None
         try:book_received=datetime.fromisoformat(book.get('received_at',book['time']))
         except (KeyError,TypeError,ValueError):book_received=None
-        fresh=bool(depth_time and depth_time.tzinfo and depth_time.date()==received.date()
-                   and 0<=(received-depth_time).total_seconds()<=book_stale_seconds
-                   and book_received and book_received.tzinfo and book_received.date()==received.date()
-                   and 0<=(received-book_received).total_seconds()<=book_stale_seconds)
+        fresh=market_freshness(depth_time,received,book_stale_seconds,
+            received_at=book_received,received_monotonic=book.get('received_monotonic'),
+            monotonic_now=received_monotonic)['fresh']
         matched=book.get('best_ask')==ask and book.get('best_bid')==bid
         depth_available=bool(fresh and matched and book.get('depth_available'))
         depth_source='0D' if depth_available else 'BOOK_STALE' if not fresh else 'BOOK_PRICE_MISMATCH' if not matched else 'DATA_UNAVAILABLE'
@@ -58,7 +59,8 @@ def parse_tick(item,received,book=None,book_stale_seconds=5):
     venue=v.get('9081') or 'KRX'
     return Tick(stream_symbol(item['item']),dt,number(v['10']),int(number(v['15'])),int(number(v['13'])),
         ask,bid,v.get('290')=='2',ask_qty=ask_qty,bid_qty=bid_qty,venue=venue,
-        depth_available=depth_available,book_time=depth_time,depth_source=depth_source)
+        depth_available=depth_available,book_time=depth_time,depth_source=depth_source,
+        received_at=received.isoformat(),received_monotonic=received_monotonic)
 
 class Feed:
     def __init__(self,rest,symbols,index_subscription_enabled=False):
@@ -66,6 +68,7 @@ class Feed:
         self.stop=threading.Event(); self.overflow=threading.Event(); self.socket=None
         self.logged_in=False; self.transport_failed=False; self.subscription_lock=threading.RLock()
         self.observation_symbols=frozenset(); self.priority_symbols=None; self.observation_sink=None
+        self.trade_review=None  # bounded evidence sink, independent of SHADOW routing
         self.observation_q=queue.Queue(maxsize=8192);self.observation_drops=0
         self.orderbooks={}
         self.latest_ticks={}
@@ -88,8 +91,13 @@ class Feed:
 
     def emit(self,event):
         received=now()
+        received_monotonic=time.monotonic()
+        if event.get('trnm')=='REAL':event={**event,'_received_monotonic':received_monotonic}
         if event.get('trnm') not in {'ERROR','DISCONNECTED'}:self.last_message_at=received
         with self.subscription_lock:
+            capture=getattr(self,'trade_review',None)
+            if capture and event.get('trnm') in {'REG','ERROR','DISCONNECTED'}:
+                capture.stream(event['trnm'],received)
             if event.get('trnm')=='REG' and str(event.get('grp_no'))=='2':
                 if event.get('return_code') not in (None,0,'0'):self.index_context.clear()
                 return  # Diagnostic ACK is never an order/market subscription ACK.
@@ -116,13 +124,15 @@ class Feed:
                         item['item']=sym
                     accepted_items.append(item)
                     if sym and itype=='0D':
-                        self.orderbooks[sym]=parse_book(item,received)
+                        self.orderbooks[sym]=parse_book(item,received,received_monotonic)
                         item['_book']=self.orderbooks[sym]
+                        if capture:capture.book(sym,item['_book'],received)
                     elif sym and itype=='0B':
                         item['_book']=self.orderbooks.get(sym)
                         try:
-                            tick=parse_tick(item,received,book=item['_book'],book_stale_seconds=getattr(self.rest.cfg,'stale_seconds',5))
+                            tick=parse_tick(item,received,book=item['_book'],book_stale_seconds=getattr(self.rest.cfg,'stale_seconds',5),received_monotonic=received_monotonic)
                             item['_observation_tick']=(received,tick)
+                            if capture:capture.tick(tick,received)
                             prior=self.latest_ticks.get(sym)
                             if sym in self.symbols and (prior is None or tick.time>=prior.time):self.latest_ticks[sym]=tick
                         except (ValueError,KeyError):pass
@@ -134,7 +144,7 @@ class Feed:
                     if item.get('type')=='0B' and item.get('item') in self.observation_symbols:
                         try:
                             parsed=item.get('_observation_tick')
-                            tick=parsed[1] if parsed else parse_tick(item,received,book=item.get('_book') or self.orderbooks.get(code(item.get('item',''))),book_stale_seconds=getattr(self.rest.cfg,'stale_seconds',5))
+                            tick=parsed[1] if parsed else parse_tick(item,received,book=item.get('_book') or self.orderbooks.get(code(item.get('item',''))),book_stale_seconds=getattr(self.rest.cfg,'stale_seconds',5),received_monotonic=received_monotonic)
                             # Frozen value for the same received frame, shared by observation and main.
                             item['_observation_tick']=(received,tick)
                             if self.observation_sink:self.observation_sink(tick,received)
@@ -163,6 +173,9 @@ class Feed:
             wire=self.subscription_items(updated)
             if updated==self.symbols and wire==self.wire_symbols: return False
             venue_changed=self.subscription_items(self.symbols)!=self.wire_symbols
+            capture=getattr(self,'trade_review',None)
+            if capture:
+                capture.subscription(set(updated)-set(self.symbols),set(self.symbols)-set(updated),now())
             self.symbols=updated
             self.wire_symbols=wire
             if venue_changed:self.latest_ticks.clear();self.orderbooks.clear()

@@ -16,6 +16,7 @@ from automation.observation_retention import ObservationRetention
 from core.broker import Rest,Rejected
 from core.realtime import Feed,parse_tick
 from core.strategy import Tick
+from core.market_time import market_freshness,tick_freshness
 from core.report import export
 from candidate_builder import structure
 from automation.policy import Policy,load_automation,LEGACY_SYMBOL,BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL,legacy_test_release_enabled
@@ -485,6 +486,10 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
             detector.evaluation_gates(t,watch),signal=sig,price=t.price)
         return None
     if sig.get('pattern') == 'FAST':
+        from automation.entry_timing import annotate_signal
+        annotate_signal(engine,detector,watch,sig)
+        from automation.fast_entry_context import attach_fast_entry_observation
+        attach_fast_entry_observation(sig,detector,t,engine.clock(),engine.c.min_reward_risk)
         fresh=structure(bars,sig['limit'],replace(engine.c,max_recent_range=999.0,max_overhead_share=1.0,min_resistance_room=0.0),t.time.date())
         if fresh.get('status')!='ELIGIBLE':
             from automation.decisions import gate
@@ -603,7 +608,7 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
         elif kind=='0s': update_market(engine,str(item['values']['215']))
         elif kind=='0B':
             parsed=item.get('_observation_tick')
-            t=parsed[1] if isinstance(parsed,tuple) and len(parsed)==2 and parsed[0]==received and isinstance(parsed[1],Tick) else parse_tick(item,received,book_stale_seconds=engine.c.stale_seconds)
+            t=parsed[1] if isinstance(parsed,tuple) and len(parsed)==2 and parsed[0]==received and isinstance(parsed[1],Tick) else parse_tick(item,received,book_stale_seconds=engine.c.stale_seconds,received_monotonic=message.get('_received_monotonic'))
             if t.symbol not in symbols:continue
             if subscriptions is not None and not subscriptions.tick_ready(t,received):continue
             state=getattr(engine,'s',{})
@@ -611,7 +616,8 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
             clock_fn=getattr(engine,'clock',None)
             wall_clock=clock_fn() if callable(clock_fn) else None
             if not isinstance(wall_clock,datetime):wall_clock=now()
-            protected=t.symbol in positions and t.regular and 0<=(wall_clock-t.time).total_seconds()<=engine.c.stale_seconds
+            timing=tick_freshness(t,wall_clock,engine.c.stale_seconds)
+            protected=t.symbol in positions and t.regular and timing['fresh']
             # Preserve genuine receiver-time history even if the consumer was
             # delayed. Old frames can build past bars, never generate a current
             # order or exit. Current execution still uses wall-clock freshness.
@@ -622,14 +628,18 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
                     health=getattr(engine,'position_health',None)
                     if health is not None:health.trade_seen(t.symbol,t)
                 continue
+            capture=getattr(engine,'trade_review',None)
+            history=detector.history.get(t.symbol,())
+            if capture is not None and history:
+                capture.completed_bar(t.symbol,history[-1],received,wall_clock)
             if getattr(engine.a, 'fast_momentum_enabled', False) and hasattr(engine, 'fast_strategy') and engine.fast_strategy is not None:
                 engine.fast_strategy.ingest_tick(t, received)
             if subscriptions is not None:subscriptions.accepted(t.symbol)
-            accepted+=1;engine.last_regular_tick_at=t.time
+            accepted+=1;engine.last_regular_tick_at=t.time;engine.last_regular_tick=t
             timeline=getattr(engine,'observation_timeline',None)
             if timeline is not None:timeline.tick(t.symbol,t.time,detector.usable_bars(t.symbol),t.price,received=received,processed=wall_clock,
-                execution_fresh=0<=(wall_clock-t.time).total_seconds()<=engine.c.stale_seconds)
-            if not 0<=(wall_clock-t.time).total_seconds()<=engine.c.stale_seconds:continue
+                execution_fresh=timing['fresh'])
+            if not timing['fresh']:continue
             prices[t.symbol]=t.bid or t.price
             if engine.market=='UNKNOWN': engine.market='3'
             finished=list(detector.completed.get(t.symbol,[]))
@@ -672,6 +682,7 @@ def order_ready_from_evidence(readiness,stale_seconds,connected):
     """One data-readiness rule; this never grants approval or symbol authority."""
     if not isinstance(readiness,dict) or not connected:return False
     if readiness.get('order_ready') is False:return False
+    if readiness.get('regular_tick_timing_valid') is False:return False
     age=readiness.get('regular_tick_age')
     if type(age) not in (int,float) or not 0<=age:return False
     missing=readiness.get('missing',[])
@@ -700,9 +711,12 @@ def heartbeat_order_readiness(heartbeat,cfg,stamp):
     if type(age) in (int,float) and math.isfinite(age):age+=elapsed
     else:age=None
     try:
-        last=datetime.fromisoformat(ready['last_regular_tick_at'])
-        actual_age=(stamp-last).total_seconds()
-        if last.tzinfo is None or last.date()!=stamp.date() or actual_age<0:raise ValueError('invalid tick stamp')
+        timing=market_freshness(ready['last_regular_tick_at'],stamp,cfg.stale_seconds,
+            received_at=ready.get('last_regular_tick_received_at'))
+        ready['regular_tick_timing_valid']=timing['valid']
+        ready['regular_tick_exchange_age']=timing['exchange_age_seconds']
+        if not timing['valid']:raise ValueError('invalid tick stamp')
+        actual_age=timing['effective_age_seconds']
         age=max(age,actual_age) if age is not None else actual_age
     except KeyError:pass  # Older snapshots can carry an age relative to heartbeat time.
     except (TypeError,ValueError):age=None
@@ -752,11 +766,19 @@ def readiness_snapshot(engine,counts,radar_ok,stamp,detector=None):
         in_control=control_supported(stamp)
         in_market=supported(stamp)
     last=getattr(engine,'last_regular_tick_at',None)
+    last_tick=getattr(engine,'last_regular_tick',None)
+    if getattr(last_tick,'time',None)!=last:last_tick=None
     if detector is not None:
-        regular=[t.time for t in detector.last.values() if t.regular or is_after]
-        if regular:last=max(regular+[last] if last else regular)
-    tick_age=(stamp-last).total_seconds() if last is not None else None
-    fresh_tick=in_market and tick_age is not None and 0<=tick_age<=engine.c.stale_seconds and last.date()==stamp.date()
+        # Capture immutable tick/receipt pairs under the observation lock.
+        with (getattr(detector,'_state_lock',None) or nullcontext()):
+            regular=[t for t in detector.last.values() if t.regular or is_after]
+            if regular:
+                candidate=max(regular,key=lambda t:t.time)
+                if last is None or candidate.time>=last:last=candidate.time;last_tick=candidate
+    timing=(tick_freshness(last_tick,stamp,engine.c.stale_seconds) if last_tick is not None
+            else market_freshness(last,stamp,engine.c.stale_seconds))
+    tick_age=timing['effective_age_seconds']
+    fresh_tick=in_market and timing['fresh']
     tick_lag_source=None
     if not fresh_tick and in_market:
         loop_lag=getattr(engine,'event_loop_lag',0)
@@ -781,6 +803,11 @@ def readiness_snapshot(engine,counts,radar_ok,stamp,detector=None):
     ready={'state':state,'phase':assessment(stamp)['phase'],'gates':gates,'missing':missing,
             'regular_epoch':stamp.replace(hour=9,minute=0,second=0,microsecond=0).isoformat(),
             'last_regular_tick_at':last.isoformat() if last else None,'regular_tick_age':tick_age,
+            'last_regular_tick_received_at':getattr(last_tick,'received_at',None),
+            'regular_tick_exchange_age':timing['exchange_age_seconds'],
+            'regular_tick_receive_age':timing['receive_age_seconds'],
+            'regular_tick_receive_elapsed':timing['receive_elapsed_seconds'],
+            'regular_tick_timing_valid':timing['valid'],
             'tick_lag_source':tick_lag_source,'market_pending':not in_market,'strategy_warmup_separate':True,
             'asof':stamp.isoformat(),'event_loop_lag_seconds':getattr(engine,'event_loop_lag',None),
             'feed_queue_depth':getattr(engine,'feed_queue_size',None),'transport_failure_seen':transport_failed}
@@ -812,6 +839,13 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     effective.validate()
     rest=Rest(effective); folder=root/'runtime'/('automation-smoke' if seconds or readiness_check else 'automation-'+cfg.broker_environment)
     engine=AutonomousEngine(effective,auto,policy,folder,rest,now)
+    # This recorder never calls a broker or the experimental profit policies.
+    # Recording failure must not interrupt existing position protection.
+    try:
+        from automation.trade_review_capture import TradeReviewCapture
+        engine.trade_review=TradeReviewCapture(folder/'trade-review',clock=now)
+    except OSError as error:
+        engine.event('TRADE_REVIEW_CAPTURE_UNAVAILABLE',error_type=type(error).__name__)
     observation_settings=load_observation(root);engine.observation_settings=observation_settings
     engine.candidate_audit=CandidateAudit()
     from automation.entry_timing import ObservationTimeline
@@ -842,6 +876,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
         radar_worker=RadarWorker(effective,auto,policy,rank_rest,root)
         bind_candidate_observation(radar_worker,lambda:shadow,engine)
         realtime_feed=Feed(rest,sorted(symbols));engine.readiness_feed=realtime_feed
+        realtime_feed.trade_review=getattr(engine,'trade_review',None)
         return (radar_worker,account_worker,realtime_feed)
     symbols=set(engine.s['positions'])|{o['symbol'] for o in engine.active_orders()}
     subscriptions=SubscriptionState(symbols); priority_symbols=set(symbols)
@@ -909,7 +944,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     engine.reset_detector=True
                 elif not in_session and data_active:
                     feed.close(); radar.close(); account.close(); data_active=False
-                    detector.reset(); engine.disconnect(); engine.account_ok=False; engine.market='UNKNOWN'; radar_ok=False;engine.last_regular_tick_at=None;engine.last_radar_at=None
+                    detector.reset(); engine.disconnect(); engine.account_ok=False; engine.market='UNKNOWN'; radar_ok=False;engine.last_regular_tick_at=None;engine.last_regular_tick=None;engine.last_radar_at=None
                     engine.event('OUT_OF_SUPPORTED_SESSION',message='연결 검사/조회와 신규 주문을 다음 정규장까지 대기')
                     if engine.s['positions'] or engine.active_orders():
                         engine.event('POSITION_REMAINS_AFTER_SESSION',reason_code='OVERNIGHT_RISK',allow_overnight=auto.ALLOW_OVERNIGHT,
@@ -1138,6 +1173,8 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     atomic_json(root/'runtime/candidate_summary.json',summary,fsync=False)
                     engine.save(); reporter.submit(rows,engine.s); last_report=time.monotonic()
                 if time.monotonic()-last_heartbeat>=1:
+                    capture=getattr(engine,'trade_review',None)
+                    if capture is not None:capture.set_scope(lookup,engine.s['positions'],now())
                     for stage in engine.observation_timeline.drain_events():
                         engine.event('OPENING_PIPELINE_STAGE',**stage)
                     engine.observation_timeline.save(now())
@@ -1167,7 +1204,8 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         'feed_queue_depth':getattr(engine,'feed_queue_size',None),'event_loop_lag_seconds':getattr(engine,'event_loop_lag',None),
                         'available_capital':min(engine.available_cash,auto.capital_limit),'approved_cap':auto.capital_limit,
                         'bot_cash':engine.s['cash'],'positions':len(engine.s['positions']),'pending':len(engine.active_orders()),
-                        'strategy':'MANAGE' if engine.s['positions'] else 'SCAN' if lookup else 'QUIET','counts':counts},fsync=False)
+                        'strategy':'MANAGE' if engine.s['positions'] else 'SCAN' if lookup else 'QUIET','counts':counts,
+                        'trade_review_capture':capture.stats() if capture is not None else {'available':False}},fsync=False)
                     last_heartbeat=time.monotonic()
                 if done: break
             except KeyboardInterrupt:
@@ -1185,6 +1223,10 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
         shadow.close()
         if context_worker:context_worker.close()
         if data_active: feed.close(); radar.close(); account.close()
+        capture=getattr(engine,'trade_review',None)
+        if capture is not None:
+            capture.close()
+            engine.event('TRADE_REVIEW_CAPTURE_CLOSED',capture=capture.stats())
         if engine.candidate_audit.started:
             summary=engine.candidate_audit.summary(now().isoformat(),engine.capital_context())
             atomic_json(root/'runtime/candidate_summary.json',summary,fsync=False); engine.event('CANDIDATE_CYCLE_SUMMARY',**summary)

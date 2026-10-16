@@ -7,6 +7,7 @@ from pathlib import Path
 from core.engine import Engine, TERMINAL
 from core.broker import Rejected
 from core.settings import KST
+from core.market_time import market_freshness,tick_freshness
 from core.util import code, floor_tick,tick_size,read_json_retry,atomic_json
 from automation.capital import Costs, initial_allocation, owned_equity
 from automation.policy import LEGACY_SYMBOL,BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL,HARD_LOCKS,legacy_test_release_enabled
@@ -130,7 +131,12 @@ class AutonomousEngine(ExistingExits,Engine):
               'name':self.names.get(sym),'setup':(p.get('signal') or {}).get('pattern'),
               'build_id':BUILD_ID,'strategy_experiment':STRATEGY_EXPERIMENT}
         info.update(data)
-        return super().event(kind,**safe_values(info))
+        result=super().event(kind,**safe_values(info))
+        capture=getattr(self,'trade_review',None)
+        if capture is not None:
+            try:capture.event_ref(kind,data,self.clock(),self.s.get('positions',{}))
+            except Exception:self.trade_review_errors=getattr(self,'trade_review_errors',0)+1
+        return result
     def session_ending(self):
         sess=self.current_session()
         t=self.clock().strftime('%H:%M:%S')
@@ -157,7 +163,12 @@ class AutonomousEngine(ExistingExits,Engine):
         return self.quantity_details(signal,equity,cash,remaining)['quantity']
 
     def quantity_details(self,signal,equity,cash,remaining):
-        entry=signal['limit']; stop=signal['stop']
+        entry=signal['limit']
+        policy=signal.get('invalidation_policy') or {}
+        stop=(policy.get('emergency_stop')
+              if self.a.confirmed_invalidation_enabled and isinstance(policy.get('emergency_stop'),(int,float)) and 0<policy['emergency_stop']<entry
+              else signal.get('emergency') if isinstance(signal.get('emergency'),(int,float)) and 0<signal['emergency']<entry
+              else signal['stop'])
         valid=0<stop<entry
         unit=entry-stop+self.costs.roundtrip(entry,stop)+stop*self.c.exit_slippage_fraction if valid else 0
         risk_budget=max(0,min(equity*self.c.risk_fraction,remaining))
@@ -270,6 +281,7 @@ class AutonomousEngine(ExistingExits,Engine):
         sizing=self.quantity_details(signal,equity,self.s['cash']-reserved,remaining); qty=sizing['quantity']
         reason=self.new_entry_reason(sym)
         breakout=signal.get('evaluation_gates',{}).get('breakout',{}).get('values',{}).get('breakout')
+        timing=tick_freshness(tick,self.clock(),self.c.stale_seconds)
         return qty,{**signal.get('evaluation_gates',{}),
             'breakout_quote':gate(breakout is None or (tick.price>breakout and tick.ask>breakout and signal['limit']>breakout),
                 breakout=breakout,price=tick.price,ask=tick.ask,entry=signal['limit']),
@@ -277,7 +289,7 @@ class AutonomousEngine(ExistingExits,Engine):
             'market_status':gate(self.market_status.get(sym,{}).get('pass'),status=self.market_status.get(sym)),
             'session':gate(self.entry_window(),time=self.clock().strftime('%H:%M:%S'),cutoff=getattr(self.a,'after_entry_cutoff','19:45:00') if self.current_session()=='AFTER' else self.a.new_entry_cutoff,market=self.market),
             'connection_account':gate(self.connected and self.account_ok and not self.s['halt'] and (not self.c.live_mode or time.monotonic()-self.last_account<=self.c.reconcile_seconds*3),connected=self.connected,account_ok=self.account_ok,halt=self.s['halt'],account_age=time.monotonic()-self.last_account),
-            'tick':gate(tick.regular and abs((self.clock()-tick.time).total_seconds())<=self.c.stale_seconds,lag=(self.clock()-tick.time).total_seconds(),regular=tick.regular,stale_limit=self.c.stale_seconds),
+            'tick':gate(tick.regular and timing['fresh'],lag=timing['exchange_age_seconds'],regular=tick.regular,stale_limit=self.c.stale_seconds,timing=timing),
             'repeat_slots':gate(not self.entry_failure(sym) and not self.active_orders(sym) and sym not in self.s['positions'] and sym not in self.s['excluded'] and (self.c.max_entries_per_symbol is None or self.s['entries'].get(sym,0)<self.c.max_entries_per_symbol) and self.entry_slots_available() and len(set(self.s['positions'])|{o['symbol'] for o in buys})<(1 if (signal or {}).get('pattern')=='FAST' else self.c.max_positions),entries=self.s['entries'].get(sym,0),symbol_entry_limit=self.c.max_entries_per_symbol,consecutive_losses=self.s['automation']['consecutive_losses'],consecutive_loss_limit=self.a.max_consecutive_losses,daily_entries=sum(self.s['entries'].values()),daily_entry_limit=self.c.max_entries_per_day,daily_entry_limit_enabled=self.c.max_entries_per_day is not None,daily_entry_limit_pass=self.entry_slots_available(),reserved_entry_slots=self.pending_entry_lifecycles(),entry_count_basis=self.s.get('entry_count_basis'),failure_latch=self.entry_failure(sym),slots=len(set(self.s['positions'])|{o['symbol'] for o in buys})),
             'risk_quantity':gate(qty>0,**sizing,equity=equity,remaining_risk=remaining,reserved_cash=reserved,book_cash=self.s['cash'],actual_cash=self.available_cash,entry=signal['limit'],stop=signal['stop'],risk_fraction=self.c.risk_fraction,max_daily_loss_fraction=self.c.max_daily_loss_fraction,allowed_risk_krw=equity*self.c.risk_fraction,remaining_daily_risk_krw=max(0,remaining)),
             'efficiency':gate(signal.get('efficiency',{}).get('decision')=='TRADE',efficiency=signal.get('efficiency'))}
@@ -383,7 +395,8 @@ class AutonomousEngine(ExistingExits,Engine):
         provider=getattr(self,'entry_quote_provider',None)
         if provider and not signal.get('symbol'):return 'ENTRY_MARKET_DATA_UNAVAILABLE'
         tick,book=provider(signal['symbol']) if provider else (fallback,{})
-        evidence={'checked_at':self.clock().isoformat(),'phase':phase,
+        checked_at=self.clock()
+        evidence={'checked_at':checked_at.isoformat(),'phase':phase,
             'receiver_provider':bool(provider),'tick_available':tick is not None,'quantity':quantity,
             'limit':signal.get('limit'),'book_time':book.get('time'),
             'book_bid':book.get('best_bid'),'book_ask':book.get('best_ask'),
@@ -393,12 +406,27 @@ class AutonomousEngine(ExistingExits,Engine):
         # during authorization. Final boundary evidence belongs in an event.
         if phase=='PRE_INTENT':signal['entry_execution_evidence']=evidence
         if tick is None:return 'ENTRY_MARKET_DATA_UNAVAILABLE'
-        age=(self.clock()-tick.time).total_seconds()
-        evidence.update(tick_time=tick.time.isoformat(),tick_age_seconds=age,
+        timing=tick_freshness(tick,checked_at,self.c.stale_seconds)
+        evidence.update(tick_time=tick.time.isoformat(),tick_age_seconds=timing['exchange_age_seconds'],
+            tick_received_at=getattr(tick,'received_at',None),tick_timing=timing,
             price=tick.price,bid=tick.bid,ask=tick.ask,regular=tick.regular,
             tick_venue=getattr(tick,'venue',None),tick_depth_source=getattr(tick,'depth_source',None),
             spread=(tick.ask-tick.bid)/tick.price if tick.price>0 else None)
-        if not tick.regular or not 0<=age<=self.c.stale_seconds:return 'ENTRY_MARKET_DATA_STALE'
+        if not tick.regular or not timing['fresh']:return 'ENTRY_MARKET_DATA_STALE'
+        if signal.get('pattern')=='FAST':
+            # Preserve the signal's own lifetime/chase contract at the final
+            # boundary; no new momentum threshold or aggressive price is used.
+            try:
+                detected=datetime.fromisoformat(signal['signal_detected_at'])
+                age=(checked_at-detected).total_seconds()
+                ttl=signal['ttl_seconds'];ceiling=signal['max_chase_price']
+                if (type(ttl) not in (int,float) or not math.isfinite(ttl) or ttl<=0
+                        or type(ceiling) not in (int,float) or not math.isfinite(ceiling) or ceiling<=0):
+                    return 'FAST_ENTRY_PROOF_MISSING'
+                if age<0 or detected.date()!=checked_at.date():return 'FAST_SIGNAL_CLOCK_INVALID'
+                if age>ttl:return 'FAST_SIGNAL_TTL_EXPIRED'
+                if tick.ask>ceiling:return 'FAST_MAX_CHASE_EXCEEDED'
+            except (KeyError,TypeError,ValueError):return 'FAST_ENTRY_PROOF_MISSING'
         b_structure=self.a.structural_pullback_enabled and signal.get('pattern')=='B'
         a_structure=self.a.structural_breakout_enabled and signal.get('pattern')=='A'
         if b_structure or a_structure:
@@ -408,12 +436,14 @@ class AutonomousEngine(ExistingExits,Engine):
                 return 'PULLBACK_STRUCTURE_SPREAD_CHANGED'
             if provider:
                 try:
-                    book_age=(self.clock()-datetime.fromisoformat(book['time'])).total_seconds()
+                    book_timing=market_freshness(book['time'],checked_at,self.c.stale_seconds,
+                        received_at=book.get('received_at'),received_monotonic=book.get('received_monotonic'))
                     bid,ask=book['best_bid'],book['best_ask']
                     if any(type(v) not in (int,float) or not math.isfinite(v) or v<=0 for v in (bid,ask)) or bid>ask:
                         return 'PULLBACK_ENTRY_BOOK_UNAVAILABLE'
                 except (KeyError,TypeError,ValueError):return 'PULLBACK_ENTRY_BOOK_UNAVAILABLE'
-                if not 0<=book_age<=self.c.stale_seconds:return 'PULLBACK_ENTRY_BOOK_STALE'
+                evidence['book_timing']=book_timing
+                if not book_timing['fresh']:return 'PULLBACK_ENTRY_BOOK_STALE'
                 if ask>signal['limit']:return 'ENTRY_QUOTE_ABOVE_LIMIT'
                 if ask-bid>planned_buffer:
                     return 'PULLBACK_STRUCTURE_SPREAD_CHANGED'
@@ -426,18 +456,24 @@ class AutonomousEngine(ExistingExits,Engine):
         if breakout is not None:
             if tick.price<=breakout or tick.ask<=breakout or signal['limit']<=breakout:return 'BREAKOUT_QUOTE_NOT_CONFIRMED'
             if max(tick.price,signal['limit'])/breakout-1>self.c.max_chase:return 'ENTRY_CHASE_CHANGED'
-        if self.current_session()=='AFTER':
+        # FAST's executable-depth requirement also applies in the regular
+        # session. A fresh signal is not proof of liquidity at PRE_HTTP.
+        if self.current_session()=='AFTER' or signal.get('pattern')=='FAST':
             if book:
-                try:book_age=(self.clock()-datetime.fromisoformat(book['time'])).total_seconds()
+                try:book_timing=market_freshness(book['time'],checked_at,self.c.stale_seconds,
+                        received_at=book.get('received_at'),received_monotonic=book.get('received_monotonic'))
                 except (KeyError,ValueError,TypeError):return 'ENTRY_DEPTH_UNAVAILABLE'
-                if not 0<=book_age<=self.c.stale_seconds or not book.get('depth_available'):return 'ENTRY_DEPTH_UNAVAILABLE'
+                evidence['book_timing']=book_timing
+                if not book_timing['fresh'] or not book.get('depth_available'):return 'ENTRY_DEPTH_UNAVAILABLE'
                 if book.get('best_bid')!=tick.bid or book.get('best_ask')!=tick.ask:return 'ENTRY_DEPTH_PRICE_MISMATCH'
                 ask_qty=book.get('ask_qty',0);bid_qty=book.get('bid_qty',0)
             else:
                 if getattr(tick,'depth_available',None) is False:return 'ENTRY_DEPTH_UNAVAILABLE'
                 stamp=getattr(tick,'book_time',None)
-                if stamp is not None and not 0<=(self.clock()-stamp).total_seconds()<=self.c.stale_seconds:return 'ENTRY_DEPTH_UNAVAILABLE'
+                if stamp is not None and not market_freshness(stamp,checked_at,self.c.stale_seconds)['fresh']:return 'ENTRY_DEPTH_UNAVAILABLE'
                 ask_qty=tick.ask_qty;bid_qty=tick.bid_qty
+            if any(type(q) not in (int,float) or not math.isfinite(q) or q<0 for q in (ask_qty,bid_qty)):
+                return 'ENTRY_DEPTH_UNAVAILABLE'
             if min(ask_qty,bid_qty)<max(1,quantity):return 'ENTRY_DEPTH_BELOW_ACTUAL_QUANTITY'
         return None
 
@@ -748,6 +784,7 @@ class AutonomousEngine(ExistingExits,Engine):
             protection_evidence=p.get('protection_evidence'),data_health=p.get('data_health'),
             exit_plan=p.get('exit_plan'),exit_state=p.get('exit_state'),
             profit_policy_observation=p.get('profit_policy_observation'),
+            fast_exit_evidence=p.get('fast_exit_evidence'),
             exit_trigger_evidence=p.get('exit_trigger_evidence'),
             opportunity_timing=p['signal'].get('opportunity_timing'),
             name=p['signal'].get('name') or self.names.get(trade['symbol']),setup=p['pattern'],
@@ -851,6 +888,7 @@ class AutonomousEngine(ExistingExits,Engine):
                 'last_quote':p.get('last_quote'),'data_health':p.get('data_health'),
                 'protection':p.get('protection_evidence'),
                 'invalidation':p.get('invalidation_evidence'),
+                'fast_exit':p.get('fast_exit_evidence'),
                 'after_momentum':p.get('after_momentum_evidence')})
             p['exit_trigger_evidence']['exit_state']=deepcopy(p.get('exit_state'))
         return super().request_exit(symbol,reason)
@@ -1077,8 +1115,16 @@ class AutonomousEngine(ExistingExits,Engine):
             if hasattr(self, 'fast_strategy') and self.fast_strategy is not None:
                 self.fast_strategy.ingest_tick(t, received=self.clock())
                 should_exit, exit_reason, exit_evidence = self.fast_strategy.evaluate_exit(p, t, self.clock())
-                if p.get('protection_stop') and p['protection_stop'] > p.get('stop', 0):
-                    p['stop'] = p['protection_stop']
+                # FAST's micro-pivot line requires two independent trade
+                # breaches. It is not a confirmed-bar structural stop: copying
+                # it into p['stop'] also raises the quote-only emergency line
+                # and lets one book update override a FAST HOLD.
+                p['fast_exit_evidence']={'checked_at':self.clock().isoformat(),
+                    'decision':'EXIT' if should_exit else 'HOLD' if exit_reason=='HOLD' else 'UNKNOWN','reason':exit_reason,
+                    'micro_protection_stop':p.get('protection_stop'),
+                    'structural_stop':p.get('stop'),'emergency_stop':p.get('emergency'),
+                    'protection_authority':'FAST_TWO_INDEPENDENT_TRADE_BREACHES',
+                    'evidence':dict(exit_evidence)}
                 if should_exit:
                     self.request_exit(t.symbol, f'FAST_{exit_reason}')
         if p and self.a.confirmed_invalidation_enabled and policy:
@@ -1091,7 +1137,9 @@ class AutonomousEngine(ExistingExits,Engine):
                 self.position_price_updated(p,t)
             soft=max(policy['structural_stop'],p['stop'])
             p['confirmed_soft_stop']=soft
-            hard=max(p['initial_stop'],floor_tick(soft-policy['noise_band']))
+            policy_emergency=policy.get('emergency_stop')
+            base_emergency=policy_emergency if isinstance(policy_emergency,(int,float)) and policy_emergency>0 else p['initial_stop']
+            hard=max(base_emergency,floor_tick(soft-policy['noise_band']))
             quote=p.get('last_quote',{})
             try:quote_fresh=0<=(self.clock()-datetime.fromisoformat(quote['time'])).total_seconds()<=self.c.stale_seconds
             except (KeyError,TypeError,ValueError):quote_fresh=False
@@ -1107,7 +1155,12 @@ class AutonomousEngine(ExistingExits,Engine):
         if p and previous is not None and p.get('stop',0)>previous:
             self.decisions.emit('PROTECTION_UPDATE',t.symbol,'HOLD','PROTECTION_RAISED',
                 {'protection':gate(True,previous=previous,new=p.get('stop',0),completed_low=completed_low)},position=p,price=t.price,force=True)
-        if p: self.position_eval(t.symbol,p,t.price)
+        if p:
+            self.position_eval(t.symbol,p,t.price)
+            capture=getattr(self,'trade_review',None)
+            if capture is not None:
+                try:capture.position(t.symbol,p,self.clock())
+                except Exception:self.trade_review_errors=getattr(self,'trade_review_errors',0)+1
 
     def position_eval(self,sym,p,price=None):
         self.refresh_exit_state(sym)

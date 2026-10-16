@@ -6,6 +6,7 @@ from collections import deque, Counter
 from statistics import median
 import math
 from core.util import floor_tick, tick_size
+from core.market_time import market_freshness,tick_freshness,MAX_EXCHANGE_LEAD_SECONDS
 from automation.session import supported, after_supported
 
 
@@ -19,6 +20,14 @@ def stamp(value):
         return value if isinstance(value, datetime) and value.tzinfo is not None else None
     except ValueError:
         return None
+
+
+def saved_evidence(value):
+    """Detach point-in-time evidence and keep the INTENT ledger JSON-safe."""
+    if isinstance(value,datetime):return value.isoformat()
+    if isinstance(value,dict):return {k:saved_evidence(v) for k,v in value.items()}
+    if isinstance(value,(list,tuple)):return [saved_evidence(v) for v in value]
+    return value
 
 
 @dataclass
@@ -64,6 +73,7 @@ class FastSignal:
         watch = watch or {}
         g = self.extra.get('geometry', {})
         structure = g.get('structural_evidence', {})
+        metrics = self.extra.get('metrics', {})
         eff = {
             'decision': 'TRADE',
             'score': self.net_reward_risk,
@@ -83,7 +93,8 @@ class FastSignal:
             'breakout': {'result': 'PASS', 'values': {'breakout': structure.get('breakout', self.limit)}},
             'invalidation': {'result': 'PASS', 'values': {'entry': self.limit, 'stop': self.stop, 'emergency': self.emergency}},
             'risk_reward': {'result': 'PASS', 'values': {'target': self.target, 'net_rr': self.net_reward_risk}},
-            'liquidity': {'result': 'PASS', 'values': {'turnover': structure.get('turnover', 0)}},
+            'liquidity': {'result': 'PASS', 'values': {'turnover': metrics.get('turnover_10'),
+                'window_seconds': 10, 'basis': 'ACCEPTED_REAL_TICKS'}},
             'acceleration': {'result': 'PASS', 'values': {'mode': 'FAST_MICRO_MOMENTUM'}, 'required': False},
             'pattern': {'result': 'PASS', 'values': {'setup': 'FAST'}, 'required': False},
         }
@@ -110,6 +121,10 @@ class FastSignal:
             'gross_reward_risk': self.gross_reward_risk,
             'time': self.created_at.isoformat(),
             'signal_detected_at': self.created_at.isoformat(),
+            # Preserve the evidence actually evaluated, rather than an
+            # unrepeatable PASS with zero turnover or invented bar history.
+            'fast_entry_evidence': {'geometry': saved_evidence(g), 'metrics': saved_evidence(metrics),
+                'basis': 'OBSERVED_MICRO_TAPE_NOT_COMPLETED_BAR_TREND'},
             'ttl_seconds': self.ttl_seconds,
             'max_chase_price': self.max_chase_price,
             'regime': self.regime,
@@ -160,7 +175,10 @@ class MicroTape:
             return self._reject('TRADE_OR_RECEIPT_TIME_UNKNOWN')
         if not getattr(t, 'regular', True) or not number(price) or price <= 0 or not number(volume) or volume <= 0:
             return self._reject('INVALID_REGULAR_TRADE')
-        if not 0 <= (receipt - at).total_seconds() <= self.stale_seconds:
+        received_at=getattr(t,'received_at',None) or receipt
+        received_monotonic=getattr(t,'received_monotonic',None)
+        if not market_freshness(at,receipt,self.stale_seconds,received_at=received_at,
+                                received_monotonic=received_monotonic)['fresh']:
             return self._reject('STALE_OR_FUTURE_RECEIPT')
         if self.ticks and at < self.ticks[-1][0]:return self._reject('OUT_OF_ORDER_TRADE')
         if self.symbol is not None and self.symbol != t.symbol:return self._reject('SYMBOL_MISMATCH')
@@ -177,7 +195,8 @@ class MicroTape:
         previous = self.ticks[-1][1] if self.ticks else None
         direction = None if previous is None else 1 if price > previous else -1 if price < previous else 0
         self.ticks.append((at, price, volume, direction, bid, ask))
-        self.metadata.append(dict(received_at=receipt, book_time=stamp(getattr(t, 'book_time', None)),
+        self.metadata.append(dict(received_at=stamp(received_at),received_monotonic=received_monotonic,
+            book_time=stamp(getattr(t, 'book_time', None)),
             bid_qty=getattr(t, 'bid_qty', None), ask_qty=getattr(t, 'ask_qty', None),
             depth_available=getattr(t, 'depth_available', None), fingerprint=fingerprint))
         self.day = at.date(); self.symbol = t.symbol; self.last_rejection = None
@@ -194,14 +213,15 @@ class MicroTape:
         now = stamp(current_time)
         if now is None:return {}
         self._prune(now)
-        eligible = [(row, meta) for row, meta in zip(self.ticks, self.metadata)
-                    if row[0] <= now and meta['received_at'] <= now and row[0].date() == now.date()]
+        eligible = self._observed_rows(now)
         if not eligible:return {}
         result = {'ticks_count': len(eligible), 'latest_time': eligible[-1][0][0],
             'receipt_time': eligible[-1][1]['received_at'], 'last_price': eligible[-1][0][1],
             'last_bid': eligible[-1][0][4], 'last_ask': eligible[-1][0][5],
             'book_time': eligible[-1][1]['book_time'],
-            'data_fresh': 0 <= (now - eligible[-1][0][0]).total_seconds() <= self.stale_seconds,
+            'data_fresh': market_freshness(eligible[-1][0][0],now,self.stale_seconds,
+                received_at=eligible[-1][1]['received_at'],
+                received_monotonic=eligible[-1][1].get('received_monotonic'))['fresh'],
             'direction_basis': 'TICK_RULE_PROXY_NOT_AGGRESSOR_ID', 'reset_reason': self.reset_reason}
         for seconds in (10, 30, 60):
             rows = [r for r, _ in eligible if r[0] >= now - timedelta(seconds=seconds)]
@@ -222,9 +242,17 @@ class MicroTape:
         result['spread'] = (ask - bid) / bid if number(bid) and number(ask) and 0 < bid <= ask else None
         return result
 
+    def _observed_rows(self,asof):
+        # Exchange time is second-resolution. A bounded clock lead cannot
+        # erase a print which has actually arrived; unreceived prints remain
+        # unavailable, and old prints still count in their existing windows.
+        return [(row,meta) for row,meta in zip(self.ticks,self.metadata)
+                if meta['received_at']<=asof and row[0].date()==asof.date()
+                and row[0]<=asof+timedelta(seconds=MAX_EXCHANGE_LEAD_SECONDS)]
+
     def structure(self, asof, exclude_decision=True):
         """An earlier rise and higher micro-low must already have rebounded."""
-        rows = [r for r in self.ticks if r[0] <= asof and r[0].date() == asof.date()]
+        rows = [r for r,_ in self._observed_rows(asof)]
         if exclude_decision and rows:rows = rows[:-1]
         turns = []
         for row in rows:
@@ -316,10 +344,10 @@ class FastMomentumStrategy:
     def _quote(self, t, now, quantity=1, side='BOTH'):
         at = stamp(getattr(t, 'time', None)); book = stamp(getattr(t, 'book_time', None)); age = getattr(self.cfg, 'stale_seconds', 5)
         if not getattr(t, 'regular', True):return 'NONREGULAR_TRADE_NOT_EXECUTABLE'
-        if at is None or not 0 <= (now - at).total_seconds() <= age:return 'CURRENT_TRADE_STALE_OR_FUTURE'
+        if at is None or not tick_freshness(t,now,age)['fresh']:return 'CURRENT_TRADE_STALE_OR_FUTURE'
         bid, ask = getattr(t, 'bid', None), getattr(t, 'ask', None)
         if not number(bid) or not number(ask) or not 0 < bid <= ask:return 'EXECUTABLE_QUOTE_UNKNOWN'
-        if book is None or book.date() != now.date() or not 0 <= (now - book).total_seconds() <= age:
+        if book is None or not market_freshness(book,now,age)['fresh']:
             return 'BOOK_TIMESTAMP_UNKNOWN_OR_STALE'
         if getattr(t, 'depth_available', None) is not True:return 'EXECUTABLE_DEPTH_UNKNOWN'
         names = ('bid_qty',) if side == 'SELL' else ('ask_qty', 'bid_qty')
