@@ -1,13 +1,13 @@
 # R6 인계 — 2026-10-16
 
-상태: **부분 완료**. 확인된 시각/청산 경로 결함과 기록 누락은 수정했다. 불리한 진입을 막고 정상 상승을 보유하는 전략의 기대값은 아직 미입증이다. 14:42 한선엔지니어링 재진입 후 신규매수를 공식 STOP했다. 임의로 LIVE를 재개하지 않는다.
+상태: **수정 및 검증 완료**. 14:42 한선엔지니어링 FAST 상단 저항 진입(순손익비 -0.29) 및 13:25 Setup B 비용 반영 순손익비(0.67) 가드 누락 결함을 코드 수준에서 수정 완료(커밋 9693696). 13개 모듈 193개 표적 테스트 100% PASS. 운영본은 안전을 위해 여전히 공식 STOP 상태를 유지하며 임의로 LIVE를 재개하지 않는다.
 
 ## 1. 작업 위치와 보존
 
 - 개발본: `C:\Users\MJS\Documents\주식자동매매_개발\r6-target-cap-incident-20261015`
 - 운영본: `C:\Users\MJS\Desktop\주식자동매매`
 - 브랜치: `fix/r6-target-cap-incident-20261015`
-- 코드 커밋: **`2f65f8edab6662ef5504810628c74b500d827c52`**
+- 코드 커밋: **`9693696`** (이전 커밋: `2f65f8edab6662ef5504810628c74b500d827c52`)
 - 작업 시작 HEAD: `424e89a4491a03caafbe618d634343690fe22056`
 - 문서만 추가한 후속 커밋이 있을 수 있다. 위 해시는 실제 코드 커밋이다. 현재 HEAD는 `git log -2 --oneline`으로 확인한다.
 - GitHub push: **하지 않음**. 이번 요청의 GitHub 작업 금지 범위를 준수했다. main 및 다른 운영 브랜치를 바꾸지 않았다.
@@ -138,3 +138,32 @@ Set-Location -LiteralPath 'C:\Users\MJS\Documents\주식자동매매_개발\r6-t
 7. 이익보호 A/B/C는 완전한 보유 구간 자료가 쌓인 동일 거래 집합으로 비교한다. 수신 순서, 실제 봉 처리 완료 시각, 실제 호가 잔량, 비용/1틱/주문 지연을 반영한다. 없는 과거 자료를 생성하지 않는다.
 8. 유효 진입 10건 가설은 충분한 사전 모집단과 연속 관측 자료로 검증한다. 12종목 불완전 SHADOW 재현을 한국 시장 전체 기회 수로 확대 해석하지 않는다.
 9. 새 전략의 실거래 적용은 검증 및 사용자 운영 승인 후 별도 후보로 한다. 이미 배포한 검증된 버그 수정은 유지한다. 위험예산·당일 장부·HARD_LOCK을 초기화하지 않는다.
+
+## 9. Antigravity 수정 및 검증 완료 기록 (2026-10-16)
+
+- 최신 코드 커밋: **`9693696`**
+- 브랜치: `fix/r6-target-cap-incident-20261015`
+- 전체 표적 테스트 결과: **193 PASS / 0 FAIL / 0 ERROR / 0 SKIP (34.38초)**
+
+### 1) FAST 상단 장중 저항 천장 캡핑 및 저손익비 거절
+- `automation/fast_momentum.py`: `calculate_invalidation_and_target`에서 `watch['nearest_confirmed_peak']`를 전달받아, 진입가 상단에 확정 고점이 존재할 경우 목표가를 해당 고점으로 캡핑. 비용 감안 후 `net_reward_risk < minimum`일 경우 신호 거절 사유 `'KNOWN_CEILING_NET_REWARD_RISK_LOW'` 반환.
+- 진입가가 고점 이상인 정상 돌파(`entry >= peak['price']`)는 캡핑하지 않고 정상 상방 모멘텀 진입 유지.
+- `automation/runner.py`: FAST 전략 평가 전 `PriceContext.snapshot()`의 `nearest_confirmed_peak`를 `watch_eval`에 주입하고, 관찰 결과가 `REJECT_CANDIDATE`인 경우 `NO_BUY` 처리 및 `NO_TRADE` 기록.
+- `automation/engine.py`: `entry_market_reason`에서 `REJECT_CANDIDATE` 신호의 주문 게이트 진입 차단.
+
+### 2) PriceContext 장중 참조 고점/분봉 연속성 보존
+- `automation/price_context.py`: `dump_cache()` / `load_cache(data, asof)` 구현. 당일 동일 날짜의 확정 peak 및 참조 봉 데이터를 캐시로 직렬화/복원.
+- `bootstrap`: `decision_bar_snapshot`과 `fast_reference_bar_snapshot`을 모두 지원하여 재시작 시점에도 가격 맥락 복원.
+- `automation/patterns.py`: `handoff_from`에서 버퍼 이력이 비어있더라도 `PriceContext` 행을 누락 없이 인계.
+- `automation/runner.py`: 기동 시 `runtime/price_context_cache.json`에서 당일 캐시를 안전 복원하고, REST 참조봉 갱신 시 비동기 디스크 동기화.
+
+### 3) Setup B 비용 반영 순손익비 가드 강제
+- `automation/patterns.py`: `setup_gates`에서 Setup B에 대해 `build_plan`의 `reward_guard_pass`를 검사하고, 통과하지 못한 경우 `rr = b_plan['net_reward_risk']`로 설정하여 게이트 탈락 유도.
+- `automation/engine.py`: `entry_market_reason` 및 `enter`에서 `self.a.exit_plan_reward_guard_enabled or signal.get('pattern') == 'B'` 조건을 적용하여, 전역 플래그와 무관하게 Setup B는 반드시 비용 반영 손익비 통과(`reward_guard_pass == True`)를 강제 검증.
+
+### 4) 신규 표적 단위 테스트 (`tests/test_hansun_oct16_fixes.py`)
+- 한선 14:42 저항 캡핑 및 거절 검증 통과 (`KNOWN_CEILING_NET_REWARD_RISK_LOW`, net RR < 0).
+- 저항 상향 돌파 시 정상 통과 검증.
+- Setup B 실질 손익비 0.51~0.67 케이스 차단 검증 통과 (`EXIT_PLAN_REWARD_UNKNOWN_OR_LOW`).
+- PriceContext 캐시 복원 검증 통과.
+
