@@ -12,8 +12,9 @@ import json
 from pathlib import Path
 from datetime import datetime
 
-CURRENT_RELEASE_COMMIT = "0dd8884"
-CURRENT_RELEASE_BUILD_ID = "V1.6-risk2-daily4-fast-live-r6-20261015-0dd8884"
+_FALLBACK_RELEASE_COMMIT = "2dc915e"
+CURRENT_RELEASE_COMMIT = _FALLBACK_RELEASE_COMMIT
+CURRENT_RELEASE_BUILD_ID = "V1.6-risk2-daily4-fast-live-r6-20261019-2dc915e"
 
 # 필수 결함 수정 패치 식별자 및 검증 서명
 MANDATORY_PATCH_SIGNATURES = {
@@ -76,6 +77,8 @@ def get_current_commit(root=None):
     except Exception:
         pass
     return CURRENT_RELEASE_COMMIT
+
+CURRENT_RELEASE_COMMIT = get_current_commit()
 
 def check_runtime_integrity(root=None):
     """운영본 디렉터리의 실제 실행 파일 내용과 필수 패치를 물리적으로 검사한다.
