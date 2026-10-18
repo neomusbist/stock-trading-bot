@@ -184,14 +184,26 @@ class ObservationWorker:
         if kind=='SHADOW_EVAL':
             momentum={'timestamp':data['timestamp'],'gates':{key:{'result':data.get('gates',{}).get(key,{}).get('result')}
                 for key in ('acceleration','liquidity')}}
-            momentum['tier']=calculate_tier(data.get('gates',{}),data.get('setup_trials',[]))
-            momentum['price_blocked']=unviable_price_geometry(data)
+            fast_ready=bool(data.get('fast_signal_ready'))
+            momentum['tier']=0 if fast_ready else calculate_tier(data.get('gates',{}),data.get('setup_trials',[]))
+            momentum['price_blocked']=False if fast_ready else unviable_price_geometry(data)
+            momentum['fast_signal_ready']=fast_ready
             with self.lock:
                 self.snapshot.setdefault('evaluations',{})[data['symbol']]=record
                 self.runtime_snapshot['evaluations'][data['symbol']]=momentum
         elif kind=='OBSERVATION_READINESS_CHANGED':
+            sym=data.get('symbol','')
+            if sym:
+                with self.lock:
+                    prior_eval=dict(self.runtime_snapshot['evaluations'].get(sym,{}))
+                    prior_eval['timestamp']=data.get('timestamp',self.clock().isoformat())
+                    prior_eval['tier']=data.get('tier',3)
+                    if data.get('fast_signal_ready'):
+                        prior_eval['price_blocked']=False
+                        prior_eval['fast_signal_ready']=True
+                    self.runtime_snapshot['evaluations'][sym]=prior_eval
             notif=FocusNotification(
-                symbol=data.get('symbol',''),
+                symbol=sym,
                 event_seq=data.get('event_seq',0),
                 observation_seq=data.get('observation_seq',0),
                 transport_epoch=str(data.get('transport_epoch','')),

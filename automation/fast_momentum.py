@@ -5,6 +5,7 @@ from typing import Dict, Any
 from collections import deque, Counter
 from statistics import median
 import math
+import threading
 from core.util import floor_tick, tick_size
 from core.market_time import market_freshness,tick_freshness,MAX_EXCHANGE_LEAD_SECONDS
 from automation.session import supported, after_supported
@@ -284,34 +285,86 @@ class FastMomentumStrategy:
             self.costs.update(costs if isinstance(costs, dict) else {key: getattr(costs, key) for key in self.costs})
         if any(not number(v) or not 0 <= v < 1 for v in self.costs.values()):raise ValueError('invalid proportional cost assumption')
         if sum(self.costs[k] for k in ('sell', 'tax', 'exit_slippage')) >= 1:raise ValueError('invalid sell proceeds model')
+        self._lock = threading.RLock()
         self.tapes = {}; self.active_signals = {}; self.last_exit_by_symbol = {}; self.last_evaluation = {}
+        self.rejection_counts = Counter(); self.signal_history = deque(maxlen=256)
         self.cooldown_seconds = getattr(auto, 'cooldown_seconds', 900.)
 
     def get_tape(self, symbol):
-        if symbol not in self.tapes:self.tapes[symbol] = MicroTape(stale_seconds=getattr(self.cfg, 'stale_seconds', 5))
-        return self.tapes[symbol]
+        with self._lock:
+            if symbol not in self.tapes:self.tapes[symbol] = MicroTape(stale_seconds=getattr(self.cfg, 'stale_seconds', 5))
+            return self.tapes[symbol]
 
     def ingest_tick(self, t, received=None, coverage_gap=False):
-        accepted = self.get_tape(t.symbol).ingest(t, received, coverage_gap)
-        if not accepted:self._note(t, 'UNKNOWN', self.get_tape(t.symbol).last_rejection)
-        return accepted
+        with self._lock:
+            tape = self.get_tape(t.symbol)
+            accepted = tape.ingest(t, received, coverage_gap)
+            if not accepted:self._note(t, 'UNKNOWN', tape.last_rejection)
+            return accepted
+
+    def snapshot_tape(self, symbol):
+        with self._lock:
+            tape = self.tapes.get(symbol)
+            if tape is None or not tape.ticks:
+                return None
+            return dict(
+                ticks=deque(tape.ticks),
+                metadata=deque(dict(m) for m in tape.metadata),
+                last_cumulative=tape.last_cumulative,
+                day=tape.day,
+                symbol=tape.symbol,
+                reset_reason=tape.reset_reason,
+            )
+
+    def restore_tape(self, symbol, snapshot):
+        if not snapshot or not snapshot.get('ticks'):
+            return False
+        with self._lock:
+            src_ticks = snapshot['ticks']
+            tgt = self.tapes.get(symbol)
+            if tgt is not None and tgt.ticks:
+                src_last = src_ticks[-1][0]
+                tgt_last = tgt.ticks[-1][0]
+                if src_last.date() == tgt_last.date():
+                    if (src_last, snapshot.get('last_cumulative') or 0) < (tgt_last, tgt.last_cumulative or 0):
+                        return False
+                    if len(tgt.ticks) > len(src_ticks) and (src_last - tgt_last).total_seconds() <= 0:
+                        return False
+            tape = self.get_tape(symbol)
+            tape.ticks = deque(src_ticks)
+            tape.metadata = deque(dict(m) for m in snapshot['metadata'])
+            tape.last_cumulative = snapshot.get('last_cumulative')
+            tape.day = snapshot.get('day')
+            tape.symbol = snapshot.get('symbol', symbol)
+            tape.reset_reason = snapshot.get('reset_reason')
+            return True
+
+    def handoff_from(self, source, symbol):
+        if source is None or source is self or not hasattr(source, 'snapshot_tape'):
+            return False
+        return self.restore_tape(symbol, source.snapshot_tape(symbol))
 
     def forget(self, symbol, reason='OBSERVATION_COVERAGE_LOST'):
-        self.tapes.pop(symbol, None); self.active_signals.pop(symbol, None); self.last_evaluation.pop(symbol, None)
+        with self._lock:
+            self.tapes.pop(symbol, None); self.active_signals.pop(symbol, None); self.last_evaluation.pop(symbol, None)
 
     def reset(self, reason='OBSERVATION_COVERAGE_LOST'):
-        for symbol in list(self.tapes):self.forget(symbol, reason)
+        with self._lock:
+            for symbol in list(self.tapes):self.forget(symbol, reason)
 
     def record_exit(self, symbol, filled_at):
         at = stamp(filled_at)
         if at is None:raise ValueError('full exit fill requires aware timestamp')
-        self.last_exit_by_symbol[symbol] = at; self.active_signals.pop(symbol, None)
+        with self._lock:
+            self.last_exit_by_symbol[symbol] = at; self.active_signals.pop(symbol, None)
 
     def _note(self, t, status, reason, **details):
         record = dict(time=t.time.isoformat(), status=status, reason=reason,
                       actual_order_permission=False, SHADOW_ONLY=True)
         record.update(details)
         self.last_evaluation[t.symbol] = record
+        if status in {'REJECT', 'UNKNOWN'} and reason:
+            self.rejection_counts[reason] += 1
 
     def determine_phase(self, at):
         s = at.strftime('%H:%M:%S')
@@ -468,6 +521,19 @@ class FastMomentumStrategy:
                        profitability_proven=False,
                        strategy_policy='FAST_LIVE_CANDIDATE' if actual_order else 'CAUSAL_FAST_RESEARCH'))
         self.active_signals[t.symbol] = signal
+        self.signal_history.append(dict(
+            symbol=t.symbol,
+            created_at=now.isoformat(),
+            limit=signal.limit,
+            stop=signal.stop,
+            emergency=signal.emergency,
+            target=signal.target,
+            quantity=signal.quantity,
+            net_reward_risk=signal.net_reward_risk,
+            phase=phase,
+            actual_order_permission=actual_order,
+            SHADOW_ONLY=not actual_order,
+        ))
         self._note(t, 'SIGNAL', 'FAST_LIVE_CANDIDATE' if actual_order else 'CAUSAL_FAST_RESEARCH_CANDIDATE',
                    geometry=geometry, actual_order_permission=actual_order, SHADOW_ONLY=not actual_order)
         return signal

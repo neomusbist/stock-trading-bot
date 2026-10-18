@@ -250,9 +250,11 @@ class PatternDetector(Detector):
                'after_prior_high','last','last_gap_reason')
         # Never hold both detector locks: promotion and demotion can run concurrently.
         with source._state_lock:
+            src_fast=getattr(source,'fast_strategy',None)
+            fast_snap=src_fast.snapshot_tape(symbol) if src_fast is not None and hasattr(src_fast,'snapshot_tape') else None
             has_state=any(symbol in getattr(source,key) for key in ('observation_start','history','buffers'))
             has_ref=symbol in source.price_context.rows
-            if not (has_state or has_ref):return False
+            if not (has_state or has_ref or fast_snap):return False
             snapshot={key:(deque(source.buffers[symbol]) if key=='buffers' else
                            source.last[symbol] if key=='last' else deepcopy(getattr(source,key)[symbol]))
                       for key in names if symbol in getattr(source,key)}
@@ -262,7 +264,11 @@ class PatternDetector(Detector):
         with self._state_lock:
             if has_ref:
                 self.price_context.transfer(reference,symbol)
-            if not has_state:return True
+            tgt_fast=getattr(self,'fast_strategy',None)
+            fast_restored=False
+            if tgt_fast is not None and fast_snap is not None and hasattr(tgt_fast,'restore_tape'):
+                fast_restored=tgt_fast.restore_tape(symbol,fast_snap)
+            if not has_state:return bool(has_ref or fast_restored)
             src_last=snapshot.get('last');tgt_last=self.last.get(symbol)
             if tgt_last and (src_last is None or (src_last.time,src_last.cumulative)<(tgt_last.time,tgt_last.cumulative)):return False
             src_bars=len(snapshot.get('history',()))

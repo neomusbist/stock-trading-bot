@@ -185,6 +185,11 @@ def apply_qualified_progress(engine,lookup,rows,result,readiness,cfg,auto,stamp)
     for row in verified:pool[row['code']]=dict(row)
     merged=list(pool.values())
     selection=resolve_radar_focus(engine,lookup,merged,[],readiness,cfg,auto,stamp)
+    for row in merged:
+        if row['code'] in lookup:row.update(status='WATCH',fallback_source1=lookup[row['code']]['fallback_source1'])
+        elif row.get('status')=='WATCH':row.update(status='RESERVE',fallback_source1=False)
+        engine.names[row['code']]=row.get('name')
+        engine.market_status[row['code']]=row.get('market_status',{'pass':None,'reason_code':'MARKET_STATUS_UNKNOWN'})
     # Full ranking lineage is retained even when RAW was coalesced in the bounded
     # two-packet radar queue. One-source fallback is the existing FOCUS permission.
     raw=[{**r,'fallback_source1':bool(lookup.get(r['code'],{}).get('fallback_source1'))}
@@ -318,6 +323,8 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
             except queue.Full: break
     for index,(received,tick) in enumerate(promoted):
         detector.ingest(tick,received)
+        if getattr(engine,'fast_strategy',None) is not None:
+            engine.fast_strategy.ingest_tick(tick,received)
         if critical and (index+1)%64==0:engine.timer(engine.prices)
     if promoted:
         engine.event('OBSERVATION_PREWARM_HANDOFF',symbols=sorted(promotions),queued_ticks=len(promoted),
@@ -330,6 +337,8 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
         drained += 1
         if tick.symbol in observed and tick.symbol not in priority and tick.symbol not in critical:
             detector.ingest(tick, observed_at)
+            if getattr(engine,'fast_strategy',None) is not None:
+                engine.fast_strategy.ingest_tick(tick, observed_at)
     return drops, priority
 
 def apply_focus_selection(engine,lookup,by_symbol,selection):
@@ -424,14 +433,21 @@ def focus_readiness(detector,shadow_readiness,stamp):
     """WATCH ticks are routed to main; rank them by their own full evaluation."""
     from automation.focus_selection import calculate_tier,unviable_price_geometry
     result=dict(shadow_readiness)
+    fast_strat=getattr(detector,'fast_strategy',None)
     with detector._state_lock:
         for sym,evaluation in detector.last_eval.items():
             tick_at=evaluation.get('time')
             if not isinstance(tick_at,datetime) or not 0<=(stamp-tick_at).total_seconds()<=15:continue
             gates=evaluation.get('gates',{})
+            fast_ready=False
+            if fast_strat is not None and gates.get('market_status',{}).get('result')=='PASS':
+                active_fast=fast_strat.active_signals.get(sym)
+                if active_fast is not None and 0<=(stamp-active_fast.created_at).total_seconds()<=active_fast.ttl_seconds:
+                    fast_ready=True
             result[sym]={'timestamp':tick_at.isoformat(),
-                'tier':calculate_tier(gates,evaluation.get('trials',[])),
-                'price_blocked':unviable_price_geometry({'setup_trials':evaluation.get('trials',[])}),
+                'tier':0 if fast_ready else calculate_tier(gates,evaluation.get('trials',[])),
+                'price_blocked':False if fast_ready else unviable_price_geometry({'setup_trials':evaluation.get('trials',[])}),
+                'fast_signal_ready':fast_ready,
                 'gates':{k:{'result':gates.get(k,{}).get('result')} for k in ('acceleration','liquidity')}}
     return result
 
@@ -1028,6 +1044,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                                 by_symbol={r['code']:r for r in rows}
                                 focus_promotions.extend(selection.promoted)
                                 engine.candidate_audit.begin(rows,result['time'],result.get('capital_context',{}))
+                                submit_candidate_observation(engine,shadow,rows,result['time'],engine.capital_context())
                                 engine.event('FOCUS_SELECTION_APPLIED',basis='OPENING_VERIFIED_PROGRESS',
                                     promoted=selection.promoted,demoted=selection.demoted,
                                     next_watch=selection.next_watch,previous_watch=selection.previous_watch,
@@ -1215,6 +1232,9 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     for stage in engine.observation_timeline.drain_events():
                         engine.event('OPENING_PIPELINE_STAGE',**stage)
                     engine.observation_timeline.save(now())
+                    if in_session:
+                        from automation.opening_diagnostics import check_opening_funnel_diagnostic
+                        check_opening_funnel_diagnostic(engine,detector,shadow,radar,lookup,rows,now(),root)
                     sess_name=engine.current_session()
                     phase_str=market_phase(now(),live_approved=getattr(engine,'after_live_authorized',False))
                     if sess_name=='AFTER':

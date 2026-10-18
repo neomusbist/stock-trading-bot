@@ -57,11 +57,25 @@ def gate(passed,**values):
     return {'result':'UNKNOWN' if passed is None else 'PASS' if passed else 'FAIL','values':safe_values(values)}
 
 class DecisionLog:
-    def __init__(self,engine): self.engine=engine; self.last={}
+    def __init__(self,engine):
+        from collections import Counter
+        self.engine=engine; self.last={}
+        self.rejection_counts=Counter()
+        self.signal_keys_by_setup={'FAST':set(),'A':set(),'B':set(),'C':set()}
+        self.buy_candidates=set()
     def emit(self,kind,symbol,decision,reason,gates=None,position=None,signal=None,price=None,extra=None,force=False):
         e=self.engine; p=position or {}; sig=signal or p.get('signal') or {}; extra=extra or {}
         gates=gates or {}; key=(kind,symbol)
         reason=reason_code(reason,p)
+        if kind=='ENTRY_EVAL':
+            pat=sig.get('pattern')
+            if pat in self.signal_keys_by_setup and sig.get('limit') and sig.get('stop'):
+                self.signal_keys_by_setup[pat].add((symbol,sig.get('limit'),sig.get('stop'),sig.get('target')))
+                self.buy_candidates.add((symbol,pat,sig.get('limit')))
+            if decision=='NO_BUY' and reason:
+                self.rejection_counts[reason]+=1
+            elif decision=='BUY':
+                self.buy_candidates.add((symbol,pat or 'UNKNOWN',sig.get('limit')))
         if kind=='ENTRY_EVAL' and hasattr(e,'candidate_audit'):
             e.candidate_audit.observe(symbol,reason,gates,decision,{'timestamp':e.clock().isoformat(),'current_price':price,'setup_trials':sig.get('setup_trials',extra.get('setup_trials'))})
         state=('EXIT_PENDING' if p.get('exit_requested') else 'BOT_POSITION') if p else e.policy.mode

@@ -210,5 +210,107 @@ class FastRepairTests(unittest.TestCase):
         self.strategy.reset('WEBSOCKET_DISCONNECT')
         self.assertEqual(self.strategy.tapes,{})
 
+    def test_shadow_to_watch_promotion_preserves_fast_microtape_and_triggers_tier0(self):
+        from automation.shadow_observation import ShadowObserver
+        from automation.patterns import PatternDetector
+        events=[]
+        obs=ShadowObserver(self.cfg,self.auto,None,lambda kind,**kw:events.append((kind,kw)),limit=64)
+        obs.eval_seconds=0
+        w=watch()
+        w.update(code='092870',status='SHADOW',source_count=2,affordability={'entry_eligible':True},
+                 market_status={'pass':True,'reason_code':'OK'},
+                 shadow_view={'market_status':{'pass':True,'reason_code':'OK'},'resistance_room_pass':True})
+        obs.update([w],BASE)
+        seq=ticks(CAUSAL,symbol='092870')
+        for item in seq:
+            obs.tick(item,item.time)
+        fast_events=[e for e in events if e[0]=='SHADOW_FAST_SIGNAL']
+        readiness_events=[e for e in events if e[0]=='OBSERVATION_READINESS_CHANGED' and e[1].get('tier')==0]
+        self.assertTrue(fast_events)
+        self.assertTrue(readiness_events)
+        self.assertTrue(readiness_events[-1][1].get('fast_signal_ready'))
+
+        main_detector=PatternDetector(self.cfg,self.auto,None)
+        main_fast=FastMomentumStrategy(self.cfg,self.auto)
+        main_detector.fast_strategy=main_fast
+        self.assertTrue(main_detector.handoff_from(obs.detector,'092870'))
+        self.assertEqual(len(main_fast.get_tape('092870').ticks),len(seq))
+        live_sig=main_fast.evaluate(seq[-1],watch(),ingest=False,received=seq[-1].time,live_authorized=True)
+        self.assertIsNotNone(live_sig)
+        self.assertTrue(live_sig.extra['actual_order_permission'])
+        self.assertFalse(live_sig.extra['SHADOW_ONLY'])
+
+    def test_opening_10m_zero_buy_funnel_diagnostic_auto_aggregates(self):
+        import tempfile
+        from pathlib import Path
+        from automation.policy import Policy
+        from automation.engine import AutonomousEngine
+        from automation.patterns import PatternDetector
+        from automation.opening_diagnostics import check_opening_funnel_diagnostic
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            policy=Policy(root/'runtime'/'automation_policy.json')
+            stamp_0910=BASE.replace(minute=10,second=1)
+            dummy_broker=type('DummyBroker',(),{'identity':'paper'})()
+            engine=AutonomousEngine(self.cfg,self.auto,policy,root/'runtime',dummy_broker,lambda:stamp_0910)
+            detector=PatternDetector(self.cfg,self.auto,engine.costs)
+            detector.fast_strategy=engine.fast_strategy
+            from automation.entry_timing import ObservationTimeline
+            engine.observation_timeline=ObservationTimeline(root/'runtime'/'observation_timeline.json')
+            raw_rows=[{'code':'092870','name':'엑시콘','first_raw_at':BASE.isoformat(),'first_raw_price':14000.0,'reference_price':14000.0,'price':14350.0,'gain':2.5,'status':'SHADOW'}]
+            engine.observation_timeline.raw(raw_rows,BASE)
+            engine.decisions.emit('ENTRY_EVAL','092870','NO_BUY','KNOWN_CEILING_NET_REWARD_RISK_LOW',{},price=14350.0,force=True)
+            report=check_opening_funnel_diagnostic(engine,detector,None,None,{},raw_rows,stamp_0910,root)
+            self.assertIsNotNone(report)
+            self.assertTrue(report['zero_buy_alert'])
+            self.assertGreaterEqual(report['discovered_unique_symbols'],1)
+            self.assertIn('KNOWN_CEILING_NET_REWARD_RISK_LOW',report['rejection_counts_by_reason'])
+            self.assertTrue((root/'runtime'/'opening_funnel_diagnostic.json').exists())
+            self.assertEqual(report['missed_rising_candidates'][0]['symbol'],'092870')
+
+    def test_p0_3_real_symbol_price_tick_quantity_consistency_and_shadow_isolation(self):
+        import tempfile
+        from pathlib import Path
+        from core.util import tick_size
+        from automation.policy import Policy
+        from automation.engine import AutonomousEngine
+        # Use real price band for 092870 (엑시콘, ~14,000 KRW, tick_size=10 KRW)
+        real_prices=[13800,13850,13900,13950,14000,13860,13890,13920,13950,13980,14010]
+        real_seq=ticks(real_prices,symbol='092870')
+        real_seq=[replace(item,bid=item.price-tick_size(item.price),ask=item.price) for item in real_seq]
+        strat=FastMomentumStrategy(self.cfg,self.auto)
+        for item in real_seq:
+            self.assertEqual(tick_size(item.price),10)
+            self.assertTrue(strat.ingest_tick(item,item.time))
+        real_watch={
+            'code':'092870','name':'엑시콘','status':'WATCH','source_count':2,
+            'reference_price':13800.0,'first_raw_price':13800.0,
+            'resistance':14650.0,'resistance_asof':BASE.isoformat(),'observed_at':BASE.isoformat(),
+            'market_status':{'pass':True,'reason_code':'OK'},
+            'affordability':{'entry_eligible':True},
+        }
+        sig_obj=strat.evaluate(real_seq[-1],real_watch,capital_limit=71950.0,risk_budget=665687.0*0.02,ingest=False,received=real_seq[-1].time,live_authorized=True)
+        self.assertIsNotNone(sig_obj,strat.last_evaluation.get('092870'))
+        eng_sig=sig_obj.to_engine_signal(real_watch)
+        self.assertEqual(eng_sig['symbol'],'092870')
+        self.assertEqual(eng_sig['limit'],14010)
+        self.assertEqual(eng_sig['limit']%tick_size(eng_sig['limit']),0)
+        self.assertEqual(eng_sig['stop']%tick_size(eng_sig['stop']),0)
+        self.assertEqual(eng_sig['emergency']%tick_size(eng_sig['emergency']),0)
+        self.assertLessEqual(sig_obj.quantity*eng_sig['limit'],71950.0)
+        # Verify SHADOW_ONLY / diagnostic_only / actual_order_permission=False signals can NEVER place orders
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            policy=Policy(root/'runtime'/'automation_policy.json')
+            live_cfg=replace(self.cfg,live_mode=True)
+            dummy_broker=type('DummyBroker',(),{'identity':'paper'})()
+            engine=AutonomousEngine(live_cfg,self.auto,policy,root/'runtime',dummy_broker,lambda:real_seq[-1].time)
+            for forbidden in (
+                {**eng_sig,'SHADOW_ONLY':True},
+                {**eng_sig,'actual_order_permission':False},
+                {**eng_sig,'diagnostic_only':True},
+            ):
+                self.assertFalse(engine.enter(forbidden,real_seq[-1]))
+
 
 if __name__=='__main__':unittest.main()

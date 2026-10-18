@@ -32,7 +32,7 @@ def make_evaluation_view(row):
 
 class ShadowObserver:
  def __init__(self,cfg,auto,costs,emit,risk=None,limit=32):
-  self.cfg=cfg;self.auto=auto;self.detector=PatternDetector(cfg,auto,costs);self.fast_strategy=FastMomentumStrategy(cfg,auto,costs);self.emit=emit;self.risk=risk;self.limit=limit;self.rows={};self.first={};self.last_log={};self.previous={}
+  self.cfg=cfg;self.auto=auto;self.detector=PatternDetector(cfg,auto,costs);self.fast_strategy=FastMomentumStrategy(cfg,auto,costs);self.detector.fast_strategy=self.fast_strategy;self.emit=emit;self.risk=risk;self.limit=limit;self.rows={};self.first={};self.last_log={};self.previous={}
   self.capital={};self.epoch=None;self.eval_seconds=2;self.selected_at={};self.latest={};self.detached=set()
   self.last_tier={};self.observation_seq=0;self.detached_at={};self.last_evaluated={}
  def reset_stream(self,reason,symbol=None,stamp=None):
@@ -79,7 +79,7 @@ class ShadowObserver:
    strong=fresh and all(gates.get(k,{}).get('result')=='PASS' for k in ('acceleration','liquidity'))
    if self.auto.setup_aware_watch_priority:
     observation=self.latest.get(sym,{})
-    strong=fresh and calculate_tier(gates,observation.get('setup_trials',[]),row)<=1
+    strong=fresh and (bool(observation.get('fast_signal_ready')) or calculate_tier(gates,observation.get('setup_trials',[]),row)<=1)
    tier_rank=0 if watch_priority(row) else 1 if strong else 2
    effective_score=score+(2.0 if held else 0.0)
    tie_rank=1 if (sym in self.rows and not held) else 0
@@ -135,6 +135,13 @@ class ShadowObserver:
   sig,gates,trials,history=self.detector.evaluation_snapshot(t,view)
   if sig:
    sig['SHADOW_ONLY']=True;sig['actual_order_permission']=False;sig['diagnostic_only']=True
+  if getattr(self.detector,'price_context',None) is not None:
+   structure_now=self.fast_strategy.get_tape(t.symbol).structure(t.time)
+   ctx_snapshot=self.detector.price_context.snapshot(t.symbol,t,t.ask,
+    support=structure_now.get('support') if structure_now.get('pass') else None,
+    breakout=structure_now.get('breakout') if structure_now.get('pass') else None)
+   if ctx_snapshot.get('nearest_confirmed_peak'):
+    view['nearest_confirmed_peak']=ctx_snapshot['nearest_confirmed_peak']
   fast_sig=self.fast_strategy.evaluate(t,view,capital_limit=self.capital.get('entry_budget',self.capital.get('effective_auto_cap',81300.0)),risk_budget=min(self.capital.get('risk_equity',self.capital.get('effective_auto_cap',81300.0))*self.cfg.risk_fraction,self.capital.get('risk_remaining',1626.0)),ingest=False,received=received)
   if fast_sig:
    self.event('SHADOW_FAST_SIGNAL',received,symbol=t.symbol,name=row.get('name'),signal_at=fast_sig.created_at.isoformat(),limit=fast_sig.limit,stop=fast_sig.stop,target=fast_sig.target,emergency=fast_sig.emergency,quantity=fast_sig.quantity,net_reward_risk=fast_sig.net_reward_risk,regime=fast_sig.regime,phase=fast_sig.phase,ttl_seconds=fast_sig.ttl_seconds,max_chase_price=fast_sig.max_chase_price,geometry=fast_sig.extra.get('geometry'),tick_metrics=fast_sig.extra.get('metrics'),SHADOW_ONLY=True,actual_order_permission=False)
@@ -147,7 +154,8 @@ class ShadowObserver:
   for trial in trials:
    if gates['market_status']['result']!='PASS':trial['failed_reasons'].append('MARKET_STATUS_FAIL');trial['entry_ready']=False
   self.observation_seq+=1
-  current_tier=calculate_tier(gates,trials,row)
+  fast_ready=bool(fast_sig is not None and gates.get('market_status',{}).get('result')=='PASS')
+  current_tier=0 if fast_ready else calculate_tier(gates,trials,row)
   prior_tier=self.last_tier.get(t.symbol)
   if prior_tier!=current_tier:
    self.last_tier[t.symbol]=current_tier
@@ -155,8 +163,9 @@ class ShadowObserver:
               tier=current_tier,prior_tier=prior_tier,readiness_kind=TIER_NAMES.get(current_tier,'TIER_CHANGED'),
               observation_seq=self.observation_seq,source_count=row.get('source_count'),
               usable_completed_bars=len(usable),stored_completed_bars=len(history),
+              fast_signal_ready=fast_ready,
               SHADOW_ONLY=True,actual_order_permission=False,diagnostic_only=True)
-  signature=repr(([(k,v['result']) for k,v in gates.items()],[(x['setup'],x['candidate_generated'],x['failed_reasons']) for x in trials]))
+  signature=repr(([(k,v['result']) for k,v in gates.items()],[(x['setup'],x['candidate_generated'],x['failed_reasons']) for x in trials],current_tier,fast_ready))
   previous=self.last_log.get(t.symbol)
   if previous and previous[1]==signature and (received-previous[0]).total_seconds()<10:return
   # Sizing is a log diagnostic, never a promotion input. Compute only for records actually emitted.
@@ -166,7 +175,7 @@ class ShadowObserver:
    trial.update(invalidation_ticks=(virtual['limit']-virtual['stop'])/tick_size(t.price) if virtual else None,
                 virtual_risk_quantity=sizing,risk_basis='DIAGNOSTIC_SIZING_ONLY_NOT_ORDER_AUTHORIZATION')
   self.last_log[t.symbol]=(received,signature)
-  self.event('SHADOW_EVAL',received,symbol=t.symbol,name=row.get('name'),**self.first[t.symbol],source_count=row.get('source_count'),discovery_status=row.get('status'),current_price=t.price,usable_completed_bars=len(usable),stored_completed_bars=len(history),gates=gates,setup_trials=trials,virtual_signal=sig,actual_order_permission=False,
+  self.event('SHADOW_EVAL',received,symbol=t.symbol,name=row.get('name'),**self.first[t.symbol],source_count=row.get('source_count'),discovery_status=row.get('status'),current_price=t.price,usable_completed_bars=len(usable),stored_completed_bars=len(history),gates=gates,setup_trials=trials,virtual_signal=sig,fast_signal_ready=fast_ready,actual_order_permission=False,
     microstructure={'tick_size':tick_size(t.price),'tick_fraction':tick_size(t.price)/t.price,'spread_fraction':(t.ask-t.bid)/t.price,'last_trade_gap_seconds':(t.time-old.time).total_seconds() if old else None,
       'book_depth':None,'book_gap':None,'vi_state':None,'slippage_basis':'CONFIG_ESTIMATE_NOT_MEASURED','entry_slippage_fraction':self.cfg.entry_slippage_fraction,'exit_slippage_fraction':self.cfg.exit_slippage_fraction})
  def virtual_size(self,virtual):
