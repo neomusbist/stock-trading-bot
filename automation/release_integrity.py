@@ -12,9 +12,9 @@ import json
 from pathlib import Path
 from datetime import datetime
 
-_FALLBACK_RELEASE_COMMIT = "2dc915e"
+_FALLBACK_RELEASE_COMMIT = "01ccffb"
 CURRENT_RELEASE_COMMIT = _FALLBACK_RELEASE_COMMIT
-CURRENT_RELEASE_BUILD_ID = "V1.6-risk2-daily4-fast-live-r6-20261019-2dc915e"
+CURRENT_RELEASE_BUILD_ID = "V1.6-risk2-daily4-fast-live-r6-20261019-01ccffb"
 
 # 필수 결함 수정 패치 식별자 및 검증 서명
 MANDATORY_PATCH_SIGNATURES = {
