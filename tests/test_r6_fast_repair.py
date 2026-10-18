@@ -312,5 +312,105 @@ class FastRepairTests(unittest.TestCase):
             ):
                 self.assertFalse(engine.enter(forbidden,real_seq[-1]))
 
+    def test_subsecond_received_at_and_shadow_scan_limit_promotion_to_buy(self):
+        import tempfile
+        from pathlib import Path
+        from core.util import tick_size
+        from automation.policy import Policy
+        from automation.engine import AutonomousEngine
+        from automation.patterns import PatternDetector
+        from automation.shadow_observation import ShadowObserver
+        from automation.focus_selection import select_focus
+        from automation.runner import (
+            merge_verified_shadow_candidates,
+            apply_focus_selection,
+            evaluate_actual_entry,
+            focus_readiness,
+        )
+        events=[]
+        obs=ShadowObserver(self.cfg,self.auto,None,lambda k,**d:events.append((k,d)))
+        obs.capital={'entry_budget':81300.0,'effective_auto_cap':81300.0,'risk_equity':81300.0,'risk_remaining':1626.0,'account_fresh':True}
+        obs.eval_seconds=0
+        shadow_row=watch()
+        shadow_row.update(
+            code='092870',name='엑시콘',status='UNKNOWN',reason='STATUS_SCAN_LIMIT',
+            source_count=2,observed_at=BASE.isoformat(),
+            affordability={'entry_eligible':True},
+            market_status={'pass':True,'reason_code':'OK','checked_at':BASE.isoformat()},
+            shadow_view={
+                'status':'ELIGIBLE','resistance':1045.0,'resistance_asof':BASE.isoformat(),
+                'resistance_room_pass':True,
+                'market_status':{'pass':True,'reason_code':'OK','checked_at':BASE.isoformat()},
+            },
+        )
+        obs.update([shadow_row],BASE)
+        seq=ticks(CAUSAL,symbol='092870')
+        for item in seq:
+            # Subsecond received_at > item.time (1-second KRX exchange timestamp)
+            recv=item.time+timedelta(milliseconds=350)
+            obs.tick(item,recv,transport_received=recv)
+        last_recv=seq[-1].time+timedelta(milliseconds=350)
+        self.assertTrue(any(e[0]=='SHADOW_FAST_SIGNAL' for e in events))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            obs_dir=root/'data'/'observation'
+            obs_dir.mkdir(parents=True,exist_ok=True)
+            csv_lines=['datetime,open,high,low,close,volume']
+            for idx in range(25):
+                d=(BASE.date()-timedelta(days=26-idx)).isoformat()
+                csv_lines.append(f'{d},980,1045,970,984,2000000')
+            (obs_dir/'092870_daily.csv').write_text('\n'.join(csv_lines)+'\n',encoding='utf-8')
+
+            policy=Policy(root/'runtime'/'automation_policy.json')
+            policy.command('LIVE',confirmation='LIVE')
+            live_cfg=replace(self.cfg,live_mode=True,min_history_bars=20,history_bars=20,entry_start='09:00:00')
+            live_auto=replace(self.auto,fast_momentum_enabled=True,entry_context_enabled=True,costs_confirmed=True)
+            orders_sent=[]
+            class DummyBroker:
+                identity='live'
+                def submit(self,side,symbol,qty,limit,signal=None):
+                    orders_sent.append((side,symbol,qty,limit))
+                    return {'id':'ORD-FAST-01','status':'ACCEPTED'}
+            import time as _time
+            engine=AutonomousEngine(live_cfg,live_auto,policy,root/'runtime',DummyBroker(),lambda:last_recv)
+            engine.connected=True
+            engine.account_ok=True
+            engine.market='3'
+            engine.last_account=_time.monotonic()
+            engine.available_cash=81300.0
+            engine.s['cash']=81300.0
+            engine.readiness_reason=lambda:''
+            main_detector=PatternDetector(live_cfg,live_auto,engine.costs)
+            main_detector.fast_strategy=engine.fast_strategy
+
+            radar_rows=[{
+                'code':'092870','name':'엑시콘','status':'UNKNOWN','reason':'STATUS_SCAN_LIMIT',
+                'source_count':2,'discovery_score':25.0,'reference_price':984.0,
+                'observed_at':BASE.isoformat(),'affordability':{'entry_eligible':True},
+            }]
+            dummy_shadow=type('DummyShadow',(),{'observer':obs})()
+            lookup={}
+            merged_rows=merge_verified_shadow_candidates(radar_rows,dummy_shadow,lookup)
+            by_symbol={r['code']:r for r in merged_rows}
+            self.assertEqual(by_symbol['092870']['status'],'SHADOW')
+
+            readiness={'092870':{'timestamp':last_recv.isoformat(),'tier':0,'price_blocked':False,'fast_signal_ready':True,'gates':{'acceleration':{'result':'PASS'},'liquidity':{'result':'PASS'}}}}
+            selection=select_focus(lookup,merged_rows,readiness,live_cfg.max_watchlist,live_auto.fallback_source1,last_recv.isoformat())
+            self.assertTrue(selection.applied)
+            self.assertIn('092870',selection.promoted)
+            apply_focus_selection(engine,lookup,by_symbol,selection)
+            self.assertIn('092870',lookup)
+            self.assertEqual(engine.market_status['092870']['pass'],True)
+
+            self.assertTrue(main_detector.handoff_from(obs.detector,'092870'))
+            dummy_radar=type('DummyRadar',(),{'root':root,'cache':{},'status_cache':{}})()
+            dummy_account=type('DummyAccount',(),{'need_fills':False})()
+            order=evaluate_actual_entry(engine,main_detector,seq[-1],lookup['092870'],dummy_radar,{'092870':seq[-1].price},dummy_account)
+            self.assertIsNotNone(order)
+            self.assertEqual(len(orders_sent),1)
+            self.assertEqual(orders_sent[0][:2],('BUY','092870'))
+
 
 if __name__=='__main__':unittest.main()
+

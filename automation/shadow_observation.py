@@ -136,7 +136,7 @@ class ShadowObserver:
   if sig:
    sig['SHADOW_ONLY']=True;sig['actual_order_permission']=False;sig['diagnostic_only']=True
   if getattr(self.detector,'price_context',None) is not None:
-   structure_now=self.fast_strategy.get_tape(t.symbol).structure(t.time)
+   structure_now=self.fast_strategy.get_tape(t.symbol).structure(received)
    ctx_snapshot=self.detector.price_context.snapshot(t.symbol,t,t.ask,
     support=structure_now.get('support') if structure_now.get('pass') else None,
     breakout=structure_now.get('breakout') if structure_now.get('pass') else None)

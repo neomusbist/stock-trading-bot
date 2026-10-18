@@ -341,6 +341,28 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
                 engine.fast_strategy.ingest_tick(tick, observed_at)
     return drops, priority
 
+def merge_verified_shadow_candidates(rows,shadow,lookup):
+    """Merge ObservationWorker-verified SHADOW candidates that hit RadarWorker's per-cycle scan limit."""
+    shadow_rows=getattr(getattr(shadow,'observer',None),'rows',{}) if shadow is not None else {}
+    if not shadow_rows:return rows
+    from automation.shadow_observation import make_evaluation_view
+    pool={r['code']:dict(r) for r in rows}
+    scan_limit_reasons={'STATUS_SCAN_LIMIT','이번 주기 차트 조회 한도; 다음 주기 재시도',None,''}
+    for sym,s_row in list(shadow_rows.items()):
+        sv=s_row.get('shadow_view',{})
+        ms=sv.get('market_status') or s_row.get('market_status') or {}
+        if (sv.get('status')=='ELIGIBLE' and ms.get('pass') is True
+                and s_row.get('affordability',{}).get('entry_eligible') is True):
+            cur=pool.get(sym)
+            if cur is None or (cur.get('status') in {'RAW','UNKNOWN',None} and cur.get('reason') in scan_limit_reasons):
+                ev=make_evaluation_view(s_row)
+                if cur is not None:
+                    for k in ('source_count','source_details','source_deltas','discovery_score','observed_at','first_raw_at','first_raw_price','reference_price','affordability'):
+                        if cur.get(k) is not None:ev[k]=cur[k]
+                ev['status']='WATCH' if sym in lookup else 'SHADOW'
+                pool[sym]=ev
+    return list(pool.values())
+
 def apply_focus_selection(engine,lookup,by_symbol,selection):
     """main thread에서 WATCH 자격 표시만 동기화한다. detector/주문 상태는 바꾸지 않는다."""
     for sym in selection.demoted:
@@ -358,8 +380,18 @@ def apply_focus_selection(engine,lookup,by_symbol,selection):
             first_watch=timeline.watch(sym,datetime.fromisoformat(selection.focus_epoch))['first_watch_at']
         lookup[sym]={**row,'status':'WATCH','fallback_source1':source1,
                      'watch_type':'FALLBACK_SOURCE1' if source1 else 'PRIMARY','first_watch_at':first_watch}
+        engine.names[sym]=row.get('name')
+        if row.get('market_status'):
+            engine.market_status[sym]=row.get('market_status')
         if sym in engine.source_qualification:
             engine.source_qualification[sym]['fallback_source1']=source1
+        elif getattr(engine,'source_qualification_seen',False) or getattr(engine,'source_qualification',None):
+            engine.source_qualification[sym]={
+                'source_count':row.get('source_count',0),
+                'timestamp':row.get('observed_at') or selection.focus_epoch,
+                'economic_reason':row.get('affordability',{}).get('reason_code'),
+                'fallback_source1':source1,
+            }
 
 def resolve_radar_focus(engine,lookup,rows,rank_watch,readiness,cfg,auto,stamp):
     """Commit the final focus against actual incumbents, before subscription changes."""
@@ -484,8 +516,9 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
                    bool(engine.policy.state.get('live_authorized')) and
                    bool(engine.c.live_mode))
         watch_eval = dict(watch)
+        eval_now = engine.clock()
         if getattr(detector, 'price_context', None) is not None:
-            structure_now = engine.fast_strategy.get_tape(t.symbol).structure(t.time)
+            structure_now = engine.fast_strategy.get_tape(t.symbol).structure(eval_now)
             ctx_snapshot = detector.price_context.snapshot(
                 t.symbol, t, t.ask,
                 support=structure_now.get('support') if structure_now.get('pass') else None,
@@ -499,7 +532,7 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
             capital_limit=engine.auto_available_capital(),
             risk_budget=engine.risk_equity() * engine.c.risk_fraction,
             ingest=False,
-            received=engine.clock(),
+            received=eval_now,
             live_authorized=is_live
         )
         if fast_sig is not None:
@@ -513,6 +546,15 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
     sig['name']=watch.get('name')
     sig['fallback_source1']=bool(watch.get('fallback_source1'))
     bars=radar.cache.get((t.time.date(),t.symbol))
+    radar_root=getattr(radar,'root',None)
+    if not bars and isinstance(radar_root,(str,os.PathLike)):
+        from candidate_builder import bars_from_csv
+        for folder in ('data/raw','data/observation'):
+            csv_path=Path(radar_root)/folder/f'{t.symbol}_daily.csv'
+            if csv_path.exists():
+                loaded=bars_from_csv(csv_path,t.time.date())
+                if len(loaded)>=engine.c.min_history_bars:
+                    bars=loaded; radar.cache[(t.time.date(),t.symbol)]=bars; break
     if not bars:
         engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','HISTORY_UNAVAILABLE',
             detector.evaluation_gates(t,watch),signal=sig,price=t.price)
@@ -544,15 +586,6 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
             engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','STRUCTURE_REJECTED',
                 {'structure':gate(False,**fresh)},signal=sig,price=t.price)
             engine.event('NO_TRADE',symbol=t.symbol,reason=fresh['reason']); return None
-        sig=detector.signal(t,{**watch,**fresh})
-        if not sig:
-            engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','FRESH_STRUCTURE_SIGNAL_NOT_READY',
-                detector.evaluation_gates(t,{**watch,**fresh}),price=t.price,
-                extra={'signal_detected':False,'setup_trials':detector.last_eval.get(t.symbol,{}).get('trials',[])})
-            return None
-        sig['name']=watch.get('name')
-        annotate_signal(engine,detector,watch,sig)
-        sig['fallback_source1']=bool(watch.get('fallback_source1'))
         sig=detector.signal(t,{**watch,**fresh})
         if not sig:
             engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','FRESH_STRUCTURE_SIGNAL_NOT_READY',
@@ -1064,7 +1097,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                             atomic_json(root/'runtime/candidate_summary.json',summary,fsync=False)
                             engine.event('CANDIDATE_CYCLE_SUMMARY',**summary)
                         prior_watch=set(lookup)
-                        rows=result['rows'];radar_ok=True;engine.last_radar_at=datetime.fromisoformat(result['time'])
+                        rows=merge_verified_shadow_candidates(result['rows'],shadow,lookup);radar_ok=True;engine.last_radar_at=datetime.fromisoformat(result['time'])
                         selection=resolve_radar_focus(engine,lookup,rows,result['watch'],
                             focus_readiness(detector,shadow.runtime_view().get('evaluations',{}),now()),effective,auto,now())
                         focus_promotions.extend(selection.promoted)
@@ -1111,6 +1144,8 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         continue
                     focus_dirty=True
                 if focus_dirty:
+                    rows=merge_verified_shadow_candidates(rows,shadow,lookup)
+                    by_symbol={row['code']:row for row in rows}
                     readiness=focus_readiness(detector,shadow.runtime_view().get('evaluations',{}),now())
                     selection=select_focus(
                         current_watch=lookup,
@@ -1122,6 +1157,12 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     )
                     if selection.applied:
                         apply_focus_selection(engine,lookup,by_symbol,selection)
+                        for row in rows:
+                            if row['code'] in lookup:row.update(status='WATCH',fallback_source1=lookup[row['code']]['fallback_source1'])
+                            elif row.get('status')=='WATCH':row.update(status='RESERVE',fallback_source1=False)
+                        if not radar_ok:
+                            radar_ok=True; last_radar=last_radar or time.monotonic()
+                            if getattr(engine,'last_radar_at',None) is None:engine.last_radar_at=now()
                         focus_promotions.extend(selection.promoted)
                         engine.event('FOCUS_SELECTION_APPLIED',promoted=selection.promoted,demoted=selection.demoted,
                             next_watch=selection.next_watch,previous_watch=selection.previous_watch,
