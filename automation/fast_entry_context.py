@@ -6,7 +6,7 @@ Missing context is UNKNOWN. No entry/exit line or LIVE gate is changed here.
 """
 from datetime import datetime
 import math
-from core.util import floor_tick
+from core.util import floor_tick, tick_size
 
 
 def _stamp(value):
@@ -31,6 +31,7 @@ def observe_fast_entry_context(signal,context,asof,minimum_rr):
         if (not signaled.date()==observed.date()==asof.date() or signaled>asof or observed>asof):
             return {**result,'reason':'CONTEXT_NOT_AVAILABLE_AT_DECISION'}
         geometry=signal['fast_entry_evidence']['geometry'];costs=geometry['costs']
+        struct_ev=geometry.get('structural_evidence') or {}
         entry=signal['limit'];stop=signal['stop'];emergency=signal['emergency'];original=signal['target']
         if not all(_positive(v) for v in (entry,stop,emergency,original,minimum_rr)) or not emergency<stop<entry<original:
             return {**result,'reason':'ENTRY_GEOMETRY_UNKNOWN'}
@@ -50,7 +51,14 @@ def observe_fast_entry_context(signal,context,asof,minimum_rr):
         confirmed=_stamp(peak['confirmed_at']);peak_at=_stamp(peak['time'])
         available=_stamp(peak.get('available_at',peak['confirmed_at']))
         cleared=_stamp(peak['cleared_at']) if peak.get('cleared_at') else None
-        if (not _positive(peak['price']) or peak['price']<entry or not peak_at<confirmed<=asof
+        support=struct_ev.get('support');breakout=struct_ev.get('breakout')
+        confirmed_breakout=(
+            _positive(peak['price'])
+            and entry>peak['price']+tick_size(peak['price'])
+            and _positive(breakout) and breakout>peak['price']
+            and _positive(support) and support>=peak['price']
+        )
+        if (not _positive(peak['price']) or confirmed_breakout or not peak_at<confirmed<=asof
                 or not peak_at.date()==confirmed.date()==available.date()==asof.date()
                 or available>asof or (cleared and cleared<=asof)):
             return {**result,'reason':'CONFIRMED_PEAK_UNAVAILABLE_OR_CLEARED'}
@@ -78,7 +86,9 @@ def attach_fast_entry_observation(signal,detector,tick,asof,minimum_rr):
     from automation.fast_momentum import saved_evidence
     try:
         at=_stamp(asof)
-        view=detector.price_context.snapshot(tick.symbol,replace(tick,time=at),signal['limit'])
+        struct_ev=((signal.get('fast_entry_evidence') or {}).get('geometry') or {}).get('structural_evidence') or {}
+        view=detector.price_context.snapshot(tick.symbol,replace(tick,time=at),signal['limit'],
+            support=struct_ev.get('support'),breakout=struct_ev.get('breakout'))
         signal['fast_context_observation']=observe_fast_entry_context(signal,view,at,minimum_rr)
         signal['fast_context_snapshot']=saved_evidence(view)
         bars=detector.price_context.reference_bars(tick.symbol,at,signal.get('venue','KRX'))

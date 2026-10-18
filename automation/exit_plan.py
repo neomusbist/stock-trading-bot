@@ -28,7 +28,8 @@ def invalidation_lines(cfg, auto, position):
     initial = position['initial_stop']
     stop = position.get('stop', initial)
     policy = position.get('signal', {}).get('invalidation_policy') or {}
-    close_based = (auto.confirmed_invalidation_enabled and policy.get('enabled', True)
+    close_based = ((auto.confirmed_invalidation_enabled or position.get('pattern') == 'FAST' or policy.get('policy_name') == 'FAST_MICRO_STRUCTURE')
+                   and policy.get('enabled', True)
                    and number(policy.get('structural_stop'))
                    and number(policy.get('noise_band')) and policy['noise_band'] > 0)
     if close_based:

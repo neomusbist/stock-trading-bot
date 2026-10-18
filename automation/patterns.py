@@ -65,17 +65,24 @@ class PatternDetector(Detector):
             self.day_high[t.symbol]=max(t.price,self.day_high.get(t.symbol,t.price))
         had_minute_gap = False
         if b and b['time']!=minute:
-            # Prior confirmed references are distinct from consecutive signal bars.
-            self.price_context.record(t.symbol,{**b,'venue':getattr(self.cfg,'after_default_venue','SOR') if t.time.strftime('%H:%M:%S')>=self.a.after_prep_start else 'KRX'},t.time,self.cfg.stale_seconds)
-            self.history.setdefault(t.symbol,deque(maxlen=30)).append(b)
-            if (minute-b['time']).total_seconds()!=60:
+            if (minute-b['time']).total_seconds()==60:
+                # Prior confirmed references are distinct from consecutive signal bars.
+                self.price_context.record(t.symbol,{**b,'venue':getattr(self.cfg,'after_default_venue','SOR') if t.time.strftime('%H:%M:%S')>=self.a.after_prep_start else 'KRX'},t.time,self.cfg.stale_seconds)
+                self.history.setdefault(t.symbol,deque(maxlen=30)).append(b)
+            else:
                 had_minute_gap = True
                 self.last_gap_reason[t.symbol]='MISSING_MINUTE'
+                if self.continuous_observation:
+                    self.price_context.record(t.symbol,{**b,'venue':getattr(self.cfg,'after_default_venue','SOR') if t.time.strftime('%H:%M:%S')>=self.a.after_prep_start else 'KRX'},t.time,self.cfg.stale_seconds)
+                    self.history.setdefault(t.symbol,deque(maxlen=30)).append(b)
+                else:
+                    self.history.pop(t.symbol,None)
+                    self.completed.pop(t.symbol,None)
             b=None
         if b is None:
             start=self.observation_start.get(t.symbol)
-            was_observing = start is not None and start <= minute
-            gap_reason='MISSING_MINUTE' if had_minute_gap else (None if (was_observing or t.time.second<=self.cfg.stale_seconds) else 'FIRST_TRADE_AFTER_5S_COVERAGE_UNKNOWN')
+            was_observing = (start is not None and start <= minute) and not had_minute_gap
+            gap_reason=None if (was_observing or t.time.second<=self.cfg.stale_seconds) else ('MISSING_MINUTE' if had_minute_gap else 'FIRST_TRADE_AFTER_5S_COVERAGE_UNKNOWN')
             b={'time':minute,'open':t.price,'high':t.price,'low':t.price,'close':t.price,'volume':0,
                'first_second':0 if was_observing else t.time.second,'last_second':t.time.second,
                'first_trade_time':t.time.isoformat(),'last_trade_time':t.time.isoformat(),
@@ -144,10 +151,18 @@ class PatternDetector(Detector):
 
     @observation_locked
     def usable_bars(self,symbol,after_only=False):
+        bars=list(self.history.get(symbol,()))
+        if not bars:return []
+        cur=self.current.get(symbol)
+        if cur is not None:
+            if cur.get('gap_reason') is not None or (cur['time']-bars[-1]['time']).total_seconds()!=60:
+                return []
         valid=[]
-        for bar in reversed(self.history.get(symbol,())):
-            if bar.get('gap_reason') is not None or bar['first_second']>self.cfg.stale_seconds:break
+        for bar in reversed(bars):
+            if bar.get('gap_reason') is not None or bar.get('first_second',0)>self.cfg.stale_seconds:break
             if after_only and bar['time'].strftime('%H:%M:%S')<'15:40:00':
+                break
+            if valid and (valid[-1]['time']-bar['time']).total_seconds()!=60:
                 break
             valid.append(bar)
         return list(reversed(valid))
@@ -162,10 +177,21 @@ class PatternDetector(Detector):
         usable_count=len(usable)
         diff_reason=None
         if stored_count>usable_count:
-            inv_idx=stored_count-usable_count-1
-            if 0<=inv_idx<stored_count:
-                inv_bar=history[inv_idx]
-                diff_reason=inv_bar.get('gap_reason') or ('FIRST_TRADE_AFTER_5S_COVERAGE_UNKNOWN' if inv_bar.get('first_second',0)>self.cfg.stale_seconds else 'PARTIAL_SUBSCRIPTION_START')
+            cur=self.current.get(symbol)
+            if usable_count==0 and cur is not None and (cur.get('gap_reason') is not None or (cur['time']-history[-1]['time']).total_seconds()!=60):
+                diff_reason=cur.get('gap_reason') or 'MISSING_MINUTE'
+            else:
+                inv_idx=stored_count-usable_count-1
+                if 0<=inv_idx<stored_count:
+                    inv_bar=history[inv_idx]
+                    if inv_bar.get('gap_reason'):
+                        diff_reason=inv_bar['gap_reason']
+                    elif inv_bar.get('first_second',0)>self.cfg.stale_seconds:
+                        diff_reason='FIRST_TRADE_AFTER_5S_COVERAGE_UNKNOWN'
+                    elif inv_idx+1<stored_count and (history[inv_idx+1]['time']-inv_bar['time']).total_seconds()!=60:
+                        diff_reason='MISSING_MINUTE'
+                    else:
+                        diff_reason='PARTIAL_SUBSCRIPTION_START'
         elif stored_count==0 and symbol in self.last_gap_reason:
             diff_reason=self.last_gap_reason[symbol]
         return {
@@ -194,10 +220,18 @@ class PatternDetector(Detector):
             return 0
         valid_bars = []
         for i, b in enumerate(bars):
-            if i > 0 and (b['time'] - bars[i-1]['time']).total_seconds() != 60:
+            if b.get('gap_reason') is not None or b.get('first_second', 0) > self.cfg.stale_seconds:
                 valid_bars.clear()
-            valid_bars.append(b)
-        if valid_bars:
+                continue
+            if i > 0 and valid_bars and (b['time'] - valid_bars[-1]['time']).total_seconds() != 60:
+                valid_bars.clear()
+            valid_bars.append({
+                **deepcopy(b),
+                'first_second': b.get('first_second', 0),
+                'gap_reason': b.get('gap_reason')
+            })
+        cur_min = asof.replace(second=0, microsecond=0)
+        if valid_bars and valid_bars[-1]['time'] + timedelta(minutes=1) == cur_min:
             h = self.history.setdefault(symbol, deque(maxlen=30))
             for b in valid_bars:
                 if b not in h:

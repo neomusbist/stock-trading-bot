@@ -469,7 +469,12 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
                    bool(engine.c.live_mode))
         watch_eval = dict(watch)
         if getattr(detector, 'price_context', None) is not None:
-            ctx_snapshot = detector.price_context.snapshot(t.symbol, t, t.ask)
+            structure_now = engine.fast_strategy.get_tape(t.symbol).structure(t.time)
+            ctx_snapshot = detector.price_context.snapshot(
+                t.symbol, t, t.ask,
+                support=structure_now.get('support') if structure_now.get('pass') else None,
+                breakout=structure_now.get('breakout') if structure_now.get('pass') else None,
+            )
             peak = ctx_snapshot.get('nearest_confirmed_peak')
             if peak:
                 watch_eval['nearest_confirmed_peak'] = peak

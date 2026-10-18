@@ -40,9 +40,12 @@ class AutonomousEngine(ExistingExits,Engine):
         path=Path(folder)/'state.json'
         boot_clock=clock
         carried=set()
+        day_changed=False
         if path.exists():
             old=read_json_retry(path)
-            if old['day']!=clock().date().isoformat(): carried=set(old['positions'])
+            if old['day']!=clock().date().isoformat():
+                day_changed=True
+                carried=set(old['positions'])
             if old['day']!=clock().date().isoformat() and any(o['status'] not in TERMINAL for o in old['orders'].values()):
                 boot_time=datetime.fromisoformat(old['day']+'T'+clock().strftime('%H:%M:%S')).replace(tzinfo=clock().tzinfo)
                 boot_clock=lambda:boot_time
@@ -57,6 +60,8 @@ class AutonomousEngine(ExistingExits,Engine):
         self.account_ok=False
         self.s.setdefault('automation',{'approved_cap':auto.capital_limit,'allocated':False,'cash':0.,
             'existing':{},'consecutive_losses':0,'last_exit':{},'mode':'ARMED','strategy':'QUIET'})
+        if day_changed and self.s['day']==clock().date().isoformat():
+            self.s['automation']['consecutive_losses']=0
         prior=self.s['automation']['approved_cap']
         if prior!=auto.capital_limit:
             if self.s['positions'] or self.active_orders():

@@ -265,7 +265,7 @@ class MicroTape:
             peak_i = max(range(i), key=lambda n: turns[n][1]); peak = turns[peak_i]
             if peak_i == 0:continue
             origin = min(turns[:peak_i], key=lambda r: r[1])
-            if low[1] <= origin[1] or any(r[1] < low[1] for r in turns[i + 1:]):continue
+            if low[1] <= origin[1] or any(r[1] < low[1] for r in turns[peak_i + 1:]):continue
             noise = median([abs(b[1] - a[1]) for a, b in zip(turns, turns[1:])])
             return {**evidence, 'pass': True, 'support': low[1], 'support_at': low[0].isoformat(),
                 'confirmation_at': right[0].isoformat(), 'breakout': peak[1], 'breakout_at': peak[0].isoformat(),
@@ -377,11 +377,19 @@ class FastMomentumStrategy:
             peak_price = peak.get('price')
             peak_conf = stamp(peak.get('confirmed_at'))
             peak_cleared = stamp(peak.get('cleared_at')) if peak.get('cleared_at') else None
-            if (number(peak_price) and peak_price >= entry
+            if (number(peak_price)
                     and peak_conf and peak_conf <= now and peak_conf.date() == now.date()
                     and (peak_cleared is None or peak_cleared > now)):
-                intraday_cap = peak_price
-                target = floor_tick(min(overhead, peak_price))
+                confirmed_breakout = (
+                    entry > peak_price + tick_size(peak_price)
+                    and breakout > peak_price
+                    and support >= peak_price
+                )
+                if not confirmed_breakout:
+                    intraday_cap = peak_price
+                    target = floor_tick(min(overhead, peak_price))
+                else:
+                    target = floor_tick(overhead)
             else:
                 target = floor_tick(overhead)
         else:
@@ -391,9 +399,11 @@ class FastMomentumStrategy:
             return reject(reason, entry=entry, target=target, nearest_confirmed_peak=peak if intraday_cap else None, structure=structure)
         # Never move a structural line to a fixed percentage or solve a target
         # backwards from desired RR. Size from the separately derived hard line.
-        buffer = max(tick_size(support), t.ask - t.bid, support * getattr(self.cfg, 'structural_buffer', .001))
+        pullback_depth = max(0., breakout - support)
+        min_pullback_room = min(max(0., support - structure['origin'] - tick_size(support)), tick_size(support)) if pullback_depth <= tick_size(support) else 0.
+        buffer = max(tick_size(support), t.ask - t.bid, support * getattr(self.cfg, 'structural_buffer', .001)) + min_pullback_room
         stop = floor_tick(support - buffer)
-        noise = max(structure['observed_noise'], t.ask - t.bid, tick_size(support))
+        noise = max(structure['observed_noise'], t.ask - t.bid, 2 * tick_size(support))
         emergency = floor_tick(stop - noise)
         if not 0 < emergency < stop < entry < target:return reject('INVALID_STRUCTURAL_PRICE_GEOMETRY', structure=structure)
         entry_fill = entry * (1 + self.costs['entry_slippage'])
