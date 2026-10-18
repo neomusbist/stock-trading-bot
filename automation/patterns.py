@@ -155,7 +155,7 @@ class PatternDetector(Detector):
         if not bars:return []
         cur=self.current.get(symbol)
         if cur is not None:
-            if cur.get('gap_reason') is not None or (cur['time']-bars[-1]['time']).total_seconds()!=60:
+            if cur.get('gap_reason')=='MISSING_MINUTE' or (cur['time']-bars[-1]['time']).total_seconds()!=60:
                 return []
         valid=[]
         for bar in reversed(bars):
@@ -178,8 +178,8 @@ class PatternDetector(Detector):
         diff_reason=None
         if stored_count>usable_count:
             cur=self.current.get(symbol)
-            if usable_count==0 and cur is not None and (cur.get('gap_reason') is not None or (cur['time']-history[-1]['time']).total_seconds()!=60):
-                diff_reason=cur.get('gap_reason') or 'MISSING_MINUTE'
+            if usable_count==0 and cur is not None and (cur.get('gap_reason')=='MISSING_MINUTE' or (cur['time']-history[-1]['time']).total_seconds()!=60):
+                diff_reason='MISSING_MINUTE'
             else:
                 inv_idx=stored_count-usable_count-1
                 if 0<=inv_idx<stored_count:
@@ -230,8 +230,7 @@ class PatternDetector(Detector):
                 'first_second': b.get('first_second', 0),
                 'gap_reason': b.get('gap_reason')
             })
-        cur_min = asof.replace(second=0, microsecond=0)
-        if valid_bars and valid_bars[-1]['time'] + timedelta(minutes=1) == cur_min:
+        if valid_bars:
             h = self.history.setdefault(symbol, deque(maxlen=30))
             for b in valid_bars:
                 if b not in h:
