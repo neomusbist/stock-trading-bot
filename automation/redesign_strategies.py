@@ -87,42 +87,46 @@ def evaluate_early_momentum_breakout(bars: list, t, watch: dict, cfg, auto, cost
     entry_limit = t.ask + ts
     delta_base = h_base - l_base
 
-    # Invalidation stop: Base midpoint pivot invalidation with floor at l_base
-    struct_stop = max(floor_tick(l_base), floor_tick(h_base - 0.50 * delta_base - ts))
-    emerg_stop = min(struct_stop - ts, floor_tick(l_base - ts))
+    # Invalidation stop: Base structural invalidation at l_base - ts
+    struct_stop = floor_tick(l_base - ts)
+    emerg_stop = min(struct_stop - ts, floor_tick(l_base - 2 * ts))
 
     if not (0 < emerg_stop < struct_stop < entry_limit):
-        struct_stop = floor_tick(l_base - ts)
-        emerg_stop = min(struct_stop - 2 * ts, floor_tick(struct_stop * 0.996))
-        if not (0 < emerg_stop < struct_stop < entry_limit):
-            return None, {'reason': 'INVALID_GEOMETRY', 'pass': False}
+        return None, {'reason': 'INVALID_GEOMETRY', 'pass': False}
 
     stop_dist = (entry_limit - emerg_stop) / entry_limit
     if not (0.0035 <= stop_dist <= 0.05):
         return None, {'reason': 'STOP_DISTANCE_OUT_OF_BOUNDS', 'pass': False, 'stop_dist': stop_dist}
 
-    # Target calculation: realistic projection above h_base, capped by nearest active resistance/VI
+    # Target calculation: realistic projection above h_base, strictly capped by nearest active resistance/VI
     overhead = watch.get('resistance')
-    atr = max(ts * 3, statistics_atr(bars, 5))
+    atr = max(ts * 3, statistics_atr(bars, 14))
     wave_target = max(floor_tick(h_base + 1.8 * delta_base), floor_tick(entry_limit + 3.0 * atr), floor_tick(entry_limit * 1.020))
 
-    ceilings = [c for c in [overhead, watch.get('vi_upper')] if c is not None and c > entry_limit]
+    ceilings = []
+    if overhead is not None and overhead > entry_limit:
+        ceilings.append(floor_tick(overhead))
     if watch.get('vi_upper') and watch['vi_upper'] > entry_limit + 2 * ts:
-        ceilings.append(watch['vi_upper'] - 2 * ts)
-    physical_ceiling = min(ceilings) if ceilings else wave_target
-    target = min(wave_target, physical_ceiling)
-    if overhead and overhead > entry_limit:
-        target = min(max(wave_target, overhead), floor_tick(entry_limit * 1.08))
+        ceilings.append(floor_tick(watch['vi_upper'] - 2 * ts))
 
-    calc = calculate_net_proceeds_and_cost(entry_limit, target, struct_stop, costs)
-    min_rr = getattr(cfg, 'min_early_momentum_rr', 1.20)
+    if ceilings:
+        physical_ceiling = min(ceilings)
+        target = min(wave_target, physical_ceiling)
+    else:
+        # No explicit overhead or VI ceiling: cap by conservative ATR / horizon, never assume distant target
+        conservative_cap = floor_tick(entry_limit + min(3.0 * atr, entry_limit * 0.035))
+        target = min(wave_target, conservative_cap)
+
+    calc_struct = calculate_net_proceeds_and_cost(entry_limit, target, struct_stop, costs)
+    calc_emerg = calculate_net_proceeds_and_cost(entry_limit, target, emerg_stop, costs)
+    min_rr = getattr(cfg, 'min_early_momentum_rr', 1.40)
 
     # Breakeven check: target must clear breakeven price + 2 ticks
-    if target < calc['breakeven_price'] + 2 * ts:
-        return None, {'reason': 'TARGET_BELOW_BREAKEVEN', 'pass': False, 'target': target, 'be': calc['breakeven_price']}
+    if target < calc_struct['breakeven_price'] + 2 * ts:
+        return None, {'reason': 'TARGET_BELOW_BREAKEVEN', 'pass': False, 'target': target, 'be': calc_struct['breakeven_price']}
 
-    if calc['net_rr'] is None or calc['net_rr'] < min_rr:
-        return None, {'reason': 'NET_RR_LOW', 'pass': False, 'net_rr': calc['net_rr'], 'min_rr': min_rr}
+    if calc_struct['net_rr'] is None or calc_struct['net_rr'] < min_rr:
+        return None, {'reason': 'NET_RR_LOW', 'pass': False, 'net_rr': calc_struct['net_rr'], 'min_rr': min_rr}
 
     signal = {
         'pattern': 'EarlyMomentumBreakout',
@@ -131,7 +135,12 @@ def evaluate_early_momentum_breakout(bars: list, t, watch: dict, cfg, auto, cost
         'stop': struct_stop,
         'emergency': emerg_stop,
         'target': target,
-        'net_reward_risk': calc['net_rr'],
+        'structural_stop': struct_stop,
+        'emergency_stop': emerg_stop,
+        'net_reward_risk': calc_struct['net_rr'],
+        'net_rr_structural': calc_struct['net_rr'],
+        'net_rr_emergency': calc_emerg['net_rr'],
+        'risk_per_share_sized': calc_emerg['risk_net'],
         'time': t.time.isoformat(),
         'h_base': h_base,
         'l_base': l_base,
@@ -201,30 +210,37 @@ def evaluate_pullback_reclaim_breakout(bars: list, t, watch: dict, cfg, auto, co
         return None, {'reason': 'INVALID_GEOMETRY', 'pass': False}
 
     overhead = watch.get('resistance')
-    atr = max(ts * 3, statistics_atr(bars, 5))
+    atr = max(ts * 3, statistics_atr(bars, 14))
     target_candidate = max(floor_tick(h_impulse + 0.382 * delta_impulse), floor_tick(entry_limit + 3.0 * atr), floor_tick(entry_limit * 1.020))
 
-    ceilings = [c for c in [overhead, watch.get('vi_upper')] if c is not None and c > entry_limit]
+    ceilings = []
+    if overhead is not None and overhead > entry_limit:
+        ceilings.append(floor_tick(overhead))
     if watch.get('vi_upper') and watch['vi_upper'] > entry_limit + 2 * ts:
-        ceilings.append(watch['vi_upper'] - 2 * ts)
-    physical_ceiling = min(ceilings) if ceilings else target_candidate
-    target = min(target_candidate, physical_ceiling)
-    if overhead and overhead > entry_limit:
-        target = min(max(target_candidate, overhead), floor_tick(entry_limit * 1.08))
+        ceilings.append(floor_tick(watch['vi_upper'] - 2 * ts))
 
-    calc = calculate_net_proceeds_and_cost(entry_limit, target, struct_stop, costs)
-    min_rr = getattr(cfg, 'min_pullback_reclaim_rr', 1.30)
+    if ceilings:
+        physical_ceiling = min(ceilings)
+        target = min(target_candidate, physical_ceiling)
+    else:
+        # No explicit overhead or VI ceiling: cap by conservative ATR / horizon, never assume distant target
+        conservative_cap = floor_tick(entry_limit + min(3.0 * atr, entry_limit * 0.035))
+        target = min(target_candidate, conservative_cap)
+
+    calc_struct = calculate_net_proceeds_and_cost(entry_limit, target, struct_stop, costs)
+    calc_emerg = calculate_net_proceeds_and_cost(entry_limit, target, emerg_stop, costs)
+    min_rr = getattr(cfg, 'min_pullback_reclaim_rr', 1.50)
 
     # First milestone: impulse peak must exceed breakeven price
-    if h_impulse <= calc['breakeven_price'] + ts:
-        return None, {'reason': 'IMPULSE_PEAK_BELOW_BREAKEVEN', 'pass': False, 'h_impulse': h_impulse, 'be': calc['breakeven_price']}
+    if h_impulse <= calc_struct['breakeven_price'] + ts:
+        return None, {'reason': 'IMPULSE_PEAK_BELOW_BREAKEVEN', 'pass': False, 'h_impulse': h_impulse, 'be': calc_struct['breakeven_price']}
 
     # Breakeven check: target must clear breakeven price + 2 ticks
-    if target < calc['breakeven_price'] + 2 * ts:
-        return None, {'reason': 'TARGET_BELOW_BREAKEVEN', 'pass': False, 'target': target, 'be': calc['breakeven_price']}
+    if target < calc_struct['breakeven_price'] + 2 * ts:
+        return None, {'reason': 'TARGET_BELOW_BREAKEVEN', 'pass': False, 'target': target, 'be': calc_struct['breakeven_price']}
 
-    if calc['net_rr'] is None or calc['net_rr'] < min_rr:
-        return None, {'reason': 'NET_RR_LOW', 'pass': False, 'net_rr': calc['net_rr'], 'min_rr': min_rr}
+    if calc_struct['net_rr'] is None or calc_struct['net_rr'] < min_rr:
+        return None, {'reason': 'NET_RR_LOW', 'pass': False, 'net_rr': calc_struct['net_rr'], 'min_rr': min_rr}
 
     signal = {
         'pattern': 'PullbackReclaimBreakout',
@@ -233,7 +249,12 @@ def evaluate_pullback_reclaim_breakout(bars: list, t, watch: dict, cfg, auto, co
         'stop': struct_stop,
         'emergency': emerg_stop,
         'target': target,
-        'net_reward_risk': calc['net_rr'],
+        'structural_stop': struct_stop,
+        'emergency_stop': emerg_stop,
+        'net_reward_risk': calc_struct['net_rr'],
+        'net_rr_structural': calc_struct['net_rr'],
+        'net_rr_emergency': calc_emerg['net_rr'],
+        'risk_per_share_sized': calc_emerg['risk_net'],
         'time': t.time.isoformat(),
         'h_impulse': h_impulse,
         'l_pullback': l_pullback,

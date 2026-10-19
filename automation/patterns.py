@@ -482,7 +482,7 @@ class PatternDetector(Detector):
                 'structure':{k:watch.get(k) for k in ('long_position','overhead_share_estimate','resistance','recent_support')},
                 'session':'AFTER' if is_after else 'REGULAR','venue':venue,
                 'planned_qty':None,'liquidity_mode':'depth' if is_after else 'turnover'}
-        if getattr(self.cfg, 'enable_redesign_live', False):
+        if getattr(self.cfg, 'enable_redesign_live', False) and getattr(self.a, 'enable_redesign_live', False):
             for name in ('EarlyMomentumBreakout', 'PullbackReclaimBreakout'):
                 trial = next((x for x in trials if x['setup'] == name), None)
                 if trial and trial.get('entry_ready') and trial.get('signal'):

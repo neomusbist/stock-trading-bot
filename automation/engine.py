@@ -516,6 +516,10 @@ class AutonomousEngine(ExistingExits,Engine):
         return None
 
     def enter(self,signal,tick):
+        if signal.get('pattern') in ('EarlyMomentumBreakout', 'PullbackReclaimBreakout'):
+            if not (getattr(self.a, 'enable_redesign_live', False) and getattr(self.c, 'enable_redesign_live', False)):
+                self.decisions.emit('ENTRY_EVAL', tick.symbol, 'NO_BUY', 'REDESIGN_STRATEGY_LIVE_NOT_AUTHORIZED', signal=signal, price=tick.price)
+                return None
         if signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or signal.get('diagnostic_only') is True or ('source_count' in signal and signal['source_count']<max(2,self.a.min_source_count) and not signal.get('fallback_source1')):
             self.decisions.emit('ENTRY_EVAL',tick.symbol,'NO_BUY','OBSERVATION_NOT_BUY_PERMISSION',signal=signal,price=tick.price);return None
         self.diagnostic('signal_count')

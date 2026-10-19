@@ -54,6 +54,8 @@ class AutomationConfig:
     exit_plan_reward_guard_enabled: bool = False  # cost-inclusive RR experiment; insufficient evidence to enable
     fast_momentum_enabled: bool = False  # R6 FAST live momentum entry integration
     enable_ask_1tick_tolerance: bool = False  # Pre-validated ask1 + 1 tick tolerance
+    enable_redesign_trials: bool = False  # Candidate A/B shadow observation
+    enable_redesign_live: bool = False  # Candidate A/B live order authority (requires explicit approval)
     pullback_min_rise: float = 0.008
     pullback_min_retrace: float = 0.20  # minimum retrace fraction for confirmed controlled pullback
     min_stop_distance_fraction: float = 0.012  # minimum stop distance fraction (1.2%) to prevent tight noise stops
@@ -100,8 +102,12 @@ class AutomationConfig:
             if type(getattr(self,k)) is not int or getattr(self,k)<=0: raise ValueError(f'{k}: 양의 정수 필요')
         if type(self.ALLOW_OVERNIGHT) is not bool or type(self.costs_confirmed) is not bool or type(self.replacement_enabled) is not bool or type(self.entry_context_enabled) is not bool or type(self.stable_position_book_confirmation) is not bool:
             raise ValueError('불리언 설정 오류')
-        if any(type(getattr(self,k)) is not bool for k in ('confirmed_box_direction','confirmed_structure_protection','fresh_box_basis_enabled','setup_aware_watch_priority','structural_pullback_enabled','structural_breakout_enabled','intraday_context_enabled','confirmed_invalidation_enabled','after_momentum_failure_enabled','exit_plan_reward_guard_enabled','fast_momentum_enabled')):
+        if any(type(getattr(self,k)) is not bool for k in ('confirmed_box_direction','confirmed_structure_protection','fresh_box_basis_enabled','setup_aware_watch_priority','structural_pullback_enabled','structural_breakout_enabled','intraday_context_enabled','confirmed_invalidation_enabled','after_momentum_failure_enabled','exit_plan_reward_guard_enabled','fast_momentum_enabled','enable_redesign_trials','enable_redesign_live')):
             raise ValueError('불리언 설정 오류')
+        if self.enable_redesign_live and not self.enable_redesign_trials:
+            raise ValueError('enable_redesign_live는 enable_redesign_trials가 함께 활성화되어야 함')
+        if self.enable_redesign_live and not self.costs_confirmed:
+            raise ValueError('enable_redesign_live는 costs_confirmed가 필수임')
         for k in ('new_entry_cutoff','force_flatten_start','after_prep_start','after_market_start','after_entry_cutoff','after_force_flatten_start','after_market_close'):
             datetime.strptime(getattr(self,k),'%H:%M:%S')
         if not '09:00:00'<self.new_entry_cutoff<self.force_flatten_start<'15:20:00':

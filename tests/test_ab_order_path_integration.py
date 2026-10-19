@@ -65,24 +65,30 @@ class AbOrderPathIntegrationTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_early_momentum_breakout_rr_without_distant_overhead(self):
-        """Proves that a realistic 1.5% base produces achievable Net RR >= 1.20 without distant resistance."""
+        """Proves that a realistic base with 14m session ATR produces achievable Net RR >= 1.40 without distant resistance."""
         bars = [
-            {'time': self.time - timedelta(minutes=4), 'open': 10000, 'high': 10150, 'low': 10000, 'close': 10050, 'volume': 5000},
-            {'time': self.time - timedelta(minutes=3), 'open': 10050, 'high': 10150, 'low': 10020, 'close': 10100, 'volume': 6000},
-            {'time': self.time - timedelta(minutes=2), 'open': 10100, 'high': 10150, 'low': 10050, 'close': 10120, 'volume': 5500},
-            {'time': self.time - timedelta(minutes=1), 'open': 10120, 'high': 10150, 'low': 10080, 'close': 10140, 'volume': 8000},
+            {'time': self.time - timedelta(minutes=14 - i), 'open': 9900, 'high': 10100, 'low': 9900, 'close': 10050, 'volume': 8000}
+            for i in range(10)
+        ] + [
+            {'time': self.time - timedelta(minutes=4), 'open': 10040, 'high': 10100, 'low': 10040, 'close': 10060, 'volume': 5000},
+            {'time': self.time - timedelta(minutes=3), 'open': 10060, 'high': 10100, 'low': 10040, 'close': 10070, 'volume': 6000},
+            {'time': self.time - timedelta(minutes=2), 'open': 10070, 'high': 10100, 'low': 10040, 'close': 10090, 'volume': 5500},
+            {'time': self.time - timedelta(minutes=1), 'open': 10090, 'high': 10100, 'low': 10050, 'close': 10095, 'volume': 9000},
         ]
         # Breakout tick
-        tick = Tick('093370', self.time, 10160, 3000, 100000, 10160, 10150, True, ask_qty=5000, bid_qty=5000, depth_available=True)
+        tick = Tick('093370', self.time, 10110, 3000, 100000, 10110, 10105, True, ask_qty=5000, bid_qty=5000, depth_available=True)
         # NO arbitrary distant resistance passed
         watch = {'code': '093370', 'status': 'WATCH'}
 
         sig, details = evaluate_early_momentum_breakout(bars, tick, watch, self.cfg, self.auto, self.costs.__dict__)
         self.assertTrue(details['pass'], f"Rejected on: {details.get('reason')}")
         self.assertIsNotNone(sig)
-        self.assertGreaterEqual(sig['net_reward_risk'], 1.20)
-        self.assertGreater(sig['stop'], sig['emergency'])
-        self.assertGreater(sig['limit'], sig['stop'])
+        self.assertGreaterEqual(sig['net_reward_risk'], 1.40)
+        self.assertEqual(sig['stop'], 10030)
+        self.assertEqual(sig['emergency'], 10020)
+        self.assertEqual(sig['structural_stop'], 10030)
+        self.assertEqual(sig['emergency_stop'], 10020)
+        self.assertGreater(sig['risk_per_share_sized'], 0)
 
     def test_pullback_reclaim_breakout_rr_and_breakeven_milestone(self):
         """Proves pullback reclaim generates valid signal with impulse peak above breakeven."""
@@ -186,7 +192,7 @@ class AbOrderPathIntegrationTests(unittest.TestCase):
         res = self.engine.enter(signal, tick)
         self.assertIsNone(res)
 
-        # When SHADOW_ONLY is removed (authorized), passes pre-intent and attempts entry
+        # When SHADOW_ONLY is removed but live redesign authorization is False, still blocked at engine boundary
         signal_auth = copy.deepcopy(signal)
         signal_auth['SHADOW_ONLY'] = False
         signal_auth['actual_order_permission'] = True
@@ -196,6 +202,14 @@ class AbOrderPathIntegrationTests(unittest.TestCase):
         self.engine.is_supported_now = MagicMock(return_value=True)
         self.engine.entry_window = MagicMock(return_value=True)
 
+        object.__setattr__(self.engine.a, 'enable_redesign_live', False)
+        object.__setattr__(self.engine.c, 'enable_redesign_live', False)
+        res_blocked = self.engine.enter(signal_auth, tick)
+        self.assertIsNone(res_blocked, "Unapproved live redesign signal must be blocked")
+
+        # When explicitly authorized in both AutomationConfig and Config, passes pre-intent and creates OrderIntent
+        object.__setattr__(self.engine.a, 'enable_redesign_live', True)
+        object.__setattr__(self.engine.c, 'enable_redesign_live', True)
         res_auth = self.engine.enter(signal_auth, tick)
         self.assertIsNotNone(res_auth, "Authorized signal should create an OrderIntent")
         self.assertEqual(res_auth['side'], 'BUY')
