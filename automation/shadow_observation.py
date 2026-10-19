@@ -2,6 +2,7 @@
 from datetime import datetime
 from core.util import floor_tick
 from core.util import tick_size
+from core.market_time import tick_freshness
 from automation.patterns import PatternDetector
 from automation.policy import HARD_LOCKS,BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL
 from automation.decisions import STRATEGY_VERSION
@@ -121,7 +122,12 @@ class ShadowObserver:
   if not self.detector.ingest(t,transport_received or received):return
   # FAST needs EVERY accepted tick; the evaluation throttle below must not thin its MicroTape.
   self.fast_strategy.ingest_tick(t,received=transport_received or received)
-  execution_fresh=0<=(received-t.time).total_seconds()<=self.cfg.stale_seconds
+  # The receiver, FAST and final order boundary share the same bounded clock
+  # guard. A second-resolution exchange stamp may lead a genuine receipt by
+  # less than one second; the old local sign check silently dropped that
+  # accepted print before publishing SHADOW readiness. Receipt-counter expiry
+  # still blocks a delayed consumer even when wall time looks current.
+  execution_fresh=tick_freshness(t,received,self.cfg.stale_seconds)['fresh']
   timeline=getattr(self,'timeline',None)
   if timeline is not None:timeline.tick(t.symbol,t.time,self.detector.usable_bars(t.symbol),t.price,
        received=transport_received or received,processed=received,execution_fresh=execution_fresh)

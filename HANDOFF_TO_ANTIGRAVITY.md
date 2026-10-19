@@ -1,5 +1,16 @@
 # R6 인계 — 2026-10-19 최신 갱신
 
+> **13:13 전체 경로 감사 및 승인 배포:** 최신 실제 코드 `858cebc221e246d31877a4fb0a1e328d54712b40`, 브랜치 `fix/r6-midday-focus-20261019`. 먼저 [R6_FULLPATH_OPPORTUNITIES_20261019.md](R6_FULLPATH_OPPORTUNITIES_20261019.md)를 읽는다. 09:00~12:58 RAW417→WATCH59→main 신호3종목→실제 매수1건. 유효 누락 기회 수/기대값은 UNKNOWN이다. SHADOW 잔존 음수 시각 검사·FAST 진입 전 증거 누락·비용 표시 오류를 수정했다. 관련266개 PASS. 사용자 명시 승인 후4파일을13:13:24 운영 반영하고 공식 LIVE 재개했다. 새 진입/청산/목표 정책은 연구 전용, 운영 미연결. 당일 장부128원·위험2%/일일4%·HARD_LOCK·시각/구조선 분리·기존 승인 상태 보존. 원본/실계좌 대조·배포·최종 상태·GitHub 보존 증거는 저장소 밖 `r6-fullpath-20261019-private`에 있다. 아래 이전 시각의 상태는 역사 기록이다.
+
+### 이번 변경을 이어받는 구체적 순서
+
+1. 기존 개발본 `C:\Users\MJS\Documents\주식자동매매_개발\r6-target-cap-incident-20261015`에서 `git status --short`, `git branch --show-current`, `git rev-parse HEAD` 확인. 새 clone/과거 GitHub 소스로 덮어쓰지 않는다. 최신 문서 커밋은 실제 코드 커밋858cebc의 후손이다. 원격 보존 커밋/동일 tree 검증은 private `PUBLICATION_RESULT.json`으로 확인한다.
+2. private `DEPLOYMENT.json`, `FINAL_STATUS.json`, `TARGETED.json`부터 읽는다. LIVE 보유·주문은 새로 바뀔 수 있으므로 다음 교체 전 공식 STOP·실계좌 대조를 반드시 다시 한다. 13:13 시점의 무보유를 계속 사실로 가정하지 않는다. 승인 없이 새 전략·LIVE 재시작 금지.
+3. 분석 재개는 private `summarize_paths.py`만 실행한다. 이미 생성한 DAY_AUDIT·PATTERN_EPISODES·RADAR_SYMBOLS·TIMELINE 파일을 사용하며1GB 로그 재검색을 반복하지 않는다. 첫 모집단은09:15까지 당시 매수가능192종목,130종목은 후속 가격 부족이다. 사후 상승주만 선택하지 않는다.
+4. 09시 첫 수신/유효봉 지연, 후성의09:00 발견→12:50 WATCH, 일봉 조건으로 WATCH 미편입된 디알텍/에코앤드림 등을 당시 status/구독 이벤트와 연결한다. 유효 신호/체결 증거가 없으면 미실현 이익을 계산하지 않는다. 표적 종목·시간만 추가로 읽는다.
+5. `automation.fast_horizon_research.compare_horizon` 및 private HORIZON_COMPARISON은 목표 가설 비교만 한다. 루닛의 일봉 상한RR27.51와 작은 반응의 비용 부족이 확인됐지만 새 상한/필터의 순기대값은 미입증이다. 실제 관찰 자료에서 기존 early continuation/local reclaim·청산A/B/C를 같은 수신 시점으로 비교한다. 익절을 늦추면 손실이 커지는 대가도 평가한다.
+6. 필요한 표적 검사는 private `run_targeted.py` 또는 신규3파일(`test_shadow_clock_consistency`, `test_fast_decision_capture`, `test_fast_horizon_research`)과 기존 관련 검사만 실행한다. 최종 결과266 PASS, 네트워크0, 전체 회귀 아님. 새로운 FAST 증거는 FAST_DECISION_TAPE/PART이며 기존 TRADE로 오해하거나 원래 존재하지 않던 연속호가로 복원하지 않는다. parts/session/loss/truncated를 확인한다.
+
 > **12:43 최신 운영 완료:** 코드 `dfee211348d1f9dce4606f8208d7893b8f130452`, 관련 183개 표적 검사 통과. `runner.focus_readiness` 전달 경로 1파일을 안전 계좌 대조·백업·해시/장부/승인 보존 후 12:43:16 운영 반영, 12:43:17 공식 LIVE 재개했다. 12:43:40 LIVE/OPEN_READY/주문 준비 ON, 계좌·연결 정상, 봇 보유·미체결·UNKNOWN 0, HALT 없음, 손실장부 128원 보존. [R6_MIDDAY_GATES_20261019.md](R6_MIDDAY_GATES_20261019.md)와 private `r6-midday-gates-20261019-private/DEPLOYMENT.json`, `FINAL_STATUS.json`을 확인한다. 이전 루닛·시각·구조선 패치와 위험/진입/청산 정책은 보존했다. 신호 0의 모든 원인을 해결했다거나 수익성·거래 횟수가 개선됐다고 주장하지 않는다.
 
 > **12:30 무진입 후속:** 최신 브랜치 `fix/r6-midday-focus-20261019`. [R6_MIDDAY_GATES_20261019.md](R6_MIDDAY_GATES_20261019.md)를 먼저 읽는다. 17종목·68평가에서 완성 신호 0이며 주문/위험 gate가 직접 막은 확인 사례는 없다. 별도로 `runner.focus_readiness`가 15초 지난 실제 main 가격구조 실패를 누락하여 앞선 TTL 보존 수정을 우회하는 결함을 실제 기록으로 재현·수정했다. 더 최근 SHADOW 관측을 오래된 main 평가가 덮어쓰는 문제도 함께 바로잡았다. 진입·위험·청산 임계값 변경 없음. 원본/표적 검사/최종 운영 반영 증거는 저장소 밖 `r6-midday-gates-20261019-private`에 보존한다. 아래 루닛 및 12:01 상태는 이전 단계 기록이다.

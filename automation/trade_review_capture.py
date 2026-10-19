@@ -110,6 +110,31 @@ class TradeReviewCapture:
             for _,data in ring:
                 self.ring_size-=len(data);self._queue(data)
 
+    def decision_tape(self,symbol,at,snapshot):
+        """Persist bounded FAST evidence even when promotion beat WATCH scope.
+
+        This is a separate provenance-labelled snapshot, not fabricated TRADE
+        frames or a claim that the receiver ring was complete. All existing
+        queue, per-line and disk caps still apply; recorder failure cannot trade.
+        """
+        if not isinstance(snapshot,dict):return
+        rows=snapshot.get('rows',[])
+        if not isinstance(rows,list):return
+        parts=[rows[i:i+8] for i in range(0,min(len(rows),256),8)]
+        snapshot_id=uuid.uuid4().hex
+        with self.lock:
+            self._record({'event':'FAST_DECISION_TAPE','symbol':symbol,'at':iso(at),
+                **{k:snapshot.get(k) for k in ('asof','eligible_rows','truncated','max_rows',
+                   'reset_reason','source','coverage','direction_basis')},
+                'snapshot_id':snapshot_id,'retained_rows':min(len(rows),256),'parts':len(parts),
+                'separate_book_history':'UNKNOWN_USE_ORIGINAL_PAIRED_TICK_FIELDS',
+                'orders_enabled':False,'actual_order_permission':False},symbol,force=True)
+            for index,part in enumerate(parts):
+                self._record({'event':'FAST_DECISION_TAPE_PART','symbol':symbol,'at':iso(at),
+                    'snapshot_id':snapshot_id,'asof':snapshot.get('asof'),
+                    'part':index,'parts':len(parts),'rows':part,
+                    'orders_enabled':False,'actual_order_permission':False},symbol,force=True)
+
     def tick(self,t,received):
         row={'event':'TRADE','symbol':t.symbol,'exchange_at':iso(t.time),'received_at':iso(received),
              'received_monotonic':getattr(t,'received_monotonic',None),
