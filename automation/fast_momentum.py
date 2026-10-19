@@ -178,8 +178,14 @@ class MicroTape:
             return self._reject('INVALID_REGULAR_TRADE')
         received_at=getattr(t,'received_at',None) or receipt
         received_monotonic=getattr(t,'received_monotonic',None)
+        # Admission asks whether the print was timely AT RECEIPT. Replaying a
+        # receiver queue must retain that genuine history, just as ABC does.
+        # Comparing its counter to the consumer's current monotonic clock here
+        # erased the earlier rise/pullback during catch-up. Current eligibility
+        # still checks the original counter in metrics() and _quote().
         if not market_freshness(at,receipt,self.stale_seconds,received_at=received_at,
-                                received_monotonic=received_monotonic)['fresh']:
+                                received_monotonic=received_monotonic,
+                                monotonic_now=received_monotonic)['fresh']:
             return self._reject('STALE_OR_FUTURE_RECEIPT')
         if self.ticks and at < self.ticks[-1][0]:return self._reject('OUT_OF_ORDER_TRADE')
         if self.symbol is not None and self.symbol != t.symbol:return self._reject('SYMBOL_MISMATCH')
