@@ -28,10 +28,11 @@ class TickLogger:
     - each row carries the tick time (exchange) and the local receive time separately, plus the
       best-level quote quantities that the receiver actually provides (no deeper book exists).
     """
-    def __init__(self, log_path: Path, max_bytes: int = 64 * 1024 * 1024, max_buffer_rows: int = 200_000):
+    def __init__(self, log_path: Path, max_bytes: int = 64 * 1024 * 1024, max_buffer_rows: int = 200_000, max_rotated_files: int = 2):
         self.path = Path(log_path)
         self.max_bytes = max_bytes
         self.max_buffer_rows = max_buffer_rows
+        self.max_rotated_files = max_rotated_files
         self.buffer = []
         self.last_flush = time.monotonic()
         self.retry_after = 0.0
@@ -124,6 +125,12 @@ class TickLogger:
                     index += 1
                 self.path.rename(self.path.with_name(f'{self.path.name}.{index}'))
                 self.rotations += 1
+                for i in range(1, index):
+                    if index - i >= self.max_rotated_files:
+                        old_f = self.path.with_name(f'{self.path.name}.{i}')
+                        try:
+                            if old_f.exists(): old_f.unlink()
+                        except OSError: pass
             payload = '\n'.join(json.dumps(row, ensure_ascii=False) for row in self.buffer) + '\n'
             with open(self.path, 'a+', encoding='utf-8') as f:
                 original = f.tell()

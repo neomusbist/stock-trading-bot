@@ -396,6 +396,10 @@ class OperatorService:
             log=self.root/'runtime/operator_console.txt'; log.parent.mkdir(parents=True,exist_ok=True)
             from core.event_log import rotate_if_large
             rotate_if_large(log)  # No active writer: duplicate-run and idle checks above.
+            try:
+                from automation.storage_governor import run_storage_governance
+                run_storage_governance(self.root)
+            except Exception: pass
             with log.open('a',encoding='utf-8') as output:
                 self.child=subprocess.Popen([resolve_python(),'-X','utf8',str(self.root/'operator_runner.py'),'--token',token,'--purpose',purpose],
                     cwd=self.root,stdin=subprocess.DEVNULL,stdout=output,stderr=subprocess.STDOUT,creationflags=flags)

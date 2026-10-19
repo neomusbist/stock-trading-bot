@@ -4,6 +4,29 @@ from datetime import datetime
 from pathlib import Path
 _LOCKS={};_GUARD=threading.Lock()
 MAX_LOG_BYTES=64*1024*1024
+MAX_ARCHIVE_TOTAL_BYTES=200*1024*1024
+MAX_ARCHIVE_AGE_SECONDS=3*86400
+
+def prune_archive(archive, max_total_bytes=MAX_ARCHIVE_TOTAL_BYTES, max_age_seconds=MAX_ARCHIVE_AGE_SECONDS):
+    try:
+        archive = Path(archive)
+        if not archive.exists(): return
+        now_ts = time.time()
+        files = [f for f in archive.glob('*') if f.is_file()]
+        for f in files:
+            try:
+                if now_ts - f.stat().st_mtime > max_age_seconds: f.unlink()
+            except OSError: pass
+        remaining = [f for f in archive.glob('*') if f.is_file()]
+        total_size = sum(f.stat().st_size for f in remaining)
+        if total_size > max_total_bytes:
+            remaining.sort(key=lambda x: x.stat().st_mtime)
+            for f in remaining:
+                if total_size <= max_total_bytes: break
+                try:
+                    sz = f.stat().st_size; f.unlink(); total_size -= sz
+                except OSError: pass
+    except Exception: pass
 
 def log_lock(path):
     key=os.path.normcase(str(Path(path).absolute()))
@@ -17,7 +40,10 @@ def rotate_if_large(path,max_bytes=MAX_LOG_BYTES):
         archive=path.parent/'archive';archive.mkdir(exist_ok=True)
         target=archive/(path.name+'.'+datetime.now().strftime('%Y%m%d-%H%M%S-%f')+'.'+str(os.getpid())+'.'+uuid.uuid4().hex[:8])
         for attempt in range(6):
-            try:os.replace(path,target);return target
+            try:
+                os.replace(path,target)
+                prune_archive(archive)
+                return target
             except PermissionError:
                 if attempt==5:raise
                 time.sleep(.01*(2**attempt))
