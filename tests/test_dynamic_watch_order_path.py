@@ -128,7 +128,9 @@ class DynamicWatchOrderPathIntegrationTests(unittest.TestCase):
     def test_e2e_non_watch_live_strategy_promotes_and_submits_buy_order(self):
         """End-to-End Test: Non-WATCH candidate with valid LIVE Setup A promotes dynamically to WATCH and submits BUY order."""
         sym = '018670'  # Synthetic signal fixture; no real-stock identity claim.
-        bars = self._generate_bars(base_price=2400, n_bars=70)
+        # Keep the installed LIVE history prerequisite (500), rather than
+        # relying on the undeployed developer branch's 60-bar relaxation.
+        bars = self._generate_bars(base_price=2400, n_bars=self.cfg.min_history_bars)
         self.radar.cache[(self.time.date(), sym)] = bars
         
         self.detector.completed[sym] = list(bars)

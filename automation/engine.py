@@ -439,6 +439,16 @@ class AutonomousEngine(ExistingExits,Engine):
             tick_venue=getattr(tick,'venue',None),tick_depth_source=getattr(tick,'depth_source',None),
             spread=(tick.ask-tick.bid)/tick.price if tick.price>0 else None)
         if not tick.regular or not timing['fresh']:return 'ENTRY_MARKET_DATA_STALE'
+        if signal.get('pattern') in {'A','B','C'}:
+            # A new quote does not renew the breakout tick that generated an
+            # INTENT. Preserve its immutable receipt counter across PRE_HTTP.
+            source=signal.get('entry_source_timing') or {}
+            if source and source.get('exchange_at')!=signal.get('time'):
+                return 'ENTRY_SIGNAL_TICK_MISMATCH'
+            source_timing=market_freshness(signal.get('time'),checked_at,self.c.stale_seconds,
+                received_at=source.get('received_at'),received_monotonic=source.get('received_monotonic'))
+            evidence['signal_timing']=source_timing
+            if not source_timing['fresh']:return 'ENTRY_SIGNAL_DATA_STALE'
         if signal.get('pattern')=='FAST':
             # Preserve the signal's own lifetime/chase contract at the final
             # boundary; no new momentum threshold or aggressive price is used.
@@ -479,18 +489,12 @@ class AutonomousEngine(ExistingExits,Engine):
         breakout=signal.get('evaluation_gates',{}).get('breakout',{}).get('values',{}).get('breakout') or signal.get('breakout')
         # Legacy core synthetic signals have no geometry. The real runner always
         # supplies a provider; all production A/B/C signals also carry breakout.
-        effective_limit=signal['limit']
-        if getattr(self.a,'enable_ask_1tick_tolerance',False) and signal.get('stop') and signal.get('target'):
-            ts=tick_size(signal['limit'])
-            tolerant_limit=signal['limit']+ts
-            breakout_val=breakout or signal.get('breakout')
-            chase_ok=(breakout_val is None) or (tolerant_limit/breakout_val-1<=self.c.max_chase)
-            risk_ok=(tolerant_limit>signal['stop']) and ((signal['target']-tolerant_limit)/(tolerant_limit-signal['stop'])>=self.c.min_reward_risk)
-            if chase_ok and risk_ok:
-                effective_limit=tolerant_limit
         if provider or breakout is not None:
             if not 0<tick.bid<=tick.ask or tick.price<=0 or (tick.ask-tick.bid)/tick.price>self.c.max_spread:return 'ENTRY_SPREAD_CHANGED'
-            if effective_limit<tick.ask:return 'ENTRY_QUOTE_ABOVE_LIMIT'
+            # Authorize the exact persisted order price. A tolerance applied
+            # only to this check leaves a resting BUY below the current ask,
+            # which can fill later after its momentum premise has changed.
+            if signal['limit']<tick.ask:return 'ENTRY_QUOTE_ABOVE_LIMIT'
         if breakout is not None:
             if tick.price<=breakout or tick.ask<=breakout or signal['limit']<=breakout:return 'BREAKOUT_QUOTE_NOT_CONFIRMED'
             if max(tick.price,signal['limit'])/breakout-1>self.c.max_chase:return 'ENTRY_CHASE_CHANGED'
@@ -516,6 +520,10 @@ class AutonomousEngine(ExistingExits,Engine):
         return None
 
     def enter(self,signal,tick):
+        if signal.get('pattern') in ('EarlyMomentumBreakout', 'PullbackReclaimBreakout'):
+            if not (getattr(self.a, 'enable_redesign_live', False) and getattr(self.c, 'enable_redesign_live', False)):
+                self.decisions.emit('ENTRY_EVAL', tick.symbol, 'NO_BUY', 'REDESIGN_STRATEGY_LIVE_NOT_AUTHORIZED', signal=signal, price=tick.price)
+                return None
         if signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or signal.get('diagnostic_only') is True or ('source_count' in signal and signal['source_count']<max(2,self.a.min_source_count) and not signal.get('fallback_source1')):
             self.decisions.emit('ENTRY_EVAL',tick.symbol,'NO_BUY','OBSERVATION_NOT_BUY_PERMISSION',signal=signal,price=tick.price);return None
         self.diagnostic('signal_count')
@@ -534,6 +542,15 @@ class AutonomousEngine(ExistingExits,Engine):
                 {'invalidation':gate(False,entry=signal.get('limit'),stop=signal.get('stop'))},signal=signal,price=tick.price,extra={'quantity':0})
             self.diagnostic('internal_reject_count'); return None
         signal=apply_empirical(signal,self.s['trades'],self.a)
+        if signal.get('pattern') in {'A','B','C'} and not signal.get('entry_source_timing'):
+            try:source_matches=datetime.fromisoformat(signal['time'])==tick.time
+            except (KeyError,TypeError,ValueError):source_matches=False
+            if not source_matches:
+                self.decisions.emit('ENTRY_EVAL',tick.symbol,'NO_BUY','ENTRY_SIGNAL_TICK_MISMATCH',signal=signal,price=tick.price)
+                return None
+            signal['entry_source_timing']={'exchange_at':signal['time'],
+                'received_at':getattr(tick,'received_at',None),
+                'received_monotonic':getattr(tick,'received_monotonic',None)}
         qty,gates=self.entry_gates(signal,tick)
         reason=self.new_entry_reason(signal['symbol'])
         market_reason=self.entry_market_reason(signal,qty,tick)
@@ -862,7 +879,8 @@ class AutonomousEngine(ExistingExits,Engine):
         p['protection_bars']=(previous+[{**b,'time':stamp}])[-30:]
         p['last_complete_bar_at']=stamp
         policy=p.get('signal',{}).get('invalidation_policy')
-        if self.a.confirmed_invalidation_enabled and policy:
+        from automation.exit_plan import invalidation_lines
+        if invalidation_lines(self.c,self.a,p)['close_based']:
             soft=max(policy['structural_stop'],p.get('confirmed_soft_stop',policy['structural_stop']))
             p['last_invalidation_bar']={'time':stamp,'close':b['close'],'structural_stop':soft}
             if b['time']==self.clock().replace(second=0,microsecond=0)-timedelta(minutes=1) and b['close']<=soft:
@@ -890,8 +908,7 @@ class AutonomousEngine(ExistingExits,Engine):
             p['profit_policy_observation']['source_key']=key
 
     def position_price_updated(self,p,t):
-        from automation.exit_plan import fresh
-        if not t.regular or not fresh(t.time,self.clock(),self.c.stale_seconds):return
+        if not t.regular or not tick_freshness(t,self.clock(),self.c.stale_seconds)['fresh']:return
         p['last_trade_time']=t.time.isoformat();p['last_trade_price']=t.price
         target=p.get('exit_plan',{}).get('target')
         if target is not None and t.price>=target and not p.get('target_touch'):
@@ -899,7 +916,9 @@ class AutonomousEngine(ExistingExits,Engine):
         self.refresh_exit_state(t.symbol)
 
     def protection(self,p,price,completed_low):
-        if self.a.confirmed_structure_protection or (self.a.confirmed_invalidation_enabled and p.get('signal',{}).get('invalidation_policy')):
+        from automation.exit_plan import invalidation_lines
+        policy=p.get('signal',{}).get('invalidation_policy')
+        if self.a.confirmed_structure_protection or policy and invalidation_lines(self.c,self.a,p)['close_based']:
             from automation.trade_quality import confirmed_protection
             high,stop,evidence=confirmed_protection(self.c,self.a,p,price,self.clock())
             evidence['effective_stop']=stop
@@ -1173,21 +1192,22 @@ class AutonomousEngine(ExistingExits,Engine):
                     'evidence':dict(exit_evidence)}
                 if should_exit:
                     self.request_exit(t.symbol, f'FAST_{exit_reason}')
-        if p and self.a.confirmed_invalidation_enabled and policy:
-            trade_fresh=0<=(self.clock()-t.time).total_seconds()<=self.c.stale_seconds
+        from automation.exit_plan import invalidation_lines
+        if p and invalidation_lines(self.c,self.a,p)['close_based']:
+            trade_fresh=t.regular and tick_freshness(t,self.clock(),self.c.stale_seconds)['fresh']
             if trade_fresh:
                 if self.a.after_momentum_failure_enabled and t.price>p['high']:
                     p['after_entry_peak']={'price':t.price,'time':t.time.isoformat()}
                 p['last_tick']=self.clock().isoformat();p['low']=min(p['low'],t.price)
                 p['high'],p['stop']=self.protection(p,t.price,completed_low)
                 self.position_price_updated(p,t)
-            soft=max(policy['structural_stop'],p['stop'])
+            lines=invalidation_lines(self.c,self.a,p)
+            soft=lines['active_structure']
             p['confirmed_soft_stop']=soft
-            policy_emergency=policy.get('emergency_stop')
-            base_emergency=policy_emergency if isinstance(policy_emergency,(int,float)) and policy_emergency>0 else p['initial_stop']
-            hard=max(base_emergency,floor_tick(soft-policy['noise_band']))
+            hard=lines['emergency']
             quote=p.get('last_quote',{})
-            try:quote_fresh=0<=(self.clock()-datetime.fromisoformat(quote['time'])).total_seconds()<=self.c.stale_seconds
+            try:quote_fresh=market_freshness(quote['time'],self.clock(),self.c.stale_seconds,
+                received_at=quote.get('received_at'),received_monotonic=quote.get('received_monotonic'))['fresh']
             except (KeyError,TypeError,ValueError):quote_fresh=False
             bid=quote.get('bid',0) if quote_fresh else 0
             p['invalidation_evidence']={'checked_at':self.clock().isoformat(),'structural_stop':soft,

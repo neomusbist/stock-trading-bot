@@ -156,7 +156,7 @@ class SetupAccelerationTests(unittest.TestCase):
         (p/'operator_user_authorization.json').write_text(json.dumps({'build_id':'V1.5-risk2-watch12-bc20M-observation-r5-20261014'}),encoding='utf-8')
         ok,reasons=authorization_valid(self.root,self.cfg,self.auto,self.policy,self.clock)
         self.assertFalse(ok);self.assertIn('LIVE_APPROVAL_BUILD_MISMATCH',reasons)
-        self.assertEqual(BUILD_ID,'V1.6-risk2-daily4-fast-live-r6-20261015')
+        self.assertEqual(BUILD_ID,'V1.6-risk2-daily4-fast-live-r6-integrated-20261020')
     def set_turnover(self,amount):
         fast=[i for i,t in enumerate(self.d.buffers[SYM]) if 0<=(self.t.time-t.time).total_seconds()<self.cfg.acceleration_seconds]
         for i in fast:self.d.buffers[SYM][i]=replace(self.d.buffers[SYM][i],volume=0)

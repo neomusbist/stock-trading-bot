@@ -174,7 +174,10 @@ class OpeningReceiverTests(unittest.TestCase):
                 self.radar.status_cache={}
                 if pattern=='A':
                     shapes=[(10000,10020,9990,10010),(10300,10340,10290,10310)]
-                elif pattern=='B':shapes=[tuple(b[k]*10 for k in ('open','high','low','close')) for b in pullback.NORMAL]
+                elif pattern=='B':
+                    # The old 400-won impulse yielded net RR=1.278, correctly
+                    # below 1.5. Use a stronger causal control, not a lower gate.
+                    shapes=[tuple(10000+(b[k]-1000)*20 for k in ('open','high','low','close')) for b in pullback.NORMAL]
                 else:shapes=[(9860,10000,9860,9970)]*5
                 cumulative=0
                 for minute,shape in enumerate(shapes):
@@ -184,7 +187,7 @@ class OpeningReceiverTests(unittest.TestCase):
                         cumulative+=volume
                         t=Tick(SYM,OPEN+timedelta(minutes=minute,seconds=sec),price,volume,cumulative,price,price-10)
                         self.send(t)  # receiver builds genuine post-09:00 candles
-                baseline=shapes[-1][3];breakout=10410 if pattern=='B' else 10350 if pattern=='A' else 10010
+                baseline=shapes[-1][3];breakout=10810 if pattern=='B' else 10350 if pattern=='A' else 10010
                 for sec in range(6):
                     px=breakout if sec==5 else baseline;volume=4000 if sec==5 else 100;cumulative+=volume
                     t=Tick(SYM,OPEN+timedelta(minutes=len(shapes),seconds=sec),px,volume,cumulative,px,px-10)

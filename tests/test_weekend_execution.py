@@ -79,7 +79,7 @@ class FinalBuyEvidenceTests(unittest.TestCase):
                        venue='SOR',depth_available=True,book_time=self.clock,depth_source='0D')
         self.book={'time':self.clock.isoformat(),'best_ask':6340,'best_bid':6330,
                    'ask_qty':depth,'bid_qty':depth,'depth_available':True}
-        self.signal={'symbol':'999990','time':self.clock.isoformat(),'pattern':'B','limit':6340,'stop':6290,
+        self.signal={'symbol':'999990','time':self.clock.isoformat(),'pattern':'B','limit':6340,'stop':6290,'target':6600,
             'source_count':2,'session':'AFTER','venue':'SOR','efficiency':{'decision':'TRADE'},
             'evaluation_gates':{'breakout':{'result':'PASS','values':{'breakout':6320}}}}
         self.feed=Feed(Mock(cfg=self.cfg),['999990']);self.feed.latest_ticks['999990']=self.tick

@@ -42,14 +42,14 @@ class DepthWarmupTests(unittest.TestCase):
     def test_watch_and_fast_parser_use_same_attached_depth(self):
         sink=[];self.feed.configure_observation({SYM},{SYM},lambda t,r:sink.append(t))
         self.emit([self.book(),self.trade()]);stamp,msg=self.feed.q.get_nowait()
-        parsed=parse_tick(msg['data'][1],stamp)
+        parsed=parse_tick(msg['data'][1],stamp,received_monotonic=msg['_received_monotonic'])
         self.assertEqual((parsed.ask_qty,parsed.bid_qty),(34,56))
         self.assertEqual(parsed,sink[0]);self.rest.get_token.assert_not_called()
     def test_real_main_message_path_preserves_depth_without_order_evaluation(self):
         self.emit([self.book(),self.trade()]);stamp,msg=self.feed.q.get_nowait()
         e=Mock();e.c=self.cfg;e.market='3';e._depth_log_at={}
         with patch('automation.runner.now',return_value=BASE):
-            n=process_message(e,self.d,msg,stamp,{SYM},{},Mock(),{},Mock(),True)
+            n=process_message(e,self.d,msg,stamp,{SYM},{},Mock(),{},Mock(),False)
         self.assertEqual(n,1);self.assertEqual(self.d.last[SYM].ask_qty,34)
         e.enter.assert_not_called();e.event.assert_called_once()
         self.assertEqual(e.event.call_args.args[0],'BOOK_DEPTH_OBSERVED')

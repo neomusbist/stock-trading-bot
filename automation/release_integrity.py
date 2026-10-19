@@ -9,12 +9,13 @@ import os
 import sys
 import hashlib
 import json
+import ast
 from pathlib import Path
 from datetime import datetime
 
 _FALLBACK_RELEASE_COMMIT = "a53f248"
 CURRENT_RELEASE_COMMIT = _FALLBACK_RELEASE_COMMIT
-CURRENT_RELEASE_BUILD_ID = "V1.6-risk2-daily4-fast-live-r6-20261019-a53f248"
+from automation.decisions import BUILD_ID as CURRENT_RELEASE_BUILD_ID
 
 # 필수 결함 수정 패치 식별자 및 검증 서명
 MANDATORY_PATCH_SIGNATURES = {
@@ -89,6 +90,46 @@ def check_runtime_integrity(root=None):
     file_hashes = {}
     verified_patches = []
     missing_patches = []
+    manifest_verified = False
+    manifest_file = root_path / 'runtime/RELEASE_IDENTITY.json'
+    # Read the declared identity without executing the inspected source.
+    declared_build = None
+    try:
+        tree = ast.parse((root_path/'automation/decisions.py').read_text(encoding='utf-8-sig'))
+        for node in tree.body:
+            if (isinstance(node,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='BUILD_ID' for t in node.targets)
+                    and isinstance(node.value,ast.Constant) and isinstance(node.value.value,str)):
+                declared_build=node.value.value
+    except (OSError,UnicodeError,SyntaxError):pass
+    if manifest_file.exists():
+        try:
+            manifest=json.loads(manifest_file.read_text(encoding='utf-8-sig'))
+            declared_files=manifest.get('files')
+            if not isinstance(declared_files,dict) or not 1<=len(declared_files)<=512:
+                raise ValueError('INVALID_MANIFEST_FILES')
+            if declared_build and manifest.get('build_id')!=declared_build:
+                reasons.append('MANIFEST_BUILD_ID_MISMATCH')
+            required=set(CRITICAL_RUNTIME_FILES)
+            if declared_build and '-integrated-' in declared_build:
+                required.update({'automation/release_integrity.py','automation/observation_worker.py',
+                    'automation/patterns.py','automation/focus_selection.py','automation/position_health.py'})
+            for rel in sorted(required-set(declared_files)):
+                reasons.append('MANIFEST_REQUIRED_FILE_MISSING: '+rel)
+            for rel,expected in declared_files.items():
+                if not isinstance(rel,str) or not isinstance(expected,str):raise ValueError('INVALID_MANIFEST_ENTRY')
+                target=(root_path/rel).resolve()
+                if target==root_path.resolve() or root_path.resolve() not in target.parents:
+                    raise ValueError('MANIFEST_PATH_OUTSIDE_ROOT')
+                if len(expected)!=64 or any(c not in '0123456789abcdef' for c in expected):
+                    raise ValueError('INVALID_MANIFEST_DIGEST')
+                actual=sha256_file(target)
+                file_hashes[rel]=actual
+                if actual!=expected:reasons.append('MANIFEST_HASH_MISMATCH: '+rel)
+            manifest_verified=not reasons
+        except (OSError,UnicodeError,ValueError,TypeError,AttributeError) as error:
+            reasons.append('RELEASE_MANIFEST_INVALID: '+str(error))
+    elif declared_build and '-integrated-' in declared_build:
+        reasons.append('RELEASE_MANIFEST_REQUIRED_FOR_BUILD')
 
     # 1. 핵심 런타임 파일 존재 및 해시 계산
     for rel_path in CRITICAL_RUNTIME_FILES:
@@ -131,7 +172,8 @@ def check_runtime_integrity(root=None):
     return {
         'valid': valid,
         'commit': commit_id,
-        'build_id': CURRENT_RELEASE_BUILD_ID,
+        'build_id': declared_build or CURRENT_RELEASE_BUILD_ID,
+        'manifest_verified': manifest_verified,
         'fast_momentum_hash': fast_hash,
         'fast_momentum_short_hash': short_hash,
         'file_hashes': file_hashes,

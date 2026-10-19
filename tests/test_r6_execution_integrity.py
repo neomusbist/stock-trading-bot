@@ -87,7 +87,9 @@ class OrderBoundaryTests(AccountFixture):
         self.e.a=replace(self.auto,confirmed_box_direction=False,fresh_box_basis_enabled=False)
 
     def test_one_tick_tolerance_cannot_authorize_a_different_unsent_limit(self):
-        self.e.a = replace(self.e.a, enable_ask_1tick_tolerance=True)
+        # LIVE has no configuration field for this retired developer option.
+        # Model its presence without adding a new operational setting.
+        object.__setattr__(self.e.a,'enable_ask_1tick_tolerance',True)
         signal = self.simple_signal()
         self.e.entry_quote_provider = lambda _: (self.quote(2455), {})
         self.assertEqual(self.e.entry_market_reason(signal, 29, phase='PRE_HTTP'),

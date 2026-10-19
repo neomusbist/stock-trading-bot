@@ -47,7 +47,11 @@ class PriceContextTests(unittest.TestCase):
             self.record(bars);self.assertIsNone(self.d.price_context.snapshot(self.t.symbol,self.t,13610)['nearest_confirmed_peak'])
     def test_crossed_peak_preserves_genuine_breakout_path(self):
         self.record(self.refs());t=replace(self.t,price=13640,ask=13640,bid=13630)
-        self.assertIsNone(self.d.price_context.snapshot(t.symbol,t,13640)['nearest_confirmed_peak'])
+        # One quote step above a confirmed peak is not proof of a reclaimed
+        # support. The installed rule retains it until that evidence exists.
+        self.assertEqual(self.d.price_context.snapshot(t.symbol,t,13640)['nearest_confirmed_peak']['price'],13630)
+        t=replace(t,price=13650,ask=13650,bid=13640)
+        self.assertIsNone(self.d.price_context.snapshot(t.symbol,t,13650,support=13630,breakout=13640)['nearest_confirmed_peak'])
     def test_regular_reference_remains_after_but_never_becomes_strategy_bars(self):
         self.record(self.refs(start=datetime(2026,10,12,14,30,tzinfo=KST)))
         self.assertIsNotNone(self.d.price_context.snapshot(self.t.symbol,self.t,13610)['nearest_confirmed_peak'])
@@ -99,10 +103,11 @@ class ContextOrderTests(unittest.TestCase):
     feed=fixtures.SetupAccelerationTests.feed
     trial=fixtures.SetupAccelerationTests.trial
     def test_context_rr_blocks_real_pattern_before_fake_order(self):
-        self.auto=replace(self.auto,entry_context_enabled=True);self.d.a=self.auto
+        self.auto=replace(self.auto,entry_context_enabled=False);self.d.a=self.auto
         for name in ('B','C'):
             self.d=PatternDetector(self.cfg,self.auto,self.e.costs)
             sig=self.feed(name);self.assertIsNotNone(sig)
+            self.d.a=replace(self.auto,entry_context_enabled=True)
             entry=sig['limit']
             # Align to :00 second boundary so bars are recognized as valid completed 1-minute references
             stamp=(self.t.time-timedelta(minutes=3)).replace(second=0,microsecond=0)

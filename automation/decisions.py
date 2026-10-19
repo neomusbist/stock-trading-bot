@@ -2,7 +2,7 @@
 import json
 import math
 STRATEGY_VERSION='V1.6-fast-live-20261015'
-BUILD_ID='V1.6-risk2-daily4-fast-live-r6-20261015'
+BUILD_ID='V1.6-risk2-daily4-fast-live-r6-integrated-20261020'
 STRATEGY_EXPERIMENT='20261015-risk2-daily4-dynamiccap-watch12-fast-momentum-live-r6'
 
 def check_experiment_consistency(cfg, build_id=BUILD_ID, experiment=STRATEGY_EXPERIMENT):

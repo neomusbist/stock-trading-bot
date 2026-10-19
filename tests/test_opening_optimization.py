@@ -103,7 +103,7 @@ class OpeningOptimizationTests(unittest.TestCase):
         received,message=feed.q.get_nowait()
         with patch('automation.runner.now',return_value=t.time),patch('automation.runner.parse_tick',side_effect=AssertionError('duplicate parser')):
             self.assertEqual(runner.process_message(f.e,d,message,received,{t.symbol},{},Mock(),{},Mock(),True),1)
-        self.assertIs(d.last[t.symbol],sink[0]);self.assertEqual(sink[0],parse_tick(item,received))
+        self.assertIs(d.last[t.symbol],sink[0]);self.assertEqual(sink[0],parse_tick(item,received,received_monotonic=message['_received_monotonic']))
         self.assertEqual(f.broker.orders,[])
     def test_untrusted_or_other_received_frame_cannot_supply_parsed_tick(self):
         f,d,t,w=self.fixture()
@@ -158,7 +158,8 @@ class OpeningStreamTests(unittest.TestCase):
         costs=Costs(auto.commission_buy,auto.commission_sell,auto.sell_tax,cfg.entry_slippage_fraction,cfg.exit_slippage_fraction)
         start=datetime(2026,10,8,9,0,tzinfo=KST)
         sequences={'A':[(980,1000,997,1000)]*2,
-            'B':[(980,1000,997,1000),(990,1020,1015,2000),(1005,1010,1008,200),(1005,1010,1008,100)],
+            # A valid B control must pass net RR and the existing chase cap.
+            'B':[(960,1000,994,1000),(980,1040,1030,2000),(1020,1030,1028,200),(1020,1030,1028,100)],
             'C':[(1000,1010,1005,1000)]*5}
         for pattern,seq in sequences.items():
             with self.subTest(pattern=pattern):
@@ -172,7 +173,7 @@ class OpeningStreamTests(unittest.TestCase):
                         t=Tick(sym,start+timedelta(minutes=minute,seconds=second),p,vol,cum,p+1,p-1)
                         self.assertTrue(d.ingest(t,t.time))
                         if minute==0 and second==0:self.assertIsNone(d.signal(t,w))
-                price={'A':1001,'B':1021,'C':1011}[pattern];ask=price+1 if pattern=='A' else price
+                price={'A':1001,'B':1031,'C':1011}[pattern];ask=price+1 if pattern=='A' else price
                 t=Tick(sym,start+timedelta(minutes=len(seq)),price,100000,cum+100000,ask,price-1)
                 self.assertTrue(d.ingest(t,t.time));sig=d.signal(t,w)
                 self.assertIsNotNone(sig);self.assertEqual(sig['pattern'],pattern)

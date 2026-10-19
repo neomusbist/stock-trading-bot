@@ -280,10 +280,11 @@ class CurrentReferenceIntegrationTests(unittest.TestCase):
 
     def test_minute_aligned_context_blocks_real_patterns_before_order(self):
         from automation.patterns import PatternDetector
-        self.auto=replace(self.auto,entry_context_enabled=True);self.d.a=self.auto
+        self.auto=replace(self.auto,entry_context_enabled=False);self.d.a=self.auto
         for name in ('B','C'):
             self.d=PatternDetector(self.cfg,self.auto,self.e.costs);sig=self.feed(name)
             self.assertIsNotNone(sig);entry=sig['limit']
+            self.d.a=replace(self.auto,entry_context_enabled=True)
             stamp=self.t.time.replace(second=0,microsecond=0)-timedelta(minutes=3)
             self.d.price_context=PriceContext()
             for i,h in enumerate((entry,entry+20,entry+10)):

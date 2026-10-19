@@ -99,7 +99,7 @@ class PipelineTests(unittest.TestCase):
     def test_market_state_forbids_auction_entry(self):
         update_market(self.e,'2'); self.assertFalse(self.e.entry_window()); self.assertTrue(self.e.session_ending())
     def test_pending_prior_day_restore_waits_account_not_guess(self):
-        sig={'symbol':SYMBOL,'limit':10020,'stop':9800,'pattern':'A','efficiency':{'decision':'TRADE'}}
+        sig={'symbol':SYMBOL,'limit':10020,'stop':9800,'pattern':'A','time':self.clock[0].isoformat(),'efficiency':{'decision':'TRADE'}}
         order=self.e.enter(sig,Tick(SYMBOL,self.clock[0],10000,100,100,10010,9990)); self.assertIsNotNone(order)
         self.clock[0]+=timedelta(days=1)
         restored=AutonomousEngine(self.cfg,self.auto,self.policy,self.folder/'book',self.broker,lambda:self.clock[0])

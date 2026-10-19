@@ -410,7 +410,7 @@ class PatternDetector(Detector):
         self.last_eval[t.symbol]={'time':t.time,'cumulative':t.cumulative,'gates':gates,'trials':trials}
         self._eval_keys[t.symbol]=self._evaluation_key(t,watch)
         is_after=after_supported(t.time)
-        if (not supported(t.time) and not is_after) or watch.get('status') not in {'WATCH','ELIGIBLE','RESERVE'}:return None
+        if (not supported(t.time) and not is_after) or watch.get('status') not in {'WATCH','ELIGIBLE','RESERVE','SHADOW'}:return None
         if is_after:
             if watch.get('vi_active') or getattr(t,'vi_active',False) or watch.get('single_price_auction'): return None
             if watch.get('is_etf_etn') or watch.get('after_ineligible'): return None
@@ -466,6 +466,7 @@ class PatternDetector(Detector):
                 'fallback_source1':bool(watch.get('fallback_source1')),
                 'structure':{k:watch.get(k) for k in ('long_position','overhead_share_estimate','resistance','recent_support')},
                 'risk_per_share':score['risk_per_share'],'market_state':'3',
+                **({'SHADOW_ONLY':True,'actual_order_permission':False} if watch.get('status')=='SHADOW' else {}),
                 'session':'AFTER' if is_after else 'REGULAR','venue':venue,
                 'planned_qty':None,'liquidity_mode':'depth' if is_after else 'turnover'}
         return None
@@ -640,7 +641,7 @@ class PatternDetector(Detector):
                 'acceleration':accel_gate,
                 'liquidity':liq_gate,
                 'spread':gate(None if spread is None else spread<=c.max_spread,bid=t.bid,ask=t.ask,spread=spread,max_spread=c.max_spread),
-                'structure':gate(watch.get('status') in {'WATCH','ELIGIBLE','RESERVE'},status=watch.get('status'),resistance=watch.get('resistance'),overhead_share=watch.get('overhead_share_estimate')),
+                'structure':gate(watch.get('status') in {'WATCH','ELIGIBLE','RESERVE','SHADOW'},status=watch.get('status'),resistance=watch.get('resistance'),overhead_share=watch.get('overhead_share_estimate')),
                 'market_status':gate(watch.get('market_status',{}).get('pass'),status=watch.get('market_status')),
                 'pattern':gate(False,reason='완성봉/돌파/추격/무효화/효율 중 신호 미충족')}
         return gates,bars,len(fast),len(base)

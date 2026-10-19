@@ -220,7 +220,7 @@ class StructureProtectionTests(unittest.TestCase):
         t=self.tick(7340)
         packet={'trnm':'REAL','data':[{'type':'0B','item':health_fixture.SYM,'_observation_tick':(self.clock,t),'values':{}}]}
         with patch('automation.runner.now',return_value=self.clock):
-            process_message(self.e,d,packet,self.clock,{health_fixture.SYM},{},Mock(),self.e.prices,self.account,True)
+            process_message(self.e,d,packet,self.clock,{health_fixture.SYM},{},Mock(),self.e.prices,self.account,False)
         self.assertEqual(self.p['stop'],7280);self.assertEqual(self.sell_count(),0)
 
     def test_user_stop_flat_still_exits(self):

@@ -12,8 +12,11 @@ class TestDeployRelease(unittest.TestCase):
     def setUp(self):
         self.dev_root = Path(__file__).resolve().parent.parent
 
-    def test_deploy_and_rollback_in_isolated_target(self):
-        """격리된 모의 타깃 디렉터리에서 배포, 해시 검증, 롤백이 100% 정상 작동하는지 검증한다."""
+    def test_legacy_deployer_cannot_install_partial_integrated_source(self):
+        """Legacy six-file deployer must reject a partial integrated release.
+
+        The eight-path overlay/rollback has its own temporary-target rehearsal.
+        """
         with tempfile.TemporaryDirectory() as src_tmp, tempfile.TemporaryDirectory() as tgt_tmp:
             src = Path(src_tmp)
             tgt = Path(tgt_tmp)
@@ -38,6 +41,10 @@ class TestDeployRelease(unittest.TestCase):
 
             # 3. 배포 전 점검
             readiness = check_deployment_readiness(src, tgt)
+            if '-integrated-' in (readiness.get('src_integrity',{}).get('build_id') or ''):
+                self.assertFalse(readiness['can_deploy'])
+                self.assertIn('RELEASE_MANIFEST_REQUIRED_FOR_BUILD',readiness['src_integrity']['reasons'])
+                return
             self.assertTrue(readiness['can_deploy'])
             self.assertFalse(readiness['target_integrity']['valid'])
 

@@ -198,10 +198,10 @@ class AfterMarketTests(unittest.TestCase):
 
     def test_c2_source1_fallback_in_after(self):
         """AFTER 모드에서 source_count=1 단일소스 후보도 fallback_source1 플래그로 관찰/진입 가능하다."""
+        self.clock = datetime(2026, 10, 7, 16, 10, 0, tzinfo=KST)
         sig = self.signal()
         sig['source_count'] = 1
         sig['fallback_source1'] = True
-        self.clock = datetime(2026, 10, 7, 16, 10, 0, tzinfo=KST)
         self.e.last_account = time.monotonic()
         order = self.e.enter(sig, self.tick())
         self.assertIsNotNone(order)
