@@ -491,16 +491,29 @@ def focus_readiness(detector,shadow_readiness,stamp):
     with detector._state_lock:
         for sym,evaluation in detector.last_eval.items():
             tick_at=evaluation.get('time')
-            if not isinstance(tick_at,datetime) or not 0<=(stamp-tick_at).total_seconds()<=15:continue
+            if not isinstance(tick_at,datetime) or tick_at.tzinfo is None:continue
+            age=(stamp-tick_at).total_seconds()
+            if age<0 or tick_at.astimezone(stamp.tzinfo).date()!=stamp.date():continue
             gates=evaluation.get('gates',{})
+            price_blocked=unviable_price_geometry({'setup_trials':evaluation.get('trials',[])})
+            # Positive readiness still expires at 15s. A same-day negative
+            # geometry must reach retained_price_block even after that TTL;
+            # dropping it here made the lower-level expiry fix unreachable.
+            if age>15 and not price_blocked:continue
+            # WATCH and SHADOW are two views of one causal observation history.
+            # Never overwrite a newer real observation with an older live one.
+            try:
+                shadow_at=datetime.fromisoformat(result.get(sym,{}).get('timestamp',''))
+                if shadow_at.tzinfo is not None and tick_at<shadow_at<=stamp:continue
+            except (ValueError,TypeError):pass
             fast_ready=False
-            if fast_strat is not None and gates.get('market_status',{}).get('result')=='PASS':
+            if age<=15 and fast_strat is not None and gates.get('market_status',{}).get('result')=='PASS':
                 active_fast=fast_strat.active_signals.get(sym)
                 if active_fast is not None and 0<=(stamp-active_fast.created_at).total_seconds()<=active_fast.ttl_seconds:
                     fast_ready=True
             result[sym]={'timestamp':tick_at.isoformat(),
                 'tier':0 if fast_ready else calculate_tier(gates,evaluation.get('trials',[])),
-                'price_blocked':False if fast_ready else unviable_price_geometry({'setup_trials':evaluation.get('trials',[])}),
+                'price_blocked':False if fast_ready else price_blocked,
                 'fast_signal_ready':fast_ready,
                 'gates':{k:{'result':gates.get(k,{}).get('result')} for k in ('acceleration','liquidity')}}
     return result
