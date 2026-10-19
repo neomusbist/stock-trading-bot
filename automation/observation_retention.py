@@ -17,10 +17,12 @@ class ObservationRetention:
         self.last_watch.update({s:stamp for s in watch})
         retained=sorted(set(self.last_watch)-critical,key=lambda s:(-self.last_watch[s].timestamp(),s))
         # Critical positions/orders/external protection are never sacrificed.
-        # Use the configured observation budget. If the required existing
-        # critical + shadow footprint exceeds it, grace may replace diagnostics
-        # but must not expand that footprint further.
-        budget=max(capacity,len(critical|shadow))
+        # The shadow list is a ranked request, not extra capacity. Counting its
+        # union as a new budget caused 64/65 oscillation when WATCH roles moved
+        # across that list, repeatedly replacing the entire stream group.
+        # Only unavoidable critical overflow may exceed the configured limit;
+        # never discard a held position/order/external protection to fit it.
+        budget=max(capacity,len(critical))
         selected=set(critical)
         selected.update(retained[:max(0,budget-len(selected))])
         grace=set(selected)-critical
