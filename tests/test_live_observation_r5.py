@@ -89,7 +89,7 @@ class ResidenceTests(unittest.TestCase):
         r.select({'old'}, {'position','order'}, [], AT,g,4)
         r.last_watch.update({str(i):AT for i in range(30)})
         selected,_,_=r.select({'new'},{'position','order'},['s1','s2'],AT+timedelta(seconds=70),g,4)
-        self.assertEqual(len(selected),5)
+        self.assertEqual(len(selected),4)
         self.assertTrue({'new','position','order'}<=selected)
 
 class ReceivedHistoryTests(unittest.TestCase):

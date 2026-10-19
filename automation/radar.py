@@ -146,11 +146,11 @@ class DynamicRadar:
             except (KeyError,ValueError,TypeError):fresh=False
             gates=observation.get('gates',{}) if fresh else {}
             if self.a.setup_aware_watch_priority:
-                from automation.focus_selection import readiness_tier,candidate_priority_tuple,TIER_NAMES,unviable_price_geometry,TIER_FRESH_WEAK
+                from automation.focus_selection import readiness_tier,candidate_priority_tuple,TIER_NAMES,retained_price_block
                 tier=readiness_tier(observation,row,stamp.isoformat())
                 row['watch_priority_basis']=TIER_NAMES[tier]
                 return candidate_priority_tuple(row,tier,row['code'] in self.watch,
-                    price_blocked=tier==TIER_FRESH_WEAK and unviable_price_geometry(observation))
+                    price_blocked=retained_price_block(observation,stamp.isoformat()))
             # 신선한 가속/유동성 PASS를 우선 관찰한다. 오래된 랭킹만으로 자리를 차지하지 않는다.
             strong=all(gates.get(k,{}).get('result')=='PASS' for k in ('acceleration','liquidity'))
             weak=bool(gates) and any(gates.get(k,{}).get('result')=='FAIL' for k in ('acceleration','liquidity'))

@@ -12,20 +12,20 @@ class RetentionTests(unittest.TestCase):
         stamp=datetime(2026,10,12,12,6,tzinfo=KST);r=ObservationRetention()
         r.select({'old'},{'held'},{'old','new','extra'},stamp,60,3)
         desired,observed,retained=r.select({'new'},{'held'},['extra','next'],stamp+timedelta(seconds=6),60,3)
-        self.assertEqual(desired,{'new','held','old','extra'});self.assertEqual(observed,{'old','extra'})
-        self.assertEqual(retained,{'old'});self.assertEqual(len(desired),4) # Existing baseline also used four slots.
+        self.assertEqual(desired,{'new','held','old'});self.assertEqual(observed,{'old'})
+        self.assertEqual(retained,{'old'});self.assertEqual(len(desired),3)
         desired,_,retained=r.select({'new'},{'held'},{'extra'},stamp+timedelta(seconds=61),60,3)
         self.assertEqual(retained,set());self.assertEqual(desired,{'new','held','extra'})
     def test_full_budget_grace_uses_diagnostic_slots_in_existing_priority_order(self):
         stamp=datetime(2026,10,12,12,6,tzinfo=KST);r=ObservationRetention()
         r.select({'old'},{'held'},[],stamp,60,3)
         desired,_,grace=r.select({'new'},{'held'},['preferred','weaker'],stamp+timedelta(seconds=6),60,3)
-        self.assertEqual(desired,{'new','held','old','preferred'})
+        self.assertEqual(desired,{'new','held','old'})
         self.assertEqual(grace,{'old'})
-        # Three old roles do not expand a full two-symbol diagnostic baseline.
+        # Grace replaces diagnostics inside the configured total capacity.
         r.last_watch.update({'old2':stamp,'old3':stamp})
         desired,_,_=r.select({'new'},{'held'},['preferred','weaker'],stamp+timedelta(seconds=7),60,3)
-        self.assertEqual(len(desired),4);self.assertTrue({'new','held'}<=desired)
+        self.assertEqual(len(desired),3);self.assertTrue({'new','held'}<=desired)
     def test_next_day_never_retains_previous_watch(self):
         r=ObservationRetention();stamp=datetime(2026,10,12,12,tzinfo=KST)
         r.select({'old'},set(),set(),stamp,60,2)

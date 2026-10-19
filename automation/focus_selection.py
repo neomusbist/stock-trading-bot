@@ -128,6 +128,22 @@ def unviable_price_geometry(info: dict) -> bool:
     return bool(formed and all(any(v.get('result')=='FAIL' for k,v in t.get('gates',{}).items()
                                   if k in price_keys) for t in formed))
 
+def retained_price_block(info: dict, clock_iso: str = '') -> bool:
+    """Expiry of positive readiness is not recovery from a known bad geometry.
+
+    A newer real evaluation replaces this evidence. Do not carry it across a
+    date boundary or treat a future/malformed timestamp as observed evidence.
+    This affects WATCH priority only, never eligibility or order permission.
+    """
+    if not unviable_price_geometry(info):return False
+    if not clock_iso:return True
+    try:
+        stamp=datetime.fromisoformat(info['timestamp']);clock=datetime.fromisoformat(clock_iso)
+        return bool(stamp.tzinfo and clock.tzinfo and stamp.astimezone(clock.tzinfo).date()==clock.date()
+                    and stamp<=clock)
+    except (KeyError,TypeError,ValueError):return False
+
+
 def candidate_priority_tuple(row: dict, tier: int, is_existing: bool = False, price_blocked: bool = False) -> tuple:
     """우선순위 튜플: (tier, -effective_score, incumbent_tie, overhead_share, symbol)
     - tier: 0 (SIGNAL_READY) ~ 4 (FRESH_WEAK). 작을수록 우선.
@@ -144,7 +160,11 @@ def candidate_priority_tuple(row: dict, tier: int, is_existing: bool = False, pr
     # UNKNOWN observation is not evidence of superiority over measured weakness.
     # Both compete on the existing discovery score/hysteresis until a candidate
     # actually reaches momentum/geometry/signal readiness (tiers 0..2).
-    competition_tier=tier if price_blocked else min(tier,TIER_RANK_ONLY)
+    # Stale positive readiness falls to rank-only. A still-recorded negative
+    # geometry must not improve from 4 to 3 merely because its 15s TTL expires;
+    # that caused promotion -> fresh rejection -> demotion on every quiet gap.
+    competition_tier=(TIER_FRESH_WEAK if price_blocked and tier>=TIER_RANK_ONLY
+                      else min(tier,TIER_RANK_ONLY))
     return (competition_tier, -effective_score, 0 if is_existing else 1, overhead, row.get('code', ''))
 
 def readiness_tier(info: dict, row: dict, clock_iso: str = '') -> int:
@@ -213,7 +233,7 @@ def select_focus(
         tier_map[sym] = tier
         is_existing = (sym in prev_watch_symbols)
         priority_tuples[sym] = candidate_priority_tuple(r, tier, is_existing=is_existing,
-            price_blocked=tier==TIER_FRESH_WEAK and unviable_price_geometry(r_info))
+            price_blocked=retained_price_block(r_info,clock_iso))
 
     # 정렬: (tier, -effective_score, incumbent_tie, overhead, symbol)
     eligible_candidates.sort(key=lambda r: priority_tuples[r['code']])
