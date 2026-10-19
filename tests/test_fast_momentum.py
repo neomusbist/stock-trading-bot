@@ -197,7 +197,9 @@ class TestFastMomentumStrategy(unittest.TestCase):
 
         # A lower rebound high and two prints below its floor are causal evidence.
         self.strategy = FastMomentumStrategy()
-        for s, price in enumerate([70000, 70200, 70050, 70150, 70040, 70030]):
+        # 70,000 KRW uses a 100-won quote unit. The old 40/50-won
+        # increments accidentally depended on shrinking that unit to a print.
+        for s, price in enumerate([70000, 70600, 70200, 70400, 70100, 70000]):
             t_down = self._tick(price=price, volume=150, delta_seconds=60+s)
             self.strategy.ingest_tick(t_down, t_down.time)
         should_exit, reason, _ = self.strategy.evaluate_exit(pos, t_down, t_down.time)

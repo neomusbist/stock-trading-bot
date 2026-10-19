@@ -148,3 +148,7 @@ operator_*approval*.json
 !/HANDOFF_TRADE_QUALITY_20261013.md
 !/tools/trade_quality_replay.py
 !/tools/exit_policy_replay.py
+
+# Reviewed, bounded public market-data incident fixture and forensic report.
+!/tests/fixtures/lunit_exit_20261019.json
+!/R6_LUNIT_INCIDENT_20261019.md
