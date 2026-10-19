@@ -56,9 +56,8 @@ def fetch_bars(rest,symbol,cfg,folder,asof):
     return bars_from_csv(p,asof)
 
 def structure(bars,reference,cfg,asof):
-    min_bars = getattr(cfg, 'min_young_history_bars', 60) if len(bars) < cfg.min_history_bars else cfg.min_history_bars
-    if len(bars)<min_bars:
-        return {'status':'UNKNOWN','reason':f'일봉 부족 {len(bars)}/{min_bars}','history_count':len(bars)}
+    if len(bars)<cfg.min_history_bars:
+        return {'status':'UNKNOWN','reason':f'일봉 부족 {len(bars)}/{cfg.min_history_bars}','history_count':len(bars)}
     bars=bars[-cfg.history_bars:]
     if (asof-date.fromisoformat(bars[-1]['datetime'])).days>cfg.max_history_age_days:
         return {'status':'UNKNOWN','reason':'과거 일봉 갱신 필요','history_count':len(bars)}

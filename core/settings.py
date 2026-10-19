@@ -65,18 +65,10 @@ class Config:
     after_a_min_gain: float = 0.003
     after_a_liquidity_mode: str = 'depth'
     after_default_venue: str = 'SOR'
-    enable_redesign_trials: bool = True
-    enable_redesign_live: bool = False
-    min_early_momentum_rr: float = 1.40
-    min_pullback_reclaim_rr: float = 1.50
 
     def validate(self):
         if type(self.live_mode) is not bool or type(self.after_enabled) is not bool:
             raise ValueError('live_mode / after_enabled는 JSON true/false만 허용')
-        if type(self.enable_redesign_trials) is not bool or type(self.enable_redesign_live) is not bool:
-            raise ValueError('enable_redesign_trials / enable_redesign_live는 JSON true/false만 허용')
-        if self.enable_redesign_live and not self.enable_redesign_trials:
-            raise ValueError('enable_redesign_live는 enable_redesign_trials가 함께 활성화되어야 함')
         if self.broker_environment not in ('production', 'mock'):
             raise ValueError('broker_environment 오류')
         if self.after_default_venue not in ('SOR', 'KRX', 'NXT'):

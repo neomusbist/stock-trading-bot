@@ -151,13 +151,6 @@ class ShadowObserver:
   fast_sig=self.fast_strategy.evaluate(t,view,capital_limit=self.capital.get('entry_budget',self.capital.get('effective_auto_cap',81300.0)),risk_budget=min(self.capital.get('risk_equity',self.capital.get('effective_auto_cap',81300.0))*self.cfg.risk_fraction,self.capital.get('risk_remaining',1626.0)),ingest=False,received=received)
   if fast_sig:
    self.event('SHADOW_FAST_SIGNAL',received,symbol=t.symbol,name=row.get('name'),signal_at=fast_sig.created_at.isoformat(),limit=fast_sig.limit,stop=fast_sig.stop,target=fast_sig.target,emergency=fast_sig.emergency,quantity=fast_sig.quantity,net_reward_risk=fast_sig.net_reward_risk,regime=fast_sig.regime,phase=fast_sig.phase,ttl_seconds=fast_sig.ttl_seconds,max_chase_price=fast_sig.max_chase_price,geometry=fast_sig.extra.get('geometry'),tick_metrics=fast_sig.extra.get('metrics'),SHADOW_ONLY=True,actual_order_permission=False)
-  for tr in trials:
-   if tr.get('setup') in ('EarlyMomentumBreakout', 'PullbackReclaimBreakout') and tr.get('entry_ready'):
-    r_sig = tr.get('signal')
-    if r_sig:
-     self.event('SHADOW_REDESIGN_SIGNAL',received,symbol=t.symbol,name=row.get('name'),pattern=tr['setup'],
-                signal_at=r_sig.get('time'),limit=r_sig.get('limit'),stop=r_sig.get('stop'),emergency=r_sig.get('emergency'),
-                target=r_sig.get('target'),net_reward_risk=r_sig.get('net_reward_risk'),SHADOW_ONLY=True,actual_order_permission=False,diagnostic_only=True)
   usable=[]
   for bar in reversed(history):
    if bar['first_second']>self.cfg.stale_seconds:break

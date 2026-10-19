@@ -20,7 +20,6 @@ class OpeningPrint:
     received_at: datetime
     watch: Mapping
     provenance: str  # REAL_WS or SIMULATED; never infer this from the price.
-    processed_at: datetime | None = None  # Missing processing delay stays explicitly unknown.
 
 
 def opening_prerequisites(cfg, auto):

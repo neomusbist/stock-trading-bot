@@ -91,10 +91,9 @@ class PositionDataHealth:
         self.waiting.pop(symbol,None)
         self.account.position_symbols=frozenset(set(self.account.position_symbols)-{symbol})
         # A quote is not a trade/bar: no MFE/trailing/warmup changes, and no fabricated tick.
-        from automation.exit_plan import invalidation_lines
-        lines=invalidation_lines(e.c,e.a,p)
-        if lines['close_based']:
-            emergency=lines['emergency']
+        if e.a.confirmed_invalidation_enabled and p.get('signal',{}).get('invalidation_policy'):
+            from automation.exit_plan import invalidation_lines
+            emergency=invalidation_lines(e.c,e.a,p)['emergency']
             trigger_fresh=age<=e.c.stale_seconds or confirmed
         else:
             emergency=min(p['stop']-tick_size(p['stop']),floor_tick(p['stop']*(1-e.c.structural_buffer)))

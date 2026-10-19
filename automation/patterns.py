@@ -155,15 +155,14 @@ class PatternDetector(Detector):
         if not bars:return []
         cur=self.current.get(symbol)
         if cur is not None:
-            if not self.continuous_observation and (cur.get('gap_reason')=='MISSING_MINUTE' or (cur['time']-bars[-1]['time']).total_seconds()!=60):
+            if cur.get('gap_reason')=='MISSING_MINUTE' or (cur['time']-bars[-1]['time']).total_seconds()!=60:
                 return []
         valid=[]
         for bar in reversed(bars):
-            if not self.continuous_observation and (bar.get('gap_reason') is not None or bar.get('first_second',0)>self.cfg.stale_seconds):break
-            if bar.get('gap_reason') not in (None, 'MISSING_MINUTE'):break
+            if bar.get('gap_reason') is not None or bar.get('first_second',0)>self.cfg.stale_seconds:break
             if after_only and bar['time'].strftime('%H:%M:%S')<'15:40:00':
                 break
-            if not self.continuous_observation and valid and (valid[-1]['time']-bar['time']).total_seconds()!=60:
+            if valid and (valid[-1]['time']-bar['time']).total_seconds()!=60:
                 break
             valid.append(bar)
         return list(reversed(valid))
@@ -221,13 +220,10 @@ class PatternDetector(Detector):
             return 0
         valid_bars = []
         for i, b in enumerate(bars):
-            if not self.continuous_observation and (b.get('gap_reason') is not None or b.get('first_second', 0) > self.cfg.stale_seconds):
+            if b.get('gap_reason') is not None or b.get('first_second', 0) > self.cfg.stale_seconds:
                 valid_bars.clear()
                 continue
-            if b.get('gap_reason') not in (None, 'MISSING_MINUTE'):
-                valid_bars.clear()
-                continue
-            if not self.continuous_observation and i > 0 and valid_bars and (b['time'] - valid_bars[-1]['time']).total_seconds() != 60:
+            if i > 0 and valid_bars and (b['time'] - valid_bars[-1]['time']).total_seconds() != 60:
                 valid_bars.clear()
             valid_bars.append({
                 **deepcopy(b),
@@ -400,39 +396,6 @@ class PatternDetector(Detector):
                 'price_action':{'condition':'CONTROLLED_PULLBACK' if name=='B' else 'INTRADAY_BOX' if name=='C' else 'PRIOR_HIGH_BREAKOUT',
                     'formed':bool(setup),'breakout':price_gates.get('breakout',gate(False,reason='GEOMETRY_ABSENT'))},
                 'virtual_entry':virtual.get('entry'),'virtual_invalidation':virtual.get('stop')})
-        if getattr(self.cfg, 'enable_redesign_trials', True):
-            from automation.redesign_strategies import evaluate_early_momentum_breakout, evaluate_pullback_reclaim_breakout
-            for setup_name, eval_fn in (
-                ('EarlyMomentumBreakout', evaluate_early_momentum_breakout),
-                ('PullbackReclaimBreakout', evaluate_pullback_reclaim_breakout),
-            ):
-                try:
-                    r_sig, r_res = eval_fn(bars, t, watch, self.cfg, self.a, self.costs)
-                    trials.append({
-                        'setup': setup_name,
-                        'evaluated': True,
-                        'candidate_generated': bool(r_sig),
-                        'entry_ready': bool(r_sig),
-                        'failed_reasons': [] if r_sig else [r_res.get('reason', 'REJECT')],
-                        'primary_reason_code': 'SETUP_PRICE_GATES_PASS' if r_sig else r_res.get('reason', 'REJECT'),
-                        'signal': r_sig,
-                        'evaluation_error': None,
-                        'evidence': r_res
-                    })
-                except Exception as e:
-                    err_type = type(e).__name__
-                    err_msg = str(e)[:200]
-                    trials.append({
-                        'setup': setup_name,
-                        'evaluated': False,
-                        'candidate_generated': False,
-                        'entry_ready': False,
-                        'failed_reasons': [f'EVALUATION_ERROR_{err_type}'],
-                        'primary_reason_code': f'EVALUATION_ERROR_{err_type}',
-                        'signal': None,
-                        'evaluation_error': f"{err_type}: {err_msg}",
-                        'evidence': {'error': f"{err_type}: {err_msg}", 'symbol': t.symbol, 'time': t.time.isoformat()}
-                    })
         return trials
 
     @observation_locked
@@ -447,7 +410,7 @@ class PatternDetector(Detector):
         self.last_eval[t.symbol]={'time':t.time,'cumulative':t.cumulative,'gates':gates,'trials':trials}
         self._eval_keys[t.symbol]=self._evaluation_key(t,watch)
         is_after=after_supported(t.time)
-        if (not supported(t.time) and not is_after) or watch.get('status') not in {'WATCH','ELIGIBLE','RESERVE','SHADOW'}:return None
+        if (not supported(t.time) and not is_after) or watch.get('status') not in {'WATCH','ELIGIBLE','RESERVE'}:return None
         if is_after:
             if watch.get('vi_active') or getattr(t,'vi_active',False) or watch.get('single_price_auction'): return None
             if watch.get('is_etf_etn') or watch.get('after_ineligible'): return None
@@ -502,27 +465,9 @@ class PatternDetector(Detector):
                 'efficiency':score,'source_count':watch.get('source_count',len(watch.get('source_details',{}))),'source_details':watch.get('source_details',{}),'source_deltas':watch.get('source_deltas',{}),
                 'fallback_source1':bool(watch.get('fallback_source1')),
                 'structure':{k:watch.get(k) for k in ('long_position','overhead_share_estimate','resistance','recent_support')},
+                'risk_per_share':score['risk_per_share'],'market_state':'3',
                 'session':'AFTER' if is_after else 'REGULAR','venue':venue,
                 'planned_qty':None,'liquidity_mode':'depth' if is_after else 'turnover'}
-        if getattr(self.cfg, 'enable_redesign_live', False) and getattr(self.a, 'enable_redesign_live', False):
-            for name in ('EarlyMomentumBreakout', 'PullbackReclaimBreakout'):
-                trial = next((x for x in trials if x['setup'] == name), None)
-                if trial and trial.get('entry_ready') and trial.get('signal'):
-                    r_sig = trial['signal']
-                    venue = watch.get('venue') or (getattr(c, 'after_default_venue', 'SOR') if is_after else 'KRX')
-                    return {
-                        'symbol': t.symbol, 'time': t.time.isoformat(),
-                        'limit': r_sig['limit'], 'stop': r_sig['stop'], 'emergency': r_sig['emergency'],
-                        'target': r_sig['target'], 'pattern': name,
-                        'net_reward_risk': r_sig.get('net_reward_risk'),
-                        'evaluation_gates': gates, 'setup_trials': trials,
-                        'invalidation_policy': r_sig.get('invalidation_policy'),
-                        'market_context': context, 'discovery_context': watch.get('discovery_context'),
-                        'efficiency': {'decision': 'TRADE', 'score': 1.0, 'inputs': {'confidence': 1.0, 'planned_minutes': 15, 'target': r_sig['target']}},
-                        'turnover': turnover, 'turnover_ratio': ratio, 'gain': gain,
-                        'source_count': watch.get('source_count', len(watch.get('source_details', {}))),
-                        'venue': venue, 'session': 'AFTER' if is_after else 'REGULAR'
-                    }
         return None
 
     @observation_locked
@@ -695,7 +640,7 @@ class PatternDetector(Detector):
                 'acceleration':accel_gate,
                 'liquidity':liq_gate,
                 'spread':gate(None if spread is None else spread<=c.max_spread,bid=t.bid,ask=t.ask,spread=spread,max_spread=c.max_spread),
-                'structure':gate(watch.get('status') in {'WATCH','ELIGIBLE','RESERVE','SHADOW'},status=watch.get('status'),resistance=watch.get('resistance'),overhead_share=watch.get('overhead_share_estimate')),
+                'structure':gate(watch.get('status') in {'WATCH','ELIGIBLE','RESERVE'},status=watch.get('status'),resistance=watch.get('resistance'),overhead_share=watch.get('overhead_share_estimate')),
                 'market_status':gate(watch.get('market_status',{}).get('pass'),status=watch.get('market_status')),
                 'pattern':gate(False,reason='완성봉/돌파/추격/무효화/효율 중 신호 미충족')}
         return gates,bars,len(fast),len(base)
