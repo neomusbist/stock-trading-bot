@@ -46,6 +46,7 @@ class V15ObservationWatchTests(unittest.TestCase):
         self.assertEqual(len(self.d.usable_bars(sym)), 4)
 
         # 2. Simulate 11:39:26: radar reports ACCOUNT_CAPITAL_UNAVAILABLE
+        self.e.account_ok = False
         rows = [
             {'code': sym, 'name': '라온시큐어', 'status': 'UNKNOWN', 'source_count': 2,
              'reference_price': 18500, 'affordability': {'entry_eligible': None, 'reason_code': 'ACCOUNT_CAPITAL_UNAVAILABLE'},

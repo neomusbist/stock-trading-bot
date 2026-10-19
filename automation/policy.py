@@ -53,6 +53,7 @@ class AutomationConfig:
     after_momentum_failure_enabled: bool = False  # failed AFTER burst rebound, independent of one-R activation
     exit_plan_reward_guard_enabled: bool = False  # cost-inclusive RR experiment; insufficient evidence to enable
     fast_momentum_enabled: bool = False  # R6 FAST live momentum entry integration
+    enable_ask_1tick_tolerance: bool = False  # Pre-validated ask1 + 1 tick tolerance
     pullback_min_rise: float = 0.008
     pullback_min_retrace: float = 0.20  # minimum retrace fraction for confirmed controlled pullback
     min_stop_distance_fraction: float = 0.012  # minimum stop distance fraction (1.2%) to prevent tight noise stops

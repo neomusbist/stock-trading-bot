@@ -462,12 +462,21 @@ class AutonomousEngine(ExistingExits,Engine):
                 if ask>signal['limit']:return 'ENTRY_QUOTE_ABOVE_LIMIT'
                 if ask-bid>planned_buffer:
                     return 'PULLBACK_STRUCTURE_SPREAD_CHANGED'
-        breakout=signal.get('evaluation_gates',{}).get('breakout',{}).get('values',{}).get('breakout')
+        breakout=signal.get('evaluation_gates',{}).get('breakout',{}).get('values',{}).get('breakout') or signal.get('breakout')
         # Legacy core synthetic signals have no geometry. The real runner always
         # supplies a provider; all production A/B/C signals also carry breakout.
+        effective_limit=signal['limit']
+        if getattr(self.a,'enable_ask_1tick_tolerance',False) and signal.get('stop') and signal.get('target'):
+            ts=tick_size(signal['limit'])
+            tolerant_limit=signal['limit']+ts
+            breakout_val=breakout or signal.get('breakout')
+            chase_ok=(breakout_val is None) or (tolerant_limit/breakout_val-1<=self.c.max_chase)
+            risk_ok=(tolerant_limit>signal['stop']) and ((signal['target']-tolerant_limit)/(tolerant_limit-signal['stop'])>=self.c.min_reward_risk)
+            if chase_ok and risk_ok:
+                effective_limit=tolerant_limit
         if provider or breakout is not None:
             if not 0<tick.bid<=tick.ask or tick.price<=0 or (tick.ask-tick.bid)/tick.price>self.c.max_spread:return 'ENTRY_SPREAD_CHANGED'
-            if signal['limit']<tick.ask:return 'ENTRY_QUOTE_ABOVE_LIMIT'
+            if effective_limit<tick.ask:return 'ENTRY_QUOTE_ABOVE_LIMIT'
         if breakout is not None:
             if tick.price<=breakout or tick.ask<=breakout or signal['limit']<=breakout:return 'BREAKOUT_QUOTE_NOT_CONFIRMED'
             if max(tick.price,signal['limit'])/breakout-1>self.c.max_chase:return 'ENTRY_CHASE_CHANGED'

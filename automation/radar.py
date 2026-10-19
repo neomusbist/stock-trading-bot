@@ -16,11 +16,31 @@ from automation.observation_settings import ObservationSettings,load_observation
 
 FIELDS=('flu_rt','cntr_str','now_trde_qty','pred_trde_qty','exp_cntr_qty','trde_prica','bigd_rank','now_rank','base_comp_chgr')
 
-def observation_structure(bars,price,cfg,day):
+def observation_structure(bars,price,cfg,day,item=None):
     strict=structure(bars,price,replace(cfg,max_recent_range=.99),day)
     strict['resistance_room_pass']=not (strict.get('resistance') and price and strict['resistance']/price-1<cfg.min_resistance_room)
+    surge_override=False
+    if item and isinstance(item,dict) and getattr(cfg,'intraday_surge_override_enabled',True):
+        sources=item.get('source_details',{})
+        max_turnover=max(((d.get('values',{}).get('trde_prica') or 0.0) for d in sources.values()),default=0.0) if sources else 0.0
+        max_gain=max(((d.get('values',{}).get('flu_rt') or 0.0) for d in sources.values()),default=0.0) if sources else 0.0
+        min_turnover=getattr(cfg,'min_surge_turnover_million',3000.0)
+        min_gain=getattr(cfg,'min_surge_gain_pct',2.0)
+        if max_turnover>=min_turnover and max_gain>=min_gain:
+            surge_override=True
+    reasons=[r.strip() for r in (strict.get('reason') or '').split('|') if r.strip()]
     if strict.get('reason')=='상단 저항 여유 부족':
         strict.update(status='ELIGIBLE',reason='A/C 돌파 관찰; B는 상단 저항 여유 검사 유지',compression_deferred='RESISTANCE_ROOM_TO_SETUP',setup_allowlist=['A','C'])
+    elif surge_override and strict.get('status')=='REJECT':
+        overridable={'거래대금 부족','최근 5일 저점 이탈','상단 저항 여유 부족'}
+        if reasons and all(r in overridable for r in reasons):
+            allowlist=['A','C'] if '상단 저항 여유 부족' in reasons else ['A','B','C']
+            strict.update(status='ELIGIBLE',
+                          reason='INTRADAY_SURGE_OVERRIDE: 당일 거래대금 및 상승 모멘텀 확인',
+                          track='INTRADAY_SURGE_OVERRIDE',
+                          intraday_surge_override=True,
+                          compression_deferred='INTRADAY_SURGE_OVERRIDE',
+                          setup_allowlist=allowlist)
     return strict
 
 def ordinary(symbol,name):
@@ -289,7 +309,7 @@ class RadarWorker:
         self.timings['history_ms']+=(time.perf_counter()-history_started)*1000
         # 상승폭 자체로 강자를 배제하지 않는다. 가격구조/호가/손절거리는 신호 단계에서 검사한다.
         effective=replace(self.cfg,max_recent_range=0.99)
-        structure_started=time.perf_counter();result=observation_structure(self.cache[key],item['reference_price'],effective,day);self.timings['structure_ms']+=(time.perf_counter()-structure_started)*1000
+        structure_started=time.perf_counter();result=observation_structure(self.cache[key],item['reference_price'],effective,day,item=item);self.timings['structure_ms']+=(time.perf_counter()-structure_started)*1000
         result['reference_basis']='랭킹 현재가; 일봉은 전일까지'
         result['market_status']=status
         return result

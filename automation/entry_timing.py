@@ -126,10 +126,13 @@ class ObservationTimeline:
                     and r['first_tick_received_at']<r['first_watch_at']),
                 'latency_seconds':{
                 'raw_to_watch':delay(r,'first_raw_at','first_watch_at'),
+                'raw_to_sub_req':delay(r,'first_raw_at','first_subscription_request_at'),
+                'sub_req_to_tick':delay(r,'first_subscription_request_at','first_normal_tick_at') or delay(r,'first_subscription_request_at','first_tick_received_at'),
                 'watch_to_subscription_ack':delay(r,'first_watch_at','first_subscription_ack_at'),
                 'subscription_ack_to_tick':delay(r,'first_subscription_ack_at','first_tick_received_at'),
                 'receiver_to_processing':delay(r,'first_tick_received_at','first_tick_processed_at'),
-                'tick_to_completed_bar':delay(r,'first_execution_fresh_tick_at','first_completed_bar_known_at'),
+                'tick_to_completed_bar':delay(r,'first_normal_tick_at','first_completed_bar_known_at') or delay(r,'first_execution_fresh_tick_at','first_completed_bar_known_at'),
+                'watch_to_eval':delay(r,'first_watch_at','first_valid_signal_at') or delay(r,'first_watch_at','first_risk_eligible_at'),
                 'completed_bar_to_signal':delay(r,'first_completed_bar_known_at','first_valid_signal_at'),
                 'signal_to_risk_eligible':delay(r,'first_valid_signal_at','first_risk_eligible_at')}}
                 for s,r in self.rows.items()} if self.day==stamp.date() else {}}

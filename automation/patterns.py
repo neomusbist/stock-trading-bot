@@ -396,6 +396,21 @@ class PatternDetector(Detector):
                 'price_action':{'condition':'CONTROLLED_PULLBACK' if name=='B' else 'INTRADAY_BOX' if name=='C' else 'PRIOR_HIGH_BREAKOUT',
                     'formed':bool(setup),'breakout':price_gates.get('breakout',gate(False,reason='GEOMETRY_ABSENT'))},
                 'virtual_entry':virtual.get('entry'),'virtual_invalidation':virtual.get('stop')})
+        if getattr(self.cfg, 'enable_redesign_trials', True):
+            try:
+                from automation.redesign_strategies import evaluate_early_momentum_breakout, evaluate_pullback_reclaim_breakout
+                early_sig, early_res = evaluate_early_momentum_breakout(bars, t, watch, self.cfg, self.a, self.costs)
+                trials.append({'setup': 'EarlyMomentumBreakout', 'evaluated': True, 'candidate_generated': bool(early_sig),
+                               'entry_ready': bool(early_sig), 'failed_reasons': [] if early_sig else [early_res.get('reason', 'REJECT')],
+                               'primary_reason_code': 'SETUP_PRICE_GATES_PASS' if early_sig else early_res.get('reason', 'REJECT'),
+                               'signal': early_sig})
+                reclaim_sig, reclaim_res = evaluate_pullback_reclaim_breakout(bars, t, watch, self.cfg, self.a, self.costs)
+                trials.append({'setup': 'PullbackReclaimBreakout', 'evaluated': True, 'candidate_generated': bool(reclaim_sig),
+                               'entry_ready': bool(reclaim_sig), 'failed_reasons': [] if reclaim_sig else [reclaim_res.get('reason', 'REJECT')],
+                               'primary_reason_code': 'SETUP_PRICE_GATES_PASS' if reclaim_sig else reclaim_res.get('reason', 'REJECT'),
+                               'signal': reclaim_sig})
+            except Exception:
+                pass
         return trials
 
     @observation_locked
