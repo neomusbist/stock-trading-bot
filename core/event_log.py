@@ -7,24 +7,74 @@ MAX_LOG_BYTES=64*1024*1024
 MAX_ARCHIVE_TOTAL_BYTES=200*1024*1024
 MAX_ARCHIVE_AGE_SECONDS=3*86400
 
+# Explicit Tier A / Protected patterns (never delete under any circumstance)
+PROTECTED_PATTERNS = (
+    'state.json',
+    'events.jsonl',
+    'trade-review',
+    'heartbeat.json',
+    'session_settings.json',
+    'operator_account.json',
+    'policy.json',
+    'RELEASE_IDENTITY',
+    'DEPLOYMENT',
+    'TRADE_PRIVATE',
+    'BROKER_PRIVATE',
+    'CAPTURE_PRIVATE',
+    'EVENT_WINDOW_PRIVATE',
+    '.bundle',
+    'lunit',
+    'bexel',
+    'incident',
+    'fixture',
+)
+
+# Explicit Tier C / Allowlist of deletable diagnostic prefixes (only these may be pruned)
+DELETABLE_ARCHIVE_PREFIXES = (
+    'operator_console.txt',
+    'runner_stdout',
+    'debug',
+    'temp_',
+    'operator_error_history.jsonl',
+)
+
+def is_protected_file(path):
+    name_lower = Path(path).name.lower()
+    return any(p.lower() in name_lower for p in PROTECTED_PATTERNS)
+
+def is_deletable_diagnostic_archive(path):
+    p = Path(path)
+    if is_protected_file(p):
+        return False
+    name_lower = p.name.lower()
+    return any(name_lower.startswith(prefix.lower()) for prefix in DELETABLE_ARCHIVE_PREFIXES)
+
 def prune_archive(archive, max_total_bytes=MAX_ARCHIVE_TOTAL_BYTES, max_age_seconds=MAX_ARCHIVE_AGE_SECONDS):
+    """
+    Safely prunes ONLY whitelisted diagnostic log archives (Tier C).
+    Never touches Tier A ledgers (state.json, events.jsonl, trade-review, etc.).
+    Rejects unknown or protected files.
+    """
     try:
         archive = Path(archive)
         if not archive.exists(): return
         now_ts = time.time()
-        files = [f for f in archive.glob('*') if f.is_file()]
+        files = [f for f in archive.glob('*') if f.is_file() and is_deletable_diagnostic_archive(f)]
         for f in files:
             try:
-                if now_ts - f.stat().st_mtime > max_age_seconds: f.unlink()
+                if now_ts - f.stat().st_mtime > max_age_seconds:
+                    f.unlink()
             except OSError: pass
-        remaining = [f for f in archive.glob('*') if f.is_file()]
+        remaining = [f for f in archive.glob('*') if f.is_file() and is_deletable_diagnostic_archive(f)]
         total_size = sum(f.stat().st_size for f in remaining)
         if total_size > max_total_bytes:
             remaining.sort(key=lambda x: x.stat().st_mtime)
             for f in remaining:
                 if total_size <= max_total_bytes: break
                 try:
-                    sz = f.stat().st_size; f.unlink(); total_size -= sz
+                    sz = f.stat().st_size
+                    f.unlink()
+                    total_size -= sz
                 except OSError: pass
     except Exception: pass
 

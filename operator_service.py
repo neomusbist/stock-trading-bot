@@ -266,6 +266,13 @@ class OperatorService:
         after_live=bool(policy.get('after_live_authorized')) and cfg.live_mode
         from automation.runner import heartbeat_order_readiness
         ready=heartbeat_order_readiness(hb,cfg,self.clock());ready_ok=ready['order_ready']
+        disk_safety=None
+        try:
+            from automation.storage_governor import check_disk_safety_gate
+            disk_safety=check_disk_safety_gate(self.root)
+            if disk_safety and disk_safety.get('disk_critical'):
+                ready_ok=False
+        except Exception: pass
         trading_on=bool(configured and fresh and hb.get('connected') and hb.get('account_ok') and ready_ok and not state.get('halt') and not counts['uncertain'] and is_reg)
         if curr_sess=='AFTER' and configured and after_live and fresh and hb.get('connected') and hb.get('account_ok') and ready_ok and not state.get('halt') and not counts['uncertain'] and is_after_entry:
             trading_on=True
@@ -299,7 +306,8 @@ class OperatorService:
                 +(['OUTSIDE_TRADING_WINDOW'] if not (is_reg or is_after_entry) else [])
                 +(['AFTER_LIVE_NOT_AUTHORIZED'] if curr_sess=='AFTER' and not after_live else [])
                 +(['HALT_ACTIVE'] if state.get('halt') else [])
-                +(['UNKNOWN_ORDER'] if counts['uncertain'] else [])),
+                +(['UNKNOWN_ORDER'] if counts['uncertain'] else [])
+                +(['CRITICAL_LOW_DISK_SPACE'] if (disk_safety and disk_safety.get('disk_critical')) else [])),
             'candidate_count':len(watch.get('items',[])) if fresh and watch.get('asof')==self.clock().date().isoformat() else 0,
             'position_count':sum(len(s['positions']) for _,s in self.states()),
             'last_decision':(('최근 기록: ' if fresh else '과거 기록: ')+str((decisions[-1].get('timestamp') or decisions[-1].get('time') or '')[:10])+' '+decision_line(decisions[-1])) if decisions else '아직 판단 기록 없음',
@@ -455,6 +463,12 @@ class OperatorService:
         if any(st.get('halt') for _,st in self.states()) or not self.hard_locks_ok() or policy.get('releases'):reasons.append('HALT/보호정책 확인 필요')
         if policy.get('test_capital_release',{}).get('status') in {'APPROVED','SUBMITTING'}:reasons.append('시험매도 장부 확인 필요')
         if auto.capital_limit>0 and not auto.costs_confirmed:reasons.append('비용 설정 미확인')
+        try:
+            from automation.storage_governor import check_disk_safety_gate
+            disk_gate = check_disk_safety_gate(self.root)
+            if disk_gate and disk_gate.get('disk_critical'):
+                reasons.append(disk_gate.get('order_block_reason'))
+        except Exception: pass
         return self.save_result('pilot',{'verdict':'FAIL' if reasons else 'PASS','reasons':reasons,
             'readiness_phase':'PREOPEN_LOCAL_READY','operational_requalification':True,'build_id':BUILD_ID,
             'config_hash':cfg.fingerprint(),'auto_hash':auto.fingerprint(),'policy_revision':policy['revision'],
