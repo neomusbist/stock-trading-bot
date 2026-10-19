@@ -85,28 +85,41 @@ def evaluate_early_momentum_breakout(bars: list, t, watch: dict, cfg, auto, cost
     # Executable pricing with 1-tick tolerance
     ts = tick_size(t.ask)
     entry_limit = t.ask + ts
-    struct_stop = floor_tick(l_base - ts)
-    emerg_stop = min(struct_stop - 2 * ts, floor_tick(struct_stop * 0.996))
+    delta_base = h_base - l_base
+
+    # Invalidation stop: Base midpoint pivot invalidation with floor at l_base
+    struct_stop = max(floor_tick(l_base), floor_tick(h_base - 0.50 * delta_base - ts))
+    emerg_stop = min(struct_stop - ts, floor_tick(l_base - ts))
 
     if not (0 < emerg_stop < struct_stop < entry_limit):
-        return None, {'reason': 'INVALID_GEOMETRY', 'pass': False}
+        struct_stop = floor_tick(l_base - ts)
+        emerg_stop = min(struct_stop - 2 * ts, floor_tick(struct_stop * 0.996))
+        if not (0 < emerg_stop < struct_stop < entry_limit):
+            return None, {'reason': 'INVALID_GEOMETRY', 'pass': False}
 
     stop_dist = (entry_limit - emerg_stop) / entry_limit
     if not (0.0035 <= stop_dist <= 0.05):
         return None, {'reason': 'STOP_DISTANCE_OUT_OF_BOUNDS', 'pass': False, 'stop_dist': stop_dist}
 
-    # Target calculation
+    # Target calculation: realistic projection above h_base, capped by nearest active resistance/VI
     overhead = watch.get('resistance')
     atr = max(ts * 3, statistics_atr(bars, 5))
-    n_wave_target = floor_tick(h_base + (h_base - l_base) * 1.618)
-    wave_target = max(floor_tick(entry_limit + 2.0 * atr), n_wave_target)
+    wave_target = max(floor_tick(h_base + 1.8 * delta_base), floor_tick(entry_limit + 3.0 * atr), floor_tick(entry_limit * 1.020))
+
+    ceilings = [c for c in [overhead, watch.get('vi_upper')] if c is not None and c > entry_limit]
+    if watch.get('vi_upper') and watch['vi_upper'] > entry_limit + 2 * ts:
+        ceilings.append(watch['vi_upper'] - 2 * ts)
+    physical_ceiling = min(ceilings) if ceilings else wave_target
+    target = min(wave_target, physical_ceiling)
     if overhead and overhead > entry_limit:
-        target = min(overhead, floor_tick(entry_limit * 1.08))
-    else:
-        target = wave_target
+        target = min(max(wave_target, overhead), floor_tick(entry_limit * 1.08))
 
     calc = calculate_net_proceeds_and_cost(entry_limit, target, struct_stop, costs)
-    min_rr = getattr(cfg, 'min_early_momentum_rr', 1.40)
+    min_rr = getattr(cfg, 'min_early_momentum_rr', 1.20)
+
+    # Breakeven check: target must clear breakeven price + 2 ticks
+    if target < calc['breakeven_price'] + 2 * ts:
+        return None, {'reason': 'TARGET_BELOW_BREAKEVEN', 'pass': False, 'target': target, 'be': calc['breakeven_price']}
 
     if calc['net_rr'] is None or calc['net_rr'] < min_rr:
         return None, {'reason': 'NET_RR_LOW', 'pass': False, 'net_rr': calc['net_rr'], 'min_rr': min_rr}
@@ -188,15 +201,27 @@ def evaluate_pullback_reclaim_breakout(bars: list, t, watch: dict, cfg, auto, co
         return None, {'reason': 'INVALID_GEOMETRY', 'pass': False}
 
     overhead = watch.get('resistance')
-    target_candidate = floor_tick(h_impulse + 0.618 * delta_impulse)
-    target = min(overhead, target_candidate) if overhead and overhead > entry_limit else target_candidate
+    atr = max(ts * 3, statistics_atr(bars, 5))
+    target_candidate = max(floor_tick(h_impulse + 0.382 * delta_impulse), floor_tick(entry_limit + 3.0 * atr), floor_tick(entry_limit * 1.020))
+
+    ceilings = [c for c in [overhead, watch.get('vi_upper')] if c is not None and c > entry_limit]
+    if watch.get('vi_upper') and watch['vi_upper'] > entry_limit + 2 * ts:
+        ceilings.append(watch['vi_upper'] - 2 * ts)
+    physical_ceiling = min(ceilings) if ceilings else target_candidate
+    target = min(target_candidate, physical_ceiling)
+    if overhead and overhead > entry_limit:
+        target = min(max(target_candidate, overhead), floor_tick(entry_limit * 1.08))
 
     calc = calculate_net_proceeds_and_cost(entry_limit, target, struct_stop, costs)
-    min_rr = getattr(cfg, 'min_pullback_reclaim_rr', 1.50)
+    min_rr = getattr(cfg, 'min_pullback_reclaim_rr', 1.30)
 
     # First milestone: impulse peak must exceed breakeven price
     if h_impulse <= calc['breakeven_price'] + ts:
         return None, {'reason': 'IMPULSE_PEAK_BELOW_BREAKEVEN', 'pass': False, 'h_impulse': h_impulse, 'be': calc['breakeven_price']}
+
+    # Breakeven check: target must clear breakeven price + 2 ticks
+    if target < calc['breakeven_price'] + 2 * ts:
+        return None, {'reason': 'TARGET_BELOW_BREAKEVEN', 'pass': False, 'target': target, 'be': calc['breakeven_price']}
 
     if calc['net_rr'] is None or calc['net_rr'] < min_rr:
         return None, {'reason': 'NET_RR_LOW', 'pass': False, 'net_rr': calc['net_rr'], 'min_rr': min_rr}

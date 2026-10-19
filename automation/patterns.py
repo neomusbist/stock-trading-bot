@@ -480,9 +480,27 @@ class PatternDetector(Detector):
                 'efficiency':score,'source_count':watch.get('source_count',len(watch.get('source_details',{}))),'source_details':watch.get('source_details',{}),'source_deltas':watch.get('source_deltas',{}),
                 'fallback_source1':bool(watch.get('fallback_source1')),
                 'structure':{k:watch.get(k) for k in ('long_position','overhead_share_estimate','resistance','recent_support')},
-                'risk_per_share':score['risk_per_share'],'market_state':'3',
                 'session':'AFTER' if is_after else 'REGULAR','venue':venue,
                 'planned_qty':None,'liquidity_mode':'depth' if is_after else 'turnover'}
+        if getattr(self.cfg, 'enable_redesign_live', False):
+            for name in ('EarlyMomentumBreakout', 'PullbackReclaimBreakout'):
+                trial = next((x for x in trials if x['setup'] == name), None)
+                if trial and trial.get('entry_ready') and trial.get('signal'):
+                    r_sig = trial['signal']
+                    venue = watch.get('venue') or (getattr(c, 'after_default_venue', 'SOR') if is_after else 'KRX')
+                    return {
+                        'symbol': t.symbol, 'time': t.time.isoformat(),
+                        'limit': r_sig['limit'], 'stop': r_sig['stop'], 'emergency': r_sig['emergency'],
+                        'target': r_sig['target'], 'pattern': name,
+                        'net_reward_risk': r_sig.get('net_reward_risk'),
+                        'evaluation_gates': gates, 'setup_trials': trials,
+                        'invalidation_policy': r_sig.get('invalidation_policy'),
+                        'market_context': context, 'discovery_context': watch.get('discovery_context'),
+                        'efficiency': {'decision': 'TRADE', 'score': 1.0, 'inputs': {'confidence': 1.0, 'planned_minutes': 15, 'target': r_sig['target']}},
+                        'turnover': turnover, 'turnover_ratio': ratio, 'gain': gain,
+                        'source_count': watch.get('source_count', len(watch.get('source_details', {}))),
+                        'venue': venue, 'session': 'AFTER' if is_after else 'REGULAR'
+                    }
         return None
 
     @observation_locked

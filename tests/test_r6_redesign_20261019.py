@@ -116,8 +116,9 @@ class R6RedesignTests(unittest.TestCase):
         self.assertIsNotNone(sig)
         self.assertEqual(sig['pattern'], 'EarlyMomentumBreakout')
         self.assertEqual(sig['h_base'], 1020)
-        self.assertEqual(sig['stop'], 1004)  # 1005 - 1
-        self.assertGreaterEqual(sig['net_reward_risk'], 1.40)
+        self.assertEqual(sig['stop'], 1011)  # Base midpoint invalidation: 1020 - 0.5*15 - 1
+        self.assertEqual(sig['emergency'], 1004)  # Emergency floor: 1005 - 1
+        self.assertGreaterEqual(sig['net_reward_risk'], 1.20)
 
     def test_pullback_reclaim_breakout_evaluation(self):
         """PullbackReclaimBreakout verifies impulse rise, normal retrace, dry volume, and reclaim trigger."""
