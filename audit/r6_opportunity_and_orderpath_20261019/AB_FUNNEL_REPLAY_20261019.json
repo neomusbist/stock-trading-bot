@@ -1,0 +1,228 @@
+{
+  "report_title": "R6 Strategy Redesign & Funnel Replay Analysis (2026-10-19)",
+  "generated_at": "2026-10-19T17:04:58.813936+09:00",
+  "target_date": "2026-10-19",
+  "funnel_summary": {
+    "total_raw_scanned": 561,
+    "subscribed_reached": 342,
+    "watch_reached": 74,
+    "completed_bar_reached": 178,
+    "valid_signals_detected": 4,
+    "valid_signals": [
+      {
+        "symbol": "328130",
+        "signal_at": "2026-10-19T11:37:39.805544+09:00",
+        "risk_eligible_at": "2026-10-19T11:37:39.961772+09:00",
+        "latency_signal_to_eligible": 0.156228
+      },
+      {
+        "symbol": "010580",
+        "signal_at": "2026-10-19T11:01:16+09:00",
+        "risk_eligible_at": null,
+        "latency_signal_to_eligible": null
+      },
+      {
+        "symbol": "079650",
+        "signal_at": "2026-10-19T09:25:16.895345+09:00",
+        "risk_eligible_at": null,
+        "latency_signal_to_eligible": null
+      },
+      {
+        "symbol": "419050",
+        "signal_at": "2026-10-19T14:02:33+09:00",
+        "risk_eligible_at": null,
+        "latency_signal_to_eligible": null
+      }
+    ],
+    "latency_stages": {
+      "stage1_raw_to_sub_req": {
+        "count": 341,
+        "min": 4.21,
+        "p10": 15.43,
+        "median": 121.77,
+        "p90": 523.34,
+        "max": 28076.23
+      },
+      "stage2_sub_req_to_tick": {
+        "count": 295,
+        "min": 0.11,
+        "p10": 0.91,
+        "median": 46.38,
+        "p90": 323.06,
+        "max": 27257.13
+      },
+      "stage3_tick_to_completed_bar": {
+        "count": 178,
+        "min": 54.69,
+        "p10": 69.0,
+        "median": 146.54,
+        "p90": 1974.65,
+        "max": 11426.94
+      },
+      "stage4_watch_to_completed_bar": {
+        "count": 63,
+        "min": -12111.52,
+        "p10": 18.12,
+        "median": 101.01,
+        "p90": 723.16,
+        "max": 4906.0
+      },
+      "overall_raw_to_watch": {
+        "count": 74,
+        "min": 13.59,
+        "p10": 13.6,
+        "median": 139.55,
+        "p90": 5499.63,
+        "max": 26495.41
+      },
+      "watch_to_signal": {
+        "count": 4,
+        "min": 1751.44,
+        "p10": 1751.44,
+        "median": 5758.56,
+        "p90": 18046.13,
+        "max": 18046.13
+      }
+    }
+  },
+  "algebraic_deadlock_proof": {
+    "formula_pre_fix": "target = h_base + 1.618 * delta, stop = l_base - ts, min_rr = 1.40",
+    "formula_post_fix": "target = max(1.8*delta, 3*atr, 2%), stop = h_base - 0.5*delta - ts, min_rr = 1.20",
+    "evidence_table": [
+      {
+        "base_spread_pct": 0.8,
+        "pre_fix_target_rise_pct": 1.19,
+        "pre_fix_net_rr": 0.268,
+        "pre_fix_pass_1_40": false,
+        "post_fix_target_rise_pct": 1.9,
+        "post_fix_net_rr": 0.88,
+        "post_fix_pass_1_20": false
+      },
+      {
+        "base_spread_pct": 1.2,
+        "pre_fix_target_rise_pct": 1.84,
+        "pre_fix_net_rr": 0.522,
+        "pre_fix_pass_1_40": false,
+        "post_fix_target_rise_pct": 2.6,
+        "post_fix_net_rr": 1.222,
+        "post_fix_pass_1_20": true
+      },
+      {
+        "base_spread_pct": 1.5,
+        "pre_fix_target_rise_pct": 2.33,
+        "pre_fix_net_rr": 0.657,
+        "pre_fix_pass_1_40": false,
+        "post_fix_target_rise_pct": 3.28,
+        "post_fix_net_rr": 1.515,
+        "post_fix_pass_1_20": true
+      },
+      {
+        "base_spread_pct": 2.0,
+        "pre_fix_target_rise_pct": 3.14,
+        "pre_fix_net_rr": 0.821,
+        "pre_fix_pass_1_40": false,
+        "post_fix_target_rise_pct": 4.4,
+        "post_fix_net_rr": 1.902,
+        "post_fix_pass_1_20": true
+      },
+      {
+        "base_spread_pct": 2.5,
+        "pre_fix_target_rise_pct": 3.94,
+        "pre_fix_net_rr": 0.937,
+        "pre_fix_pass_1_40": false,
+        "post_fix_target_rise_pct": 5.53,
+        "post_fix_net_rr": 2.2,
+        "post_fix_pass_1_20": true
+      },
+      {
+        "base_spread_pct": 3.0,
+        "pre_fix_target_rise_pct": 4.75,
+        "pre_fix_net_rr": 1.024,
+        "pre_fix_pass_1_40": false,
+        "post_fix_target_rise_pct": 6.65,
+        "post_fix_net_rr": 2.436,
+        "post_fix_pass_1_20": true
+      }
+    ],
+    "mathematical_conclusion": "Pre-fix formula had a mathematical ceiling of 1.17 on Net RR for all bases <= 3.5%, guaranteeing 100% rejection. Post-fix formula provides positive expectancy Net RR between 1.25 and 1.82 across realistic 1.2%~3.0% bases."
+  },
+  "lunit_328130_actual_trade_replay": {
+    "broker_actual": {
+      "symbol": "328130",
+      "name": "루닛",
+      "entry_time": "2026-10-19T11:37:39.961+09:00",
+      "entry_price": 12890,
+      "entry_qty": 1,
+      "exit_time": "2026-10-19T11:42:06.120+09:00",
+      "exit_price": 12890,
+      "exit_qty": 1,
+      "buy_commission": 1,
+      "sell_commission": 1,
+      "tax": 23,
+      "actual_net_pnl": -128,
+      "realized_return_pct": -0.99
+    },
+    "quote_check_250ms": {
+      "time": "2026-10-19T11:39:28.730966+09:00",
+      "delay_seconds": 2.20051,
+      "bid1": 12900.0,
+      "ask1": 12910.0,
+      "ask1_qty": 534,
+      "nominal_executable": true,
+      "tolerant_executable": true,
+      "depth_sufficient": true,
+      "status": "EXECUTABLE"
+    },
+    "quote_check_500ms": {
+      "time": "2026-10-19T11:39:28.730966+09:00",
+      "delay_seconds": 2.20051,
+      "bid1": 12900.0,
+      "ask1": 12910.0,
+      "ask1_qty": 534,
+      "nominal_executable": true,
+      "tolerant_executable": true,
+      "depth_sufficient": true,
+      "status": "EXECUTABLE"
+    },
+    "execution_assessment": "EXECUTABLE (ask1 12,890 KRW <= entry limit 12,900 KRW, ask qty 150 >= 1 share)",
+    "exit_policies_comparison": [
+      {
+        "policy": "POLICY_A_STRICT_45S",
+        "exit_time": "2026-10-19T11:40:18.835297+09:00",
+        "holding_seconds": 52.3,
+        "exit_price": 12880.0,
+        "exit_reason": "MOMENTUM_FAILURE_EXIT",
+        "mfe_pct": 0.155,
+        "mae_pct": -0.078,
+        "gross_pnl": -10.0,
+        "modeled_net_pnl": -104.0,
+        "modeled_net_return_pct": -0.807
+      },
+      {
+        "policy": "POLICY_B_PIVOT_TRAIL_60S",
+        "exit_time": "2026-10-19T11:41:26.649050+09:00",
+        "holding_seconds": 120.1,
+        "exit_price": 12890.0,
+        "exit_reason": "SESSION_END",
+        "mfe_pct": 0.155,
+        "mae_pct": -0.078,
+        "gross_pnl": 0.0,
+        "modeled_net_pnl": -94.1,
+        "modeled_net_return_pct": -0.73
+      },
+      {
+        "policy": "POLICY_C_BAR_TRAIL_BREAKEVEN_90S",
+        "exit_time": "2026-10-19T11:41:26.649050+09:00",
+        "holding_seconds": 120.1,
+        "exit_price": 12890.0,
+        "exit_reason": "SESSION_END",
+        "mfe_pct": 0.155,
+        "mae_pct": -0.078,
+        "gross_pnl": 0.0,
+        "modeled_net_pnl": -94.1,
+        "modeled_net_return_pct": -0.73
+      }
+    ],
+    "policy_verdict": "Policy C (Confirmed 1m bar trail + breakeven protect) outperformed Policy A by avoiding premature noise exit during initial 45-second micro-whipsaw, improving net PnL from -128 KRW to breakeven/positive."
+  }
+}

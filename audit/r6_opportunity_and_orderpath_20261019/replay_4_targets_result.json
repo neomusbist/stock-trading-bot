@@ -1,0 +1,90 @@
+[
+  {
+    "symbol": "089230",
+    "name": "FSN",
+    "tick_count": 2342,
+    "first_tick_time": "2026-10-19T16:31:35+09:00",
+    "first_tick_price": 2585.0,
+    "max_tick_time": "2026-10-19T17:30:09+09:00",
+    "max_tick_price": 2970.0,
+    "gain_pct": 14.893617021276595,
+    "total_evals": 2342,
+    "first_eval_time": "2026-10-19T16:31:35+09:00",
+    "warmup_pass_time": "2026-10-19T16:35:00+09:00",
+    "warmup_pass_count": 2333,
+    "shadow_opportunities": 47,
+    "first_opp_time": "2026-10-19T17:25:04+09:00",
+    "failed_gates_distribution": {
+      "warmup": 9,
+      "pattern": 2342,
+      "spread": 391,
+      "acceleration": 2072
+    }
+  },
+  {
+    "symbol": "025950",
+    "name": "동신건설",
+    "tick_count": 4005,
+    "first_tick_time": "2026-10-19T16:51:30+09:00",
+    "first_tick_price": 10430.0,
+    "max_tick_time": "2026-10-19T16:51:44+09:00",
+    "max_tick_price": 11280.0,
+    "gain_pct": 8.149568552253115,
+    "total_evals": 4005,
+    "first_eval_time": "2026-10-19T16:51:30+09:00",
+    "warmup_pass_time": "2026-10-19T16:54:00+09:00",
+    "warmup_pass_count": 3466,
+    "shadow_opportunities": 0,
+    "first_opp_time": null,
+    "failed_gates_distribution": {
+      "warmup": 539,
+      "spread": 727,
+      "pattern": 4005,
+      "acceleration": 3417
+    }
+  },
+  {
+    "symbol": "478340",
+    "name": "한울소재과학",
+    "tick_count": 2993,
+    "first_tick_time": "2026-10-19T16:06:53+09:00",
+    "first_tick_price": 11180.0,
+    "max_tick_time": "2026-10-19T16:58:48+09:00",
+    "max_tick_price": 11850.0,
+    "gain_pct": 5.992844364937388,
+    "total_evals": 2993,
+    "first_eval_time": "2026-10-19T16:06:53+09:00",
+    "warmup_pass_time": "2026-10-19T16:09:03+09:00",
+    "warmup_pass_count": 2970,
+    "shadow_opportunities": 0,
+    "first_opp_time": null,
+    "failed_gates_distribution": {
+      "warmup": 23,
+      "pattern": 2993,
+      "acceleration": 2867,
+      "spread": 171
+    }
+  },
+  {
+    "symbol": "445680",
+    "name": "디아이티",
+    "tick_count": 1773,
+    "first_tick_time": "2026-10-19T16:06:51+09:00",
+    "first_tick_price": 68900.0,
+    "max_tick_time": "2026-10-19T16:12:17+09:00",
+    "max_tick_price": 73300.0,
+    "gain_pct": 6.386066763425253,
+    "total_evals": 1773,
+    "first_eval_time": "2026-10-19T16:06:51+09:00",
+    "warmup_pass_time": "2026-10-19T16:11:00+09:00",
+    "warmup_pass_count": 1307,
+    "shadow_opportunities": 0,
+    "first_opp_time": null,
+    "failed_gates_distribution": {
+      "warmup": 466,
+      "pattern": 1773,
+      "acceleration": 1593,
+      "spread": 70
+    }
+  }
+]

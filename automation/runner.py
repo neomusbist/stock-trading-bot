@@ -518,18 +518,52 @@ def focus_readiness(detector,shadow_readiness,stamp):
                 'gates':{k:{'result':gates.get(k,{}).get('result')} for k in ('acceleration','liquidity')}}
     return result
 
-def evaluate_shadow_opportunity(engine,detector,t,watch,radar,prices,account,last_evaluated_frame=None):
-    """Pre-evaluation path for subscribed non-WATCH symbols. Strictly evaluates signal and gates; zero broker orders."""
-    if not watch or not engine.connected: return None
+def evaluate_shadow_opportunity(engine,detector,t,watch,radar,prices,account,last_evaluated_frame=None,by_symbol=None,lookup=None):
+    """Pre-evaluation path for subscribed non-WATCH symbols.
+    
+    1. Evaluates existing LIVE strategies (A, B, C, FAST) and SHADOW redesign trials.
+    2. If an existing LIVE strategy qualifies and the candidate is eligible, dynamically
+       re-evaluates WATCH priority and promotes to WATCH with zero data loss.
+    3. Redesign A/B strategies remain strictly SHADOW only; zero live orders without explicit approval.
+    """
+    if not watch or not engine.connected: return False
     if last_evaluated_frame is not None:
         key=(t.time,t.cumulative)
-        if last_evaluated_frame.get(t.symbol)==key:return None
+        if last_evaluated_frame.get(t.symbol)==key:return False
         last_evaluated_frame[t.symbol]=key
     engine.names[t.symbol]=watch.get('name')
     sig=detector.signal(t,watch)
     last_eval=detector.last_eval.get(t.symbol,{})
     trials=last_eval.get('trials',[])
     gates=last_eval.get('gates',{})
+    
+    # Evaluate FAST strategy in SHADOW mode if enabled and no A/B/C signal yet
+    fast_sig=None
+    if not sig and getattr(engine.a,'fast_momentum_enabled',False) and getattr(engine,'fast_strategy',None) is not None:
+        watch_eval=dict(watch)
+        eval_now=engine.clock()
+        if getattr(detector,'price_context',None) is not None:
+            structure_now = engine.fast_strategy.get_tape(t.symbol).structure(eval_now)
+            ctx_snapshot = detector.price_context.snapshot(
+                t.symbol, t, t.ask or t.price,
+                support=structure_now.get('support') if structure_now.get('pass') else None,
+                breakout=structure_now.get('breakout') if structure_now.get('pass') else None,
+            )
+            peak = ctx_snapshot.get('nearest_confirmed_peak')
+            if peak:
+                watch_eval['nearest_confirmed_peak'] = peak
+        raw_fast=engine.fast_strategy.evaluate(
+            t, watch_eval,
+            capital_limit=engine.auto_available_capital(),
+            risk_budget=engine.risk_equity()*engine.c.risk_fraction,
+            ingest=False,
+            received=eval_now,
+            live_authorized=False
+        )
+        if raw_fast is not None:
+            fast_sig=raw_fast.to_engine_signal(watch)
+            sig=fast_sig
+
     ready_trials=[tr for tr in trials if tr.get('entry_ready')]
     if sig or ready_trials:
         pattern=sig.get('pattern') if sig else ready_trials[0].get('setup')
@@ -540,7 +574,36 @@ def evaluate_shadow_opportunity(engine,detector,t,watch,radar,prices,account,las
         engine.event('SHADOW_OPPORTUNITY_DETECTED',symbol=t.symbol,pattern=pattern,
                      price=t.price,time=t.time.isoformat(),
                      actual_order_permission=False,shadow_only=True)
-    return None
+
+    # LIVE Strategy Promotion Check:
+    # Only existing LIVE strategies (A, B, C, FAST) can trigger dynamic WATCH promotion.
+    # Redesign strategies (EarlyMomentumBreakout, PullbackReclaimBreakout) are strictly SHADOW only.
+    live_signal_ready = (sig is not None and sig.get('pattern') in {'A', 'B', 'C', 'FAST'})
+    live_trials_ready = any(tr.get('entry_ready') for tr in trials if tr.get('setup') in {'A', 'B', 'C'})
+
+    if (live_signal_ready or live_trials_ready) and lookup is not None and by_symbol is not None:
+        t_start=time.perf_counter()
+        cands=list(by_symbol.values())
+        if not any(r.get('code')==t.symbol for r in cands):
+            cands.append(watch)
+        readiness=focus_readiness(detector,{},t.time)
+        selection=select_focus(
+            current_watch=lookup,
+            candidates=cands,
+            readiness_map=readiness,
+            max_watchlist=engine.c.max_watchlist,
+            fallback_source1=engine.a.fallback_source1,
+            clock_iso=t.time.isoformat()
+        )
+        if selection.applied and t.symbol in selection.promoted:
+            apply_focus_selection(engine,lookup,by_symbol,selection)
+            latency_ms=(time.perf_counter()-t_start)*1000.0
+            pattern=sig.get('pattern') if sig else 'LIVE_GEOMETRY'
+            engine.event('WATCH_DYNAMIC_PROMOTION',symbol=t.symbol,pattern=pattern,
+                         latency_ms=latency_ms,promoted_at=t.time.isoformat(),
+                         next_watch=selection.next_watch,previous_watch=selection.previous_watch)
+            return True
+    return False
 
 def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_evaluated_frame=None):
     if not watch or not engine.connected: return None
@@ -804,8 +867,15 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
                         s_watch = {**cand, 'status': 'SHADOW'}
                     else:
                         s_watch = {'code': t.symbol, 'name': engine.names.get(t.symbol, t.symbol), 'status': 'SHADOW'}
-                    evaluate_shadow_opportunity(engine, detector, t, s_watch, radar, prices, account, getattr(engine, '_last_shadow_eval_frame', None))
-                continue
+                    promoted = evaluate_shadow_opportunity(
+                        engine, detector, t, s_watch, radar, prices, account,
+                        getattr(engine, '_last_shadow_eval_frame', None),
+                        by_symbol=by_symbol, lookup=lookup
+                    )
+                    if promoted:
+                        watch = lookup.get(t.symbol)
+                if not watch:
+                    continue
             if not radar_ok or not engine.connected: continue
             context_provider=getattr(engine,'market_context_provider',None)
             if context_provider:
