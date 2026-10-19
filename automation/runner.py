@@ -461,6 +461,28 @@ def pending_broker_settlement(state):
     return any(t.get('completed') and str(t.get('closed','')).startswith(day)
                and t.get('pnl_source')!='BROKER_QUERY' for t in state.get('trades',[]))
 
+
+def ready_account_results(account,in_session):
+    """One FIFO reconciliation per turn; a producer cannot starve market data.
+
+    Never merge or discard fills. A later account result stays queued for the
+    next turn, after controls, quote consumption and position protection run.
+    """
+    if not in_session:return
+    try:result=account.q.get_nowait()
+    except queue.Empty:return
+    yield result
+
+
+def record_observation_retention(engine,retained,previous,desired,grace_seconds,capacity):
+    """Emit changes once, including release to empty, and own a detached key."""
+    retained=set(retained)
+    if retained!=previous:
+        engine.event('OBSERVATION_RETENTION',symbols=sorted(retained),
+            grace_seconds=grace_seconds,subscription_count=len(desired),
+            capacity=capacity,actual_order_permission=False)
+    return retained
+
 def focus_readiness(detector,shadow_readiness,stamp):
     """WATCH ticks are routed to main; rank them by their own full evaluation."""
     from automation.focus_selection import calculate_tier,unviable_price_geometry
@@ -495,7 +517,12 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
         engine.decisions.emit('ENTRY_EVAL', t.symbol, 'NO_BUY', 'VI_AUCTION_NO_BUY',
                               {'market_status': gate(False, vi_active=watch.get('vi_active'), single_price=watch.get('single_price_auction'))}, price=t.price)
         return None
-    if watch.get('observation_only'):
+    # A preserved WATCH slot's cash-uncertainty marker is a cached diagnostic.
+    # Current account freshness and final sizing still control all orders.
+    # Other observation-only qualifications never become order permission.
+    cash_recovered=(watch.get('reason')=='ACCOUNT_CAPITAL_UNAVAILABLE'
+                    and engine.capital_account_valid())
+    if watch.get('observation_only') and not cash_recovered:
         from automation.decisions import gate
         engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','ACCOUNT_CAPITAL_UNAVAILABLE',
                               {'connection_account':gate(False,observation_only=True)},price=t.price)
@@ -1038,8 +1065,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 if policy.mode=='KILL' and policy.state['revision']!=engine.control_revision:
                     kill_requested_at=time.monotonic(); account.request.set()
                 done=engine.controls(prices)
-                while in_session and not account.q.empty():
-                    result=account.q.get_nowait()
+                for result in ready_account_results(account,in_session):
                     if result['error']:
                         engine.account_ok=False; engine.event('ACCOUNT_UNAVAILABLE',**{k:v for k,v in result.items() if k!='started'})
                     elif time.monotonic()-result['started']>effective.reconcile_seconds*3:
@@ -1047,13 +1073,17 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     else:
                         for sym,error in result['snapshot'].get('book_errors',{}).items(): engine.event('EXISTING_BOOK_UNAVAILABLE',symbol=sym,**error)
                         position_health.probe_results(result['snapshot'],now())
+                        reconcile_started=time.perf_counter()
                         reconciled=engine.reconcile(result['snapshot'],result['fills']); counts['account_checks']+=1; account_generation+=1
+                        reconcile_ms=(time.perf_counter()-reconcile_started)*1000
                         if reconciled is False and engine.s.get('automation',{}).get('reconcile_deferred_pending'):
                             engine.s['automation']['reconcile_deferred_pending']=False
                             account.request.set()
                         for sym,book in result['snapshot'].get('books',{}).items():
                             position_health.accept_book(sym,book,now(),source='ka10004')
-                        engine.event('ACCOUNT_LATENCY',**result['snapshot'].get('performance',{}))
+                        engine.event('ACCOUNT_LATENCY',**result['snapshot'].get('performance',{}),
+                            reconcile_ms=reconcile_ms,pending_results=account.q.qsize(),
+                            result_age_seconds=max(0,time.monotonic()-result['started']))
                         external=set(engine.s['automation']['existing'])&(set(BREAKEVEN_EXITS)|({TEST_RELEASE_SYMBOL} if legacy_test_release_enabled() else set()))
                         account.external_symbols=external
                         radar.extra_symbols=set(engine.s['positions'])
@@ -1208,10 +1238,9 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 observation_grace=observation_residence_seconds(auto)
                 desired,observed,retained=observation_retention.select(lookup,real_symbols,observed,now(),
                     grace_seconds=observation_grace,capacity=observation_settings.max_symbols)
-                if retained!=retained_observation:
-                    engine.event('OBSERVATION_RETENTION',symbols=sorted(retained),
-                        grace_seconds=observation_grace,subscription_count=len(desired),
-                        capacity=observation_settings.max_symbols,actual_order_permission=False)
+                retained_observation=record_observation_retention(
+                    engine,retained,retained_observation,desired,observation_grace,
+                    observation_settings.max_symbols)
                 observation_drops,priority_symbols=prewarm_handoff(
                     engine,detector,feed,observed,real_symbols,priority_symbols,observation_drops,
                     shadow.deliver,
