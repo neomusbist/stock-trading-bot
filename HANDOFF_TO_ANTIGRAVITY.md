@@ -181,3 +181,7 @@ Set-Location -LiteralPath 'C:\Users\MJS\Documents\주식자동매매_개발\r6-t
 - Setup B 실질 손익비 0.51~0.67 케이스 차단 검증 통과 (`EXIT_PLAN_REWARD_UNKNOWN_OR_LOW`).
 - PriceContext 캐시 복원 검증 통과.
 
+# 2026-10-19 루닛 긴급 복기 후속
+
+최신 상세 결과는 [R6_LUNIT_INCIDENT_20261019.md](R6_LUNIT_INCIDENT_20261019.md)를 먼저 읽는다. 판정은 청산 결함이다. 10원 호가단위를 관측된 5원 체결 차이로 축소해 1틱 반등을 2틱 반등으로 인정한 버그를 실제 수신 틱으로 재현·수정했다. 초기 구조선/비상선·시각/주문 경계를 유지한다. 관련 153개 표적 검사 통과. 기존 WATCH 기준판 실패는 별개 미해결이며 전체 회귀 PASS가 아니다. 사용자 최신 요청은 검증된 수정과 이전 WATCH 3파일의 운영 반영·공식 LIVE 재개를 승인했다. 아래 승인 대기 기록은 과거 상태다. 정확한 배포 및 재개 결과는 private `r6-lunit-20261019-private/DEPLOYMENT.json`과 이 문서 후속 갱신을 확인한다.
+

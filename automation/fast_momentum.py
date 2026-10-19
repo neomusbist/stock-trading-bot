@@ -580,12 +580,22 @@ class FastMomentumStrategy:
             if center[1] < min(left[1], right[1]):lows.append(center)
         holding_seconds = (now - opened).total_seconds()
         diffs = [abs(b[1] - a[1]) for a, b in zip(turns, turns[1:]) if abs(b[1] - a[1]) > 0]
-        min_step = min(tick_size(entry), min(diffs)) if diffs else tick_size(entry)
+        # A received print difference is not the executable quote unit. Lunit's
+        # 12,905 print halved this guard to 5, so a one-quote-step 12,890 ->
+        # 12,900 rebound passed the existing two-step requirement. Keep the raw
+        # print as evidence, but never let it shrink the entry quote unit.
+        min_step = tick_size(entry)
+        swing = {'swing_tick_size': min_step, 'swing_tick_basis': 'ENTRY_QUOTE_UNIT',
+                 'observed_min_price_change': min(diffs) if diffs else None}
         if (holding_seconds >= 45.0 and len(highs) >= 2 and lows and highs[-1][1] < highs[-2][1]
                 and (highs[-2][1] - lows[-1][1]) >= 2 * min_step
                 and (highs[-1][1] - lows[-1][1]) >= 2 * min_step
                 and below(lows[-1][1])):
-            return True, 'MOMENTUM_FAILURE_EXIT', {**evidence, 'bid': bid, 'failed_rebound_high': highs[-1][1], 'floor': lows[-1][1]}
+            return True, 'MOMENTUM_FAILURE_EXIT', {**evidence, **swing, 'bid': bid,
+                'previous_high': highs[-2][1], 'previous_high_at': highs[-2][0].isoformat(),
+                'failed_rebound_high': highs[-1][1], 'failed_rebound_at': highs[-1][0].isoformat(),
+                'floor': lows[-1][1], 'floor_at': lows[-1][0].isoformat(),
+                'confirmation_trades': [{'time': r[0].isoformat(), 'price': r[1]} for r in rows[-2:]]}
         initial_r = entry - emergency
         if initial_r > 0 and t.price - entry >= initial_r and lows:
             floor = lows[-1][1]
@@ -594,5 +604,5 @@ class FastMomentumStrategy:
             cost_floor = entry * (1 + self.costs['buy']) / ((1 - self.costs['sell'] - self.costs['tax']) * (1 - self.costs['exit_slippage']))
             if cost_floor < line < bid and line > (protection if number(protection) else 0):
                 position['protection_stop'] = line; position['profit_locked'] = True
-        return False, 'HOLD', {**evidence, 'holding_seconds': (now - opened).total_seconds(), 'bid': bid,
+        return False, 'HOLD', {**evidence, **swing, 'holding_seconds': (now - opened).total_seconds(), 'bid': bid,
                                'risk_budget_known': number(allowance) and allowance > 0}
