@@ -45,7 +45,9 @@ class ShortSignalQueueTests(fixture.AccountFixture):
         self.assertTrue(any(e.get('event')=='OBSERVATION_SIGNAL_QUEUED' for e in events))
         decision=next(e for e in events if e.get('event')=='OBSERVATION_OPPORTUNITY_REEVALUATED')
         self.assertFalse(decision['order_created'])
-        self.assertGreater(decision['latest_tick_at'],decision['trigger_tick_at'])
+        # Exchange HHMMSS is second precision; receipt times distinguish the
+        # later prints within that same second.
+        self.assertGreater(decision['latest_received_at'],decision['trigger_received_at'])
 
     def test_still_valid_latest_signal_reaches_all_order_guards(self):
         self.seed_receiver();lookup={};rows={SYM:self.row}
@@ -88,7 +90,7 @@ class ShortSignalQueueTests(fixture.AccountFixture):
         for sym in sorted(symbols):
             self.feed.observation_q.put((self.at,replace(last,symbol=sym)))
         calls=[];passes=0;started=time.perf_counter()
-        while not self.feed.observation_q.empty():
+        while not self.feed.observation_q.empty() or getattr(self.feed,'_opportunity_pending',{}):
             count=len(calls)
             runner.prewarm_handoff(self.e,self.detector,self.feed,symbols,set(),set(),0,
                 on_opportunity=lambda t,r:calls.append(t.symbol),opportunity_probe=lambda *args:True)
