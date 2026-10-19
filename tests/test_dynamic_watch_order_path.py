@@ -127,7 +127,7 @@ class DynamicWatchOrderPathIntegrationTests(unittest.TestCase):
 
     def test_e2e_non_watch_live_strategy_promotes_and_submits_buy_order(self):
         """End-to-End Test: Non-WATCH candidate with valid LIVE Setup A promotes dynamically to WATCH and submits BUY order."""
-        sym = '018670'  # FSN
+        sym = '018670'  # Synthetic signal fixture; no real-stock identity claim.
         bars = self._generate_bars(base_price=2400, n_bars=70)
         self.radar.cache[(self.time.date(), sym)] = bars
         
@@ -136,7 +136,7 @@ class DynamicWatchOrderPathIntegrationTests(unittest.TestCase):
         lookup = {}  # Non-WATCH
         by_symbol = {
             sym: {
-                'code': sym, 'name': 'FSN', 'reference_price': 2400,
+                'code': sym, 'name': 'Synthetic order-path fixture', 'reference_price': 2400,
                 'resistance': 2600, 'overhead_share': 0.02, 'source_count': 2,
                 'market_status': {'pass': True, 'reason_code': 'PASS'},
                 'fallback_source1': True, 'status': 'SHADOW'
@@ -161,7 +161,9 @@ class DynamicWatchOrderPathIntegrationTests(unittest.TestCase):
         self.detector.signal = MagicMock(return_value=mock_signal)
         self.detector.last_eval[sym] = {'trials': [{'setup': 'A', 'entry_ready': True}], 'gates': {}}
         
-        message = self._make_frame(sym, 2450, vol=5000, ask=2455, bid=2450)
+        # A positive marketable BUY uses the exact persisted limit. The separate
+        # final-boundary regression rejects ask=2455 with an unsent 2450 limit.
+        message = self._make_frame(sym, 2450, vol=5000, ask=2450, bid=2445)
         prices = {sym: 2450}
         account = MagicMock(need_fills=False)
         

@@ -1,0 +1,163 @@
+{
+  "captured_at": "2026-10-19T21:15:54.044101+09:00",
+  "baseline": "557e83c6bb13d39c7fc1f8d79f15798b2a576fc0",
+  "evidence_type": "SYNTHETIC_RECEIVER_TO_FAKE_BROKER_PLUS_READ_ONLY_SAVED_LEDGER",
+  "real_order_or_broker_query_performed": false,
+  "live_files_changed": false,
+  "pipeline": [
+    {
+      "session": "REGULAR",
+      "source": "SYNTHETIC_NOT_MARKET_REPLAY",
+      "cash": 71395.7759,
+      "approved_cap": 81300,
+      "risk_fraction": 0.02,
+      "daily_loss_fraction": 0.04,
+      "price": 1001.0,
+      "quantity": 67,
+      "gross_amount": 67067.0,
+      "simulated_order_status": "ACCEPTED",
+      "pattern": "FAST",
+      "signal_at": "2026-10-19T10:30:10.100000+09:00",
+      "entry_order_at": "2026-10-19T10:30:10.100000+09:00",
+      "stop": 989,
+      "emergency": 985,
+      "target": 1045,
+      "net_rr_strategy": 1.5708161508389806,
+      "signal_was_mocked": false,
+      "actual_market_fill_or_profitability_proven": false
+    },
+    {
+      "session": "AFTER",
+      "source": "SYNTHETIC_NOT_MARKET_REPLAY",
+      "cash": 71395.7759,
+      "approved_cap": 81300,
+      "risk_fraction": 0.02,
+      "daily_loss_fraction": 0.04,
+      "price": 1001.0,
+      "quantity": 67,
+      "gross_amount": 67067.0,
+      "simulated_order_status": "ACCEPTED",
+      "pattern": "FAST",
+      "signal_at": "2026-10-19T16:30:10.100000+09:00",
+      "entry_order_at": "2026-10-19T16:30:10.100000+09:00",
+      "stop": 989,
+      "emergency": 985,
+      "target": 1045,
+      "net_rr_strategy": 1.5708161508389806,
+      "signal_was_mocked": false,
+      "actual_market_fill_or_profitability_proven": false
+    }
+  ],
+  "development_live_differences": [
+    {
+      "path": "automation/engine.py",
+      "development_sha256": "f7a220e7383b7888ce47267083b5921125dc661d7e1492c96c106728cef39b8d",
+      "live_sha256": "1962421baa87c699d58b328bdca7ab3c4e27a1da99952d7a5a6a5ce8133e4a76"
+    },
+    {
+      "path": "automation/entry_frequency_experiments.py",
+      "development_sha256": "44f809626ad44f1ea83ba0db09af7e5b7ad139ed25dac78d7cd3807b82c68d6f",
+      "live_sha256": "486fd961d6f4270b9e721f46fc2b481abed9e248becd243d313aef5c34c2bd2a"
+    },
+    {
+      "path": "automation/entry_timing.py",
+      "development_sha256": "4f9a945cc06678f57811f1f13ef93cb437022a8b8d357da4c34523d5a55100bc",
+      "live_sha256": "015c3888f740b52cc30dc79669be81c77ffd1406c8bf48d8cfe6303e4ebad331"
+    },
+    {
+      "path": "automation/exit_plan.py",
+      "development_sha256": "6bee1548faabb4bb5813467538abc36d379420b5559b95176a1a447b6733399e",
+      "live_sha256": "7b7250d8678e382f65a96350d8597acabe2737fdaf818c9a69c0b3e4e3443797"
+    },
+    {
+      "path": "automation/focus_selection.py",
+      "development_sha256": "ab8d3b9e5bf2dea9237abfd174efae7597e5fe41eb1317ce30b32be22ca616c0",
+      "live_sha256": "c68aac61c3b6ffba93a2695cbc16ed682841cbd4c8e88dabb391d2f6b0fdd866"
+    },
+    {
+      "path": "automation/opening_frequency_research.py",
+      "development_sha256": "b88538e6291b187a4a9a098edd9ac6bc9c8aab2cbeed0de6fe052482cb8f37f0",
+      "live_sha256": "c45e8599d672a2e96ba61cb04cd5eceaf9f48c1bf2e5db6075a9f47ee65b64e7"
+    },
+    {
+      "path": "automation/patterns.py",
+      "development_sha256": "00139bf8eef77358d500dca76be27450e724e73c3bdd017ab95a5047f6fcfddf",
+      "live_sha256": "ac7bc47911e68bff3c850c926ec3b28add3a7401052cc0a89e7f6c5d1e0e2abd"
+    },
+    {
+      "path": "automation/policy.py",
+      "development_sha256": "8618d6ad820de033051c140386ae693af17449a87306dadf7549b325071e3d1d",
+      "live_sha256": "01483371b49d810acff652a359579060903576431d7518357b5a975028ebac7a"
+    },
+    {
+      "path": "automation/position_health.py",
+      "development_sha256": "8e87a666c2dda34affd6d0d564d16c78b5f05ee471f97bba7addf9030ac56e30",
+      "live_sha256": "863590752e0335a2069b587904f2fe2892f52e6b11e0eea068dd0612a1929099"
+    },
+    {
+      "path": "automation/radar.py",
+      "development_sha256": "def086376f02692f0c142fc52217715d5ad08ab2e453101bd6792b4416e40556",
+      "live_sha256": "76c77bfa7035b91bbb427579d0e131c10296aea39f5a7078a4546344c322b21f"
+    },
+    {
+      "path": "automation/runner.py",
+      "development_sha256": "d1243701fa80c9b1a4821b4618e5f8083caa6f954719b043ce4291f7922f852f",
+      "live_sha256": "8d3ca9cacad8be7f182e8ac7ad6dad4b2bf0e4aeac21ce2f63ea758ab4e7f14e"
+    },
+    {
+      "path": "automation/shadow_observation.py",
+      "development_sha256": "325c02d762c58f10c4a77e283a289cccbf8cec02dc14b1c073bd72e1e0ba22b6",
+      "live_sha256": "1594ea33b95e7eb3b97acdbb84d57630ecad9e1feeef27d5b7f50aa3e0b7bdfa"
+    },
+    {
+      "path": "candidate_builder.py",
+      "development_sha256": "bbda0796a94ea8c782a4ea698a3184df89632035c38abcaf34770514e0b2ddaa",
+      "live_sha256": "01705cc5edc7bcc795615f88fcd9381fdaf8e9a8073a23f4abae2273e3d53da9"
+    },
+    {
+      "path": "core/settings.py",
+      "development_sha256": "7629f6ac23c235991989a837578af448cfb51431f2314d89b345f4b97452f548",
+      "live_sha256": "55f3decd1b9589d8fda598d43421d017756299575e0f7d5aaae7a1cc6bec4608"
+    },
+    {
+      "path": "deploy_release.py",
+      "development_sha256": "9f17de3f6430044821c10f274f69ff0c086a41470458af116a00be19b966b365",
+      "live_sha256": "28869ee565b9b94bb43efc728bbcee74a3f31a9eaa0ea99fdb0db163620079e4"
+    }
+  ],
+  "live_release_label": "6c2711d",
+  "stale_live_manifest_files": [
+    "automation/observation_worker.py",
+    "automation/engine.py"
+  ],
+  "cached_live_status": {
+    "ledger_day": "2026-10-19",
+    "ledger_cash": 71395.77590000001,
+    "daily_loss": 128.0,
+    "halt": null,
+    "positions": 0,
+    "active_orders": 0,
+    "unknown_orders": 0,
+    "heartbeat_at": "2026-10-19T19:55:20.770281+09:00",
+    "mode": "STOP",
+    "is_fresh_broker_reconciliation": false
+  },
+  "saved_oct19_completed_trades": [
+    {
+      "symbol": "328130",
+      "name": "루닛",
+      "pattern": "FAST",
+      "opened": "2026-10-19T11:37:42.853023+09:00",
+      "closed": "2026-10-19T11:41:28.445110+09:00",
+      "entry": 12890.0,
+      "exit": 12890.0,
+      "qty": 5,
+      "net_pnl": -128.0,
+      "fee_actual": 128.0,
+      "reason": "FAST_MOMENTUM_FAILURE_EXIT",
+      "holding_seconds": 225.592101,
+      "MFE": 20.0,
+      "MAE": 10.0
+    }
+  ]
+}

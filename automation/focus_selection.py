@@ -58,6 +58,10 @@ class FocusSelection:
 
 def calculate_tier(gates: dict, setup_trials: list, row: dict = None) -> int:
     """후보의 gates와 setup_trials로부터 boolean tier를 계산한다. (새 가중 점수 금지)"""
+    # Experimental trials remain diagnostic. They cannot reserve/displace a
+    # LIVE WATCH slot through the worker's generic readiness notification.
+    # FAST readiness has its own explicit, expiring signal path.
+    setup_trials=[t for t in (setup_trials or []) if t.get('setup') in {'A','B','C'}]
     if not gates:
         return TIER_RANK_ONLY
 
@@ -122,7 +126,7 @@ def calculate_tier(gates: dict, setup_trials: list, row: dict = None) -> int:
 
 def unviable_price_geometry(info: dict) -> bool:
     if type(info.get('price_blocked')) is bool:return info['price_blocked']
-    formed=[t for t in info.get('setup_trials',[]) if t.get('candidate_generated')]
+    formed=[t for t in info.get('setup_trials',[]) if t.get('setup') in {'A','B','C'} and t.get('candidate_generated')]
     price_keys={'invalidation','risk_reward','economic','resistance','box_direction','box_origin',
                 'box_structure','pullback_structure','breakout_structure'}
     return bool(formed and all(any(v.get('result')=='FAIL' for k,v in t.get('gates',{}).items()
