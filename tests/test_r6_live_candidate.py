@@ -9,6 +9,7 @@ import unittest
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from tests import test_r6_execution_integrity as fixture
@@ -19,6 +20,10 @@ SYM=fixture.SYM
 
 class ShortSignalQueueTests(fixture.AccountFixture):
     seed_receiver=fixture.ReceiverPromotionTests.seed_receiver
+    def test_disabled_or_uninitialized_opportunity_queue_returns_without_work(self):
+        feed=SimpleNamespace(_opportunity_pending=object())
+        self.assertEqual(runner.drain_observed_opportunities(None,feed,None),0)
+        self.assertEqual(runner.drain_observed_opportunities(None,feed,lambda *args:self.fail('not initialized')),0)
     def test_brief_signal_invalidated_by_already_received_prints_is_not_replayed_as_order(self):
         self.seed_receiver()
         start=self.at

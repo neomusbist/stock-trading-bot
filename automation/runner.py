@@ -378,7 +378,9 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
 
 def drain_observed_opportunities(engine,feed,on_opportunity,*,deadline=None,max_evaluations=2):
     """At most two fresh evaluations; controls and position ticks go first."""
+    if on_opportunity is None:return 0
     pending=getattr(feed,'_opportunity_pending',{})
+    if not isinstance(pending,dict):return 0
     deadline=time.monotonic()+.002 if deadline is None else deadline
     evaluated=0
     observation_q=getattr(feed,'observation_q',None)
