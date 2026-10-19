@@ -11,7 +11,9 @@ def main():
     case=fixture.ReceiverPromotionTests();case.setUp()
     try:
         case.seed_receiver();start=case.at
-        for i in range(6):
+        # One neutral print remains a valid signal under unchanged FAST rules.
+        # Six prints that invalidate it are a separate mandatory NO_BUY test.
+        for i in range(1):
             case.at=start+timedelta(seconds=(i+1)*.05)
             fields={'20':case.at.strftime('%H%M%S'),'10':'1001','15':'1000','13':str(12000+1000*i),
                 '27':'1001','28':'1000','290':'2','61':'10000','71':'10000'}

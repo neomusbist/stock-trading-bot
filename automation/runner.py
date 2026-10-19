@@ -284,7 +284,7 @@ class SubscriptionState:
 
 def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,drops,sink=None,shadow_detector=None,
                     on_opportunity=None,opportunity_probe=None):
-    """Preserve FIFO history and evaluate ready prefixes before later frames.
+    """Preserve FIFO history and brief signals; trade only on current evidence.
 
     The callback uses existing order guards. Diagnostic depth/ticks stay off
     the protected order/position queue; no worker gains order authority.
@@ -310,13 +310,18 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
         return drops,priority
     pending=getattr(feed,'_opportunity_pending',None)
     if pending is None:pending={};feed._opportunity_pending=pending
+    triggers=getattr(feed,'_opportunity_triggers',None)
+    if triggers is None:triggers={};feed._opportunity_triggers=triggers
     for sym in list(pending):
         if sym not in observed or sym in priority or sym in critical:pending.pop(sym,None)
+    for sym in list(triggers):
+        if sym not in observed or sym in priority or sym in critical:triggers.pop(sym,None)
     promoted=[]
     with getattr(feed,'subscription_lock',nullcontext()):
         if feed.observation_drops!=drops:
             drops=feed.observation_drops
             pending.clear()
+            triggers.clear()
             for sym in observed-set(prior_priority)-critical:
                 detector.forget(sym)
                 fast=getattr(engine,'fast_strategy',None)
@@ -343,9 +348,8 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
         engine.event('OBSERVATION_PREWARM_HANDOFF',symbols=sorted(promotions),queued_ticks=len(promoted),
             SHADOW_ONLY=True,actual_order_permission=False)
     drained = 0
-    evaluated = 0
     drain_deadline = time.monotonic() + 0.01
-    while drained < 512 and evaluated < 2 and time.monotonic() < drain_deadline:
+    while drained < 512 and time.monotonic() < drain_deadline:
         main_q=getattr(feed,'q',None)
         if on_opportunity is not None and (getattr(feed,'transport_failed',False) or feed.overflow.is_set()
                 or isinstance(main_q,queue.Queue) and not main_q.empty()):break
@@ -359,23 +363,17 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
                 engine.fast_strategy.ingest_tick(tick, observed_at)
             if accepted and on_opportunity is not None:
                 pending[tick.symbol]=(observed_at,tick)
-                # Ingesting an entire burst first can erase a brief valid
-                # setup. Probe the existing strategies on this causal prefix;
-                # promotion and all order guards still run on the main thread.
+                # Preserve the first observed valid prefix as evidence, not
+                # permission. Already received later prints may invalidate it.
                 if (opportunity_probe is not None and engine.connected
                         and tick_freshness(tick,engine.clock(),engine.c.stale_seconds)['fresh']
                         and opportunity_probe(tick,observed_at)):
-                    if (getattr(feed,'transport_failed',False) or feed.overflow.is_set()
-                            or isinstance(main_q,queue.Queue) and not main_q.empty()):break
-                    pending.pop(tick.symbol,None)
-                    evaluated+=1
-                    on_opportunity(tick,observed_at)
-                    critical.update(engine.s['positions'])
-                    critical.update(o['symbol'] for o in engine.active_orders())
-                    # Stop at the budget, leaving unread FIFO frames intact.
-                    # They must not be ingested and overwritten before a turn.
-    drain_observed_opportunities(engine,feed,on_opportunity,deadline=drain_deadline,
-                                 max_evaluations=2-evaluated)
+                    if tick.symbol not in triggers:
+                        triggers[tick.symbol]={'trigger_tick_at':tick.time.isoformat(),
+                            'trigger_received_at':observed_at.isoformat(),'detected_at':engine.clock().isoformat()}
+                        engine.event('OBSERVATION_SIGNAL_QUEUED',symbol=tick.symbol,**triggers[tick.symbol],
+                            actual_order_permission=False)
+    drain_observed_opportunities(engine,feed,on_opportunity,deadline=drain_deadline)
     return drops, priority
 
 def drain_observed_opportunities(engine,feed,on_opportunity,*,deadline=None,max_evaluations=2):
@@ -383,14 +381,38 @@ def drain_observed_opportunities(engine,feed,on_opportunity,*,deadline=None,max_
     pending=getattr(feed,'_opportunity_pending',{})
     deadline=time.monotonic()+.002 if deadline is None else deadline
     evaluated=0
-    while on_opportunity is not None and pending and evaluated<max_evaluations and time.monotonic()<deadline:
+    observation_q=getattr(feed,'observation_q',None)
+    queued_symbols=set()
+    if isinstance(observation_q,queue.Queue):
+        with observation_q.mutex:
+            queued_symbols={item[1].symbol for item in observation_q.queue}
+    inspected=0
+    pending_count=len(pending)
+    while on_opportunity is not None and pending and inspected<pending_count and evaluated<max_evaluations and time.monotonic()<deadline:
         main_q=getattr(feed,'q',None)
         if (getattr(feed,'transport_failed',False) or feed.overflow.is_set()
                 or isinstance(main_q,queue.Queue) and not main_q.empty()):break
         sym=next(iter(pending));observed_at,tick=pending.pop(sym)
-        if not tick_freshness(tick,engine.clock(),engine.c.stale_seconds)['fresh']:continue
+        inspected+=1
+        latest=getattr(feed,'latest_ticks',{}).get(sym)
+        # A FIFO prefix is useful history, but it cannot hide later data that
+        # has already reached this receiver. Wait until this symbol catches up.
+        if sym in queued_symbols or (latest is not None and
+                (latest.time,latest.cumulative)!=(tick.time,tick.cumulative)):
+            pending[sym]=(observed_at,tick)
+            continue
+        if not tick_freshness(tick,engine.clock(),engine.c.stale_seconds)['fresh']:
+            getattr(feed,'_opportunity_triggers',{}).pop(sym,None)
+            continue
         evaluated+=1
-        on_opportunity(tick,observed_at)
+        result=on_opportunity(tick,observed_at)
+        trigger=getattr(feed,'_opportunity_triggers',{}).pop(sym,None)
+        if trigger:
+            fast_reason=getattr(engine.fast_strategy,'last_evaluation',{}).get(sym,{}) if getattr(engine,'fast_strategy',None) is not None else {}
+            engine.event('OBSERVATION_OPPORTUNITY_REEVALUATED',symbol=sym,**trigger,
+                latest_tick_at=tick.time.isoformat(),latest_received_at=observed_at.isoformat(),
+                order_created=bool(result),fast_evaluation=fast_reason,
+                actual_order_permission=False)
     return evaluated
 
 
@@ -580,7 +602,7 @@ def focus_readiness(detector,shadow_readiness,stamp):
 
 def evaluate_shadow_opportunity(engine,detector,t,watch,radar,prices,account,last_evaluated_frame=None,by_symbol=None,lookup=None,*,probe_only=False):
     """Pre-evaluation path for subscribed non-WATCH symbols.
-    
+
     1. Evaluates existing LIVE strategies (A, B, C, FAST) and SHADOW redesign trials.
     2. If an existing LIVE strategy qualifies and the candidate is eligible, dynamically
        re-evaluates WATCH priority and promotes to WATCH with zero data loss.
@@ -596,7 +618,7 @@ def evaluate_shadow_opportunity(engine,detector,t,watch,radar,prices,account,las
     last_eval=detector.last_eval.get(t.symbol,{})
     trials=last_eval.get('trials',[])
     gates=last_eval.get('gates',{})
-    
+
     # Evaluate FAST strategy in SHADOW mode if enabled and no A/B/C signal yet
     fast_sig=None
     if not sig and getattr(engine.a,'fast_momentum_enabled',False) and getattr(engine,'fast_strategy',None) is not None:
@@ -1473,15 +1495,14 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 opportunity_callback=(lambda tick,received:evaluate_observed_entry(
                     engine,detector,tick,received,lookup,radar,prices,account,by_symbol,subscriptions)) \
                     if in_session and radar_ok and not smoke_ended else None
-                opportunity_probe=(lambda tick,received:evaluate_shadow_opportunity(
-                    engine,detector,tick,{**by_symbol[tick.symbol],'status':'SHADOW'},
-                    radar,prices,account,probe_only=True) if tick.symbol in by_symbol else False) \
-                    if opportunity_callback is not None else None
                 observation_drops,priority_symbols=prewarm_handoff(
                     engine,detector,feed,observed,real_symbols,priority_symbols,observation_drops,
                     shadow.deliver,
                     shadow_detector=getattr(getattr(shadow, 'observer', None), 'detector', None),
-                    on_opportunity=opportunity_callback,opportunity_probe=opportunity_probe
+                    # No per-frame strategy probe in the operating loop.
+                    # The latest frame is evaluated only after this symbol's
+                    # already-received history has caught up.
+                    on_opportunity=opportunity_callback
                 )
                 if in_session:
                     subscriptions.refresh(engine,detector,feed,desired,now(),grace_seconds=observation_grace); symbols=set(subscriptions.symbols)

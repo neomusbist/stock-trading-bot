@@ -19,7 +19,7 @@ SYM=fixture.SYM
 
 class ShortSignalQueueTests(fixture.AccountFixture):
     seed_receiver=fixture.ReceiverPromotionTests.seed_receiver
-    def test_a_brief_valid_signal_is_evaluated_before_later_neutral_frames(self):
+    def test_brief_signal_invalidated_by_already_received_prints_is_not_replayed_as_order(self):
         self.seed_receiver()
         start=self.at
         # The receiver has already queued 6 neutral frames. Ask/bid, depth and
@@ -40,9 +40,25 @@ class ShortSignalQueueTests(fixture.AccountFixture):
             runner.prewarm_handoff(self.e,self.detector,self.feed,{SYM},set(),set(),0,
                 on_opportunity=callback,opportunity_probe=probe)
             if self.broker.orders:break
+        self.assertEqual(self.broker.orders,[])
+        events=[json.loads(line) for line in (self.e.folder/'events.jsonl').read_text(encoding='utf-8').splitlines()]
+        self.assertTrue(any(e.get('event')=='OBSERVATION_SIGNAL_QUEUED' for e in events))
+        decision=next(e for e in events if e.get('event')=='OBSERVATION_OPPORTUNITY_REEVALUATED')
+        self.assertFalse(decision['order_created'])
+        self.assertGreater(decision['latest_tick_at'],decision['trigger_tick_at'])
+
+    def test_still_valid_latest_signal_reaches_all_order_guards(self):
+        self.seed_receiver();lookup={};rows={SYM:self.row}
+        callback=lambda t,r:runner.evaluate_observed_entry(self.e,self.detector,t,r,lookup,
+            self.radar,self.prices,self.account,rows)
+        probe=lambda t,r:runner.evaluate_shadow_opportunity(self.e,self.detector,t,self.row,
+            self.radar,self.prices,self.account,probe_only=True)
+        for _ in range(12):
+            runner.prewarm_handoff(self.e,self.detector,self.feed,{SYM},set(),set(),0,
+                on_opportunity=callback,opportunity_probe=probe)
+            if self.broker.orders:break
         self.assertEqual(len(self.broker.orders),1)
-        self.assertEqual(self.broker.orders[0][3],1001)
-        self.assertLessEqual(self.broker.orders[0][2]*1001,71395.7759)
+        self.assertEqual(self.broker.orders[0],('BUY',SYM,67,1001))
 
     def test_priority_control_during_prefix_processing_preempts_new_entries(self):
         self.seed_receiver();calls=[]
@@ -55,13 +71,12 @@ class ShortSignalQueueTests(fixture.AccountFixture):
         self.assertGreater(self.feed.observation_q.qsize(),0)
         self.assertEqual(self.broker.orders,[])
 
-    def test_two_ready_prefixes_leave_remaining_fifo_frames_unread(self):
+    def test_unread_newer_frames_prevent_order_evaluation_of_a_prefix(self):
         self.seed_receiver();calls=[]
         runner.prewarm_handoff(self.e,self.detector,self.feed,{SYM},set(),set(),0,
             on_opportunity=lambda t,r:calls.append(t.cumulative),opportunity_probe=lambda *args:True)
-        # Old first six frames were ingested, never revived for an order.
-        self.assertEqual(calls,[7000,8000])
-        self.assertEqual(self.feed.observation_q.qsize(),len(CAUSAL)-8)
+        self.assertLessEqual(len(calls),1)
+        if calls:self.assertEqual(calls,[11000])
         self.assertEqual(self.broker.orders,[])
 
     def test_sixty_four_symbols_receive_bounded_fair_prefix_evaluations(self):

@@ -38,17 +38,19 @@ def main():
                     tick=Tick(sym,at,1001,1000,12000+1000*index,1001,1000,
                         ask_qty=10000,bid_qty=10000,depth_available=True,book_time=at)
                     feed.observation_q.put((at,tick))
+            prefix_diagnostics='--prefix-diagnostics' in sys.argv[2:]
             calls=[];passes=[];started=time.perf_counter()
             def probe(t,r):
                 return runner.evaluate_shadow_opportunity(case.e,case.detector,t,rows[t.symbol],
                     case.radar,case.prices,case.account,probe_only=True)
             def callback(t,r):
                 calls.append({'symbol':t.symbol,'source_at':t.time.isoformat(),
-                    'processing_at':case.at.isoformat(),'dispatch_elapsed_ms':1000*(time.perf_counter()-started)})
+                    'processing_at':case.at.isoformat(),'current_strategy_valid':bool(probe(t,r)),
+                    'dispatch_elapsed_ms':1000*(time.perf_counter()-started)})
             while (not feed.observation_q.empty() or getattr(feed,'_opportunity_pending',{})) and len(passes)<2000:
                 before=len(calls);turn=time.perf_counter()
                 runner.prewarm_handoff(case.e,case.detector,feed,set(symbols),set(),set(),0,
-                    on_opportunity=callback,opportunity_probe=probe)
+                    on_opportunity=callback,opportunity_probe=probe if prefix_diagnostics else None)
                 passes.append({'ms':1000*(time.perf_counter()-turn),'evaluations':len(calls)-before})
             at_breakout={r['symbol'] for r in calls if r['source_at'].endswith('30:10+09:00')}
             result={'input':'CAUSAL_SYNTHETIC_64_SYMBOLS_1088_FRAMES_WITH_NEUTRAL_TAIL',
@@ -56,6 +58,8 @@ def main():
                 'seconds':round(time.perf_counter()-started,4),'max_callbacks_per_pass':max(p['evaluations'] for p in passes),
                 'max_pass_ms':round(max(p['ms'] for p in passes),3),
                 'signal_prefix_symbols':len(at_breakout),'all_symbols_dispatched':len({r['symbol'] for r in calls}),
+                'current_valid_signal_symbols':len({r['symbol'] for r in calls if r['current_strategy_valid']}),
+                'per_frame_probe_enabled':prefix_diagnostics,
                 'remaining_frames':feed.observation_q.qsize(),'real_orders':0,'mock_orders':len(case.broker.orders),
                 'full_order_guards_measured':False,'dispatches':calls,'passes_detail':passes}
     finally:case.doCleanups()
