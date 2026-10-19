@@ -1,5 +1,7 @@
 # R6 인계 — 2026-10-19 최신 갱신
 
+> **최신 10:24 검증:** `feat/r6-opportunity-evidence-20261019`에서 계속한다. 기록·연구 코드 `2b8808a09351f552f780eee04c3328f03e155886`, 제한 기록 재현 CLI `8a144bbab93bb8fff51adbe179bfcee00fb2e26e`. [R6_OPPORTUNITY_IMPROVEMENT_20261019.md](R6_OPPORTUNITY_IMPROVEMENT_20261019.md)에 상위 원인 3개·정상 제외·여섯 정책 동일 자료 비교·182개 표적 검사 범위·운영 반영과 재개 명령을 기록했다. 10:18 운영 반영은 runner/기록기 두 파일만이며 새 진입 대안은 주문 금지 연구용이다. 10:24:56 LIVE/OPEN_READY, 보유·활성 주문 0, HALT 없음, 보호 파일 해시 일치. 하루 10건 및 수익성 개선은 미입증이다. GitHub 게시 대상은 위 개발 브랜치의 최종 로컬 HEAD 전체 소스다. 일반 Git 인증 부재로 연결된 GitHub 경로를 사용하며 실제 원격 커밋·동일 트리 확인은 최종 응답 및 private `PUBLICATION_RESULT.json`에 남긴다. 아래의 "push 하지 않음"은 각각 과거 단계 기록이다.
+
 > **최신 09:48 운영 반영:** `fix/r6-opening-loop-20261019`의 코드 커밋 `212ae7cbb400471cde383794e345eace54727907`을 기준으로 이어간다. 직전 `dedf4d3`은 FAST 수신 이력 손실, `212ae7c`는 완료된 과거 날짜의 무체결 취소가 오늘도 종목을 막는 결함을 수정했다. `fast_momentum.py` / `core/engine.py` 두 파일을 안전 대조 후 운영 반영하고 기존 당일 승인으로 재개했다. 09:21 runner 수정도 보존했다. [OPENING_OPPORTUNITY_FIX_20261019.md](OPENING_OPPORTUNITY_FIX_20261019.md)에 실제 서산 09:25 신호와 가격 상한 거절, 검증 범위, 기존 시험 4건의 재현된 자료 불일치, 운영 해시와 인계 증거가 있다. 09:49:35 LIVE·OPEN_READY·주문 준비 ON을 확인했다. 시장 전체 기회 수·수익성은 UNKNOWN이며 임계값은 바꾸지 않았다. GitHub push는 하지 않았다.
 
 아래 09:21 및 10/16 기록은 이전 상태이므로 위 최신 보고를 먼저 읽는다.
