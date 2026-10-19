@@ -25,7 +25,8 @@ from automation.redesign_strategies import (
     evaluate_early_momentum_breakout,
     evaluate_pullback_reclaim_breakout,
     compute_fast_viable_horizon,
-    ConditionalFastExitEvaluator
+    ConditionalFastExitEvaluator,
+    true_range_atr
 )
 from automation.engine import AutonomousEngine
 from tests.test_automation import FakeBroker
@@ -288,6 +289,77 @@ class R6RedesignTests(unittest.TestCase):
                                          Path('runtime/automation-production'), FakeBroker(), lambda: self.time)
         reason_strict = engine_strict.entry_market_reason(signal, quantity=10, fallback=tick_tolerated, phase='PRE_INTENT')
         self.assertEqual(reason_strict, 'ENTRY_QUOTE_ABOVE_LIMIT')
+
+    def test_redesign_evaluates_with_costs_dataclass_directly(self):
+        """Pass real Costs dataclass instance (not dict) to redesign evaluators to prove no AttributeError."""
+        from automation.capital import Costs
+        costs = Costs(buy=0.00015, sell=0.00015, tax=0.002, entry_slippage=0.002, exit_slippage=0.003)
+        bars = [
+            {'time': self.time - timedelta(minutes=3), 'open': 10000, 'high': 10050, 'low': 9950, 'close': 10020, 'volume': 1000},
+            {'time': self.time - timedelta(minutes=2), 'open': 10020, 'high': 10080, 'low': 9980, 'close': 10050, 'volume': 2000},
+            {'time': self.time - timedelta(minutes=1), 'open': 10050, 'high': 10100, 'low': 10000, 'close': 10080, 'volume': 1500},
+        ]
+        tick = Tick('093370', self.time, 10120, 1000, 10000, 10120, 10110, True, ask_qty=1000, bid_qty=1000, depth_available=True)
+        watch = {'code': '093370', 'resistance': 11000}
+
+        # Should execute cleanly without AttributeError: 'Costs' object has no attribute 'get'
+        sig_a, res_a = evaluate_early_momentum_breakout(bars, tick, watch, self.cfg, self.auto, costs)
+        self.assertIn('pass', res_a)
+
+        sig_b, res_b = evaluate_pullback_reclaim_breakout(bars, tick, watch, self.cfg, self.auto, costs)
+        self.assertIn('pass', res_b)
+
+    def test_pattern_detector_setup_trials_includes_redesign_trials_with_dataclass(self):
+        """PatternDetector.setup_trials executes and appends EarlyMomentumBreakout & PullbackReclaimBreakout with Costs dataclass."""
+        from automation.patterns import PatternDetector
+        from automation.capital import Costs
+        costs = Costs(buy=0.00015, sell=0.00015, tax=0.002, entry_slippage=0.002, exit_slippage=0.003)
+        detector = PatternDetector(self.cfg, self.auto, costs)
+
+        tick = Tick('093370', self.time, 10000, 10, 10000, 9990, 10000, 100, 100)
+        watch = {'code': '093370', 'status': 'WATCH', 'resistance': 11000}
+        gates, bars, f_cnt, b_cnt = detector._base_evaluation(tick, watch)
+        trials = detector.setup_trials(tick, watch, gates, _bars=[
+            {'time': self.time - timedelta(minutes=2), 'open': 9900, 'high': 10050, 'low': 9850, 'close': 10000, 'volume': 5000},
+            {'time': self.time - timedelta(minutes=1), 'open': 10000, 'high': 10050, 'low': 9950, 'close': 10000, 'volume': 2000},
+            {'time': self.time, 'open': 10000, 'high': 10050, 'low': 9950, 'close': 10000, 'volume': 1500},
+        ])
+        setups = {tr['setup']: tr for tr in trials}
+        self.assertIn('EarlyMomentumBreakout', setups)
+        self.assertIn('PullbackReclaimBreakout', setups)
+        self.assertTrue(setups['EarlyMomentumBreakout']['evaluated'])
+        self.assertTrue(setups['PullbackReclaimBreakout']['evaluated'])
+        self.assertIsNone(setups['EarlyMomentumBreakout']['evaluation_error'])
+        self.assertIsNone(setups['PullbackReclaimBreakout']['evaluation_error'])
+
+    def test_setup_trials_exception_recorded_not_swallowed(self):
+        """When an exception occurs during evaluation, it must be recorded into trials and not silently swallowed."""
+        from automation.patterns import PatternDetector
+        from automation.capital import Costs
+        from unittest.mock import patch
+        costs = Costs(buy=0.00015, sell=0.00015, tax=0.002, entry_slippage=0.002, exit_slippage=0.003)
+        detector = PatternDetector(self.cfg, self.auto, costs)
+        tick = Tick('093370', self.time, 10000, 10, 10000, 9990, 10000, 100, 100)
+        watch = {'code': '093370', 'status': 'WATCH', 'resistance': 11000}
+        gates, bars, f_cnt, b_cnt = detector._base_evaluation(tick, watch)
+
+        with patch('automation.redesign_strategies.evaluate_early_momentum_breakout', side_effect=ValueError('synthetic error')):
+            trials = detector.setup_trials(tick, watch, gates, _bars=[
+                {'time': self.time, 'open': 10000, 'high': 10050, 'low': 9950, 'close': 10000, 'volume': 1500},
+            ])
+        early = next(tr for tr in trials if tr['setup'] == 'EarlyMomentumBreakout')
+        self.assertFalse(early['evaluated'])
+        self.assertEqual(early['primary_reason_code'], 'EVALUATION_ERROR_ValueError')
+        self.assertIn('synthetic error', early['evaluation_error'])
+
+    def test_true_range_atr_calculates_gap(self):
+        """Wilder True Range properly captures gap up between prior close and current bar high/low."""
+        bars = [
+            {'open': 10000, 'high': 10100, 'low': 9950, 'close': 10000, 'volume': 100},
+            {'open': 10300, 'high': 10400, 'low': 10250, 'close': 10350, 'volume': 200},  # Gap up from 10000: TR = 10400 - 10000 = 400
+        ]
+        tr = true_range_atr(bars, period=1)
+        self.assertEqual(tr, 400.0)
 
 
 if __name__ == '__main__':

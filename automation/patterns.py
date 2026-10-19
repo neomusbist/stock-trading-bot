@@ -397,20 +397,38 @@ class PatternDetector(Detector):
                     'formed':bool(setup),'breakout':price_gates.get('breakout',gate(False,reason='GEOMETRY_ABSENT'))},
                 'virtual_entry':virtual.get('entry'),'virtual_invalidation':virtual.get('stop')})
         if getattr(self.cfg, 'enable_redesign_trials', True):
-            try:
-                from automation.redesign_strategies import evaluate_early_momentum_breakout, evaluate_pullback_reclaim_breakout
-                early_sig, early_res = evaluate_early_momentum_breakout(bars, t, watch, self.cfg, self.a, self.costs)
-                trials.append({'setup': 'EarlyMomentumBreakout', 'evaluated': True, 'candidate_generated': bool(early_sig),
-                               'entry_ready': bool(early_sig), 'failed_reasons': [] if early_sig else [early_res.get('reason', 'REJECT')],
-                               'primary_reason_code': 'SETUP_PRICE_GATES_PASS' if early_sig else early_res.get('reason', 'REJECT'),
-                               'signal': early_sig})
-                reclaim_sig, reclaim_res = evaluate_pullback_reclaim_breakout(bars, t, watch, self.cfg, self.a, self.costs)
-                trials.append({'setup': 'PullbackReclaimBreakout', 'evaluated': True, 'candidate_generated': bool(reclaim_sig),
-                               'entry_ready': bool(reclaim_sig), 'failed_reasons': [] if reclaim_sig else [reclaim_res.get('reason', 'REJECT')],
-                               'primary_reason_code': 'SETUP_PRICE_GATES_PASS' if reclaim_sig else reclaim_res.get('reason', 'REJECT'),
-                               'signal': reclaim_sig})
-            except Exception:
-                pass
+            from automation.redesign_strategies import evaluate_early_momentum_breakout, evaluate_pullback_reclaim_breakout
+            for setup_name, eval_fn in (
+                ('EarlyMomentumBreakout', evaluate_early_momentum_breakout),
+                ('PullbackReclaimBreakout', evaluate_pullback_reclaim_breakout),
+            ):
+                try:
+                    r_sig, r_res = eval_fn(bars, t, watch, self.cfg, self.a, self.costs)
+                    trials.append({
+                        'setup': setup_name,
+                        'evaluated': True,
+                        'candidate_generated': bool(r_sig),
+                        'entry_ready': bool(r_sig),
+                        'failed_reasons': [] if r_sig else [r_res.get('reason', 'REJECT')],
+                        'primary_reason_code': 'SETUP_PRICE_GATES_PASS' if r_sig else r_res.get('reason', 'REJECT'),
+                        'signal': r_sig,
+                        'evaluation_error': None,
+                        'evidence': r_res
+                    })
+                except Exception as e:
+                    err_type = type(e).__name__
+                    err_msg = str(e)[:200]
+                    trials.append({
+                        'setup': setup_name,
+                        'evaluated': False,
+                        'candidate_generated': False,
+                        'entry_ready': False,
+                        'failed_reasons': [f'EVALUATION_ERROR_{err_type}'],
+                        'primary_reason_code': f'EVALUATION_ERROR_{err_type}',
+                        'signal': None,
+                        'evaluation_error': f"{err_type}: {err_msg}",
+                        'evidence': {'error': f"{err_type}: {err_msg}", 'symbol': t.symbol, 'time': t.time.isoformat()}
+                    })
         return trials
 
     @observation_locked

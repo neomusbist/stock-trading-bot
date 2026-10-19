@@ -54,7 +54,7 @@ class AutomationConfig:
     exit_plan_reward_guard_enabled: bool = False  # cost-inclusive RR experiment; insufficient evidence to enable
     fast_momentum_enabled: bool = False  # R6 FAST live momentum entry integration
     enable_ask_1tick_tolerance: bool = False  # Pre-validated ask1 + 1 tick tolerance
-    enable_redesign_trials: bool = False  # Candidate A/B shadow observation
+    enable_redesign_trials: bool = True  # Candidate A/B shadow observation
     enable_redesign_live: bool = False  # Candidate A/B live order authority (requires explicit approval)
     pullback_min_rise: float = 0.008
     pullback_min_retrace: float = 0.20  # minimum retrace fraction for confirmed controlled pullback

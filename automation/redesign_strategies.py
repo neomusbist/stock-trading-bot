@@ -6,7 +6,7 @@ Diagnostic/Research/Shadow compatible; never bypasses risk or authorization guar
 from dataclasses import dataclass
 from datetime import datetime
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from core.util import floor_tick, tick_size
 from automation.decisions import gate
@@ -22,12 +22,29 @@ def floor_to_tick(price: float) -> int:
     return int(math.floor(price / ts) * ts)
 
 
-def calculate_net_proceeds_and_cost(entry: float, target: float, stop: float, costs: dict):
-    buy_fee = costs.get('buy', 0.00015)
-    sell_fee = costs.get('sell', 0.00015)
-    tax = costs.get('tax', 0.0018)
-    entry_slip = costs.get('entry_slippage', 0.002)
-    exit_slip = costs.get('exit_slippage', 0.003)
+def extract_costs(costs: Any) -> Tuple[float, float, float, float, float]:
+    """Extracts (buy, sell, tax, entry_slippage, exit_slippage) from Costs dataclass, dict, or None."""
+    if costs is None:
+        return 0.00015, 0.00015, 0.0018, 0.002, 0.003
+    if isinstance(costs, dict):
+        return (
+            costs.get('buy', 0.00015),
+            costs.get('sell', 0.00015),
+            costs.get('tax', 0.0018),
+            costs.get('entry_slippage', 0.002),
+            costs.get('exit_slippage', 0.003),
+        )
+    return (
+        getattr(costs, 'buy', 0.00015),
+        getattr(costs, 'sell', 0.00015),
+        getattr(costs, 'tax', 0.0018),
+        getattr(costs, 'entry_slippage', 0.002),
+        getattr(costs, 'exit_slippage', 0.003),
+    )
+
+
+def calculate_net_proceeds_and_cost(entry: float, target: float, stop: float, costs: Any):
+    buy_fee, sell_fee, tax, entry_slip, exit_slip = extract_costs(costs)
 
     cost_in = entry * (1.0 + entry_slip) * (1.0 + buy_fee)
     net_retention = (1.0 - exit_slip) * (1.0 - sell_fee - tax)
@@ -127,6 +144,9 @@ def evaluate_early_momentum_breakout(bars: list, t, watch: dict, cfg, auto, cost
 
     if calc_struct['net_rr'] is None or calc_struct['net_rr'] < min_rr:
         return None, {'reason': 'NET_RR_LOW', 'pass': False, 'net_rr': calc_struct['net_rr'], 'min_rr': min_rr}
+
+    if calc_emerg['net_rr'] is None or calc_emerg['net_rr'] < 1.0:
+        return None, {'reason': 'EMERGENCY_RR_SUB_ONE', 'pass': False, 'net_rr_emergency': calc_emerg['net_rr'], 'min_emerg_rr': 1.0}
 
     signal = {
         'pattern': 'EarlyMomentumBreakout',
@@ -242,6 +262,9 @@ def evaluate_pullback_reclaim_breakout(bars: list, t, watch: dict, cfg, auto, co
     if calc_struct['net_rr'] is None or calc_struct['net_rr'] < min_rr:
         return None, {'reason': 'NET_RR_LOW', 'pass': False, 'net_rr': calc_struct['net_rr'], 'min_rr': min_rr}
 
+    if calc_emerg['net_rr'] is None or calc_emerg['net_rr'] < 1.0:
+        return None, {'reason': 'EMERGENCY_RR_SUB_ONE', 'pass': False, 'net_rr_emergency': calc_emerg['net_rr'], 'min_emerg_rr': 1.0}
+
     signal = {
         'pattern': 'PullbackReclaimBreakout',
         'symbol': t.symbol,
@@ -306,7 +329,7 @@ def compute_fast_viable_horizon(
     Prevents distant daily resistance (+35% in Lunit) from inflating RR.
     Caps target by micro wave projection and checks breakeven reachability.
     """
-    costs = costs or dict(buy=0.00015, sell=0.00015, tax=0.0018, entry_slippage=0.002, exit_slippage=0.003)
+    buy_fee, sell_fee, tax, entry_slip, exit_slip = extract_costs(costs)
     ts = tick_size(entry_limit)
 
     if mtf_5m_context == "BEARISH":
@@ -314,8 +337,8 @@ def compute_fast_viable_horizon(
 
     effective_min_rr = min_net_rr if mtf_5m_context == "BULLISH" else (min_net_rr + 0.30)
 
-    cost_in = entry_limit * (1.0 + costs.get('entry_slippage', 0.002)) * (1.0 + costs.get('buy', 0.00015))
-    net_retention = (1.0 - costs.get('exit_slippage', 0.003)) * (1.0 - costs.get('sell', 0.00015) - costs.get('tax', 0.0018))
+    cost_in = entry_limit * (1.0 + entry_slip) * (1.0 + buy_fee)
+    net_retention = (1.0 - exit_slip) * (1.0 - sell_fee - tax)
     breakeven_price = ceil_to_tick(cost_in / net_retention)
 
     stop_proceeds = emergency_stop * net_retention
@@ -449,8 +472,28 @@ class ConditionalFastExitEvaluator:
             return False, 'HOLD', {'phase': 2, 'profit_floor': profit_floor}
 
 
-def statistics_atr(bars: list, period: int = 5) -> float:
-    if len(bars) < 2:
+def true_range_atr(bars: list, period: int = 14) -> float:
+    """
+    Computes standard Wilder True Range (TR) average over the given bar window:
+    TR = max(High - Low, |High - Prior Close|, |Low - Prior Close|)
+    """
+    if not bars:
         return 10.0
-    spans = [b['high'] - b['low'] for b in bars[-period:]]
-    return sum(spans) / max(1, len(spans))
+    if len(bars) == 1:
+        return max(1.0, float(bars[0]['high'] - bars[0]['low']))
+
+    tr_list = []
+    sub = bars[-(period + 1):]
+    for i in range(1, len(sub)):
+        h = float(sub[i]['high'])
+        l = float(sub[i]['low'])
+        prev_c = float(sub[i - 1]['close'])
+        tr = max(h - l, abs(h - prev_c), abs(l - prev_c))
+        tr_list.append(tr)
+
+    if not tr_list:
+        return max(1.0, float(bars[-1]['high'] - bars[-1]['low']))
+    return sum(tr_list) / len(tr_list)
+
+
+statistics_atr = true_range_atr

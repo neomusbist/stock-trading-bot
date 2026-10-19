@@ -65,7 +65,7 @@ class Config:
     after_a_min_gain: float = 0.003
     after_a_liquidity_mode: str = 'depth'
     after_default_venue: str = 'SOR'
-    enable_redesign_trials: bool = False
+    enable_redesign_trials: bool = True
     enable_redesign_live: bool = False
     min_early_momentum_rr: float = 1.40
     min_pullback_reclaim_rr: float = 1.50
