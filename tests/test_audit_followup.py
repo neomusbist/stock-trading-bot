@@ -45,7 +45,7 @@ class AuditFixture(unittest.TestCase):
     def tick(self,price=1001):return Tick('999990',self.clock[0],price,100,100,price+1,price-1)
     def signal(self,pattern='A'):
         return {'symbol':'999990','time':self.clock[0].isoformat(),'limit':1002,'stop':979,'pattern':pattern,'source_count':2,
-            'efficiency':efficiency(1002,979,1040,.8,10,self.e.costs)}
+            'target':1060,'efficiency':efficiency(1002,979,1060,.8,10,self.e.costs)}
     def buy(self,pattern='A',partial=False):
         order=self.e.enter(self.signal(pattern),self.tick());self.assertIsNotNone(order)
         total=1 if partial else order['qty'];self.e.cumulative_fill(order,total,total*order['limit'])
@@ -377,7 +377,7 @@ class SetupReachabilityTests(AuditFixture):
             seq=[(980,1000,997,1000)]*2
         elif pattern=='B':
             base=1017;top=1020;price=1021;ask=1021
-            seq=[(980,1000,997,1000),(990,1020,1015,2000),(1005,1010,1008,200),(1005,1010,1008,100)]
+            seq=[(980,1000,985,1000),(990,1020,1018,2000),(1010,1015,1012,200),(1010,1015,1012,100)]
         else:
             base=1007;top=1010;price=1011;ask=1011
             seq=[(1000,1010,1005,1000)]*5
