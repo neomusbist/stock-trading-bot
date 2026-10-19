@@ -538,6 +538,7 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
     engine.names[t.symbol]=watch.get('name')
     engine.market_status[t.symbol]=watch.get('market_status',{'pass':None,'reason_code':'MARKET_STATUS_UNKNOWN'})
     sig=detector.signal(t,watch)
+    fast_evaluation=None
     if not sig and getattr(engine.a, 'fast_momentum_enabled', False) and getattr(engine, 'fast_strategy', None) is not None:
         is_live = (engine.policy.mode == 'LIVE' and
                    bool(engine.policy.state.get('live_authorized')) and
@@ -562,13 +563,20 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
             received=eval_now,
             live_authorized=is_live
         )
+        fast_evaluation=engine.fast_strategy.last_evaluation.get(t.symbol)
         if fast_sig is not None:
             sig = fast_sig.to_engine_signal(watch)
+    capture=getattr(engine,'trade_review',None)
+    if capture is not None:
+        try:capture.evaluation(t,watch,detector.last_eval.get(t.symbol,{}),fast_evaluation,engine.clock())
+        except Exception:engine.trade_review_errors=getattr(engine,'trade_review_errors',0)+1
     if not sig:
         gates=detector.evaluation_gates(t,watch)
         failed=[k for k,v in gates.items() if v['result']=='FAIL']
         engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','PATTERN_OR_GATE_NOT_READY',
-            gates,price=t.price,extra={'failed_gates':failed,'signal_detected':False,'setup_trials':detector.last_eval.get(t.symbol,{}).get('trials',[])})
+            gates,price=t.price,extra={'failed_gates':failed,'signal_detected':False,
+                'setup_trials':detector.last_eval.get(t.symbol,{}).get('trials',[]),
+                'fast_evaluation':{k:fast_evaluation.get(k) for k in ('time','status','reason','regime')} if isinstance(fast_evaluation,dict) else None})
         return None
     sig['name']=watch.get('name')
     sig['fallback_source1']=bool(watch.get('fallback_source1'))

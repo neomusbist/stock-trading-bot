@@ -1,7 +1,8 @@
 """Bounded receiver evidence for actual trades. No broker or strategy decisions.
 
-WATCH data stays in a short memory ring. Only a real entry candidate promotes
-that ring to disk; holdings receive priority capture independent of SHADOW.
+WATCH ticks stay in a short memory ring. Real completed bars and bounded
+evaluation samples survive without an entry; only an actual entry candidate
+promotes its tick ring to disk. Holdings receive priority independent of SHADOW.
 Existing order/fill/fee logs are linked, not copied into a second ledger.
 """
 from collections import deque
@@ -33,7 +34,7 @@ class TradeReviewCapture:
         self.watch=frozenset();self.held=frozenset();self.promoted={}
         self.rings={};self.ring_size=0;self.pending=deque();self.pending_size=0
         self.losses=0;self.errors=0;self.ring_evictions=0;self.written=0
-        self.storage_blocked=False;self.last_error='';self.last_lines={};self.last_bar={}
+        self.storage_blocked=False;self.last_error='';self.last_lines={};self.last_bar={};self.last_evaluation_at={}
         self.last_status_write=0.
         self.day='';self.day_written=0;self.total_written=0;self.path=None;self.path_size=0
         own=sorted(self.folder.glob('trade-review-????????-????.jsonl'))
@@ -89,7 +90,7 @@ class TradeReviewCapture:
                 self.promoted={s:until for s,until in self.promoted.items() if until>current or s in self.held}
                 for s in set(self.rings)-self.watch-self.held:
                     self.ring_size-=sum(len(b) for _,b in self.rings.pop(s))
-                for mapping in (self.last_lines,self.last_bar):
+                for mapping in (self.last_lines,self.last_bar,self.last_evaluation_at):
                     for s in set(mapping)-self.watch-self.held-set(self.promoted):mapping.pop(s,None)
             for symbol,p in positions.items():self.position(symbol,p,at)
         except Exception as error:
@@ -135,7 +136,45 @@ class TradeReviewCapture:
         self.last_bar[symbol]=key
         self._record({'event':'COMPLETED_BAR','symbol':symbol,'bar':dict(bar),
             'confirmed_at':iso(received),'processed_at':iso(processed),
-            'source':'ACTUAL_RECEIVED_DETECTOR_HISTORY','reference_bars_used':False},symbol)
+            'source':'ACTUAL_RECEIVED_DETECTOR_HISTORY','reference_bars_used':False},symbol,
+            force=symbol in self.watch or symbol in self.held)
+
+    def evaluation(self,t,watch,evaluation,fast,asof):
+        """Small sampled no-entry evidence; no new detector or order evaluation.
+
+        At most 12 WATCH symbols, one sample/15s in the opening half-hour,
+        otherwise one/minute. Existing queue/day/total limits still apply.
+        This is explicitly incomplete evidence, never a census of all ticks.
+        """
+        symbol=t.symbol
+        if symbol not in self.watch and symbol not in self.held:return
+        interval=15. if '09:00:00'<=asof.strftime('%H:%M:%S')<'09:30:00' else 60.
+        with self.lock:
+            previous=self.last_evaluation_at.get(symbol)
+            if previous is not None and (asof-previous).total_seconds()<interval:return
+            self.last_evaluation_at[symbol]=asof
+        gates=evaluation.get('gates',{}) if isinstance(evaluation,dict) else {}
+        trials=[]
+        for trial in (evaluation or {}).get('trials',[]):
+            price=trial.get('gates',{}).get('invalidation',{}).get('values',{})
+            reward=trial.get('gates',{}).get('risk_reward',{}).get('values',{})
+            trials.append({'setup':trial.get('setup'),'formed':trial.get('candidate_generated'),
+                'ready':trial.get('entry_ready'),'failures':trial.get('failed_reasons'),
+                'entry':price.get('entry'),'stop':price.get('stop'),'target':reward.get('target'),
+                'rr':reward.get('rr')})
+        fast=fast if isinstance(fast,dict) else {}
+        self._record({'event':'OPPORTUNITY_SAMPLE','symbol':symbol,'asof':iso(asof),
+            'exchange_at':iso(t.time),'received_at':getattr(t,'received_at',None),
+            'received_monotonic':getattr(t,'received_monotonic',None),
+            **{k:getattr(t,k,None) for k in ('price','bid','ask','bid_qty','ask_qty','depth_available','regular')},
+            'book_time':iso(getattr(t,'book_time',None)),
+            'watch':{k:watch.get(k) for k in ('status','source_count','fallback_source1','resistance',
+                'resistance_asof','observed_at','first_raw_at','first_watch_at')},
+            'market_status':watch.get('market_status',{}),
+            'gates':{k:gates[k] for k in ('warmup','spread','liquidity','acceleration','structure') if k in gates},
+            'trials':trials,'fast':{k:fast.get(k) for k in ('time','status','reason','regime')},
+            'sampling_interval_seconds':interval,'coverage':'SAMPLED_NOT_ALL_OPPORTUNITIES',
+            'orders_enabled':False,'actual_order_permission':False},symbol,force=True)
 
     def position(self,symbol,p,at):
         sig=p.get('signal') or {}
