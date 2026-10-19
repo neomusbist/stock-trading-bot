@@ -37,3 +37,12 @@
 브랜치 `fix/r6-midday-focus-20261019`는 직전 최종본 `7f74491`에서 이어간다. 운영 반영 대상은 runner 1개 파일뿐이다. 사용자 승인 범위에 따라 공식 STOP·계좌/장부 무보유·무미체결·무UNKNOWN·무HALT·수동 보유 대조, 백업·해시 및 장부/승인 보존 후 기존 당일 승인으로 재개한다. 실제 결과는 후속 갱신과 private `DEPLOYMENT.json`에 기록한다.
 
 원본과 재개 증거: `C:\Users\MJS\Documents\주식자동매매_개발\r6-midday-gates-20261019-private`. `ATTACHMENT_AUDIT_PRIVATE.json`, `EVENTS_1229_1231_PRIVATE.jsonl`, `TICKS_1229_1231_PRIVATE.jsonl`, `SHADOW_1228_1231_PRIVATE.jsonl`, `WINDOW_REPLAY_PRIVATE.json`, `ROUTED_FAILURE_REPLAY.json`을 사용했다. active events 약 2.85MB, 틱 약 1.70MB, SHADOW 이벤트 약 4.27MB만 시각 탐색하여 읽었고 전체 로그를 전수 검색하지 않았다. 민감한 상태/계좌 원문은 저장소 밖에 보존한다.
+
+## 12:43 완료 결과
+
+- 실제 코드 커밋 `dfee211348d1f9dce4606f8208d7893b8f130452`.
+- 관련 **183 PASS / 0 FAIL / 0 ERROR / 0 SKIP**, 27.85초, 네트워크 시도 0, 전체 회귀 아님. 앞선 WATCH 감사에서 확인한 기준판 기존 실패는 이 검사와 별개이며 전체 PASS로 변경 보고하지 않는다.
+- 12:43:16.781234 runner 1개 파일만 운영 반영. 해시 `8d3ca9cacad8be7f182e8ac7ad6dad4b2bf0e4aeac21ce2f63ea758ab4e7f14e`. 백업은 `r6-operating-midday-focus-backup-20261019-124316`.
+- STOP 후 실제 증권사 계좌와 수동 보유를 대조했고, 봇 보유/미체결/UNKNOWN/주문 작업 0, HALT 없음. 장부·당일 손실 128원·위험 설정·사용자 승인 영수증을 보존했다. FAST/engine/exit_plan/시각 및 이전 WATCH 수정 해시는 그대로다.
+- 12:43:17.576429 기존 당일 승인으로 공식 LIVE 재개. 12:43:40.257630 확인에서 LIVE/OPEN_READY/주문 준비 ON, 계좌·연결 정상, 큐 0, 지연 약 0.00045초, 보호 해시 일치. 새 전략을 켜거나 거래를 강제로 만들지 않았다.
+- 최신 소스 보존용 GitHub 브랜치는 `fix/r6-midday-focus-20261019`. 실제 게시 결과·원격 커밋·동일 소스 트리 검증은 private `PUBLICATION_RESULT.json`에 기록한다. main과 이전 개발 브랜치를 변경하지 않는다.
