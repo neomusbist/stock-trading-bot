@@ -77,3 +77,11 @@ private `C:\Users\MJS\Documents\주식자동매매_개발\r6-lunit-20261019-priv
 `TRADE_PRIVATE.json`, `BROKER_PRIVATE.json`, `CAPTURE_PRIVATE.jsonl`, `EVENT_WINDOW_PRIVATE.jsonl`, `BASELINE_REPLAY.json`, `FIXED_REPLAY.json`, `FINAL_TARGETED.json/.log`, `replay.py`, `run_targeted.py`, `STOP_STATUS.json`.
 
 운영 원본은 `C:\Users\MJS\Desktop\주식자동매매\runtime\automation-production\state.json`, `trade-review\trade-review-20261019-0004.jsonl` 및 `0005.jsonl`. 이 두 제한 파일에서 해당 종목·시간만 조회했다. 계좌·주문 식별자가 있는 PRIVATE/운영 runtime은 GitHub에 게시하지 않는다. 보고서와 공개 fixture는 식별자를 제외했다.
+
+## 12:01 운영 반영 결과
+
+코드 커밋 `6038411f3aa4a2046ffaf5b1898be2b5bceb286b`. 사용자 명시 승인에 따라 12:00:14.707178에 FAST와 이전 WATCH 3개 파일(총 4개)만 운영에 반영했다. 바로 전 계좌·장부 대조에서 봇 보유/미체결/UNKNOWN/주문 작업 0, HALT 없음, 수동 보유 일치를 확인했다. 기존 `BUILD_ID`와 당일 직접 승인 영수증을 바꾸지 않았으며 공식 `resume_live_continuous(True)`로 12:00:15.391430에 재개했다. 새 LIVE 승인이나 영수증을 만들지 않았다.
+
+12:01:06.898459 확인: Worker 실행, LIVE/OPEN_READY, 주문 준비 ON, 신선한 실제 정규장 틱·구독·계좌 정상, 큐 깊이 0, 이벤트 루프 지연 약 0.0034초, 봇 보유·미체결·UNKNOWN 0, HALT 없음. 당일 손실 128원, 기존 승인 유효, 전체 운영 식별자 소스 해시 일치. `engine.py`/`exit_plan.py`/시각 패치/위험 설정/수동 보호/기존 당일 장부는 해시 또는 내용 대조로 보존했다. 관찰 전용 B/C는 운영 연결하지 않았다.
+
+백업: `C:\Users\MJS\Documents\주식자동매매_개발\r6-operating-lunit-watch-backup-20261019-120014`. 상세 안전·보존 증거는 private `DEPLOYMENT.json`, `FINAL_LIVE_STATUS.json`. `thresholds_changed=False`는 45초·2틱·진입·위험 임계값을 임의 조정하지 않았다는 뜻이며, 오류로 축소되던 실제 2틱 가격거리를 정상 호가단위로 복원한 동작 변화는 위 재현에 명시했다.

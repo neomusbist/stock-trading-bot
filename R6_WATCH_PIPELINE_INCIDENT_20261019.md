@@ -72,3 +72,5 @@ private `r6-watch-incident-20261019-private/R6_WATCH_PIPELINE_CANDIDATE_20261019
 기존의 독립 오프라인 상승 지속·확정봉 조정 후 재돌파 대안을 재사용한다. 먼저 3개 파일의 승인 배포 후 구독 공백·신선한 호가율·연속 완성봉 확보가 실제로 개선됐는지 비교한다. 다음으로 당시 알 수 있었던 상승/보합/하락 및 WATCH/비WATCH 모집단을 고정하여 같은 수신 순서로 진입 적격·수량·비용·지연·슬리피지·순손익·MFE/MAE를 비교한다. 구조가 불완전한 후보는 유효 거래로 올리지 않는다. 실제 체결 호가나 연속 자료가 부족하면 그 항목은 UNKNOWN으로 남긴다. 유리한 결과가 확인되기 전에는 LIVE 전략을 바꾸지 않는다.
 
 근거는 저장소 밖 `C:\Users\MJS\Documents\주식자동매매_개발\r6-watch-incident-20261019-private`의 `RECORDED_DAY_FUNNEL.json`, `1054_UNIQUE_FUNNEL.json`, `QUOTE_AND_TURNOVER_CHECK.json`, 제한 원본, `TARGETED_ASSESSED.json`, 기준판 실패 기록 및 배포 후보에 있다. 운영 원본 전체·인증·계좌 자료는 GitHub에 포함하지 않는다.
+> **2026-10-19 12:01 후속:** 사용자 최신 승인으로 아래 WATCH 3파일과 루닛 호가단위 오류 교정을 12:00:14 운영 반영, 12:00:15 공식 LIVE 재개했다. 무보유/무미체결/무UNKNOWN·수동 보유 대조, 장부/예산/승인 보존, 백업·무결성 검사를 통과했다. 12:01:06 LIVE/OPEN_READY/주문 준비 ON 및 배포 파일 해시 일치 확인. [R6_LUNIT_INCIDENT_20261019.md](R6_LUNIT_INCIDENT_20261019.md)와 HANDOFF 최상단을 먼저 읽는다. 아래 미배포/승인 대기는 해당 과거 시점의 상태다.
+
