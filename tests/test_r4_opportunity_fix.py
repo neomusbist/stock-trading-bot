@@ -126,3 +126,37 @@ class R4OpportunityFixTests(unittest.TestCase):
         self.assertFalse(plan['reward_guard_pass'])
         self.assertLess(plan['net_reward_risk'], 1.0)
         self.assertAlmostEqual(plan['net_reward_risk'], 0.8078, places=3)
+
+    def test_scheduled_items_admits_shadow_readiness_priority_to_hot_slots(self):
+        worker = object.__new__(RadarWorker)
+        worker.a = replace(AUTO, structural_breakout_enabled=True)
+        worker.radar = SimpleNamespace(watch={}, momentum={'77': {'fast_signal_ready': True, 'tier': 0}})
+        worker.status_waiting = {}
+        worker.status_sequence = 0
+        worker.status_cache = {}
+        worker.status_priority_symbols = frozenset(str(i) for i in range(12))
+        rows = [{'code': str(i), 'source_details': {'s': {}}, 'discovery_context': {'last_cycle_return': 0}} for i in range(85)]
+        with patch('automation.radar.now', return_value=AT):
+            order = worker.scheduled_items(rows)
+        # Active WATCH (0-11) first, then candidate with SHADOW fast readiness ('77').
+        self.assertEqual([x['code'] for x in order[:12]], list(map(str, range(12))))
+        self.assertEqual(order[12]['code'], '77')
+
+    def test_scheduled_items_expands_hot_slots_when_active_incumbents_are_cached(self):
+        worker = object.__new__(RadarWorker)
+        worker.a = AUTO
+        worker.radar = SimpleNamespace(watch={})
+        worker.status_waiting = {}
+        worker.status_sequence = 0
+        worker.status_priority_symbols = frozenset(str(i) for i in range(12))
+        # All 12 active incumbents have fresh cached status checked 5 seconds ago
+        worker.status_cache = {str(i): {'checked_at': (AT - timedelta(seconds=5)).isoformat()} for i in range(12)}
+        # 16 candidates have gains
+        rows = [{'code': str(i), 'source_details': {'s': {}}, 'discovery_context': {'last_cycle_return': 0.05 if i >= 12 and i < 28 else 0}} for i in range(85)]
+        with patch('automation.radar.now', return_value=AT):
+            order = worker.scheduled_items(rows)
+        # Active WATCH (0-11) first, then all 16 hot candidates admitted (slots expanded to 20 instead of 8)
+        self.assertEqual([x['code'] for x in order[:12]], list(map(str, range(12))))
+        hot_admitted = [x['code'] for x in order[12:28]]
+        self.assertEqual(set(hot_admitted), set(str(i) for i in range(12, 28)))
+

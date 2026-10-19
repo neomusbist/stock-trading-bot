@@ -225,13 +225,24 @@ class RadarWorker:
             gain=gain if type(gain) in (float,int) and gain>0 else 0
             try:
                 first=row.get('first_raw_at') or row.get('discovery_context',{}).get('first_raw_at')
-                recent=0<=(now()-date_time.fromisoformat(first)).total_seconds()<=2*self.a.scan_seconds
+                recent=0<=(now()-date_time.fromisoformat(first)).total_seconds()<=4*self.a.scan_seconds
             except (TypeError,ValueError):recent=False
             rising_rank=any(type(d.get('values',{}).get('flu_rt')) in (float,int) and d['values']['flu_rt']>0 for d in row['source_details'].values())
             multi_source=len(row.get('source_details',{}))>=2
-            if sym not in active and sym not in self.radar.watch and (gain>0 or (recent and rising_rank) or multi_source):
-                moving.append((gain,len(row.get('source_details',{})),-self.status_waiting[sym],sym))
-        slots=min(self.a.max_scan_charts,max(4,self.a.max_scan_charts-len(active)))
+            mom=getattr(self.radar,'momentum',{}).get(sym,{})
+            shadow_ready=bool(mom.get('fast_signal_ready') or mom.get('tier') in (0,1,2))
+            tier_bonus=1.0 if mom.get('fast_signal_ready') else 0.5 if mom.get('tier') in (0,1) else 0.2 if mom.get('tier')==2 else 0.0
+            if sym not in active and sym not in self.radar.watch and (gain>0 or (recent and rising_rank) or multi_source or shadow_ready):
+                moving.append((gain+tier_bonus,len(row.get('source_details',{})),-self.status_waiting[sym],sym))
+        active_needing=0
+        for s in active:
+            st=self.status_cache.get(s)
+            if not st or not st.get('checked_at'):active_needing+=1
+            else:
+                try:
+                    if (now()-date_time.fromisoformat(st['checked_at'])).total_seconds()>self.a.scan_seconds*2:active_needing+=1
+                except (ValueError,TypeError):active_needing+=1
+        slots=min(self.a.max_scan_charts,max(4,self.a.max_scan_charts-active_needing))
         hot={sym for *_,sym in sorted(moving,reverse=True)[:slots]}
         # Incumbent deadlines, then bounded movers, then the original aging FIFO.
         # DynamicRadar still checks affordability and all status/structure gates.
