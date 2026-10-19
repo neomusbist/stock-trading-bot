@@ -1,7 +1,7 @@
 """단일 writer 주문/체결 상태기계. 접수는 포지션이 아니며 실제 체결만 수량에 반영한다."""
 import json
 import time
-from datetime import datetime
+from datetime import datetime,date
 from pathlib import Path
 from core.settings import now
 from core.util import atomic_json, number, code,read_json_retry,exception_details,floor_tick,tick_size
@@ -75,7 +75,25 @@ class Engine:
         counters[key]=counters.get(key,0)+1
 
     def entry_failure(self,symbol):
-        return self.s.get('entry_failures',{}).get(symbol)
+        failure=self.s.get('entry_failures',{}).get(symbol)
+        if not isinstance(failure,dict):return failure
+        # A preserved audit ledger can contain an earlier day's resolved zero-
+        # fill attempt. Normal day rollover already expires these latches; do
+        # not let their retention silently create a permanent symbol ban.
+        # Missing/ambiguous evidence, current-day failures and live orders keep
+        # the original fail-closed behavior. Never alter the ledger to expire it.
+        try:
+            failed_day=date.fromisoformat(failure['day'])
+            today=self.clock().date()
+            if self.s['day']!=today.isoformat() or failed_day>=today:return failure
+            order=self.s['orders'][failure['local']]
+            resolved=(order.get('symbol')==symbol and order.get('side')=='BUY'
+                and order.get('status') in {'CANCELED','REJECTED'}
+                and type(order.get('filled')) in (int,float) and order['filled']==0
+                and str(order.get('created','')).startswith(failed_day.isoformat()+'T'))
+            if resolved and symbol not in self.s['positions'] and not self.active_orders(symbol):return None
+        except (KeyError,TypeError,ValueError):pass
+        return failure
 
     def pending_entry_lifecycles(self):
         return sum(1 for o in self.active_orders(side='BUY') if not o.get('entry_counted') and not o.get('filled'))
