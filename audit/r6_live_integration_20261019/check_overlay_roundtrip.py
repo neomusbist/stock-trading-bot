@@ -11,7 +11,8 @@ CHANGED=('automation/decisions.py','automation/engine.py','automation/focus_sele
 INSTALL_PATHS=CHANGED+('runtime/RELEASE_IDENTITY.json',)
 
 def main():
-    candidate,baseline,original_manifest,output=map(lambda p:Path(p).resolve(),sys.argv[1:])
+    candidate,baseline,original_manifest,output=map(lambda p:Path(p).resolve(),sys.argv[1:5])
+    corrected_rollback=Path(sys.argv[5]).resolve() if len(sys.argv)>5 else None
     sys.path.insert(0,str(candidate))
     from automation.release_integrity import check_runtime_integrity
     manifest=json.loads((candidate/'runtime/RELEASE_IDENTITY.json').read_text(encoding='utf-8'))
@@ -44,9 +45,17 @@ def main():
         all_baseline=all(sha(target/rel)==h for rel,h in before.items())
         assert restored and all_baseline
         assert all((target/p).read_bytes()==value for p,value in sentinels.items())
+        corrected_verified=False
+        if corrected_rollback is not None:
+            shutil.copyfile(corrected_rollback,target/'runtime/RELEASE_IDENTITY.json')
+            check=check_runtime_integrity(target)
+            assert check['valid'] and check['manifest_verified'],check['reasons']
+            assert all(sha(target/rel)==h for rel,h in before.items())
+            corrected_verified=True
         result={'temporary_target_only':True,'install_paths':list(INSTALL_PATHS),
             'installed_hashes':overlay,'post_overlay_integrity':True,'manifest_files_checked':len(manifest['files']),
             'all_original_source_hashes_restored':all_baseline,'all_eight_original_paths_restored':restored,
+            'corrected_rollback_manifest_verified':corrected_verified,
             'ledger_risk_settings_authorization_sentinels_unchanged':True,
             'legacy_deploy_release_used':False,'live_deployed':False,'real_orders':0}
     output.write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
