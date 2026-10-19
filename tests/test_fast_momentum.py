@@ -3,7 +3,8 @@ Unit and Integration Tests for R6 Fast Momentum Strategy (automation/fast_moment
 """
 import unittest
 from datetime import datetime, timedelta
-from types import SimpleNamespace
+from core.strategy import Tick
+from tests.test_r6_fast_repair import ticks, watch
 
 from automation.fast_momentum import FastMomentumStrategy, FastSignal, MicroTape
 from automation.session import KST
@@ -14,13 +15,17 @@ class TestFastMomentumStrategy(unittest.TestCase):
         self.base_time = datetime(2026, 10, 14, 9, 1, 0, tzinfo=KST)
 
     def _tick(self, symbol="005930", price=70000.0, volume=100, delta_seconds=0, bid=None, ask=None):
-        t = SimpleNamespace(
+        stamp = self.base_time + timedelta(seconds=delta_seconds)
+        t = Tick(
             symbol=symbol,
             price=float(price),
             volume=int(volume),
-            time=self.base_time + timedelta(seconds=delta_seconds),
+            cumulative=int((delta_seconds+1)*volume),
+            time=stamp,
             bid=float(bid or price - 50),
-            ask=float(ask or price + 50)
+            ask=float(ask or price + 50),
+            bid_qty=10000, ask_qty=10000, depth_available=True,
+            book_time=stamp, depth_source='SIMULATED_QUOTE'
         )
         return t
 
@@ -38,27 +43,12 @@ class TestFastMomentumStrategy(unittest.TestCase):
         self.assertEqual(m['p_max_30'], 70950.0)
 
     def test_regime_a_early_momentum_entry(self):
-        """Regime A: Aggressive early buying with tight spread -> emits valid signal."""
-        # Feed 10 ticks of building volume and upward ticks
-        for s in range(10):
-            t = self._tick(
-                price=50000.0 + s * 50,
-                volume=300,
-                delta_seconds=s * 2,
-                bid=50000.0 + s * 50,
-                ask=50050.0 + s * 50
-            )
-            self.strategy.ingest_tick(t)
-
-        watch = {'name': '유효후보', 'reference_price': 49800.0, 'resistance': 52500.0}
-        last_t = self._tick(
-            price=50450.0,
-            volume=500,
-            delta_seconds=19,
-            bid=50450.0,
-            ask=50500.0
-        )
-        sig = self.strategy.evaluate(last_t, watch, capital_limit=81300.0, risk_budget=1626.0)
+        """Independent causal support and a timestamped ceiling permit an early candidate."""
+        data = ticks(start=self.base_time)
+        for t in data:
+            self.strategy.ingest_tick(t, t.time)
+        sig = self.strategy.evaluate(data[-1], watch(at=self.base_time), capital_limit=81300.0,
+                                     risk_budget=1626.0, ingest=False, received=data[-1].time)
 
         self.assertIsNotNone(sig)
         self.assertEqual(sig.regime, 'A')
@@ -164,33 +154,16 @@ class TestFastMomentumStrategy(unittest.TestCase):
         phase = self.strategy.determine_phase(early_time)
         self.assertEqual(phase, 'OPENING_EARLY')
 
-        for s in range(6):
-            t = SimpleNamespace(
-                symbol="000660",
-                price=180000.0 + s * 200,
-                volume=50,
-                time=early_time + timedelta(seconds=s * 3),
-                bid=180000.0 + s * 200,
-                ask=180100.0 + s * 200
-            )
-            self.strategy.ingest_tick(t)
-
-        watch = {'name': 'SK하이닉스', 'reference_price': 179500.0}
-        last_t = SimpleNamespace(
-            symbol="000660",
-            price=181000.0,
-            volume=80,
-            time=early_time + timedelta(seconds=16),
-            bid=181000.0,
-            ask=181200.0
-        )
-        # Sizing with larger capital to allow 1 share of 180k
-        sig = self.strategy.evaluate(last_t, watch, capital_limit=250000.0, risk_budget=5000.0)
+        data = ticks(start=early_time)
+        for t in data:
+            self.strategy.ingest_tick(t, t.time)
+        sig = self.strategy.evaluate(data[-1], watch(at=early_time), capital_limit=81300.0,
+                                     risk_budget=1626.0, ingest=False, received=data[-1].time)
         self.assertIsNotNone(sig)
         self.assertEqual(sig.phase, 'OPENING_EARLY')
 
     def test_exit_plan_invalidation_and_scratch(self):
-        """3-tier exit: Stop loss, emergency plunge, and momentum stall scratch."""
+        """Confirmed soft breach, immediate executable hard breach, and failed rebound."""
         pos = {
             'symbol': '005930',
             'entry': 70000.0,
@@ -205,31 +178,34 @@ class TestFastMomentumStrategy(unittest.TestCase):
         should_exit, reason, _ = self.strategy.evaluate_exit(pos, t_hold, self.base_time + timedelta(seconds=30))
         self.assertFalse(should_exit)
 
-        # 2. Invalidation stop exit
+        # A single touch holds; a second independent print confirms the breach.
         t_stop = self._tick(price=69200.0, delta_seconds=40)
+        self.strategy.ingest_tick(t_stop, t_stop.time)
         should_exit, reason, _ = self.strategy.evaluate_exit(pos, t_stop, self.base_time + timedelta(seconds=40))
+        self.assertFalse(should_exit)
+        t_stop2 = self._tick(price=69150.0, delta_seconds=41)
+        self.strategy.ingest_tick(t_stop2, t_stop2.time)
+        should_exit, reason, _ = self.strategy.evaluate_exit(pos, t_stop2, t_stop2.time)
         self.assertTrue(should_exit)
         self.assertEqual(reason, 'INVALIDATION_STOP_EXIT')
 
         # 3. Emergency plunge exit
-        t_emg = self._tick(price=68900.0, delta_seconds=40)
-        should_exit, reason, _ = self.strategy.evaluate_exit(pos, t_emg, self.base_time + timedelta(seconds=40))
+        t_emg = self._tick(price=68900.0, delta_seconds=42)
+        should_exit, reason, _ = self.strategy.evaluate_exit(pos, t_emg, t_emg.time)
         self.assertTrue(should_exit)
         self.assertEqual(reason, 'EMERGENCY_PLUNGE_EXIT')
 
-        # 4. Momentum stall scratch exit after 60s
-        # Simulate heavy downticks in the tape
-        for s in range(10):
-            t_down = self._tick(price=70000.0 - s * 20, volume=150, delta_seconds=60 + s)
-            self.strategy.ingest_tick(t_down)
-
-        t_stall = self._tick(price=69850.0, delta_seconds=75)
-        should_exit, reason, _ = self.strategy.evaluate_exit(pos, t_stall, self.base_time + timedelta(seconds=75))
+        # A lower rebound high and two prints below its floor are causal evidence.
+        self.strategy = FastMomentumStrategy()
+        for s, price in enumerate([70000, 70200, 70050, 70150, 70040, 70030]):
+            t_down = self._tick(price=price, volume=150, delta_seconds=60+s)
+            self.strategy.ingest_tick(t_down, t_down.time)
+        should_exit, reason, _ = self.strategy.evaluate_exit(pos, t_down, t_down.time)
         self.assertTrue(should_exit)
-        self.assertEqual(reason, 'MOMENTUM_STALL_SCRATCH_EXIT')
+        self.assertEqual(reason, 'MOMENTUM_FAILURE_EXIT')
 
-    def test_profit_protection_lock_at_one_r(self):
-        """Profit protection moves stop to break-even at +1R."""
+    def test_profit_protection_requires_confirmed_post_fill_structure(self):
+        """An excursion alone holds; a later confirmed higher low can protect profit."""
         pos = {
             'symbol': '005930',
             'entry': 70000.0,
@@ -238,13 +214,296 @@ class TestFastMomentumStrategy(unittest.TestCase):
             'emergency': 69000.0,
             'opened': self.base_time.isoformat()
         }
-        # Price hits 70,800 (+800 KRW > 1R)
-        t_profit = self._tick(price=70800.0, delta_seconds=30)
+        t_profit = self._tick(price=71100.0, delta_seconds=30)
+        self.strategy.ingest_tick(t_profit, t_profit.time)
         should_exit, reason, _ = self.strategy.evaluate_exit(pos, t_profit, self.base_time + timedelta(seconds=30))
         self.assertFalse(should_exit)
+        self.assertFalse(pos.get('profit_locked', False))
+        self.assertEqual(pos['stop'], 69300)
+        for s, price in enumerate([71500, 71200, 71600], 31):
+            t_profit = self._tick(price=price, delta_seconds=s)
+            self.strategy.ingest_tick(t_profit, t_profit.time)
+            outcome = self.strategy.evaluate_exit(pos, t_profit, t_profit.time)
+        self.assertFalse(outcome[0])
         self.assertTrue(pos.get('profit_locked'))
-        self.assertGreater(pos['stop'], 70000.0, "Stop must be moved above entry price to lock profit")
+        self.assertGreater(pos['protection_stop'], 70000)
+        self.assertEqual(pos['stop'], 69300)
+
+    def test_sm_bexel_incident_reproduction_holds_noise(self):
+        """2026-10-15 17:43 SM Bexel incident reproduction:
+        Entry 3,305 KRW, stop 3,290 KRW, emergency 3,285 KRW.
+        Within 21 seconds, price fluctuates between 3,300 and 3,315 (5 KRW 1-tick noise).
+        With 45s settling window and multi-step swing filtering, the bot MUST HOLD and NOT exit.
+        """
+        pos = {
+            'symbol': '010580',
+            'entry': 3305.0,
+            'qty': 21,
+            'stop': 3290.0,
+            'emergency': 3285.0,
+            'opened': self.base_time.isoformat()
+        }
+        bexel_ticks = [
+            (0, 3305.0, 3300.0, 3305.0),
+            (3, 3310.0, 3305.0, 3310.0),
+            (8, 3315.0, 3310.0, 3315.0),  # Peak excursion +10 KRW (+0.3%)
+            (12, 3310.0, 3305.0, 3310.0), # 1-tick dip
+            (15, 3315.0, 3310.0, 3315.0), # 1-tick bounce
+            (18, 3310.0, 3305.0, 3310.0), # 1-tick dip
+            (20, 3305.0, 3300.0, 3305.0), # Back to entry
+            (21, 3300.0, 3300.0, 3305.0), # Retest breakout level at 3,300 KRW
+        ]
+        strat = FastMomentumStrategy()
+        for idx, (sec, price, bid, ask) in enumerate(bexel_ticks):
+            t_stamp = self.base_time + timedelta(seconds=sec)
+            t = Tick(symbol='010580', price=price, volume=100, cumulative=(idx + 1) * 100,
+                     time=t_stamp, bid=bid, ask=ask, bid_qty=500, ask_qty=500,
+                     depth_available=True, book_time=t_stamp)
+            strat.ingest_tick(t, t.time)
+
+        # Evaluate at 21 seconds when bid hit 3,300 KRW (above structural stop 3,290 KRW)
+        should_exit, reason, evidence = strat.evaluate_exit(pos, t, t.time)
+        self.assertFalse(should_exit, "1-tick noise pullback to 3,300 must NOT trigger premature momentum failure exit")
+        self.assertEqual(reason, 'HOLD')
+        self.assertLess(evidence['holding_seconds'], 45.0)
+
+        # Even if evaluated after 50 seconds with the same 5 KRW tick noise,
+        # multi-step swing filtering (>= 2 * min_step) must prevent false momentum failure exit!
+        future_time = self.base_time + timedelta(seconds=50)
+        t_50 = Tick(symbol='010580', price=3300.0, volume=100, cumulative=1000,
+                    time=future_time, bid=3300.0, ask=3305.0, bid_qty=500, ask_qty=500,
+                    depth_available=True, book_time=future_time)
+        strat.ingest_tick(t_50, t_50.time)
+        should_exit_50, reason_50, _ = strat.evaluate_exit(pos, t_50, future_time)
+        self.assertFalse(should_exit_50, "1-tick (5 KRW) micro-fluctuations must be filtered as noise even after settling window")
+        self.assertEqual(reason_50, 'HOLD')
+
+    def test_sm_bexel_real_structural_invalidation_counter_example(self):
+        """Counter-example: True breakdown to structural stop (3,290 KRW) or emergency (3,285 KRW)
+        must exit immediately and protect capital, regardless of holding time.
+        """
+        pos = {
+            'symbol': '010580',
+            'entry': 3305.0,
+            'qty': 21,
+            'stop': 3290.0,
+            'emergency': 3285.0,
+            'opened': self.base_time.isoformat()
+        }
+        strat = FastMomentumStrategy()
+
+        # 1. Emergency plunge immediately at second 5: bid drops to 3,285 KRW
+        t_emg = Tick(symbol='010580', price=3285.0, volume=100, cumulative=100,
+                     time=self.base_time + timedelta(seconds=5), bid=3285.0, ask=3290.0,
+                     bid_qty=500, ask_qty=500,
+                     depth_available=True, book_time=self.base_time + timedelta(seconds=5))
+        strat.ingest_tick(t_emg, t_emg.time)
+        should_exit, reason, _ = strat.evaluate_exit(pos, t_emg, t_emg.time)
+        self.assertTrue(should_exit, "Emergency plunge must exit immediately regardless of settling window")
+        self.assertEqual(reason, 'EMERGENCY_PLUNGE_EXIT')
+
+        # 2. Structural stop breach: two prints at 3,290 KRW
+        strat2 = FastMomentumStrategy()
+        t_stop1 = Tick(symbol='010580', price=3290.0, volume=100, cumulative=100,
+                       time=self.base_time + timedelta(seconds=10), bid=3290.0, ask=3295.0,
+                       bid_qty=500, ask_qty=500,
+                       depth_available=True, book_time=self.base_time + timedelta(seconds=10))
+        strat2.ingest_tick(t_stop1, t_stop1.time)
+        # First print: holds pending confirmation
+        should_exit1, _, _ = strat2.evaluate_exit(pos, t_stop1, t_stop1.time)
+        self.assertFalse(should_exit1)
+
+        t_stop2 = Tick(symbol='010580', price=3290.0, volume=100, cumulative=200,
+                       time=self.base_time + timedelta(seconds=11), bid=3290.0, ask=3295.0,
+                       bid_qty=500, ask_qty=500,
+                       depth_available=True, book_time=self.base_time + timedelta(seconds=11))
+        strat2.ingest_tick(t_stop2, t_stop2.time)
+        # Second print: confirms invalidation stop
+        should_exit2, reason2, _ = strat2.evaluate_exit(pos, t_stop2, t_stop2.time)
+        self.assertTrue(should_exit2, "Confirmed breach of 3,290 stop must trigger INVALIDATION_STOP_EXIT")
+        self.assertEqual(reason2, 'INVALIDATION_STOP_EXIT')
+
+    def test_sm_bexel_genuine_momentum_failure_counter_example(self):
+        """Counter-example: Genuine momentum failure with real multi-step swings after 45s:
+        - Advance +30 KRW (3,305 -> 3,335, 6 ticks)
+        - Pullback -20 KRW (3,335 -> 3,315, 4 ticks floor)
+        - Rebound +10 KRW to lower high (3,315 -> 3,325, 2 ticks < 3,335)
+        - Breakdown below floor 3,315 to 3,310 / 3,305 at 60s
+        Must trigger MOMENTUM_FAILURE_EXIT to scratch before stop loss.
+        """
+        pos = {
+            'symbol': '010580',
+            'entry': 3305.0,
+            'qty': 21,
+            'stop': 3290.0,
+            'emergency': 3285.0,
+            'opened': self.base_time.isoformat()
+        }
+        strat = FastMomentumStrategy()
+        true_failure_ticks = [
+            (0, 3305.0, 3300.0, 3305.0),
+            (15, 3335.0, 3330.0, 3335.0), # Swing High 1: +30 KRW (6 ticks up)
+            (30, 3315.0, 3315.0, 3320.0), # Swing Low 1: -20 KRW pullback (floor)
+            (46, 3325.0, 3320.0, 3325.0), # Swing High 2: +10 KRW rebound (lower high < 3335)
+            (55, 3310.0, 3310.0, 3315.0), # Print 1 below floor 3315
+            (60, 3305.0, 3300.0, 3305.0), # Print 2 below floor 3315 (bid 3300)
+        ]
+        for idx, (sec, price, bid, ask) in enumerate(true_failure_ticks):
+            t_stamp = self.base_time + timedelta(seconds=sec)
+            t = Tick(symbol='010580', price=price, volume=100, cumulative=(idx + 1) * 100,
+                     time=t_stamp, bid=bid, ask=ask, bid_qty=500, ask_qty=500,
+                     depth_available=True, book_time=t_stamp)
+            strat.ingest_tick(t, t.time)
+
+        should_exit, reason, evidence = strat.evaluate_exit(pos, t, t.time)
+        self.assertTrue(should_exit, "Genuine multi-step failed rebound breaking floor after 60s must trigger MOMENTUM_FAILURE_EXIT")
+        self.assertEqual(reason, 'MOMENTUM_FAILURE_EXIT')
+        self.assertEqual(evidence['failed_rebound_high'], 3325.0)
+        self.assertEqual(evidence['floor'], 3315.0)
+
+    def test_sm_bexel_1830_trade_review_reproduction(self):
+        """2026-10-15 18:30~18:32 SM Bexel (010580) 22-share trade review:
+        Entry 3,235 KRW, stop 3,220 KRW, emergency 3,220 KRW, target 3,435 KRW.
+        Excursion reached 3,260 KRW (+1.67R, MFE).
+        Pullback to 3,250 KRW (floor), followed by 1-tick bounce to 3,255 KRW (+5 KRW).
+        Then dip to 3,245 KRW.
+        In unpatched code: 3,255 was treated as a lower high (< 3,260) and exited at 3,245.
+        In patched code: The +5 KRW bounce (< 2 * min_step = 10 KRW) is filtered as noise.
+        The bot MUST HOLD at 3,245 KRW and not prematurely exit!
+        """
+        trade_base = datetime(2026, 10, 15, 18, 30, 25, tzinfo=KST)
+        pos = {
+            'symbol': '010580',
+            'entry': 3235.0,
+            'qty': 22,
+            'stop': 3220.0,
+            'emergency': 3220.0,
+            'opened': trade_base.isoformat()
+        }
+        trade_ticks = [
+            (0, 3235.0, 3230.0, 3235.0),   # 18:30:25 entry
+            (8, 3250.0, 3245.0, 3250.0),   # 18:30:33 1R hit
+            (38, 3240.0, 3240.0, 3245.0),  # 18:31:03 dip
+            (68, 3245.0, 3245.0, 3250.0),  # 18:31:33 bounce
+            (95, 3260.0, 3255.0, 3260.0),  # 18:32:00 peak MFE 3260
+            (110, 3250.0, 3250.0, 3255.0), # 18:32:15 pullback to 3250 floor
+            (125, 3255.0, 3250.0, 3255.0), # 18:32:30 1-tick bounce to 3255
+            (135, 3245.0, 3245.0, 3250.0), # 18:32:40 dip to 3245
+            (136, 3245.0, 3245.0, 3250.0), # 18:32:41 second print at 3245 (exit trigger in unpatched)
+        ]
+        strat = FastMomentumStrategy()
+        for idx, (sec, price, bid, ask) in enumerate(trade_ticks):
+            t_stamp = trade_base + timedelta(seconds=sec)
+            t = Tick(symbol='010580', price=price, volume=100, cumulative=(idx + 1) * 100,
+                     time=t_stamp, bid=bid, ask=ask, bid_qty=500, ask_qty=500,
+                     depth_available=True, book_time=t_stamp)
+            strat.ingest_tick(t, t.time)
+
+        should_exit, reason, evidence = strat.evaluate_exit(pos, t, t.time)
+        self.assertFalse(should_exit, "Patched code must filter out 1-tick rebound and hold position!")
+        self.assertEqual(reason, 'HOLD')
+        self.assertEqual(evidence['holding_seconds'], 136.0)
+
+    def test_oct16_genomictree_and_hansun_emergency_vs_structural_stop_separation(self):
+        """2026-10-16 live incident reproduction & counter-examples:
+        1. Genomictree (293490): entry 11,000 (limit 11,020), structural_stop 10,960, emergency_stop 10,940, noise_band 20.
+           Normal 0D quote at 09:54:23 with bid=10,960, ask=10,970 must NOT trigger '호가 급락/유동성 붕괴'
+           because emergency_stop is 10,940 (not overwritten by initial_stop=10,960).
+           Genuine plunge to bid=10,940 MUST trigger immediate exit.
+        2. Hansun Engineering (452280): entry 17,180, structural_stop 17,090, emergency_stop 17,070, noise_band 20.
+           Single trade tick at 10:14:55 with price=17,090 and bid=17,110 must NOT trigger
+           '계좌 위험으로 수량 계산한 비상선 이탈' because hard emergency stop is 17,070 (not 17,090).
+           Genuine breach to 17,070 or confirmed 2-tick structural breach at 17,090 MUST trigger immediate exit.
+        """
+        from core.settings import Config
+        from automation.policy import AutomationConfig
+        from automation.exit_plan import invalidation_lines, build_plan
+
+        cfg = Config()
+        auto = AutomationConfig()
+
+        # --- Case A: Genomictree (293490) ---
+        sig_293490 = FastSignal(
+            symbol='293490', name='지노믹트리', limit=11020.0, stop=10960.0,
+            target=11400.0, emergency=10940.0, quantity=6,
+            net_reward_risk=3.67, gross_reward_risk=6.33,
+            reward_net_per_share=325.95, risk_net_per_share=88.91,
+            regime='A', phase='REGULAR',
+            created_at=datetime(2026, 10, 16, 9, 54, 16, tzinfo=KST),
+            extra={'geometry': {'noise_band': 20.0, 'structural_evidence': {'breakout': 10990.0, 'support': 10970.0, 'origin': 10940.0}}}
+        ).to_engine_signal()
+
+        plan_293490 = build_plan(cfg, auto, sig_293490, entry=11000.0, quantity=6, filled=True)
+        self.assertEqual(plan_293490['initial_invalidation'], 10960.0)
+        self.assertEqual(plan_293490['initial_emergency'], 10940.0)
+
+        pos_293490 = {
+            'symbol': '293490', 'ownership': 'BOT', 'pattern': 'FAST',
+            'avg': 11000.0, 'qty': 6, 'initial_stop': 10960.0, 'stop': 10960.0,
+            'emergency': 10940.0, 'opened': '2026-10-16T09:54:18+09:00',
+            'signal': sig_293490,
+        }
+        lines_293490 = invalidation_lines(cfg, auto, pos_293490)
+        self.assertEqual(lines_293490['active_structure'], 10960.0)
+        self.assertEqual(lines_293490['emergency'], 10940.0)
+
+        # Quote bid=10,960 > emergency=10,940 -> holds; bid=10,940 <= emergency=10,940 -> exits
+        self.assertFalse(10960.0 <= lines_293490['emergency'])
+        self.assertTrue(10940.0 <= lines_293490['emergency'])
+
+        # --- Case B: Hansun Engineering (452280) ---
+        t_entry = datetime(2026, 10, 16, 10, 14, 0, tzinfo=KST)
+        sig_452280 = FastSignal(
+            symbol='452280', name='한선엔지니어링', limit=17180.0, stop=17090.0,
+            target=17850.0, emergency=17070.0, quantity=4,
+            net_reward_risk=3.87, gross_reward_risk=7.44,
+            reward_net_per_share=590.96, risk_net_per_share=152.71,
+            regime='A', phase='REGULAR',
+            created_at=t_entry,
+            extra={'geometry': {'noise_band': 20.0, 'structural_evidence': {'breakout': 17150.0, 'support': 17110.0, 'origin': 17070.0}}}
+        ).to_engine_signal()
+
+        plan_452280 = build_plan(cfg, auto, sig_452280, entry=17180.0, quantity=4, filled=True)
+        self.assertEqual(plan_452280['initial_invalidation'], 17090.0)
+        self.assertEqual(plan_452280['initial_emergency'], 17070.0)
+
+        pos_452280 = {
+            'symbol': '452280', 'ownership': 'BOT', 'pattern': 'FAST',
+            'avg': 17180.0, 'qty': 4, 'initial_stop': 17090.0, 'stop': 17090.0,
+            'emergency': 17070.0, 'opened': t_entry.isoformat(),
+            'signal': sig_452280,
+        }
+        lines_452280 = invalidation_lines(cfg, auto, pos_452280)
+        self.assertEqual(lines_452280['active_structure'], 17090.0)
+        self.assertEqual(lines_452280['emergency'], 17070.0)
+
+        # Single trade print at 17,090 with bid=17,110 at 10:14:55:
+        # 1) Neither hard emergency (17,070) nor FAST 2-tick invalidation triggers
+        strat = FastMomentumStrategy(cfg, auto)
+        t_single = Tick(symbol='452280', price=17090.0, volume=10, cumulative=100,
+                        time=t_entry + timedelta(seconds=55), bid=17110.0, ask=17120.0,
+                        bid_qty=100, ask_qty=100, depth_available=True,
+                        book_time=t_entry + timedelta(seconds=55))
+        strat.ingest_tick(t_single, t_single.time)
+        should_exit, reason, _ = strat.evaluate_exit(pos_452280, t_single, t_single.time)
+        self.assertFalse(should_exit)
+        self.assertEqual(reason, 'HOLD')
+        self.assertFalse(t_single.price <= lines_452280['emergency'])
+        self.assertFalse(t_single.bid <= lines_452280['emergency'])
+
+        # 2) Counter-example: genuine emergency plunge to 17,070 exits immediately
+        t_emg = Tick(symbol='452280', price=17070.0, volume=10, cumulative=110,
+                     time=t_entry + timedelta(seconds=56), bid=17070.0, ask=17080.0,
+                     bid_qty=100, ask_qty=100, depth_available=True,
+                     book_time=t_entry + timedelta(seconds=56))
+        strat.ingest_tick(t_emg, t_emg.time)
+        should_exit_emg, reason_emg, _ = strat.evaluate_exit(pos_452280, t_emg, t_emg.time)
+        self.assertTrue(should_exit_emg)
+        self.assertEqual(reason_emg, 'EMERGENCY_PLUNGE_EXIT')
+        self.assertTrue(t_emg.price <= lines_452280['emergency'])
 
 
 if __name__ == '__main__':
     unittest.main()
+
+

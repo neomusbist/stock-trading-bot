@@ -32,9 +32,18 @@ def make_evaluation_view(row):
 
 class ShadowObserver:
  def __init__(self,cfg,auto,costs,emit,risk=None,limit=32):
-  self.cfg=cfg;self.auto=auto;self.detector=PatternDetector(cfg,auto,costs);self.fast_strategy=FastMomentumStrategy(cfg,auto,costs);self.emit=emit;self.risk=risk;self.limit=limit;self.rows={};self.first={};self.last_log={};self.previous={}
+  self.cfg=cfg;self.auto=auto;self.detector=PatternDetector(cfg,auto,costs);self.fast_strategy=FastMomentumStrategy(cfg,auto,costs);self.detector.fast_strategy=self.fast_strategy;self.emit=emit;self.risk=risk;self.limit=limit;self.rows={};self.first={};self.last_log={};self.previous={}
   self.capital={};self.epoch=None;self.eval_seconds=2;self.selected_at={};self.latest={};self.detached=set()
-  self.last_tier={};self.observation_seq=0;self.detached_at={}
+  self.last_tier={};self.observation_seq=0;self.detached_at={};self.last_evaluated={}
+ def reset_stream(self,reason,symbol=None,stamp=None):
+  """A coverage break invalidates FAST microstructure as well as ABC bars."""
+  if symbol is None:
+   self.detector.reset();self.fast_strategy.reset(reason=reason)
+   self.latest.clear();self.last_log.clear();self.last_tier.clear();self.last_evaluated.clear()
+  else:
+   self.detector.forget(symbol);self.fast_strategy.forget(symbol,reason=reason)
+   self.latest.pop(symbol,None);self.last_log.pop(symbol,None);self.last_tier.pop(symbol,None);self.last_evaluated.pop(symbol,None)
+  if stamp is not None:self.event('SHADOW_STREAM_RESET',stamp,symbol=symbol,reason=reason,actual_order_permission=False)
  def event(self,kind,stamp,**data):
   if kind=='SHADOW_EVAL':self.latest[data['symbol']]={'timestamp':stamp.isoformat(),**data}
   data.setdefault('SHADOW_ONLY',True)
@@ -42,6 +51,7 @@ class ShadowObserver:
  def update(self,rows,stamp):
   if isinstance(stamp,str):stamp=datetime.fromisoformat(stamp)
   if self.epoch!=stamp.date():
+   self.fast_strategy.reset(reason='DAY_ROLLOVER');self.last_tier={};self.last_evaluated={}
    self.detector.reset();self.first={};self.previous={};self.rows={};self.last_log={};self.selected_at={};self.latest={};self.detached=set();self.detached_at={};self.epoch=stamp.date()
   eligible=[]
   for row in rows:
@@ -69,7 +79,7 @@ class ShadowObserver:
    strong=fresh and all(gates.get(k,{}).get('result')=='PASS' for k in ('acceleration','liquidity'))
    if self.auto.setup_aware_watch_priority:
     observation=self.latest.get(sym,{})
-    strong=fresh and calculate_tier(gates,observation.get('setup_trials',[]),row)<=1
+    strong=fresh and (bool(observation.get('fast_signal_ready')) or calculate_tier(gates,observation.get('setup_trials',[]),row)<=1)
    tier_rank=0 if watch_priority(row) else 1 if strong else 2
    effective_score=score+(2.0 if held else 0.0)
    tie_rank=1 if (sym in self.rows and not held) else 0
@@ -79,7 +89,7 @@ class ShadowObserver:
   for sym in list(self.detached-set(selected)):
    since=self.detached_at.get(sym,stamp)
    if (stamp-since).total_seconds()>self.cfg.stale_seconds and not self.detector.observation_fresh(sym,stamp):
-    self.detector.forget(sym);self.detached.discard(sym);self.detached_at.pop(sym,None)
+    self.reset_stream('UNSUBSCRIBED_STALE_GAP',symbol=sym);self.detached.discard(sym);self.detached_at.pop(sym,None)
     self.event('SHADOW_DATA_RESET',stamp,symbol=sym,data_action='RESET_STALE_GAP',observation_gap_seconds=(stamp-since).total_seconds())
   for row in eligible[self.limit:]:self.event('SHADOW_CAPACITY',stamp,symbol=row['code'],reason='DIAGNOSTIC_LIMIT',limit=self.limit)
   for sym,row in selected.items():
@@ -87,7 +97,7 @@ class ShadowObserver:
     since=self.detached_at.get(sym,stamp);last=self.detector.last.get(sym)
     expired=bool(last and last.time.date()!=stamp.date()) or ((stamp-since).total_seconds()>self.cfg.stale_seconds and not self.detector.observation_fresh(sym,stamp))
     if expired:
-     self.detector.forget(sym)
+     self.reset_stream('REJOIN_STALE_GAP',symbol=sym)
      self.event('SHADOW_DATA_RESET',stamp,symbol=sym,data_action='RESET_STALE_GAP',observation_gap_seconds=(stamp-since).total_seconds())
     self.detached.discard(sym);self.detached_at.pop(sym,None)
    self.selected_at.setdefault(sym,stamp)
@@ -97,12 +107,12 @@ class ShadowObserver:
     self.event('SHADOW_TRANSITION',stamp,symbol=sym,name=row.get('name'),**self.first[sym],from_status=(prior or {}).get('status'),to_status=row.get('status'),source_before=(prior or {}).get('source_count'),source_count=row.get('source_count'),reason=row.get('reason'),data_action='RETAIN_CONTINUOUS' if last and self.detector.continuous_observation else 'RETAIN_FRESH' if fresh else 'NO_DATA' if last is None else 'STALE_PENDING_RESET',live_detector_unchanged=True)
   for sym in self.rows.keys()-selected.keys():
    self.event('SHADOW_ENDED',stamp,symbol=sym,reason='INELIGIBLE_OR_CAPACITY',data_action='RETAIN_UNTIL_STALE_GAP')
-   self.detached.add(sym);self.detached_at[sym]=stamp;self.selected_at.pop(sym,None);self.last_log.pop(sym,None);self.latest.pop(sym,None)
+   self.detached.add(sym);self.detached_at[sym]=stamp;self.selected_at.pop(sym,None);self.last_log.pop(sym,None);self.latest.pop(sym,None);self.last_evaluated.pop(sym,None)
   self.rows=selected
   # Preserve the committed role through RAW cycles, but not through a real demotion.
   for sym,row in selected.items():
    if row.get('status')!='RAW' or sym not in self.previous:self.previous[sym]=row
- def tick(self,t,received,transport_received=None):
+ def tick(self,t,received,transport_received=None,coverage_complete=True):
   row=self.rows.get(t.symbol)
   if not row:return
   old=self.detector.last.get(t.symbol);reset=bool(old and (t.time-old.time).total_seconds()>self.cfg.stale_seconds)
@@ -110,23 +120,31 @@ class ShadowObserver:
   # catches up. They cannot publish a current signal/readiness when stale.
   if not self.detector.ingest(t,transport_received or received):return
   # FAST needs EVERY accepted tick; the evaluation throttle below must not thin its MicroTape.
-  self.fast_strategy.ingest_tick(t)
+  self.fast_strategy.ingest_tick(t,received=transport_received or received)
   execution_fresh=0<=(received-t.time).total_seconds()<=self.cfg.stale_seconds
   timeline=getattr(self,'timeline',None)
   if timeline is not None:timeline.tick(t.symbol,t.time,self.detector.usable_bars(t.symbol),t.price,
        received=transport_received or received,processed=received,execution_fresh=execution_fresh)
   self.first[t.symbol].setdefault('first_tick_at',received.isoformat())
-  if not execution_fresh:return
+  if not execution_fresh or not coverage_complete:return
   if reset and not self.detector.continuous_observation:self.event('SHADOW_DATA_RESET',received,symbol=t.symbol,reason='STALE_TICK_GAP',gap_seconds=(t.time-old.time).total_seconds())
-  previous=self.last_log.get(t.symbol)
-  if previous and (received-previous[0]).total_seconds()<self.eval_seconds:return
+  evaluated=self.last_evaluated.get(t.symbol)
+  if evaluated and (received-evaluated).total_seconds()<self.eval_seconds:return
+  self.last_evaluated[t.symbol]=received
   view=make_evaluation_view(row)
   sig,gates,trials,history=self.detector.evaluation_snapshot(t,view)
   if sig:
    sig['SHADOW_ONLY']=True;sig['actual_order_permission']=False;sig['diagnostic_only']=True
-  fast_sig=self.fast_strategy.evaluate(t,row,capital_limit=self.capital.get('effective_auto_cap',81300.0),risk_budget=self.capital.get('risk_remaining',1626.0),ingest=False)
+  if getattr(self.detector,'price_context',None) is not None:
+   structure_now=self.fast_strategy.get_tape(t.symbol).structure(received)
+   ctx_snapshot=self.detector.price_context.snapshot(t.symbol,t,t.ask,
+    support=structure_now.get('support') if structure_now.get('pass') else None,
+    breakout=structure_now.get('breakout') if structure_now.get('pass') else None)
+   if ctx_snapshot.get('nearest_confirmed_peak'):
+    view['nearest_confirmed_peak']=ctx_snapshot['nearest_confirmed_peak']
+  fast_sig=self.fast_strategy.evaluate(t,view,capital_limit=self.capital.get('entry_budget',self.capital.get('effective_auto_cap',81300.0)),risk_budget=min(self.capital.get('risk_equity',self.capital.get('effective_auto_cap',81300.0))*self.cfg.risk_fraction,self.capital.get('risk_remaining',1626.0)),ingest=False,received=received)
   if fast_sig:
-   self.event('SHADOW_FAST_SIGNAL',received,symbol=t.symbol,name=row.get('name'),limit=fast_sig.limit,stop=fast_sig.stop,target=fast_sig.target,emergency=fast_sig.emergency,quantity=fast_sig.quantity,net_reward_risk=fast_sig.net_reward_risk,regime=fast_sig.regime,phase=fast_sig.phase,ttl_seconds=fast_sig.ttl_seconds,max_chase_price=fast_sig.max_chase_price,SHADOW_ONLY=True,actual_order_permission=False)
+   self.event('SHADOW_FAST_SIGNAL',received,symbol=t.symbol,name=row.get('name'),signal_at=fast_sig.created_at.isoformat(),limit=fast_sig.limit,stop=fast_sig.stop,target=fast_sig.target,emergency=fast_sig.emergency,quantity=fast_sig.quantity,net_reward_risk=fast_sig.net_reward_risk,regime=fast_sig.regime,phase=fast_sig.phase,ttl_seconds=fast_sig.ttl_seconds,max_chase_price=fast_sig.max_chase_price,geometry=fast_sig.extra.get('geometry'),tick_metrics=fast_sig.extra.get('metrics'),SHADOW_ONLY=True,actual_order_permission=False)
   usable=[]
   for bar in reversed(history):
    if bar['first_second']>self.cfg.stale_seconds:break
@@ -136,7 +154,8 @@ class ShadowObserver:
   for trial in trials:
    if gates['market_status']['result']!='PASS':trial['failed_reasons'].append('MARKET_STATUS_FAIL');trial['entry_ready']=False
   self.observation_seq+=1
-  current_tier=calculate_tier(gates,trials,row)
+  fast_ready=bool(fast_sig is not None and gates.get('market_status',{}).get('result')=='PASS')
+  current_tier=0 if fast_ready else calculate_tier(gates,trials,row)
   prior_tier=self.last_tier.get(t.symbol)
   if prior_tier!=current_tier:
    self.last_tier[t.symbol]=current_tier
@@ -144,8 +163,9 @@ class ShadowObserver:
               tier=current_tier,prior_tier=prior_tier,readiness_kind=TIER_NAMES.get(current_tier,'TIER_CHANGED'),
               observation_seq=self.observation_seq,source_count=row.get('source_count'),
               usable_completed_bars=len(usable),stored_completed_bars=len(history),
+              fast_signal_ready=fast_ready,
               SHADOW_ONLY=True,actual_order_permission=False,diagnostic_only=True)
-  signature=repr(([(k,v['result']) for k,v in gates.items()],[(x['setup'],x['candidate_generated'],x['failed_reasons']) for x in trials]))
+  signature=repr(([(k,v['result']) for k,v in gates.items()],[(x['setup'],x['candidate_generated'],x['failed_reasons']) for x in trials],current_tier,fast_ready))
   previous=self.last_log.get(t.symbol)
   if previous and previous[1]==signature and (received-previous[0]).total_seconds()<10:return
   # Sizing is a log diagnostic, never a promotion input. Compute only for records actually emitted.
@@ -155,7 +175,7 @@ class ShadowObserver:
    trial.update(invalidation_ticks=(virtual['limit']-virtual['stop'])/tick_size(t.price) if virtual else None,
                 virtual_risk_quantity=sizing,risk_basis='DIAGNOSTIC_SIZING_ONLY_NOT_ORDER_AUTHORIZATION')
   self.last_log[t.symbol]=(received,signature)
-  self.event('SHADOW_EVAL',received,symbol=t.symbol,name=row.get('name'),**self.first[t.symbol],source_count=row.get('source_count'),discovery_status=row.get('status'),current_price=t.price,usable_completed_bars=len(usable),stored_completed_bars=len(history),gates=gates,setup_trials=trials,virtual_signal=sig,actual_order_permission=False,
+  self.event('SHADOW_EVAL',received,symbol=t.symbol,name=row.get('name'),**self.first[t.symbol],source_count=row.get('source_count'),discovery_status=row.get('status'),current_price=t.price,usable_completed_bars=len(usable),stored_completed_bars=len(history),gates=gates,setup_trials=trials,virtual_signal=sig,fast_signal_ready=fast_ready,actual_order_permission=False,
     microstructure={'tick_size':tick_size(t.price),'tick_fraction':tick_size(t.price)/t.price,'spread_fraction':(t.ask-t.bid)/t.price,'last_trade_gap_seconds':(t.time-old.time).total_seconds() if old else None,
       'book_depth':None,'book_gap':None,'vi_state':None,'slippage_basis':'CONFIG_ESTIMATE_NOT_MEASURED','entry_slippage_fraction':self.cfg.entry_slippage_fraction,'exit_slippage_fraction':self.cfg.exit_slippage_fraction})
  def virtual_size(self,virtual):

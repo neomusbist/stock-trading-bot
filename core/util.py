@@ -29,12 +29,12 @@ def code(value):
 _json_locks = {}
 _json_locks_guard = threading.Lock()
 
-def atomic_json(path, value):
+def atomic_json(path, value, fsync=True):
     key=os.path.normcase(str(Path(path).absolute()))
     with _json_locks_guard: lock=_json_locks.setdefault(key,threading.RLock())
-    with lock: _atomic_json(path,value)
+    with lock: _atomic_json(path,value,fsync=fsync)
 
-def _atomic_json(path, value):
+def _atomic_json(path, value, fsync=True):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     # Windows reader handles may briefly prevent replacement. Each writer owns
@@ -45,14 +45,19 @@ def _atomic_json(path, value):
         with os.fdopen(fd,'w',encoding='utf-8') as f:
             json.dump(value,f,ensure_ascii=False,indent=2,allow_nan=False)
             f.flush()
-            os.fsync(f.fileno())
-        for attempt in range(6):
+            if fsync:
+                os.fsync(f.fileno())
+        for attempt in range(8):
             try:
                 os.replace(tmp,path)
                 break
-            except PermissionError:
-                if attempt==5: raise
-                time.sleep(.01*(2**attempt))
+            except (PermissionError, OSError) as e:
+                winerror = getattr(e, 'winerror', None)
+                if winerror not in (5, 32) and not isinstance(e, PermissionError):
+                    raise
+                if attempt == 7:
+                    raise
+                time.sleep(min(0.5, 0.015 * (2 ** attempt)))
     finally:
         if tmp.exists():
             try: tmp.unlink()

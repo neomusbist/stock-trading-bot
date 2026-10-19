@@ -10,6 +10,7 @@ from datetime import datetime,timedelta
 import math
 from automation.entry_context_audit import confirmed_overhead
 from automation.market_context import trend_window
+from core.util import tick_size
 
 
 class PriceContext:
@@ -31,7 +32,8 @@ class PriceContext:
             except (KeyError,TypeError,ValueError):continue
         added=0
         for stamp,sig in sorted(usable,key=lambda p:p[0]):
-            for raw in sorted(sig.get('decision_bar_snapshot',[]),key=lambda b:b.get('time','')):
+            snapshots=sig.get('decision_bar_snapshot') or sig.get('fast_reference_bar_snapshot') or []
+            for raw in sorted(snapshots,key=lambda b:b.get('time','')):
                 try:
                     bar={**raw,'time':datetime.fromisoformat(raw['time']),'venue':sig.get('venue')}
                     added+=bool(self.record(sig['symbol'],bar,stamp,stale_seconds))
@@ -57,7 +59,8 @@ class PriceContext:
                 return self.record(symbol,bar,asof,stale_seconds)
             row['context_venue']=venue
         if row['bars'] and stamp<=row['bars'][-1]['time']:return False
-        row['bars'].append({k:deepcopy(bar[k]) for k in ('time','open','high','low','close')})
+        row['bars'].append({**{k:deepcopy(bar[k]) for k in ('time','open','high','low','close')},
+            'first_second':bar.get('first_second',0),'gap_reason':bar.get('gap_reason')})
         if self.bar_limit>30 and 'volume' in bar:row['bars'][-1]['volume']=bar['volume']
         row['last_complete_at']=(stamp+timedelta(minutes=1)).isoformat()
         # Retain the reference and its clearance evidence. A completed close over
@@ -95,10 +98,20 @@ class PriceContext:
         if received and datetime.fromisoformat(received)>asof:return []
         return [deepcopy(b) for b in row['bars'] if b['time']+timedelta(minutes=1)<=asof]
 
-    def snapshot(self,symbol,tick,entry):
+    def snapshot(self,symbol,tick,entry,support=None,breakout=None):
         row=self.rows.get(symbol) if self.day==tick.time.date() else None
-        peaks=[p for p in row['peaks'] if p['price']>entry and p['confirmed_at']<=tick.time.isoformat()
-            and (not p.get('cleared_at') or p['cleared_at']>tick.time.isoformat())] if row else []
+        def _active_peak(p):
+            if p['confirmed_at']>tick.time.isoformat() or (p.get('cleared_at') and p['cleared_at']<=tick.time.isoformat()):
+                return False
+            if p['price']>=entry:
+                return True
+            step=tick_size(p['price'])
+            if entry<=p['price']+step:
+                return True
+            if entry<=p['price']*1.005 and not (support is not None and support>=p['price'] and breakout is not None and breakout>p['price']):
+                return True
+            return False
+        peaks=[p for p in row['peaks'] if _active_peak(p)] if row else []
         peak=min(peaks,key=lambda p:p['price']) if peaks else None
         return {'asof':tick.time.isoformat(),'nearest_confirmed_peak':deepcopy(peak),
             'known_peak_count':len(peaks),
@@ -148,3 +161,42 @@ class PriceContext:
                 dst['context_venue']=src.get('context_venue')
         self.rows.move_to_end(symbol)
         while len(self.rows)>self.limit:self.rows.popitem(last=False)
+
+    def dump_cache(self):
+        """Serialize current day's observed reference bars and confirmed peaks."""
+        if not self.day:return {}
+        return {
+            'day': self.day.isoformat(),
+            'rows': {
+                sym: {
+                    'bars': [{k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in b.items()} for b in row['bars']],
+                    'peaks': list(row['peaks']),
+                    'first_observed_at': row['first_observed_at'],
+                    'last_complete_at': row['last_complete_at'],
+                    'context_venue': row.get('context_venue'),
+                    'history_received_at': row.get('history_received_at')
+                }
+                for sym, row in self.rows.items()
+            }
+        }
+
+    def load_cache(self, data, asof):
+        """Restore reference bars and peaks from same-day cache without touching tick warmup."""
+        if not data or not data.get('day'):return 0
+        try:
+            cache_day = datetime.fromisoformat(data['day']).date() if isinstance(data['day'], str) else data['day']
+            if cache_day != asof.date():return 0
+        except (TypeError, ValueError):
+            return 0
+        added = 0
+        for sym, row_data in data.get('rows', {}).items():
+            for raw_bar in row_data.get('bars', []):
+                try:
+                    bar = dict(raw_bar)
+                    if isinstance(bar.get('time'), str):
+                        bar['time'] = datetime.fromisoformat(bar['time'])
+                    if bar['time'].date() == asof.date() and bar['time'] + timedelta(minutes=1) <= asof:
+                        added += bool(self.record(sym, bar, asof))
+                except (KeyError, TypeError, ValueError):
+                    continue
+        return added

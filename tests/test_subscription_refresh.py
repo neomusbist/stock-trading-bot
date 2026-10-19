@@ -17,7 +17,7 @@ from automation.policy import AutomationConfig,Policy
 from automation.engine import AutonomousEngine
 from automation.patterns import PatternDetector
 from automation.shadow_observation import ShadowObserver
-from automation.runner import SubscriptionState,prewarm_handoff,process_message
+from automation.runner import SubscriptionState,prewarm_handoff,process_message,readiness_snapshot
 from automation.allocation import efficiency
 from operator_service import OperatorService
 from tests.test_automation import FakeBroker
@@ -45,6 +45,7 @@ class SubscriptionRefreshTests(unittest.TestCase):
         self.sub=SubscriptionState([SYM]);self.account=Mock();self.account.request=__import__('threading').Event()
         self.radar=Mock();self.radar.cache={};self.prices={}
         self.watch={'code':SYM,'name':'합성','status':'WATCH','source_count':2,'resistance':11000,'previous_close':10000,'market_status':{'pass':True}}
+        self.e.last_regular_tick_at=START;self.e.last_radar_at=START
     def tick(self,sym=SYM,sec=0,cumulative=None,regular=True):
         return Tick(sym,START+timedelta(seconds=sec),10000,100,cumulative or 100+sec,10010,9990,regular)
     def frame(self,t):
@@ -55,7 +56,8 @@ class SubscriptionRefreshTests(unittest.TestCase):
     def refresh(self,desired):self.sub.refresh(self.e,self.d,self.feed,desired,self.clock)
     def signal(self):return {'symbol':SYM,'limit':10020,'stop':9800,'pattern':'B','time':self.clock.isoformat(),'efficiency':efficiency(10020,9800,10600,.8,30,self.e.costs)}
     def on(self):
-        self.e.save();atomic_json(self.e.folder/'heartbeat.json',{'time':self.clock.isoformat(),'connected':self.e.connected,'account_ok':self.e.account_ok,'market':'3'})
+        ready=readiness_snapshot(self.e,{'subscription_acks':1,'ticks':1},True,self.clock,self.d)
+        self.e.save();atomic_json(self.e.folder/'heartbeat.json',{'time':self.clock.isoformat(),'connected':self.e.connected,'account_ok':self.e.account_ok,'market':'3','readiness':ready})
         service=OperatorService(self.root,clock=lambda:self.clock,gateway=Mock())
         with patch.object(service,'process_info',return_value={'running':True,'managed':False}):return service.public_status()['trading_on']
     def warm(self):

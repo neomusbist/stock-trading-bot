@@ -266,9 +266,9 @@ class MainWindow(QMainWindow):
         self.jobs=set(); self.read_pool=QThreadPool(self); self.read_pool.setMaxThreadCount(1)
         self.command_pool=QThreadPool(self); self.command_pool.setMaxThreadCount(1)
         self.emergency_pool=QThreadPool(self); self.emergency_pool.setMaxThreadCount(1)
-        self.setWindowTitle('주식자동매매 V1.5'); self.resize(1220,820); self.setMinimumSize(980,700)
+        self.setWindowTitle('주식자동매매 V1.6'); self.resize(1220,820); self.setMinimumSize(980,700)
         body=QWidget(); self.setCentralWidget(body); outer=QVBoxLayout(body); outer.setContentsMargins(20,16,20,16)
-        header=QHBoxLayout(); title=QLabel('주식자동매매 V1.5'); title.setObjectName('title'); header.addWidget(title)
+        header=QHBoxLayout(); title=QLabel('주식자동매매 V1.6'); title.setObjectName('title'); header.addWidget(title)
         header.addSpacing(14)
         self.mode_badge=QLabel('요청 모드: 확인 중'); self.mode_badge.setObjectName('modeBadge'); header.addWidget(self.mode_badge)
         self.permission_badge=QLabel('주문 권한: 확인 중'); self.permission_badge.setObjectName('permissionBadge'); header.addWidget(self.permission_badge)
@@ -466,7 +466,12 @@ class MainWindow(QMainWindow):
 
     def apply_status(self,s):
         self.status=s; operation,market,safety=presentation(s)
-        self.clock.setText(s['time'][:19].replace('T',' ')+' / '+s.get('build_id',s['strategy_version']))
+        integrity = s.get('code_integrity') or {}
+        integ_summary = integrity.get('summary', '')
+        clock_str = s['time'][:19].replace('T',' ')+' / '+s.get('build_id',s['strategy_version'])
+        if integ_summary:
+            clock_str += f" [{integ_summary}]"
+        self.clock.setText(clock_str)
         mode=s.get('mode','STOP')
         if mode=='LIVE':
             if s.get('current_session')=='AFTER' and not s.get('after_live_approved'):
@@ -500,8 +505,13 @@ class MainWindow(QMainWindow):
                 p_text='[주문 권한] 주문 전송 차단 (OFF)'
                 p_style='background:#f8fafc;color:#64748b;border:1px solid #cbd5e1;font-weight:700;padding:4px 10px;border-radius:4px;'
         self.permission_badge.setText(p_text); self.permission_badge.setStyleSheet(p_style)
-        self.cards['operation'].setText(operation); self.cards['market'].setText(market); self.cards['safety'].setText(safety)
-        self.cards['safety'].setStyleSheet('color:#b43838;' if s.get('halt') else 'color:#8a620c;' if safety.startswith('주의') else 'color:#56657a;' if safety.startswith('로컬 상태') else 'color:#24684a;')
+        self.cards['operation'].setText(operation); self.cards['market'].setText(market)
+        if integrity and not integrity.get('valid', True) and s.get('live_mode'):
+            self.cards['safety'].setText(f"주의 — 코드 불일치 ({integ_summary})")
+            self.cards['safety'].setStyleSheet('color:#b43838;font-weight:700;')
+        else:
+            self.cards['safety'].setText(safety)
+            self.cards['safety'].setStyleSheet('color:#b43838;' if s.get('halt') else 'color:#8a620c;' if safety.startswith('주의') else 'color:#56657a;' if safety.startswith('로컬 상태') else 'color:#24684a;')
         self.cards['account'].setText(('현재 조회 정상' if s.get('account_fresh') else '최근 조회값만 있음' if s['cash'] is not None else '조회 미확인')+'\n'+s['websocket'].split(' — ')[0])
         for key in ('cap','cash','available'): self.cards[key].setText(money(s[key]))
         self.cards['cash'].setToolTip('조회시각: '+str(s.get('cash_time') or '미확인')+' / 기록값은 현재 잔고를 보장하지 않음')

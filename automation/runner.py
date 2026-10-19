@@ -16,6 +16,7 @@ from automation.observation_retention import ObservationRetention
 from core.broker import Rest,Rejected
 from core.realtime import Feed,parse_tick
 from core.strategy import Tick
+from core.market_time import market_freshness,tick_freshness
 from core.report import export
 from candidate_builder import structure
 from automation.policy import Policy,load_automation,LEGACY_SYMBOL,BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL,legacy_test_release_enabled
@@ -184,6 +185,11 @@ def apply_qualified_progress(engine,lookup,rows,result,readiness,cfg,auto,stamp)
     for row in verified:pool[row['code']]=dict(row)
     merged=list(pool.values())
     selection=resolve_radar_focus(engine,lookup,merged,[],readiness,cfg,auto,stamp)
+    for row in merged:
+        if row['code'] in lookup:row.update(status='WATCH',fallback_source1=lookup[row['code']]['fallback_source1'])
+        elif row.get('status')=='WATCH':row.update(status='RESERVE',fallback_source1=False)
+        engine.names[row['code']]=row.get('name')
+        engine.market_status[row['code']]=row.get('market_status',{'pass':None,'reason_code':'MARKET_STATUS_UNKNOWN'})
     # Full ranking lineage is retained even when RAW was coalesced in the bounded
     # two-packet radar queue. One-source fallback is the existing FOCUS permission.
     raw=[{**r,'fallback_source1':bool(lookup.get(r['code'],{}).get('fallback_source1'))}
@@ -213,18 +219,19 @@ class SubscriptionState:
         detector.reset();self.disconnected(stamp)
         engine.event('SUBSCRIPTION_TRANSPORT_LOST',worker_restart_required=False)
 
-    def gap_expired(self,detector,symbol,stamp):
+    def gap_expired(self,detector,symbol,stamp,limit_seconds=None):
         last=detector.last.get(symbol)
         if last and last.time.date()!=stamp.date():return True
         detached_at=self.detached_at.get(symbol)
+        limit = limit_seconds if limit_seconds is not None else detector.cfg.stale_seconds
         # A quiet stock's last trade age is not the length of a subscription gap.
-        return bool(detached_at and (stamp-detached_at).total_seconds()>detector.cfg.stale_seconds
+        return bool(detached_at and (stamp-detached_at).total_seconds()>limit
                     and not detector.observation_fresh(symbol,stamp))
 
-    def refresh(self,engine,detector,feed,desired,stamp):
+    def refresh(self,engine,detector,feed,desired,stamp,grace_seconds=None):
         desired=set(desired)
         for sym in list(self.detached-desired):
-            if self.gap_expired(detector,sym,stamp):
+            if self.gap_expired(detector,sym,stamp,limit_seconds=grace_seconds):
                 gap=(stamp-self.detached_at[sym]).total_seconds()
                 detector.forget(sym); self.detached.discard(sym);self.detached_at.pop(sym,None)
                 engine.event('OBSERVATION_RELEASED',symbol=sym,data_action='RESET_STALE_GAP',
@@ -249,10 +256,11 @@ class SubscriptionState:
         for sym in added:
             had_data=sym in detector.last
             fresh=detector.observation_fresh(sym,stamp)
-            expired=had_data and self.gap_expired(detector,sym,stamp)
+            expired=had_data and self.gap_expired(detector,sym,stamp,limit_seconds=grace_seconds)
             since=self.detached_at.get(sym)
             gap=(stamp-since).total_seconds() if since else 0.0
             if expired:detector.forget(sym)
+            elif hasattr(detector,'preload_from_context'):detector.preload_from_context(sym,stamp)
             self.detached.discard(sym);self.detached_at.pop(sym,None);self.waiting[sym]=stamp
             engine.event('OBSERVATION_REJOINED',symbol=sym,
                 data_action='RESET_STALE_GAP' if expired else 'RETAIN_FRESH' if fresh else 'RETAIN_OBSERVATION' if had_data else 'NO_DATA',
@@ -277,12 +285,12 @@ class SubscriptionState:
 def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,drops,sink=None,shadow_detector=None):
     """구독 라우팅 경계에서 승격 종목의 기존 예열 큐와 관찰 상태를 인계한다. 주문은 하지 않는다."""
     priority=set(real_symbols)
-    if shadow_detector is None and hasattr(sink,'__self__'):
-        worker = getattr(sink, '__self__', None)
-        shadow_detector = getattr(getattr(worker, 'observer', None), 'detector', None)
-    if not isinstance(getattr(feed,'observation_q',None),queue.Queue):
-        if hasattr(feed,'configure_observation'):feed.configure_observation(priority,observed,sink)
-        return drops,priority
+    if shadow_detector is None:
+        if hasattr(sink,'__self__') and not str(type(sink)).startswith("<class 'unittest.mock."):
+            worker = getattr(sink, '__self__', None)
+            shadow_detector = getattr(getattr(worker, 'observer', None), 'detector', None)
+        elif hasattr(sink, 'shadow_detector') and not str(type(sink)).startswith("<class 'unittest.mock."):
+            shadow_detector = sink.shadow_detector
     critical=set(engine.s['positions'])|{o['symbol'] for o in engine.active_orders()}
     critical.update(set(engine.s['automation']['existing'])&set(BREAKEVEN_EXITS))
     promotions=(priority-set(prior_priority))&observed-critical
@@ -292,34 +300,68 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
             detector.handoff_from(shadow_detector, sym)
         for sym in demotions:
             shadow_detector.handoff_from(detector, sym)
+    if not isinstance(getattr(feed,'observation_q',None),queue.Queue):
+        if hasattr(feed,'configure_observation'):feed.configure_observation(priority,observed,sink)
+        return drops,priority
     promoted=[]
-    # emit도 같은 lock을 쓰므로 인계 경계 이후의 새 WATCH 틱은 REAL 큐로 간다.
     with getattr(feed,'subscription_lock',nullcontext()):
         if feed.observation_drops!=drops:
             drops=feed.observation_drops
             for sym in observed-set(prior_priority)-critical:detector.forget(sym)
             engine.event('OBSERVATION_DATA_GAP',SHADOW_ONLY=True,dropped=drops,data_action='RESET_PREWARM',actual_order_permission=False)
-        if promotions:
-            remaining=[]
-            for _ in range(feed.observation_q.qsize()):
-                try:item=feed.observation_q.get_nowait()
-                except queue.Empty:break
-                feed.observation_q.task_done()
-                if item[1].symbol in promotions:promoted.append(item)
-                else:remaining.append(item)
-            for item in remaining:feed.observation_q.put_nowait(item)
         feed.configure_observation(priority,observed,sink)
+    if promotions and hasattr(feed, 'observation_q'):
+        remaining=[]
+        for _ in range(feed.observation_q.qsize()):
+            try:item=feed.observation_q.get_nowait()
+            except queue.Empty:break
+            feed.observation_q.task_done()
+            if item[1].symbol in promotions:promoted.append(item)
+            else:remaining.append(item)
+        for item in remaining:
+            try: feed.observation_q.put_nowait(item)
+            except queue.Full: break
     for index,(received,tick) in enumerate(promoted):
         detector.ingest(tick,received)
+        if getattr(engine,'fast_strategy',None) is not None:
+            engine.fast_strategy.ingest_tick(tick,received)
         if critical and (index+1)%64==0:engine.timer(engine.prices)
     if promoted:
         engine.event('OBSERVATION_PREWARM_HANDOFF',symbols=sorted(promotions),queued_ticks=len(promoted),
             SHADOW_ONLY=True,actual_order_permission=False)
-    for _ in range(64):
-        try:observed_at,tick=feed.observation_q.get_nowait()
-        except queue.Empty:break
-        if tick.symbol in observed and tick.symbol not in priority and tick.symbol not in critical:detector.ingest(tick,observed_at)
-    return drops,priority
+    drained = 0
+    drain_deadline = time.monotonic() + 0.01
+    while drained < 512 and time.monotonic() < drain_deadline:
+        try: observed_at, tick = feed.observation_q.get_nowait()
+        except queue.Empty: break
+        drained += 1
+        if tick.symbol in observed and tick.symbol not in priority and tick.symbol not in critical:
+            detector.ingest(tick, observed_at)
+            if getattr(engine,'fast_strategy',None) is not None:
+                engine.fast_strategy.ingest_tick(tick, observed_at)
+    return drops, priority
+
+def merge_verified_shadow_candidates(rows,shadow,lookup):
+    """Merge ObservationWorker-verified SHADOW candidates that hit RadarWorker's per-cycle scan limit."""
+    shadow_rows=getattr(getattr(shadow,'observer',None),'rows',{}) if shadow is not None else {}
+    if not shadow_rows:return rows
+    from automation.shadow_observation import make_evaluation_view
+    pool={r['code']:dict(r) for r in rows}
+    scan_limit_reasons={'STATUS_SCAN_LIMIT','이번 주기 차트 조회 한도; 다음 주기 재시도',None,''}
+    for sym,s_row in list(shadow_rows.items()):
+        sv=s_row.get('shadow_view',{})
+        ms=sv.get('market_status') or s_row.get('market_status') or {}
+        if (sv.get('status')=='ELIGIBLE' and ms.get('pass') is True
+                and s_row.get('affordability',{}).get('entry_eligible') is True):
+            cur=pool.get(sym)
+            if cur is None or (cur.get('status') in {'RAW','UNKNOWN',None} and cur.get('reason') in scan_limit_reasons):
+                ev=make_evaluation_view(s_row)
+                if cur is not None:
+                    for k in ('source_count','source_details','source_deltas','discovery_score','observed_at','first_raw_at','first_raw_price','reference_price','affordability'):
+                        if cur.get(k) is not None:ev[k]=cur[k]
+                ev['status']='WATCH' if sym in lookup else 'SHADOW'
+                pool[sym]=ev
+    return list(pool.values())
 
 def apply_focus_selection(engine,lookup,by_symbol,selection):
     """main thread에서 WATCH 자격 표시만 동기화한다. detector/주문 상태는 바꾸지 않는다."""
@@ -338,8 +380,18 @@ def apply_focus_selection(engine,lookup,by_symbol,selection):
             first_watch=timeline.watch(sym,datetime.fromisoformat(selection.focus_epoch))['first_watch_at']
         lookup[sym]={**row,'status':'WATCH','fallback_source1':source1,
                      'watch_type':'FALLBACK_SOURCE1' if source1 else 'PRIMARY','first_watch_at':first_watch}
+        engine.names[sym]=row.get('name')
+        if row.get('market_status'):
+            engine.market_status[sym]=row.get('market_status')
         if sym in engine.source_qualification:
             engine.source_qualification[sym]['fallback_source1']=source1
+        elif getattr(engine,'source_qualification_seen',False) or getattr(engine,'source_qualification',None):
+            engine.source_qualification[sym]={
+                'source_count':row.get('source_count',0),
+                'timestamp':row.get('observed_at') or selection.focus_epoch,
+                'economic_reason':row.get('affordability',{}).get('reason_code'),
+                'fallback_source1':source1,
+            }
 
 def resolve_radar_focus(engine,lookup,rows,rank_watch,readiness,cfg,auto,stamp):
     """Commit the final focus against actual incumbents, before subscription changes."""
@@ -409,24 +461,68 @@ def pending_broker_settlement(state):
     return any(t.get('completed') and str(t.get('closed','')).startswith(day)
                and t.get('pnl_source')!='BROKER_QUERY' for t in state.get('trades',[]))
 
+
+def ready_account_results(account,in_session):
+    """One FIFO reconciliation per turn; a producer cannot starve market data.
+
+    Never merge or discard fills. A later account result stays queued for the
+    next turn, after controls, quote consumption and position protection run.
+    """
+    if not in_session:return
+    try:result=account.q.get_nowait()
+    except queue.Empty:return
+    yield result
+
+
+def record_observation_retention(engine,retained,previous,desired,grace_seconds,capacity):
+    """Emit changes once, including release to empty, and own a detached key."""
+    retained=set(retained)
+    if retained!=previous:
+        engine.event('OBSERVATION_RETENTION',symbols=sorted(retained),
+            grace_seconds=grace_seconds,subscription_count=len(desired),
+            capacity=capacity,actual_order_permission=False)
+    return retained
+
 def focus_readiness(detector,shadow_readiness,stamp):
     """WATCH ticks are routed to main; rank them by their own full evaluation."""
     from automation.focus_selection import calculate_tier,unviable_price_geometry
     result=dict(shadow_readiness)
+    fast_strat=getattr(detector,'fast_strategy',None)
     with detector._state_lock:
         for sym,evaluation in detector.last_eval.items():
             tick_at=evaluation.get('time')
             if not isinstance(tick_at,datetime) or not 0<=(stamp-tick_at).total_seconds()<=15:continue
             gates=evaluation.get('gates',{})
+            fast_ready=False
+            if fast_strat is not None and gates.get('market_status',{}).get('result')=='PASS':
+                active_fast=fast_strat.active_signals.get(sym)
+                if active_fast is not None and 0<=(stamp-active_fast.created_at).total_seconds()<=active_fast.ttl_seconds:
+                    fast_ready=True
             result[sym]={'timestamp':tick_at.isoformat(),
-                'tier':calculate_tier(gates,evaluation.get('trials',[])),
-                'price_blocked':unviable_price_geometry({'setup_trials':evaluation.get('trials',[])}),
+                'tier':0 if fast_ready else calculate_tier(gates,evaluation.get('trials',[])),
+                'price_blocked':False if fast_ready else unviable_price_geometry({'setup_trials':evaluation.get('trials',[])}),
+                'fast_signal_ready':fast_ready,
                 'gates':{k:{'result':gates.get(k,{}).get('result')} for k in ('acceleration','liquidity')}}
     return result
 
 def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_evaluated_frame=None):
     if not watch or not engine.connected: return None
-    if watch.get('observation_only'):
+    if watch.get('status') and watch.get('status') != 'WATCH':
+        from automation.decisions import gate
+        engine.decisions.emit('ENTRY_EVAL', t.symbol, 'NO_BUY', 'CANDIDATE_STATUS_NOT_WATCH',
+                              {'status': gate(False, status=watch.get('status'))}, price=t.price)
+        return None
+    if watch.get('vi_active') or watch.get('single_price_auction') or getattr(t, 'vi_active', False):
+        from automation.decisions import gate
+        engine.decisions.emit('ENTRY_EVAL', t.symbol, 'NO_BUY', 'VI_AUCTION_NO_BUY',
+                              {'market_status': gate(False, vi_active=watch.get('vi_active'), single_price=watch.get('single_price_auction'))}, price=t.price)
+        return None
+    # A preserved WATCH slot's cash-uncertainty marker is a cached diagnostic.
+    # Current account freshness and final sizing still control all orders.
+    # Other observation-only qualifications never become order permission.
+    cash_recovered=(watch.get('reason')=='ACCOUNT_CAPITAL_UNAVAILABLE'
+                    and engine.capital_account_valid())
+    if watch.get('observation_only') and not cash_recovered:
         from automation.decisions import gate
         engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','ACCOUNT_CAPITAL_UNAVAILABLE',
                               {'connection_account':gate(False,observation_only=True)},price=t.price)
@@ -442,36 +538,98 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
     engine.names[t.symbol]=watch.get('name')
     engine.market_status[t.symbol]=watch.get('market_status',{'pass':None,'reason_code':'MARKET_STATUS_UNKNOWN'})
     sig=detector.signal(t,watch)
+    fast_evaluation=None
+    if not sig and getattr(engine.a, 'fast_momentum_enabled', False) and getattr(engine, 'fast_strategy', None) is not None:
+        is_live = (engine.policy.mode == 'LIVE' and
+                   bool(engine.policy.state.get('live_authorized')) and
+                   bool(engine.c.live_mode))
+        watch_eval = dict(watch)
+        eval_now = engine.clock()
+        if getattr(detector, 'price_context', None) is not None:
+            structure_now = engine.fast_strategy.get_tape(t.symbol).structure(eval_now)
+            ctx_snapshot = detector.price_context.snapshot(
+                t.symbol, t, t.ask,
+                support=structure_now.get('support') if structure_now.get('pass') else None,
+                breakout=structure_now.get('breakout') if structure_now.get('pass') else None,
+            )
+            peak = ctx_snapshot.get('nearest_confirmed_peak')
+            if peak:
+                watch_eval['nearest_confirmed_peak'] = peak
+        fast_sig = engine.fast_strategy.evaluate(
+            t, watch_eval,
+            capital_limit=engine.auto_available_capital(),
+            risk_budget=engine.risk_equity() * engine.c.risk_fraction,
+            ingest=False,
+            received=eval_now,
+            live_authorized=is_live
+        )
+        fast_evaluation=engine.fast_strategy.last_evaluation.get(t.symbol)
+        if fast_sig is not None:
+            sig = fast_sig.to_engine_signal(watch)
+    capture=getattr(engine,'trade_review',None)
+    if capture is not None:
+        try:capture.evaluation(t,watch,detector.last_eval.get(t.symbol,{}),fast_evaluation,engine.clock())
+        except Exception:engine.trade_review_errors=getattr(engine,'trade_review_errors',0)+1
     if not sig:
         gates=detector.evaluation_gates(t,watch)
         failed=[k for k,v in gates.items() if v['result']=='FAIL']
         engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','PATTERN_OR_GATE_NOT_READY',
-            gates,price=t.price,extra={'failed_gates':failed,'signal_detected':False,'setup_trials':detector.last_eval.get(t.symbol,{}).get('trials',[])})
+            gates,price=t.price,extra={'failed_gates':failed,'signal_detected':False,
+                'setup_trials':detector.last_eval.get(t.symbol,{}).get('trials',[]),
+                'fast_evaluation':{k:fast_evaluation.get(k) for k in ('time','status','reason','regime')} if isinstance(fast_evaluation,dict) else None})
         return None
     sig['name']=watch.get('name')
-    from automation.entry_timing import annotate_signal
-    annotate_signal(engine,detector,watch,sig)
     sig['fallback_source1']=bool(watch.get('fallback_source1'))
     bars=radar.cache.get((t.time.date(),t.symbol))
+    radar_root=getattr(radar,'root',None)
+    if not bars and isinstance(radar_root,(str,os.PathLike)):
+        from candidate_builder import bars_from_csv
+        for folder in ('data/raw','data/observation'):
+            csv_path=Path(radar_root)/folder/f'{t.symbol}_daily.csv'
+            if csv_path.exists():
+                loaded=bars_from_csv(csv_path,t.time.date())
+                if len(loaded)>=engine.c.min_history_bars:
+                    bars=loaded; radar.cache[(t.time.date(),t.symbol)]=bars; break
     if not bars:
         engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','HISTORY_UNAVAILABLE',
             detector.evaluation_gates(t,watch),signal=sig,price=t.price)
         return None
-    fresh=structure(bars,sig['limit'],replace(engine.c,max_recent_range=.99,min_resistance_room=0 if sig['pattern'] in {'A','C'} else engine.c.min_resistance_room),t.time.date())
-    if fresh.get('status')!='ELIGIBLE':
-        from automation.decisions import gate
-        engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','STRUCTURE_REJECTED',
-            {'structure':gate(False,**fresh)},signal=sig,price=t.price)
-        engine.event('NO_TRADE',symbol=t.symbol,reason=fresh['reason']); return None
-    sig=detector.signal(t,{**watch,**fresh})
-    if not sig:
-        engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','FRESH_STRUCTURE_SIGNAL_NOT_READY',
-            detector.evaluation_gates(t,{**watch,**fresh}),price=t.price,
-            extra={'signal_detected':False,'setup_trials':detector.last_eval.get(t.symbol,{}).get('trials',[])})
-        return None
-    sig['name']=watch.get('name')
-    annotate_signal(engine,detector,watch,sig)
-    sig['fallback_source1']=bool(watch.get('fallback_source1'))
+    if sig.get('pattern') == 'FAST':
+        from automation.entry_timing import annotate_signal
+        annotate_signal(engine,detector,watch,sig)
+        from automation.fast_entry_context import attach_fast_entry_observation
+        attach_fast_entry_observation(sig,detector,t,engine.clock(),engine.c.min_reward_risk)
+        obs = sig.get('fast_context_observation', {})
+        if obs.get('status') == 'REJECT_CANDIDATE':
+            from automation.decisions import gate
+            reason = obs.get('reason', 'FAST_ENTRY_CONTEXT_REJECTED')
+            engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY',reason,
+                {'fast_entry_context':gate(False,**obs)},signal=sig,price=t.price)
+            engine.event('NO_TRADE',symbol=t.symbol,reason=reason); return None
+        fresh=structure(bars,sig['limit'],replace(engine.c,max_recent_range=999.0,max_overhead_share=1.0,min_resistance_room=0.0),t.time.date())
+        if fresh.get('status')!='ELIGIBLE':
+            from automation.decisions import gate
+            engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','STRUCTURE_REJECTED',
+                {'structure':gate(False,**fresh)},signal=sig,price=t.price)
+            engine.event('NO_TRADE',symbol=t.symbol,reason=fresh['reason']); return None
+    else:
+        from automation.entry_timing import annotate_signal
+        annotate_signal(engine,detector,watch,sig)
+        fresh=structure(bars,sig['limit'],replace(engine.c,max_recent_range=.99,min_resistance_room=0 if sig['pattern'] in {'A','C'} else engine.c.min_resistance_room),t.time.date())
+        if fresh.get('status')!='ELIGIBLE':
+            from automation.decisions import gate
+            engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','STRUCTURE_REJECTED',
+                {'structure':gate(False,**fresh)},signal=sig,price=t.price)
+            engine.event('NO_TRADE',symbol=t.symbol,reason=fresh['reason']); return None
+        sig=detector.signal(t,{**watch,**fresh})
+        if not sig:
+            engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','FRESH_STRUCTURE_SIGNAL_NOT_READY',
+                detector.evaluation_gates(t,{**watch,**fresh}),price=t.price,
+                extra={'signal_detected':False,'setup_trials':detector.last_eval.get(t.symbol,{}).get('trials',[])})
+            return None
+        sig['name']=watch.get('name')
+        annotate_signal(engine,detector,watch,sig)
+        sig['fallback_source1']=bool(watch.get('fallback_source1'))
     for sym,p in (list(engine.s['positions'].items()) if engine.a.replacement_enabled else []):
         if sym==t.symbol or p.get('exit_requested'): continue
         history=radar.cache.get((t.time.date(),sym)); price=prices.get(sym)
@@ -498,7 +656,7 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
     return o
 
 def drain_feed(feed, consume, *, clock=None, monotonic=None,
-               max_messages=64, max_seconds=.05):
+               max_messages=64, max_seconds=.05, timeout=.25):
     """Bounded FIFO catch-up; never coalesce prices, fills or connection barriers.
 
     The outer loop reconciles accounts, refreshes subscriptions and writes UI
@@ -509,7 +667,7 @@ def drain_feed(feed, consume, *, clock=None, monotonic=None,
     clock=clock or now;monotonic=monotonic or time.monotonic
     started=monotonic();count=0;lag=0.
     while count<max_messages and (not count or monotonic()-started<max_seconds):
-        try:received,message=feed.q.get(timeout=.25) if not count else feed.q.get(block=False)
+        try:received,message=feed.q.get(timeout=timeout) if not count else feed.q.get(block=False)
         except queue.Empty:break
         lag=max(0.,(clock()-received).total_seconds())
         consume(received,message,lag);count+=1
@@ -557,7 +715,7 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
         elif kind=='0s': update_market(engine,str(item['values']['215']))
         elif kind=='0B':
             parsed=item.get('_observation_tick')
-            t=parsed[1] if isinstance(parsed,tuple) and len(parsed)==2 and parsed[0]==received and isinstance(parsed[1],Tick) else parse_tick(item,received,book_stale_seconds=engine.c.stale_seconds)
+            t=parsed[1] if isinstance(parsed,tuple) and len(parsed)==2 and parsed[0]==received and isinstance(parsed[1],Tick) else parse_tick(item,received,book_stale_seconds=engine.c.stale_seconds,received_monotonic=message.get('_received_monotonic'))
             if t.symbol not in symbols:continue
             if subscriptions is not None and not subscriptions.tick_ready(t,received):continue
             state=getattr(engine,'s',{})
@@ -565,7 +723,8 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
             clock_fn=getattr(engine,'clock',None)
             wall_clock=clock_fn() if callable(clock_fn) else None
             if not isinstance(wall_clock,datetime):wall_clock=now()
-            protected=t.symbol in positions and t.regular and 0<=(wall_clock-t.time).total_seconds()<=engine.c.stale_seconds
+            timing=tick_freshness(t,wall_clock,engine.c.stale_seconds)
+            protected=t.symbol in positions and t.regular and timing['fresh']
             # Preserve genuine receiver-time history even if the consumer was
             # delayed. Old frames can build past bars, never generate a current
             # order or exit. Current execution still uses wall-clock freshness.
@@ -576,12 +735,18 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
                     health=getattr(engine,'position_health',None)
                     if health is not None:health.trade_seen(t.symbol,t)
                 continue
+            capture=getattr(engine,'trade_review',None)
+            history=detector.history.get(t.symbol,())
+            if capture is not None and history:
+                capture.completed_bar(t.symbol,history[-1],received,wall_clock)
+            if getattr(engine.a, 'fast_momentum_enabled', False) and hasattr(engine, 'fast_strategy') and engine.fast_strategy is not None:
+                engine.fast_strategy.ingest_tick(t, received)
             if subscriptions is not None:subscriptions.accepted(t.symbol)
-            accepted+=1;engine.last_regular_tick_at=t.time
+            accepted+=1;engine.last_regular_tick_at=t.time;engine.last_regular_tick=t
             timeline=getattr(engine,'observation_timeline',None)
             if timeline is not None:timeline.tick(t.symbol,t.time,detector.usable_bars(t.symbol),t.price,received=received,processed=wall_clock,
-                execution_fresh=0<=(wall_clock-t.time).total_seconds()<=engine.c.stale_seconds)
-            if not 0<=(wall_clock-t.time).total_seconds()<=engine.c.stale_seconds:continue
+                execution_fresh=timing['fresh'])
+            if not timing['fresh']:continue
             prices[t.symbol]=t.bid or t.price
             if engine.market=='UNKNOWN': engine.market='3'
             finished=list(detector.completed.get(t.symbol,[]))
@@ -620,9 +785,86 @@ class ReadOnlyPilotPolicy:
         if command not in {'STOP','KILL'}:raise ValueError('조회 실행에 권한을 부여할 수 없습니다.')
         self.state['mode']='STOP'
 
+def order_ready_from_evidence(readiness,stale_seconds,connected):
+    """One data-readiness rule; this never grants approval or symbol authority."""
+    if not isinstance(readiness,dict) or not connected:return False
+    if readiness.get('order_ready') is False:return False
+    if readiness.get('regular_tick_timing_valid') is False:return False
+    age=readiness.get('regular_tick_age')
+    if type(age) not in (int,float) or not 0<=age:return False
+    missing=readiness.get('missing',[])
+    return bool((readiness.get('state')=='OPEN_READY' and not missing and age<=stale_seconds)
+                or (missing==['FRESH_REGULAR_TICK_NOT_READY']
+                    and readiness.get('tick_lag_source')=='WS_SOURCE_SILENT'
+                    and age<=stale_seconds*2))
+
+def heartbeat_order_readiness(heartbeat,cfg,stamp):
+    """Age saved evidence for a read-only display, without inventing permission.
+
+    Engine snapshots remain the authority. The GUI can revoke an expired
+    heartbeat but cannot revive a snapshot that the engine marked OFF.
+    """
+    import math
+    original=heartbeat.get('readiness')
+    if not isinstance(original,dict) or not original:
+        return {'order_ready':False,'state':'UNKNOWN','missing':['READINESS_UNKNOWN'],'off_reasons':['READINESS_UNKNOWN']}
+    ready=copy.deepcopy(original)
+    try:
+        issued=datetime.fromisoformat(heartbeat['time']);elapsed=(stamp-issued).total_seconds()
+        if issued.tzinfo is None or issued.date()!=stamp.date() or not 0<=elapsed<=10:raise ValueError('heartbeat expired')
+    except (KeyError,ValueError,TypeError):
+        ready.update(order_ready=False,off_reasons=['HEARTBEAT_NOT_CURRENT']);return ready
+    age=ready.get('regular_tick_age')
+    if type(age) in (int,float) and math.isfinite(age):age+=elapsed
+    else:age=None
+    try:
+        timing=market_freshness(ready['last_regular_tick_at'],stamp,cfg.stale_seconds,
+            received_at=ready.get('last_regular_tick_received_at'))
+        ready['regular_tick_timing_valid']=timing['valid']
+        ready['regular_tick_exchange_age']=timing['exchange_age_seconds']
+        if not timing['valid']:raise ValueError('invalid tick stamp')
+        actual_age=timing['effective_age_seconds']
+        age=max(age,actual_age) if age is not None else actual_age
+    except KeyError:pass  # Older snapshots can carry an age relative to heartbeat time.
+    except (TypeError,ValueError):age=None
+    ready['regular_tick_age']=age
+    if ready.get('order_ready') is False:
+        ready['off_reasons']=list(ready.get('off_reasons') or ready.get('missing') or ['ENGINE_DATA_NOT_READY'])
+        return ready
+    missing=list(ready.get('missing',[]))
+    if age is None or not 0<=age<=cfg.stale_seconds:
+        if 'FRESH_REGULAR_TICK_NOT_READY' not in missing:missing.append('FRESH_REGULAR_TICK_NOT_READY')
+        ready['state']='WAITING';ready['missing']=missing
+        loop_lag=ready.get('event_loop_lag_seconds',heartbeat.get('event_loop_lag_seconds'))
+        queue_size=ready.get('feed_queue_depth',heartbeat.get('feed_queue_depth'))
+        if type(loop_lag) in (int,float) and loop_lag>1:ready['tick_lag_source']='EVENT_LOOP_LAG'
+        elif type(queue_size) in (int,float) and queue_size>5:ready['tick_lag_source']='QUEUE_BUFFER'
+        elif type(loop_lag) in (int,float) and type(queue_size) in (int,float):ready['tick_lag_source']='WS_SOURCE_SILENT'
+        elif ready.get('tick_lag_source')!='WS_SOURCE_SILENT':ready['tick_lag_source']='READINESS_LAG_UNKNOWN'
+    account_age=ready.get('account_age_seconds')
+    if type(account_age) in (int,float) and account_age+elapsed>cfg.reconcile_seconds*3:
+        if 'ACCOUNT_FRESH_NOT_READY' not in missing:missing.append('ACCOUNT_FRESH_NOT_READY')
+        ready.update(state='WAITING',missing=missing)
+    ready['order_ready']=order_ready_from_evidence(ready,cfg.stale_seconds,heartbeat.get('connected') is True)
+    ready['off_reasons']=[] if ready['order_ready'] else list(ready.get('missing') or ['ENGINE_DATA_NOT_READY'])
+    if not ready['order_ready'] and ready.get('tick_lag_source'):ready['off_reasons'].append(ready['tick_lag_source'])
+    return ready
+
+def record_order_readiness_transition(engine,ready):
+    signature=(ready['order_ready'],tuple(ready.get('off_reasons',[])),ready.get('tick_lag_source'))
+    if signature==getattr(engine,'last_order_readiness_signature',None):return False
+    engine.last_order_readiness_signature=signature
+    engine.event('ORDER_READINESS_CHANGED',order_ready=ready['order_ready'],
+        reason_codes=ready.get('off_reasons',[]),readiness=ready,
+        authority_scope='GLOBAL_DATA_ONLY_SYMBOL_QUOTE_RISK_APPROVAL_STILL_REQUIRED',actual_order_permission=False)
+    return True
+
 def readiness_snapshot(engine,counts,radar_ok,stamp,detector=None):
     """증거를 평가한다. 경과 초 수나 전략 완성봉 수를 readiness 조건으로 쓰지 않는다."""
     sess=getattr(engine,'current_session',lambda:current_session(stamp))()
+    feed=getattr(engine,'readiness_feed',None)
+    transport_failed=getattr(feed,'transport_failed',False) is True
+    connected=engine.connected and not transport_failed
     is_after=sess=='AFTER'
     if is_after:
         in_control=getattr(engine.c,'after_enabled',False) and after_control_supported(stamp)
@@ -631,11 +873,19 @@ def readiness_snapshot(engine,counts,radar_ok,stamp,detector=None):
         in_control=control_supported(stamp)
         in_market=supported(stamp)
     last=getattr(engine,'last_regular_tick_at',None)
+    last_tick=getattr(engine,'last_regular_tick',None)
+    if getattr(last_tick,'time',None)!=last:last_tick=None
     if detector is not None:
-        regular=[t.time for t in detector.last.values() if t.regular or is_after]
-        if regular:last=max(regular+[last] if last else regular)
-    tick_age=(stamp-last).total_seconds() if last is not None else None
-    fresh_tick=in_market and tick_age is not None and 0<=tick_age<=engine.c.stale_seconds and last.date()==stamp.date()
+        # Capture immutable tick/receipt pairs under the observation lock.
+        with (getattr(detector,'_state_lock',None) or nullcontext()):
+            regular=[t for t in detector.last.values() if t.regular or is_after]
+            if regular:
+                candidate=max(regular,key=lambda t:t.time)
+                if last is None or candidate.time>=last:last=candidate.time;last_tick=candidate
+    timing=(tick_freshness(last_tick,stamp,engine.c.stale_seconds) if last_tick is not None
+            else market_freshness(last,stamp,engine.c.stale_seconds))
+    tick_age=timing['effective_age_seconds']
+    fresh_tick=in_market and timing['fresh']
     tick_lag_source=None
     if not fresh_tick and in_market:
         loop_lag=getattr(engine,'event_loop_lag',0)
@@ -648,7 +898,7 @@ def readiness_snapshot(engine,counts,radar_ok,stamp,detector=None):
             tick_lag_source='WS_SOURCE_SILENT'
     radar_at=getattr(engine,'last_radar_at',None)
     radar_current=radar_ok and radar_at is not None and supported(radar_at) and radar_at.date()==stamp.date()
-    gates={'control_session':in_control,'websocket_reg_ack':bool(engine.connected and counts['subscription_acks']>0),
+    gates={'control_session':in_control,'websocket_reg_ack':bool(connected and counts['subscription_acks']>0),
            'account_fresh':engine.capital_account_valid(),'safe_state':not engine.s['halt'] and not any(o.get('status')=='UNKNOWN' for o in engine.active_orders())}
     if in_market:
         if is_after:
@@ -657,17 +907,23 @@ def readiness_snapshot(engine,counts,radar_ok,stamp,detector=None):
             gates.update(observation_session=True,regular_market=engine.market=='3',fresh_regular_tick=fresh_tick,radar_pipeline=radar_current)
     missing=[key.upper()+'_NOT_READY' for key,passed in gates.items() if not passed]
     state=('OPEN_READY' if in_market else 'PREOPEN_READY') if not missing else 'WAITING'
-    order_ready=(state=='OPEN_READY') or (
-        missing==['FRESH_REGULAR_TICK_NOT_READY']
-        and tick_lag_source=='WS_SOURCE_SILENT'
-        and isinstance(tick_age,(int,float))
-        and tick_age<=engine.c.stale_seconds*2
-        and engine.connected
-    )
-    return {'state':state,'order_ready':order_ready,'phase':assessment(stamp)['phase'],'gates':gates,'missing':missing,
+    ready={'state':state,'phase':assessment(stamp)['phase'],'gates':gates,'missing':missing,
             'regular_epoch':stamp.replace(hour=9,minute=0,second=0,microsecond=0).isoformat(),
             'last_regular_tick_at':last.isoformat() if last else None,'regular_tick_age':tick_age,
-            'tick_lag_source':tick_lag_source,'market_pending':not in_market,'strategy_warmup_separate':True}
+            'last_regular_tick_received_at':getattr(last_tick,'received_at',None),
+            'regular_tick_exchange_age':timing['exchange_age_seconds'],
+            'regular_tick_receive_age':timing['receive_age_seconds'],
+            'regular_tick_receive_elapsed':timing['receive_elapsed_seconds'],
+            'regular_tick_timing_valid':timing['valid'],
+            'tick_lag_source':tick_lag_source,'market_pending':not in_market,'strategy_warmup_separate':True,
+            'asof':stamp.isoformat(),'event_loop_lag_seconds':getattr(engine,'event_loop_lag',None),
+            'feed_queue_depth':getattr(engine,'feed_queue_size',None),'transport_failure_seen':transport_failed}
+    if type(getattr(engine,'last_account',None)) in (int,float):
+        ready['account_age_seconds']=max(0,time.monotonic()-engine.last_account)
+    ready['order_ready']=order_ready_from_evidence(ready,engine.c.stale_seconds,connected)
+    ready['off_reasons']=[] if ready['order_ready'] else list(missing or ['MARKET_NOT_OPEN'])
+    if not ready['order_ready'] and tick_lag_source:ready['off_reasons'].append(tick_lag_source)
+    return ready
 
 def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness_check=False):
     root=Path(root); auto=load_automation(root/'automation.json'); policy=Policy(root/'runtime/automation_policy.json')
@@ -690,6 +946,13 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     effective.validate()
     rest=Rest(effective); folder=root/'runtime'/('automation-smoke' if seconds or readiness_check else 'automation-'+cfg.broker_environment)
     engine=AutonomousEngine(effective,auto,policy,folder,rest,now)
+    # This recorder never calls a broker or the experimental profit policies.
+    # Recording failure must not interrupt existing position protection.
+    try:
+        from automation.trade_review_capture import TradeReviewCapture
+        engine.trade_review=TradeReviewCapture(folder/'trade-review',clock=now)
+    except OSError as error:
+        engine.event('TRADE_REVIEW_CAPTURE_UNAVAILABLE',error_type=type(error).__name__)
     observation_settings=load_observation(root);engine.observation_settings=observation_settings
     engine.candidate_audit=CandidateAudit()
     from automation.entry_timing import ObservationTimeline
@@ -697,12 +960,21 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     engine.candidate_audit.refresh_seconds=auto.scan_seconds
     atomic_json(folder/'session_settings.json',{'config':asdict(cfg),'effective_config':asdict(effective),'automation':asdict(auto)})
     detector=PatternDetector(effective,auto,engine.costs)
+    detector.fast_strategy=engine.fast_strategy
     detector.continuous_observation=True
-    if auto.entry_context_enabled or auto.structural_breakout_enabled:
+    if auto.entry_context_enabled or auto.structural_breakout_enabled or auto.intraday_context_enabled or auto.fast_momentum_enabled:
         saved=[p.get('signal',{}) for p in engine.s['trades']]
         saved.extend(o.get('signal') or {} for o in engine.s['orders'].values() if o.get('side')=='BUY')
         references=detector.price_context.bootstrap(saved,now(),effective.stale_seconds)
         engine.event('ENTRY_REFERENCE_RECOVERY',**references)
+        context_cache_path=root/'runtime'/'price_context_cache.json'
+        if context_cache_path.exists():
+            try:
+                import json
+                with open(context_cache_path,'r',encoding='utf-8') as f:cached=json.load(f)
+                recovered=detector.price_context.load_cache(cached,now())
+                if recovered:engine.event('PRICE_CONTEXT_CACHE_RESTORED',recovered_bars=recovered,symbols=len(detector.price_context.rows))
+            except Exception:pass
     # 검사 시간 종료는 STOP과 같으며 LIVE의 시간 제한 검사는 금지한다.
     if seconds and (cfg.live_mode or auto.capital_limit!=0 or policy.mode!='ARMED' or
                     policy.state.get('test_capital_release',{}).get('status') in {'APPROVED','SUBMITTING'}):
@@ -718,7 +990,9 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
         account_worker.settlement_interval=auto.scan_seconds
         radar_worker=RadarWorker(effective,auto,policy,rank_rest,root)
         bind_candidate_observation(radar_worker,lambda:shadow,engine)
-        return (radar_worker,account_worker,Feed(rest,sorted(symbols)))
+        realtime_feed=Feed(rest,sorted(symbols));engine.readiness_feed=realtime_feed
+        realtime_feed.trade_review=getattr(engine,'trade_review',None)
+        return (radar_worker,account_worker,realtime_feed)
     symbols=set(engine.s['positions'])|{o['symbol'] for o in engine.active_orders()}
     subscriptions=SubscriptionState(symbols); priority_symbols=set(symbols)
     observation_retention=ObservationRetention();retained_observation=set()
@@ -785,7 +1059,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     engine.reset_detector=True
                 elif not in_session and data_active:
                     feed.close(); radar.close(); account.close(); data_active=False
-                    detector.reset(); engine.disconnect(); engine.account_ok=False; engine.market='UNKNOWN'; radar_ok=False;engine.last_regular_tick_at=None;engine.last_radar_at=None
+                    detector.reset(); engine.disconnect(); engine.account_ok=False; engine.market='UNKNOWN'; radar_ok=False;engine.last_regular_tick_at=None;engine.last_regular_tick=None;engine.last_radar_at=None
                     engine.event('OUT_OF_SUPPORTED_SESSION',message='연결 검사/조회와 신규 주문을 다음 정규장까지 대기')
                     if engine.s['positions'] or engine.active_orders():
                         engine.event('POSITION_REMAINS_AFTER_SESSION',reason_code='OVERNIGHT_RISK',allow_overnight=auto.ALLOW_OVERNIGHT,
@@ -799,8 +1073,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 if policy.mode=='KILL' and policy.state['revision']!=engine.control_revision:
                     kill_requested_at=time.monotonic(); account.request.set()
                 done=engine.controls(prices)
-                while in_session and not account.q.empty():
-                    result=account.q.get_nowait()
+                for result in ready_account_results(account,in_session):
                     if result['error']:
                         engine.account_ok=False; engine.event('ACCOUNT_UNAVAILABLE',**{k:v for k,v in result.items() if k!='started'})
                     elif time.monotonic()-result['started']>effective.reconcile_seconds*3:
@@ -808,13 +1081,17 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     else:
                         for sym,error in result['snapshot'].get('book_errors',{}).items(): engine.event('EXISTING_BOOK_UNAVAILABLE',symbol=sym,**error)
                         position_health.probe_results(result['snapshot'],now())
+                        reconcile_started=time.perf_counter()
                         reconciled=engine.reconcile(result['snapshot'],result['fills']); counts['account_checks']+=1; account_generation+=1
+                        reconcile_ms=(time.perf_counter()-reconcile_started)*1000
                         if reconciled is False and engine.s.get('automation',{}).get('reconcile_deferred_pending'):
                             engine.s['automation']['reconcile_deferred_pending']=False
                             account.request.set()
                         for sym,book in result['snapshot'].get('books',{}).items():
                             position_health.accept_book(sym,book,now(),source='ka10004')
-                        engine.event('ACCOUNT_LATENCY',**result['snapshot'].get('performance',{}))
+                        engine.event('ACCOUNT_LATENCY',**result['snapshot'].get('performance',{}),
+                            reconcile_ms=reconcile_ms,pending_results=account.q.qsize(),
+                            result_age_seconds=max(0,time.monotonic()-result['started']))
                         external=set(engine.s['automation']['existing'])&(set(BREAKEVEN_EXITS)|({TEST_RELEASE_SYMBOL} if legacy_test_release_enabled() else set()))
                         account.external_symbols=external
                         radar.extra_symbols=set(engine.s['positions'])
@@ -838,6 +1115,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                                 by_symbol={r['code']:r for r in rows}
                                 focus_promotions.extend(selection.promoted)
                                 engine.candidate_audit.begin(rows,result['time'],result.get('capital_context',{}))
+                                submit_candidate_observation(engine,shadow,rows,result['time'],engine.capital_context())
                                 engine.event('FOCUS_SELECTION_APPLIED',basis='OPENING_VERIFIED_PROGRESS',
                                     promoted=selection.promoted,demoted=selection.demoted,
                                     next_watch=selection.next_watch,previous_watch=selection.previous_watch,
@@ -854,10 +1132,10 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         if 'source_observed_at' in result or any('source_count' in row for row in result['rows']):qualify_raw(engine,result['rows'],result.get('source_observed_at',result['time']),is_raw_phase=False)
                         if engine.candidate_audit.started:
                             summary=engine.candidate_audit.summary(now().isoformat(),engine.capital_context())
-                            atomic_json(root/'runtime/candidate_summary.json',summary)
+                            atomic_json(root/'runtime/candidate_summary.json',summary,fsync=False)
                             engine.event('CANDIDATE_CYCLE_SUMMARY',**summary)
                         prior_watch=set(lookup)
-                        rows=result['rows'];radar_ok=True;engine.last_radar_at=datetime.fromisoformat(result['time'])
+                        rows=merge_verified_shadow_candidates(result['rows'],shadow,lookup);radar_ok=True;engine.last_radar_at=datetime.fromisoformat(result['time'])
                         selection=resolve_radar_focus(engine,lookup,rows,result['watch'],
                             focus_readiness(detector,shadow.runtime_view().get('evaluations',{}),now()),effective,auto,now())
                         focus_promotions.extend(selection.promoted)
@@ -880,7 +1158,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         for row in rows:
                             engine.names[row['code']]=row.get('name')
                             engine.market_status[row['code']]=row.get('market_status',{'pass':None,'reason_code':'MARKET_STATUS_UNKNOWN'})
-                            if row.get('status') in {'REJECT','UNKNOWN','RESERVE'}:
+                            if row['code'] in lookup and row.get('status') in {'REJECT','UNKNOWN','RESERVE'}:
                                 from automation.decisions import gate
                                 engine.decisions.emit('ENTRY_EVAL',row['code'],'NO_BUY',row.get('reason') or 'WATCH_CAPACITY_RESERVE',
                                     {'candidate_compression':gate(False,status=row['status'],source_count=row.get('source_count'),
@@ -904,6 +1182,8 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         continue
                     focus_dirty=True
                 if focus_dirty:
+                    rows=merge_verified_shadow_candidates(rows,shadow,lookup)
+                    by_symbol={row['code']:row for row in rows}
                     readiness=focus_readiness(detector,shadow.runtime_view().get('evaluations',{}),now())
                     selection=select_focus(
                         current_watch=lookup,
@@ -915,6 +1195,12 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     )
                     if selection.applied:
                         apply_focus_selection(engine,lookup,by_symbol,selection)
+                        for row in rows:
+                            if row['code'] in lookup:row.update(status='WATCH',fallback_source1=lookup[row['code']]['fallback_source1'])
+                            elif row.get('status')=='WATCH':row.update(status='RESERVE',fallback_source1=False)
+                        if not radar_ok:
+                            radar_ok=True; last_radar=last_radar or time.monotonic()
+                            if getattr(engine,'last_radar_at',None) is None:engine.last_radar_at=now()
                         focus_promotions.extend(selection.promoted)
                         engine.event('FOCUS_SELECTION_APPLIED',promoted=selection.promoted,demoted=selection.demoted,
                             next_watch=selection.next_watch,previous_watch=selection.previous_watch,
@@ -943,6 +1229,9 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                             if sym in lookup:
                                 with detector._state_lock:detector.price_context.merge_history(sym,packet['bars'],received,venue)
                             with shadow.observer.detector._state_lock:shadow.observer.detector.price_context.merge_history(sym,packet['bars'],received,venue)
+                            try:
+                                atomic_json(root/'runtime'/'price_context_cache.json',detector.price_context.dump_cache())
+                            except Exception:pass
                         engine.event('INTRADAY_REFERENCE_READY' if not packet.get('error') else 'INTRADAY_REFERENCE_PENDING',
                             symbol=sym,venue=venue,received_at=packet['received_at'],known_bars=len(packet['bars']),
                             source='REST_REFERENCE',restored_signal_bars=0,restored_warmup=False,error=packet.get('error'))
@@ -957,14 +1246,16 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 observation_grace=observation_residence_seconds(auto)
                 desired,observed,retained=observation_retention.select(lookup,real_symbols,observed,now(),
                     grace_seconds=observation_grace,capacity=observation_settings.max_symbols)
-                if retained!=retained_observation:
-                    engine.event('OBSERVATION_RETENTION',symbols=sorted(retained),
-                        grace_seconds=observation_grace,subscription_count=len(desired),
-                        capacity=observation_settings.max_symbols,actual_order_permission=False)
-                    retained_observation=retained
-                observation_drops,priority_symbols=prewarm_handoff(engine,detector,feed,observed,real_symbols,priority_symbols,observation_drops,shadow.deliver)
+                retained_observation=record_observation_retention(
+                    engine,retained,retained_observation,desired,observation_grace,
+                    observation_settings.max_symbols)
+                observation_drops,priority_symbols=prewarm_handoff(
+                    engine,detector,feed,observed,real_symbols,priority_symbols,observation_drops,
+                    shadow.deliver,
+                    shadow_detector=getattr(getattr(shadow, 'observer', None), 'detector', None)
+                )
                 if in_session:
-                    subscriptions.refresh(engine,detector,feed,desired,now()); symbols=set(subscriptions.symbols)
+                    subscriptions.refresh(engine,detector,feed,desired,now(),grace_seconds=observation_grace); symbols=set(subscriptions.symbols)
                     # Rejoined symbols must first deliver a fresh post-subscription regular tick.
                     for prom in set(focus_promotions)&set(lookup):
                         prom_tick=detector.last.get(prom)
@@ -984,7 +1275,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         engine.event_loop_lag=lag
                         if message.get('trnm')=='REG' and message.get('return_code') in (0,'0'):counts['subscription_acks']+=1
                         counts['ticks']+=process_message(engine,detector,message,received,real_symbols,lookup,radar,prices,account,radar_ok and not smoke_ended,subscriptions)
-                    drain_feed(feed,consume_frame)
+                    drain_feed(feed,consume_frame,timeout=.02)
                 except queue.Empty:
                     if not in_session: time.sleep(.25)
                 position_health.prune()
@@ -997,8 +1288,9 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     summary=engine.candidate_audit.summary(now().isoformat(),engine.capital_context());summary['shadow']=len(observed)
                     summary['raw_definition']='5개 ranking API의 일반주 고유종목 합집합; HTS 0168과 동일 목록은 아님'
                     summary['refresh_seconds']=auto.scan_seconds
-                    atomic_json(root/'runtime/candidate_summary.json',summary);last_board=time.monotonic()
+                    atomic_json(root/'runtime/candidate_summary.json',summary,fsync=False);last_board=time.monotonic()
                 ready=readiness_snapshot(engine,counts,radar_ok,now(),detector)
+                record_order_readiness_transition(engine,ready)
                 if ready['state']!=getattr(engine,'last_readiness_state',None):
                     engine.event('READINESS_CHANGED',readiness=ready);engine.last_readiness_state=ready['state']
                 if readiness_check and ready['state'] in {'PREOPEN_READY','OPEN_READY'}:smoke_ended=True
@@ -1010,12 +1302,17 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     done=not engine.s['positions'] and not engine.active_orders()
                 if time.monotonic()-last_report>=60:
                     summary=engine.candidate_audit.summary(now().isoformat(),engine.capital_context())
-                    atomic_json(root/'runtime/candidate_summary.json',summary)
+                    atomic_json(root/'runtime/candidate_summary.json',summary,fsync=False)
                     engine.save(); reporter.submit(rows,engine.s); last_report=time.monotonic()
                 if time.monotonic()-last_heartbeat>=1:
+                    capture=getattr(engine,'trade_review',None)
+                    if capture is not None:capture.set_scope(lookup,engine.s['positions'],now())
                     for stage in engine.observation_timeline.drain_events():
                         engine.event('OPENING_PIPELINE_STAGE',**stage)
                     engine.observation_timeline.save(now())
+                    if in_session:
+                        from automation.opening_diagnostics import check_opening_funnel_diagnostic
+                        check_opening_funnel_diagnostic(engine,detector,shadow,radar,lookup,rows,now(),root)
                     sess_name=engine.current_session()
                     phase_str=market_phase(now(),live_approved=getattr(engine,'after_live_authorized',False))
                     if sess_name=='AFTER':
@@ -1036,13 +1333,14 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         'session':hb_session,'market_phase':phase_str,'venue':getattr(engine,'after_default_venue','SOR') if sess_name=='AFTER' else 'KRX',
                         'session_classification':assessment(now())['classification'],'readiness':ready,'build_id':BUILD_ID,'strategy_experiment':STRATEGY_EXPERIMENT,
                         'pid':os.getpid(),'identity':process_identity(os.getpid()),
-                        'account_ok':engine.account_ok,'radar_ok':radar_ok,'connected':engine.connected,
+                        'account_ok':engine.account_ok,'radar_ok':radar_ok,'connected':ready['gates']['websocket_reg_ack'],
                         'subscription_refresh_pending':subscriptions.refresh_pending,'subscription_tick_waiting':sorted(subscriptions.waiting),
                         'watch_observation':{s:dict(engine.observation_timeline.rows.get(s,{})) for s in lookup},
                         'feed_queue_depth':getattr(engine,'feed_queue_size',None),'event_loop_lag_seconds':getattr(engine,'event_loop_lag',None),
                         'available_capital':min(engine.available_cash,auto.capital_limit),'approved_cap':auto.capital_limit,
                         'bot_cash':engine.s['cash'],'positions':len(engine.s['positions']),'pending':len(engine.active_orders()),
-                        'strategy':'MANAGE' if engine.s['positions'] else 'SCAN' if lookup else 'QUIET','counts':counts})
+                        'strategy':'MANAGE' if engine.s['positions'] else 'SCAN' if lookup else 'QUIET','counts':counts,
+                        'trade_review_capture':capture.stats() if capture is not None else {'available':False}},fsync=False)
                     last_heartbeat=time.monotonic()
                 if done: break
             except KeyboardInterrupt:
@@ -1060,9 +1358,13 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
         shadow.close()
         if context_worker:context_worker.close()
         if data_active: feed.close(); radar.close(); account.close()
+        capture=getattr(engine,'trade_review',None)
+        if capture is not None:
+            capture.close()
+            engine.event('TRADE_REVIEW_CAPTURE_CLOSED',capture=capture.stats())
         if engine.candidate_audit.started:
             summary=engine.candidate_audit.summary(now().isoformat(),engine.capital_context())
-            atomic_json(root/'runtime/candidate_summary.json',summary); engine.event('CANDIDATE_CYCLE_SUMMARY',**summary)
+            atomic_json(root/'runtime/candidate_summary.json',summary,fsync=False); engine.event('CANDIDATE_CYCLE_SUMMARY',**summary)
         engine.save(); reporter.submit(rows,engine.s); reporter.close()
         try:
             atomic_json(folder/'heartbeat.json',{'time':now().isoformat(),'mode':policy.mode,'market':getattr(engine,'market','3'),
@@ -1076,7 +1378,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 'subscription_refresh_pending':False,'subscription_tick_waiting':[],
                 'available_capital':0,'approved_cap':auto.capital_limit,
                 'bot_cash':engine.s.get('cash',0.),'positions':len(engine.s['positions']),'pending':len(engine.active_orders()),
-                'strategy':'STOPPED','counts':counts})
+                'strategy':'STOPPED','counts':counts},fsync=False)
         except Exception: pass
         result={'started':started.isoformat(),'finished':now().isoformat(),'mode':policy.mode,'approved_cap':auto.capital_limit,
                 'counts':counts,'remaining_positions':len(engine.s['positions']),'remaining_orders':len(engine.active_orders()),

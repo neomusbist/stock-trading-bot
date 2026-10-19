@@ -1,5 +1,5 @@
 """완성된 봉과 현재까지 수신한 틱만으로 A/B/C 모멘텀 지속 패턴을 판별한다."""
-from datetime import timedelta
+from datetime import datetime, timedelta
 from collections import deque
 from dataclasses import replace
 from copy import deepcopy
@@ -63,19 +63,26 @@ class PatternDetector(Detector):
             if b and b['time']!=minute:
                 self.prior_high[t.symbol]=self.day_high.get(t.symbol,t.price)
             self.day_high[t.symbol]=max(t.price,self.day_high.get(t.symbol,t.price))
+        had_minute_gap = False
         if b and b['time']!=minute:
-            # Prior confirmed references are distinct from consecutive signal bars.
-            self.price_context.record(t.symbol,{**b,'venue':getattr(self.cfg,'after_default_venue','SOR') if t.time.strftime('%H:%M:%S')>=self.a.after_prep_start else 'KRX'},t.time,self.cfg.stale_seconds)
             if (minute-b['time']).total_seconds()==60:
+                # Prior confirmed references are distinct from consecutive signal bars.
+                self.price_context.record(t.symbol,{**b,'venue':getattr(self.cfg,'after_default_venue','SOR') if t.time.strftime('%H:%M:%S')>=self.a.after_prep_start else 'KRX'},t.time,self.cfg.stale_seconds)
                 self.history.setdefault(t.symbol,deque(maxlen=30)).append(b)
             else:
-                self.history.pop(t.symbol,None)
+                had_minute_gap = True
                 self.last_gap_reason[t.symbol]='MISSING_MINUTE'
+                if self.continuous_observation:
+                    self.price_context.record(t.symbol,{**b,'venue':getattr(self.cfg,'after_default_venue','SOR') if t.time.strftime('%H:%M:%S')>=self.a.after_prep_start else 'KRX'},t.time,self.cfg.stale_seconds)
+                    self.history.setdefault(t.symbol,deque(maxlen=30)).append(b)
+                else:
+                    self.history.pop(t.symbol,None)
+                    self.completed.pop(t.symbol,None)
             b=None
         if b is None:
             start=self.observation_start.get(t.symbol)
-            was_observing = start is not None and start <= minute
-            gap_reason=None if (was_observing or t.time.second<=self.cfg.stale_seconds) else 'FIRST_TRADE_AFTER_5S_COVERAGE_UNKNOWN'
+            was_observing = (start is not None and start <= minute) and not had_minute_gap
+            gap_reason=None if (was_observing or t.time.second<=self.cfg.stale_seconds) else ('MISSING_MINUTE' if had_minute_gap else 'FIRST_TRADE_AFTER_5S_COVERAGE_UNKNOWN')
             b={'time':minute,'open':t.price,'high':t.price,'low':t.price,'close':t.price,'volume':0,
                'first_second':0 if was_observing else t.time.second,'last_second':t.time.second,
                'first_trade_time':t.time.isoformat(),'last_trade_time':t.time.isoformat(),
@@ -144,10 +151,18 @@ class PatternDetector(Detector):
 
     @observation_locked
     def usable_bars(self,symbol,after_only=False):
+        bars=list(self.history.get(symbol,()))
+        if not bars:return []
+        cur=self.current.get(symbol)
+        if cur is not None:
+            if cur.get('gap_reason')=='MISSING_MINUTE' or (cur['time']-bars[-1]['time']).total_seconds()!=60:
+                return []
         valid=[]
-        for bar in reversed(self.history.get(symbol,())):
-            if bar.get('gap_reason') is not None or bar['first_second']>self.cfg.stale_seconds:break
+        for bar in reversed(bars):
+            if bar.get('gap_reason') is not None or bar.get('first_second',0)>self.cfg.stale_seconds:break
             if after_only and bar['time'].strftime('%H:%M:%S')<'15:40:00':
+                break
+            if valid and (valid[-1]['time']-bar['time']).total_seconds()!=60:
                 break
             valid.append(bar)
         return list(reversed(valid))
@@ -162,10 +177,21 @@ class PatternDetector(Detector):
         usable_count=len(usable)
         diff_reason=None
         if stored_count>usable_count:
-            inv_idx=stored_count-usable_count-1
-            if 0<=inv_idx<stored_count:
-                inv_bar=history[inv_idx]
-                diff_reason=inv_bar.get('gap_reason') or ('FIRST_TRADE_AFTER_5S_COVERAGE_UNKNOWN' if inv_bar.get('first_second',0)>self.cfg.stale_seconds else 'PARTIAL_SUBSCRIPTION_START')
+            cur=self.current.get(symbol)
+            if usable_count==0 and cur is not None and (cur.get('gap_reason')=='MISSING_MINUTE' or (cur['time']-history[-1]['time']).total_seconds()!=60):
+                diff_reason='MISSING_MINUTE'
+            else:
+                inv_idx=stored_count-usable_count-1
+                if 0<=inv_idx<stored_count:
+                    inv_bar=history[inv_idx]
+                    if inv_bar.get('gap_reason'):
+                        diff_reason=inv_bar['gap_reason']
+                    elif inv_bar.get('first_second',0)>self.cfg.stale_seconds:
+                        diff_reason='FIRST_TRADE_AFTER_5S_COVERAGE_UNKNOWN'
+                    elif inv_idx+1<stored_count and (history[inv_idx+1]['time']-inv_bar['time']).total_seconds()!=60:
+                        diff_reason='MISSING_MINUTE'
+                    else:
+                        diff_reason='PARTIAL_SUBSCRIPTION_START'
         elif stored_count==0 and symbol in self.last_gap_reason:
             diff_reason=self.last_gap_reason[symbol]
         return {
@@ -182,26 +208,67 @@ class PatternDetector(Detector):
                     0<=(stamp-last.time).total_seconds()<=self.cfg.stale_seconds)
 
     @observation_locked
+    def preload_from_context(self, symbol, asof):
+        """PriceContext에 보관된 당일 확정 1분봉이 있고 history가 비어있을 때 유효 완성봉을 안전하게 사전 적재한다."""
+        if not symbol or len(self.history.get(symbol, ())) > 0:
+            return 0
+        row = self.price_context.rows.get(symbol)
+        if not row or not row.get('bars'):
+            return 0
+        bars = [b for b in row['bars'] if isinstance(b.get('time'), datetime) and b['time'].date() == asof.date() and b['time'] + timedelta(minutes=1) <= asof]
+        if not bars:
+            return 0
+        valid_bars = []
+        for i, b in enumerate(bars):
+            if b.get('gap_reason') is not None or b.get('first_second', 0) > self.cfg.stale_seconds:
+                valid_bars.clear()
+                continue
+            if i > 0 and valid_bars and (b['time'] - valid_bars[-1]['time']).total_seconds() != 60:
+                valid_bars.clear()
+            valid_bars.append({
+                **deepcopy(b),
+                'first_second': b.get('first_second', 0),
+                'gap_reason': b.get('gap_reason')
+            })
+        if valid_bars:
+            h = self.history.setdefault(symbol, deque(maxlen=30))
+            for b in valid_bars:
+                if b not in h:
+                    h.append(b)
+            return len(valid_bars)
+        return 0
+
+    @observation_locked
     def forget(self,symbol):
         for mapping in (self.buffers,self.minutes,self.completed,self.last,self.history,self.current,self.day_high,self.prior_high,self.after_day_high,self.after_prior_high,self.last_eval,self.observation_start,self.observation_session):mapping.pop(symbol,None)
         self._eval_keys.pop(symbol,None)
 
     def handoff_from(self,source,symbol):
-        if source is None or source is self:return False
+        if source is None or source is self or not hasattr(getattr(source, '_state_lock', None), '__enter__'):return False
         names=('history','buffers','current','minutes','completed','observation_start',
                'observation_session','day_high','prior_high','after_day_high',
                'after_prior_high','last','last_gap_reason')
         # Never hold both detector locks: promotion and demotion can run concurrently.
         with source._state_lock:
-            if not any(symbol in getattr(source,key) for key in ('observation_start','history','buffers')):return False
+            src_fast=getattr(source,'fast_strategy',None)
+            fast_snap=src_fast.snapshot_tape(symbol) if src_fast is not None and hasattr(src_fast,'snapshot_tape') else None
+            has_state=any(symbol in getattr(source,key) for key in ('observation_start','history','buffers'))
+            has_ref=symbol in source.price_context.rows
+            if not (has_state or has_ref or fast_snap):return False
             snapshot={key:(deque(source.buffers[symbol]) if key=='buffers' else
                            source.last[symbol] if key=='last' else deepcopy(getattr(source,key)[symbol]))
                       for key in names if symbol in getattr(source,key)}
             reference=PriceContext();reference.day=source.price_context.day
-            if symbol in source.price_context.rows:
+            if has_ref:
                 reference.rows[symbol]=deepcopy(source.price_context.rows[symbol])
         with self._state_lock:
-            self.price_context.transfer(reference,symbol)
+            if has_ref:
+                self.price_context.transfer(reference,symbol)
+            tgt_fast=getattr(self,'fast_strategy',None)
+            fast_restored=False
+            if tgt_fast is not None and fast_snap is not None and hasattr(tgt_fast,'restore_tape'):
+                fast_restored=tgt_fast.restore_tape(symbol,fast_snap)
+            if not has_state:return bool(has_ref or fast_restored)
             src_last=snapshot.get('last');tgt_last=self.last.get(symbol)
             if tgt_last and (src_last is None or (src_last.time,src_last.cumulative)<(tgt_last.time,tgt_last.cumulative)):return False
             src_bars=len(snapshot.get('history',()))
@@ -451,7 +518,9 @@ class PatternDetector(Detector):
             breakout_pass,breakout_evidence=structural_breakout(self.price_context.reference_bars(t.symbol,t.time,venue),t.time,setup,c,limit,t.bid,t.ask)
             if breakout_evidence.get('emergency_stop') is not None:stop=breakout_evidence['emergency_stop']
             if breakout_evidence.get('target_ceiling') is not None:
-                target=breakout_evidence['target_ceiling']
+                # A wider invalidation basis can reduce position size, but must
+                # not manufacture reward by raising the pattern's prior target.
+                target=min(target,breakout_evidence['target_ceiling'])
                 if resistance is not None and resistance>limit:target=min(target,resistance)
         box_evidence=None;box_pass=None
         if setup['pattern']=='C' and self.a.fresh_box_basis_enabled and self.a.confirmed_invalidation_enabled:
@@ -463,6 +532,14 @@ class PatternDetector(Detector):
             if box_evidence.get('target_ceiling') is not None:target=min(target,box_evidence['target_ceiling'])
         distance=(limit-stop)/limit if limit>0 else None
         rr=(target-limit)/(limit-stop) if limit>stop else None
+        if setup['pattern']=='B':
+            from automation.exit_plan import build_plan
+            b_sig={'limit':limit,'stop':stop,'target':target,'pattern':'B',
+                   'emergency':structural.get('emergency_stop') if structural else None,
+                   'invalidation_policy':{'enabled':True,'structural_stop':stop,'emergency_stop':structural.get('emergency_stop',stop)} if structural else None}
+            b_plan=build_plan(c,self.a,b_sig)
+            if not b_plan.get('reward_guard_pass'):
+                rr=b_plan.get('net_reward_risk') if b_plan.get('net_reward_risk') is not None else 0.0
         horizon=getattr(self.a,'horizon_'+setup['pattern'].lower()+'_minutes')
         score=efficiency(limit,stop,target,min(1.,0.4+0.1*len(watch.get('source_details',{}))),horizon,self.costs,self.a.min_efficiency_score)
         invalidation_pass=bool(distance is not None and 0<stop<limit and c.min_stop_fraction<=distance<=c.max_stop_fraction)

@@ -11,8 +11,17 @@ ROOT_FILES={'main.py','candidate_builder.py','control.py','supervisor.py','opera
     '.gitignore','.gitattributes','.env.example','config.example.json','automation.example.json','requirements.txt',
     'README.md','AUDIT_REPORT.md','TEST_REPORT.md','NEXT_SESSION_CHECK.md','운영요약.md','사용자_시운전_가이드.txt','DEPLOYMENT_LAYOUT.md','observation.example.json','REPOSITORY_GUIDE.md','SECURITY.md','THIRD_PARTY_NOTICES.md','SOURCE_MANIFEST.json','V1.3_HANDOFF_20261007.md','V1.2_설계감사_구현명세.md','TEST_AUDIT_REPORT.md','STORAGE_AUDIT_REPORT.md','HANDOFF.md','cleanup_audit_trail.json','GUI_PERFORMANCE_REPORT.md','HANDOFF_TRADE_QUALITY_20261013.md'}
 TOOLS={'repo_guard.py','setup_local.py','export_source.py','session_audit.py','offline_benchmark.py','offline_regression.py','night_profile.py','verify_fault_injection.py','benchmark_gui_performance.py','trade_quality_replay.py','trade_quality_v15_replay.py','exit_policy_replay.py'}
+R6_REPAIR_FILES={
+    'HANDOFF_TO_ANTIGRAVITY.md',
+    *('audit/r6_work_repair_20261014/'+name for name in (
+        'FINAL_REPORT.md','BUG_FIXES.md','SYMBOL_DATA_AUDIT.csv','TRADE_LEDGER.csv',
+        'SLIPPAGE_SENSITIVITY.csv','ENTRY_LATENCY.csv','READINESS_RESULTS.md',
+        'SHADOW_RUNBOOK.md','TEST_RESULTS.md','REPRODUCE.md','SHADOW_REPAIR.md',
+        'REPLAY_RESULTS.json','DATA_IDENTITY_RESULTS.json','BASE_COMMIT_MAP.json',
+        'TEST_RESULTS.json','replay.py','symbol_audit.py'))}
 
 def allowed(name):
+    if name.replace('\\','/') in R6_REPAIR_FILES:return True
     p=Path(name); parts=p.parts
     if len(parts)==1: return name in ROOT_FILES
     if any(x.startswith('.') or x=='__pycache__' for x in parts): return False

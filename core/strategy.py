@@ -21,6 +21,9 @@ class Tick:
     depth_available: bool | None = None
     book_time: datetime | None = None
     depth_source: str = 'UNKNOWN'
+    # Immutable receiver evidence, separate from the exchange's HHMMSS stamp.
+    received_at: str | None = None
+    received_monotonic: float | None = None
 
 class Detector:
     def __init__(self,cfg):

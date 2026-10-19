@@ -82,7 +82,7 @@ class PreflightTests(unittest.TestCase):
             self.assertIsNone(self.engine.submit('SELL',symbol,1,10000,{'ownership':'EXISTING_POLICY'}))
             with self.assertRaisesRegex(Rejected,'HARD_LOCK'):
                 self.engine.order_guard('kt10001',{'stk_cd':symbol,'ord_qty':'1','ord_uv':'10000'})
-        self.assertEqual(set(BREAKEVEN_EXITS),{'052260'}); self.assertFalse(self.broker.orders)
+        self.assertEqual(set(BREAKEVEN_EXITS),set()); self.assertIn('052260',HARD_LOCKS); self.assertFalse(self.broker.orders)
 
     def test_rest_http_final_lock_prevents_opener_for_both_symbols(self):
         with patch.dict('os.environ',{'KIWOOM_APP_KEY':'FAKE-PREFLIGHT','KIWOOM_APP_SECRET':'FAKE'}):

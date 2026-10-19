@@ -36,6 +36,10 @@ REASONS={'AUTO_CAP_ZERO':'승인한도 0원','HARD_LOCK':'자동매매 금지 �
  'ACCOUNT_NOT_OK':'계좌 대조 미완료','CONNECTION_NOT_OK':'실시간 연결 미확인','HALT_ACTIVE':'안전중단 사유 유지',
  'ACCOUNT_RECONCILE_STALE':'계좌 대조 기록 오래됨','ONE_SHARE_UNAFFORDABLE':'승인자본·현금으로 비용 포함 1주 매수 불가'}
 
+def resolve_python():
+    venv = Path.home() / 'Documents/PythonEnvs/stock-trading-bot/Scripts/python.exe'
+    return str(venv) if venv.exists() else sys.executable
+
 def read_json(path,default=None):
     if not path.exists(): return default
     return read_json_retry(path,encoding='utf-8-sig')
@@ -260,19 +264,8 @@ class OperatorService:
         is_after_entry=getattr(cfg,'after_enabled',False) and after_entry_supported(self.clock())
         curr_sess=current_session(self.clock())
         after_live=bool(policy.get('after_live_authorized')) and cfg.live_mode
-        ready_ok=hb.get('readiness',{}).get('order_ready')
-        if ready_ok is None:
-            ready_state=hb.get('readiness',{}).get('state')
-            ready_missing=hb.get('readiness',{}).get('missing',[])
-            ready_source=hb.get('readiness',{}).get('tick_lag_source')
-            ready_age=hb.get('readiness',{}).get('regular_tick_age')
-            ready_ok=(ready_state=='OPEN_READY') or (
-                ready_missing==['FRESH_REGULAR_TICK_NOT_READY']
-                and ready_source=='WS_SOURCE_SILENT'
-                and isinstance(ready_age,(int,float))
-                and ready_age<=cfg.stale_seconds*2
-                and hb.get('connected')
-            ) if 'readiness' in hb else True
+        from automation.runner import heartbeat_order_readiness
+        ready=heartbeat_order_readiness(hb,cfg,self.clock());ready_ok=ready['order_ready']
         trading_on=bool(configured and fresh and hb.get('connected') and hb.get('account_ok') and ready_ok and not state.get('halt') and not counts['uncertain'] and is_reg)
         if curr_sess=='AFTER' and configured and after_live and fresh and hb.get('connected') and hb.get('account_ok') and ready_ok and not state.get('halt') and not counts['uncertain'] and is_after_entry:
             trading_on=True
@@ -297,7 +290,16 @@ class OperatorService:
             'halt':state.get('halt') or '', 'halt_info':state.get('halt_info',{}),
             'order_loop':'RUNNING' if process['running'] else 'NOT RUNNING',
             'process':process,'live_configured':bool(configured),
-            'trading_on':trading_on,
+            'trading_on':trading_on,'order_ready':ready_ok,'readiness':ready,
+            'order_off_reasons':([] if trading_on else ready.get('off_reasons',[])
+                +(['LIVE_NOT_CONFIGURED'] if not configured else [])
+                +(['WORKER_HEARTBEAT_NOT_CURRENT'] if not fresh else [])
+                +(['ACCOUNT_NOT_CURRENT'] if not hb.get('account_ok') else [])
+                +(['WEBSOCKET_NOT_CONNECTED'] if not hb.get('connected') else [])
+                +(['OUTSIDE_TRADING_WINDOW'] if not (is_reg or is_after_entry) else [])
+                +(['AFTER_LIVE_NOT_AUTHORIZED'] if curr_sess=='AFTER' and not after_live else [])
+                +(['HALT_ACTIVE'] if state.get('halt') else [])
+                +(['UNKNOWN_ORDER'] if counts['uncertain'] else [])),
             'candidate_count':len(watch.get('items',[])) if fresh and watch.get('asof')==self.clock().date().isoformat() else 0,
             'position_count':sum(len(s['positions']) for _,s in self.states()),
             'last_decision':(('최근 기록: ' if fresh else '과거 기록: ')+str((decisions[-1].get('timestamp') or decisions[-1].get('time') or '')[:10])+' '+decision_line(decisions[-1])) if decisions else '아직 판단 기록 없음',
@@ -365,7 +367,7 @@ class OperatorService:
         flags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0
         log=self.root/'runtime/operator_console.txt'; log.parent.mkdir(parents=True,exist_ok=True)
         with log.open('a',encoding='utf-8') as output:
-            p=subprocess.run([sys.executable,'-X','utf8',str(self.root/'main.py'),*args],cwd=self.root,stdin=subprocess.DEVNULL,
+            p=subprocess.run([resolve_python(),'-X','utf8',str(self.root/'main.py'),*args],cwd=self.root,stdin=subprocess.DEVNULL,
                 stdout=output,stderr=subprocess.STDOUT,timeout=timeout,creationflags=flags)
         return p.returncode
     def start_command(self,args):
@@ -375,7 +377,7 @@ class OperatorService:
         log=self.root/'runtime/operator_console.txt'; log.parent.mkdir(parents=True,exist_ok=True)
         entry='main.py' if args else 'supervisor.py'
         with log.open('a',encoding='utf-8') as output:
-            self.child=subprocess.Popen([sys.executable,'-X','utf8',str(self.root/entry),*args],cwd=self.root,
+            self.child=subprocess.Popen([resolve_python(),'-X','utf8',str(self.root/entry),*args],cwd=self.root,
                 stdin=subprocess.DEVNULL,stdout=output,stderr=subprocess.STDOUT,creationflags=flags)
         return self.child
     def launch_continuous(self):
@@ -395,7 +397,7 @@ class OperatorService:
             from core.event_log import rotate_if_large
             rotate_if_large(log)  # No active writer: duplicate-run and idle checks above.
             with log.open('a',encoding='utf-8') as output:
-                self.child=subprocess.Popen([sys.executable,'-X','utf8',str(self.root/'operator_runner.py'),'--token',token,'--purpose',purpose],
+                self.child=subprocess.Popen([resolve_python(),'-X','utf8',str(self.root/'operator_runner.py'),'--token',token,'--purpose',purpose],
                     cwd=self.root,stdin=subprocess.DEVNULL,stdout=output,stderr=subprocess.STDOUT,creationflags=flags)
             deadline=self.monotonic()+8
             while self.monotonic()<deadline:

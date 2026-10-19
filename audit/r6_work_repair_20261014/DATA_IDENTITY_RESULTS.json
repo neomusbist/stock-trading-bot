@@ -1,0 +1,44 @@
+{
+  "archive": "events.jsonl.20261014-145249-570438.7232.32e27bce",
+  "sha256": "0c698c6ef4c7d9815c83a081d5d81d66205588e120c2e07caaf3f10f2050b50c",
+  "stats": {
+    "lines": 9435,
+    "entry_eval": 6072,
+    "no_bid_ask": 4540,
+    "price_outside_bid_ask": 38,
+    "same_timestamp_pairs": 0
+  },
+  "codes": [
+    "010580",
+    "011200",
+    "038500",
+    "042510",
+    "062970",
+    "079650",
+    "290650",
+    "393890"
+  ],
+  "source_rows_checked": 15,
+  "ledger_links_checked": 23,
+  "mismatches": [],
+  "official": {
+    "url": "https://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13",
+    "at": "2026-10-14T17:16:24.191383+09:00",
+    "source_sha256": "7a68237cab67c91ba6b6cde9cad408b25a714408f4175c70c6b71e28a8813ca7",
+    "names": {
+      "079650": "서산",
+      "010580": "에스엠벡셀",
+      "393890": "더블유씨피",
+      "062970": "한국첨단소재",
+      "290650": "엘앤씨바이오",
+      "042510": "라온시큐어",
+      "011200": "HMM",
+      "038500": "삼표시멘트"
+    },
+    "corp_count": 2689
+  },
+  "ledger_identity": "PASS",
+  "incorrect_price_claim_origin": "UNKNOWN_SOURCE_REPORT_NOT_OBTAINED",
+  "raw_quote_time_parity": "UNKNOWN_SNAPSHOT_PRICE_OUTSIDE_BOOK_IN_38_ROWS",
+  "real_FAST_backtest": "UNKNOWN_NO_RAW_TAPE"
+}

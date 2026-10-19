@@ -41,39 +41,78 @@ class TickLogger:
         self.write_errors = 0
         self.rotations = 0
         self.last_error = ''
+        self.lock = threading.RLock()
+        self.next_sequence = 0
+        self.rollback_errors = 0
 
     @staticmethod
     def _iso(value):
         return value.isoformat() if hasattr(value, 'isoformat') else (None if value is None else str(value))
 
-    def log(self, tick, received):
-        self.buffer.append({
+    def _append(self, row):
+        with self.lock:
+            self.next_sequence += 1
+            row.setdefault('record_sequence', self.next_sequence)
+            self.buffer.append(row)
+            self.rows_logged += 1
+            overflow = len(self.buffer) - self.max_buffer_rows
+            if overflow > 0:
+                del self.buffer[:overflow]
+                self.rows_dropped += overflow
+            # Capture never performs file I/O. The worker's periodic flush and
+            # explicit close own writes; a burst cannot stall its receiver.
+            return True
+
+    def log(self, tick, received, processed=None, sequence=None):
+        depth = getattr(tick, 'depth_available', None) is True
+        return self._append({
+            'event': 'TRADE', 'transport_sequence': sequence,
             'symbol': getattr(tick, 'symbol', ''),
             'time': self._iso(tick.time),
             'received': self._iso(received),
+            'exchange_at': self._iso(tick.time),
+            'receiver_at': self._iso(received),
+            'processed_at': self._iso(processed),
             'price': getattr(tick, 'price', 0.0),
             'volume': getattr(tick, 'volume', 0),
             'cumulative': getattr(tick, 'cumulative', None),
             'bid': getattr(tick, 'bid', 0.0),
             'ask': getattr(tick, 'ask', 0.0),
-            'bid_qty': getattr(tick, 'bid_qty', None),
-            'ask_qty': getattr(tick, 'ask_qty', None),
+            'bid_qty': getattr(tick, 'bid_qty', None) if depth else None,
+            'ask_qty': getattr(tick, 'ask_qty', None) if depth else None,
             'depth_available': getattr(tick, 'depth_available', None),
             'depth_source': getattr(tick, 'depth_source', None),
             'book_time': self._iso(getattr(tick, 'book_time', None)),
             'venue': getattr(tick, 'venue', None),
+            'venue_basis': getattr(tick, 'venue_basis', 'RECEIVER_PARSED_NOT_INDEPENDENTLY_VERIFIED'),
+            'subscription_item': getattr(tick, 'subscription_item', None),
+            'raw_market_fields': getattr(tick, 'raw_market_fields', None),
             'regular': getattr(tick, 'regular', None),
             'vi_active': getattr(tick, 'vi_active', None),
+            'depth_status': 'AVAILABLE' if depth else 'UNKNOWN_NOT_PROVIDED_OR_UNUSABLE',
         })
-        self.rows_logged += 1
-        overflow = len(self.buffer) - self.max_buffer_rows
-        if overflow > 0:
-            del self.buffer[:overflow]
-            self.rows_dropped += overflow
-        if len(self.buffer) >= 50 or time.monotonic() - self.last_flush >= 1.0:
-            self.flush()
+
+    def log_book(self, symbol, book, received, processed=None, sequence=None):
+        depth = book.get('depth_available') is True
+        raw = book.get('raw_fields', {})
+        return self._append({'event': 'BOOK', 'symbol': symbol, 'transport_sequence': sequence,
+            'time': book.get('time'), 'received': self._iso(received),
+            'exchange_at': book.get('time') if raw.get('21') not in (None,'') else None, 'receiver_at': self._iso(received),
+            'quote_time_basis': 'EXCHANGE_FIELD_21' if raw.get('21') not in (None,'') else 'UNKNOWN_NO_EXCHANGE_TIME',
+            'subscription_item': book.get('subscription_item'),
+            'processed_at': self._iso(processed), 'bid': book.get('best_bid'), 'ask': book.get('best_ask'),
+            'bid_qty': book.get('bid_qty') if depth else None,
+            'ask_qty': book.get('ask_qty') if depth else None,
+            'total_bid_qty': book.get('total_bid_qty') if raw.get('125') not in (None, '') else None,
+            'total_ask_qty': book.get('total_ask_qty') if raw.get('121') not in (None, '') else None,
+            'depth_available': depth, 'depth_source': book.get('source'), 'raw_fields': raw,
+            'depth_status': 'AVAILABLE' if depth else 'UNKNOWN_NOT_PROVIDED_OR_UNUSABLE'})
 
     def flush(self, force: bool = False) -> bool:
+        with self.lock:
+            return self._flush(force)
+
+    def _flush(self, force: bool = False) -> bool:
         if not self.buffer:
             return True
         if not force and time.monotonic() < self.retry_after:
@@ -86,8 +125,17 @@ class TickLogger:
                 self.path.rename(self.path.with_name(f'{self.path.name}.{index}'))
                 self.rotations += 1
             payload = '\n'.join(json.dumps(row, ensure_ascii=False) for row in self.buffer) + '\n'
-            with open(self.path, 'a', encoding='utf-8') as f:
-                f.write(payload)
+            with open(self.path, 'a+', encoding='utf-8') as f:
+                original = f.tell()
+                try:
+                    f.write(payload)
+                    f.flush()
+                except Exception:
+                    try:
+                        f.seek(original); f.truncate(); f.flush()
+                    except Exception:
+                        self.rollback_errors += 1
+                    raise
         except Exception as error:
             self.write_errors += 1
             self.last_error = f'{type(error).__name__}: {error}'[:200]
@@ -100,12 +148,13 @@ class TickLogger:
         return True
 
     def stats(self) -> dict:
-        return {'rows_logged': self.rows_logged, 'rows_written': self.rows_written, 'rows_buffered': len(self.buffer),
+        with self.lock:
+            return {'rows_logged': self.rows_logged, 'rows_written': self.rows_written, 'rows_buffered': len(self.buffer),
                 'rows_dropped': self.rows_dropped, 'write_errors': self.write_errors, 'rotations': self.rotations,
-                'last_error': self.last_error}
+                'rollback_errors': self.rollback_errors, 'last_error': self.last_error}
 
 class ObservationWorker:
-    def __init__(self,cfg,auto,costs,root,rest=None,limit=32):
+    def __init__(self,cfg,auto,costs,root,rest=None,limit=32,on_fast_signal=None,on_processed_tick=None,on_stream_reset=None):
         self.cfg=cfg; self.auto=auto; self.root=Path(root); self.rest=rest;self.settings=load_observation(root);self.clock=now
         if limit==32:limit=self.settings.max_symbols
         self.folder=self.root/'runtime'; self.folder.mkdir(parents=True,exist_ok=True)
@@ -116,25 +165,45 @@ class ObservationWorker:
         self.updates=queue.Queue(maxsize=1); self.prepared=queue.Queue(maxsize=1); self.ticks=queue.Queue(maxsize=4096)
         self.focus_notifications=queue.Queue(maxsize=32)
         self.stop=threading.Event(); self.lock=threading.Lock(); self.event_lock=threading.Lock(); self.snapshot={}
+        self.delivery_lock=threading.Lock()
         self.runtime_snapshot={'symbols':(), 'evaluations':{}}
         self.metadata={}; self.daily_cache=OrderedDict(); self.dropped=0; self.apis=0; self.tick_ms=0.; self.prepare_ms=0.
+        self.input_sequence=0; self.processed_sequence=0; self.queue_gap_ranges=[]
+        self.coverage_barrier=0
+        self.on_fast_signal=on_fast_signal; self.on_processed_tick=on_processed_tick
+        self.on_stream_reset=on_stream_reset
         self.thread=threading.Thread(target=self.run,name='shadow-diagnostic',daemon=True)
         self.metadata_thread=threading.Thread(target=self.prepare_loop,name='shadow-metadata',daemon=True)
     def event(self,kind,**data):
         record={'event':kind,**data}
         with self.event_lock:
             append_jsonl(self.folder/'shadow_events.jsonl',record,default=str)
+        if kind=='SHADOW_FAST_SIGNAL' and self.on_fast_signal:
+            self.on_fast_signal(record)
+        if kind=='SHADOW_STREAM_RESET' and self.on_stream_reset:self.on_stream_reset(record)
         if kind=='SHADOW_EVAL':
             momentum={'timestamp':data['timestamp'],'gates':{key:{'result':data.get('gates',{}).get(key,{}).get('result')}
                 for key in ('acceleration','liquidity')}}
-            momentum['tier']=calculate_tier(data.get('gates',{}),data.get('setup_trials',[]))
-            momentum['price_blocked']=unviable_price_geometry(data)
+            fast_ready=bool(data.get('fast_signal_ready'))
+            momentum['tier']=0 if fast_ready else calculate_tier(data.get('gates',{}),data.get('setup_trials',[]))
+            momentum['price_blocked']=False if fast_ready else unviable_price_geometry(data)
+            momentum['fast_signal_ready']=fast_ready
             with self.lock:
                 self.snapshot.setdefault('evaluations',{})[data['symbol']]=record
                 self.runtime_snapshot['evaluations'][data['symbol']]=momentum
         elif kind=='OBSERVATION_READINESS_CHANGED':
+            sym=data.get('symbol','')
+            if sym:
+                with self.lock:
+                    prior_eval=dict(self.runtime_snapshot['evaluations'].get(sym,{}))
+                    prior_eval['timestamp']=data.get('timestamp',self.clock().isoformat())
+                    prior_eval['tier']=data.get('tier',3)
+                    if data.get('fast_signal_ready'):
+                        prior_eval['price_blocked']=False
+                        prior_eval['fast_signal_ready']=True
+                    self.runtime_snapshot['evaluations'][sym]=prior_eval
             notif=FocusNotification(
-                symbol=data.get('symbol',''),
+                symbol=sym,
                 event_seq=data.get('event_seq',0),
                 observation_seq=data.get('observation_seq',0),
                 transport_epoch=str(data.get('transport_epoch','')),
@@ -155,8 +224,27 @@ class ObservationWorker:
         item=([dict(row) for row in rows],stamp,dict(capital),allow_metadata)
         self.latest_put(self.updates,item)
     def deliver(self,tick,received):
-        try:self.ticks.put_nowait((tick,received))
-        except queue.Full:self.dropped+=1  # 진단 큐만 누락 처리. 실제 주문 큐를 HALT시키지 않는다.
+        return self._deliver('TRADE',tick,received)
+    def deliver_book(self,symbol,book,received):
+        return self._deliver('BOOK',(symbol,dict(book)),received)
+    def deliver_reset(self,reason,received,symbol=None):
+        return self._deliver('RESET',(reason,symbol),received)
+    def _deliver(self,kind,item,received):
+        with self.delivery_lock:
+            self.input_sequence+=1; sequence=self.input_sequence
+            try:
+                if self.stop.is_set():raise queue.Full
+                self.ticks.put_nowait((kind,item,received,sequence)); return True
+            except queue.Full:
+                self.dropped+=1
+                if self.queue_gap_ranges and self.queue_gap_ranges[-1][1]==sequence-1:self.queue_gap_ranges[-1][1]=sequence
+                else:self.queue_gap_ranges.append([sequence,sequence])
+                self.queue_gap_ranges=self.queue_gap_ranges[-128:]
+                return False  # Diagnostic queue only. Never changes LIVE order state.
+    def delivery_state(self):
+        with self.delivery_lock:
+            return {'input_sequence':self.input_sequence,'dropped':self.dropped,
+                    'missing_sequence_ranges':[r[:] for r in self.queue_gap_ranges]}
     def state(self):
         # 상세 기록 복제는 잠금 밖에서 수행하여 실제 보호 루프의 상태 참조를 기다리게 하지 않는다.
         with self.lock:
@@ -231,7 +319,8 @@ class ObservationWorker:
                     bars=fetch_bars(self.rest,sym,self.cfg,self.root/'data/observation',clock.date());saved['bars']=bars
                 if not bars:bars=saved.get('bars') or []
                 struct=observation_structure(bars,row['reference_price'],self.cfg,clock.date())
-                row['shadow_view']={**struct,'market_status':saved['status']}
+                row['shadow_view']={**struct,'market_status':saved['status'],
+                    'resistance_asof':self.clock().isoformat() if struct.get('resistance') else None}
             except Exception as error:
                 row['shadow_view']={'status':'UNKNOWN','market_status':saved['status'],'reason':'SHADOW_HISTORY_UNKNOWN'}
                 self.event('SHADOW_METADATA_ERROR',timestamp=clock.isoformat(),symbol=sym,SHADOW_ONLY=True,**exception_details(error))
@@ -280,33 +369,52 @@ class ObservationWorker:
             except Exception as error:self.record_error(error)
     def run(self):
         last_save=0.; dropped=0
-        while not self.stop.is_set():
+        while not self.stop.is_set() or not self.ticks.empty():
             try:
                 try:self.publish(*self.prepared.get_nowait())
                 except queue.Empty:pass
-                if dropped!=self.dropped:
-                    dropped=self.dropped;self.observer.detector.reset()
-                    self.observer.latest.clear();self.observer.last_log.clear()
+                delivery=self.delivery_state()
+                if dropped!=delivery['dropped']:
+                    dropped=delivery['dropped'];self.observer.reset_stream('QUEUE_GAP',stamp=self.clock())
+                    self.coverage_barrier=max((r[1] for r in delivery['missing_sequence_ranges']),default=delivery['input_sequence'])
                     with self.lock:
                         self.snapshot['evaluations']={};self.runtime_snapshot['evaluations']={}
-                    self.event('SHADOW_QUEUE_GAP',timestamp=datetime.now().astimezone().isoformat(),SHADOW_ONLY=True,dropped=dropped,data_action='RESET',actual_order_permission=False)
-                try:t,received=self.ticks.get(timeout=.05)
+                    self.event('SHADOW_QUEUE_GAP',timestamp=self.clock().isoformat(),SHADOW_ONLY=True,dropped=dropped,missing_sequence_ranges=delivery['missing_sequence_ranges'],data_action='RESET',actual_order_permission=False)
+                try:kind,t,received,sequence=self.ticks.get(timeout=.05)
                 except queue.Empty:t=None
-                if t is not None:
-                    self.tick_logger.log(t, received)
+                if t is not None and sequence>self.processed_sequence+1:
+                    self.observer.reset_stream('TRANSPORT_SEQUENCE_GAP',stamp=self.clock())
+                    self.event('SHADOW_SEQUENCE_GAP',timestamp=self.clock().isoformat(),missing_sequence_range=[self.processed_sequence+1,sequence-1],actual_order_permission=False)
+                if t is not None and kind=='RESET':
+                    self.observer.reset_stream(t[0],symbol=t[1],stamp=self.clock());self.processed_sequence=sequence
+                elif t is not None and kind=='BOOK':
+                    self.tick_logger.log_book(t[0],t[1],received,processed=self.clock(),sequence=sequence)
+                    self.processed_sequence=sequence
+                elif t is not None:
+                    processed=self.clock()
+                    self.tick_logger.log(t, received,processed=processed,sequence=sequence)
                     self.observer.capital=dict(getattr(self,'current_capital',self.observer.capital))
                     started=time.perf_counter()
                     # 큐 대기도 수신 지연에 포함한다. 오래된 틱으로 가상 신호를 만들지 않는다.
-                    self.observer.tick(t,self.clock(),transport_received=received);self.tick_ms=(time.perf_counter()-started)*1000
+                    self.observer.tick(t,self.clock(),transport_received=received,coverage_complete=sequence>self.coverage_barrier);self.tick_ms=(time.perf_counter()-started)*1000
+                    if self.on_processed_tick:self.on_processed_tick(t,received,processed)
+                    self.processed_sequence=sequence
                 if time.monotonic()-last_save>=2:
-                    self.tick_logger.flush()
-                    snapshot=self.state();snapshot['performance']={'prepare_ms':self.prepare_ms,'last_eval_ms':self.tick_ms,'metadata_calls':self.apis,'queue_depth':self.ticks.qsize(),'dropped':self.dropped,'tick_logger':self.tick_logger.stats()}
+                    if not self.tick_logger.flush():
+                        self.record_error(RuntimeError('SHADOW_TAPE_WRITE_FAILED: '+self.tick_logger.last_error))
+                    snapshot=self.state();snapshot['performance']={'prepare_ms':self.prepare_ms,'last_eval_ms':self.tick_ms,'metadata_calls':self.apis,'queue_depth':self.ticks.qsize(),**self.delivery_state(),'processed_sequence':self.processed_sequence,'tick_logger':self.tick_logger.stats()}
                     atomic_json(self.folder/'shadow_snapshot.json',snapshot);last_save=time.monotonic()
             except Exception as error:self.record_error(error)
     def start(self):self.metadata_thread.start();self.thread.start()
     def close(self):
         self.stop.set()
         for thread in (self.thread,self.metadata_thread):
-            if thread.ident is not None:thread.join(timeout=1)
-        try:self.tick_logger.flush(force=True)
-        except Exception:pass
+            if thread.ident is not None:thread.join(timeout=5)
+        if self.thread.is_alive():
+            self.record_error(RuntimeError('SHADOW_CLOSE_WORKER_NOT_DRAINED'))
+            raise RuntimeError('SHADOW_CLOSE_WORKER_NOT_DRAINED')
+        if not self.tick_logger.flush(force=True):
+            self.record_error(RuntimeError('SHADOW_CLOSE_FLUSH_FAILED: '+self.tick_logger.last_error))
+            raise RuntimeError('SHADOW_CLOSE_FLUSH_FAILED: '+self.tick_logger.last_error)
+        return {'drained':self.ticks.empty(),**self.delivery_state(),
+                'processed_sequence':self.processed_sequence,'tick_logger':self.tick_logger.stats()}

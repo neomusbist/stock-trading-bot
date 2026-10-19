@@ -1,0 +1,66 @@
+{
+  "code_commit": "bfe5dd9ecd61640a07a4753e62c76c36f1c82c0e",
+  "code_tree": "599e10ec8e1cf1db1a071342cc43b9e4523af4f8",
+  "development": {
+    "tests": 1430,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "network_attempts": 0,
+    "syntax_errors": 0,
+    "seconds": 141.15916700009257,
+    "exit_code": 0
+  },
+  "clean_checkout": {
+    "tests": 1430,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "network_attempts": 0,
+    "syntax_errors": 0,
+    "seconds": 142.1774455999257,
+    "exit_code": 0
+  },
+  "clean_checkout_status": "CLEAN_DETACHED_CHECKOUT",
+  "artifacts": [
+    {
+      "file": "DATA_IDENTITY_RESULTS.json",
+      "normalized_sha256": "621a155ac035b758b78838e6e3ae661572dccb8ec88942697c9e0633971d156a",
+      "equal": true
+    },
+    {
+      "file": "SYMBOL_DATA_AUDIT.csv",
+      "normalized_sha256": "17ffac0184f80f6efccd8e332accf5e83321b147717c11c4f67da1bc403f8d03",
+      "equal": true
+    },
+    {
+      "file": "REPLAY_RESULTS.json",
+      "normalized_sha256": "7b86cfe1bb18b2de923a50033e081316c6116b7c8fe290faddf898954f2b6cdf",
+      "equal": true
+    },
+    {
+      "file": "TRADE_LEDGER.csv",
+      "normalized_sha256": "358d9415644901f615301b282ce6e6f0d02dfa78e132c37b0c75f09f03bf9c70",
+      "equal": true
+    },
+    {
+      "file": "SLIPPAGE_SENSITIVITY.csv",
+      "normalized_sha256": "4b081f3fb0118bab3305acb87c78aaee742b5d5744e3a8b82a7c951a14b4b97e",
+      "equal": true
+    },
+    {
+      "file": "ENTRY_LATENCY.csv",
+      "normalized_sha256": "89f5887dbd861e8db8005de3a09adb92982fa183b4203803f8ad415a37511322",
+      "equal": true
+    }
+  ],
+  "initial_full": {
+    "tests": 1430,
+    "failures": 3,
+    "errors": 0,
+    "reason": "legacy fixtures lacked readiness evidence; fixed tests, no production safety relaxation"
+  },
+  "real_orders": 0,
+  "R6_live_deployment": false,
+  "market_profitability": "UNKNOWN"
+}

@@ -1,0 +1,15 @@
+{
+  "publication_method": "authorized GitHub connection; local CLI credentials unavailable",
+  "original_branch": "feat/v1.6-fast-momentum-r6-20261014",
+  "original_local_commits_preserved": true,
+  "published_branch_verified": true,
+  "all_trees_match_original": true,
+  "commits": [
+    {"original": "bd3074955e93f8057faef5a034de94e7b6579c30", "published": "af5a8ccee63e35932d5a420f425431ebc7b9de13", "tree": "95f6637a5f476fae6cdc37a9a443b8ceaf5b3d17"},
+    {"original": "20abf2e019ba1286066a448f23e6035f44db114b", "published": "18b618d1a386f14d1541724cbd2de406b3a61634", "tree": "9a64d6ca07ee8bd580e32bd7a3f520634b4bf482"},
+    {"original": "34da94ef45a7415d4236fd06afd27b477b0e24f9", "published": "a30436638a6dd336c37c99184337f4ce0e42ed8d", "tree": "3a69e695dbe85197633746332b17f4b5c29358bd"},
+    {"original": "1dff4ead07c27b3a011cf46ac2bc2fdaf83b9cee", "published": "398686ecb33b871110aec721a392545629a4337c", "tree": "c6d95eeb30f7cd97404348567842841a91c38e94"},
+    {"original": "2ae9c4b45b4ebed82d2f33f46f785a745417a28c", "published": "10ef646d85c9c39962aaa6ce19b873ffd24c59f2", "tree": "7452b5e740b0420f30131f80fbf16023f6b98ca6"},
+    {"original": "2affd6dea43dc2c0c03cb22e6e5f397bc5cbde8e", "published": "3ad45e15f76f29edb6bd8dfa1948230a7967daef", "tree": "24575c4d9a6e938a48d629bba202594eb66a7f34"}
+  ]
+}

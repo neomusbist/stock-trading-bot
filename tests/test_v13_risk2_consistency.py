@@ -174,7 +174,8 @@ class TestV13Risk2Consistency(unittest.TestCase):
             'market': '3',
             'pid': cur_pid,
             'identity': process_identity(cur_pid),
-            'readiness': {'state': 'OPEN_READY'},
+            'readiness': {'state': 'OPEN_READY','order_ready':True,'missing':[],
+                          'last_regular_tick_at':self.clock[0].isoformat(),'regular_tick_age':0},
         })
         atomic_json(folder / 'state.json', {'positions': {}, 'orders': {}, 'trades': [], 'halt': '', 'cash': 20000})
 
@@ -208,7 +209,8 @@ class TestV13Risk2Consistency(unittest.TestCase):
             'market': '3',
             'pid': cur_pid,
             'identity': process_identity(cur_pid),
-            'readiness': {'state': 'OPEN_READY'},
+            'readiness': {'state': 'OPEN_READY','order_ready':True,'missing':[],
+                          'last_regular_tick_at':self.clock[0].isoformat(),'regular_tick_age':0},
             'session': 'SUPPORTED_SESSION',
         })
 

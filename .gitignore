@@ -30,6 +30,7 @@
 !/test.bat
 !/operator_menu.cmd
 !/run_capacity_experiments.py
+!/deploy_release.py
 !/core/*.py
 !/automation/*.py
 !/tests/test_*.py
@@ -39,6 +40,8 @@
 !/tools/repo_guard.py
 !/tools/setup_local.py
 !/tools/export_source.py
+!/tools/preflight_live_check.py
+!/tools/recovery_guard.py
 
 # Reviewed current sources and public documentation
 !/AUDIT_REPORT.md
@@ -123,6 +126,11 @@ operator_*approval*.json
 !/audit/r6_final_20261014/**
 !/audit/r6_claude_independent/
 !/audit/r6_claude_independent/**
+!/HANDOFF_TO_ANTIGRAVITY.md
+# Runtime bytecode remains local even below an explicitly reviewed audit folder.
+**/__pycache__/
+**/*.pyc
+/audit/r6_work_repair_20261014/SHADOW_RUNBOOK_DRAFT.md
 /backup/
 /backups/
 /comparison/

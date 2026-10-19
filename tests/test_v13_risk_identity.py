@@ -34,11 +34,13 @@ class V13RiskIdentityTests(unittest.TestCase):
                 (self.engine.folder/'events.jsonl').read_text(encoding='utf-8').splitlines()]
 
     def test_identity_separates_signal_rules_and_risk_experiment(self):
-        self.assertEqual(BUILD_ID, 'V1.5-risk2-watch12-bc20M-observation-r5-20261014')
-        self.assertEqual(STRATEGY_VERSION, 'V1.5-structural-continuation-20261014')
+        self.assertEqual(BUILD_ID, 'V1.6-risk2-daily4-fast-live-r6-20261015')
+        self.assertEqual(STRATEGY_VERSION, 'V1.6-fast-live-20261015')
         self.assertIn('risk2', STRATEGY_EXPERIMENT)
         self.assertIn('daily4', STRATEGY_EXPERIMENT)
-        self.assertIn('20261007', STRATEGY_EXPERIMENT)
+        self.assertIn('20261015', STRATEGY_EXPERIMENT)
+        # Verify old V1.5 build is strictly rejected
+        self.assertNotEqual(BUILD_ID, 'V1.5-risk2-watch12-bc20M-observation-r5-20261014')
 
     def test_cap20000_risk_budget400_daily800(self):
         self.assertEqual(self.engine.risk_equity(), 20000)

@@ -148,10 +148,15 @@ class SetupAccelerationTests(unittest.TestCase):
         self.assertTrue(sig['acceleration_required'])
     def test_old_build_authorization_is_not_reused(self):
         p=self.root/'runtime';p.mkdir(exist_ok=True)
+        # 1. Verify V1.3 authorization rejection
         (p/'operator_user_authorization.json').write_text(json.dumps({'build_id':'V1.3-preopen-risk2-20261007'}),encoding='utf-8')
         ok,reasons=authorization_valid(self.root,self.cfg,self.auto,self.policy,self.clock)
         self.assertFalse(ok);self.assertIn('LIVE_APPROVAL_BUILD_MISMATCH',reasons)
-        self.assertEqual(BUILD_ID,'V1.5-risk2-watch12-bc20M-observation-r5-20261014')
+        # 2. Verify V1.5 authorization rejection in current V1.6 build
+        (p/'operator_user_authorization.json').write_text(json.dumps({'build_id':'V1.5-risk2-watch12-bc20M-observation-r5-20261014'}),encoding='utf-8')
+        ok,reasons=authorization_valid(self.root,self.cfg,self.auto,self.policy,self.clock)
+        self.assertFalse(ok);self.assertIn('LIVE_APPROVAL_BUILD_MISMATCH',reasons)
+        self.assertEqual(BUILD_ID,'V1.6-risk2-daily4-fast-live-r6-20261015')
     def set_turnover(self,amount):
         fast=[i for i,t in enumerate(self.d.buffers[SYM]) if 0<=(self.t.time-t.time).total_seconds()<self.cfg.acceleration_seconds]
         for i in fast:self.d.buffers[SYM][i]=replace(self.d.buffers[SYM][i],volume=0)

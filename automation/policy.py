@@ -8,14 +8,14 @@ from core.util import atomic_json,read_json_retry
 from core.settings import now
 
 MODES={'OFF','ARMED','LIVE','STOP','STOP_FLAT','KILL'}
-HARD_LOCKS={'005930','017900'}
+HARD_LOCKS={'005930','017900','052260'}
 LEGACY_SYMBOL='052260'
-BREAKEVEN_EXITS={'052260':5834}
-BREAKEVEN_MAX_INVENTORY={'052260':13}
+BREAKEVEN_EXITS={}
+BREAKEVEN_MAX_INVENTORY={}
 TEST_RELEASE_SYMBOL='267320'
 LEGACY_TEST_RELEASE_ENABLED=False  # compatibility replay only; no config/UI switch
 def legacy_test_release_enabled(): return LEGACY_TEST_RELEASE_ENABLED
-EXISTING_POLICIES={'005930':'MANUAL_HOLD','017900':'HARD_LOCK','052260':'BREAKEVEN_EXIT','267320':'EXTERNAL_HOLD'}
+EXISTING_POLICIES={'005930':'MANUAL_HOLD','017900':'HARD_LOCK','052260':'HARD_LOCK','267320':'EXTERNAL_HOLD'}
 
 @dataclass(frozen=True)
 class AutomationConfig:
@@ -52,6 +52,7 @@ class AutomationConfig:
     confirmed_invalidation_enabled: bool = False  # completed close vs separately sized emergency line
     after_momentum_failure_enabled: bool = False  # failed AFTER burst rebound, independent of one-R activation
     exit_plan_reward_guard_enabled: bool = False  # cost-inclusive RR experiment; insufficient evidence to enable
+    fast_momentum_enabled: bool = False  # R6 FAST live momentum entry integration
     pullback_min_rise: float = 0.008
     pullback_min_retrace: float = 0.20  # minimum retrace fraction for confirmed controlled pullback
     min_stop_distance_fraction: float = 0.012  # minimum stop distance fraction (1.2%) to prevent tight noise stops
@@ -98,7 +99,7 @@ class AutomationConfig:
             if type(getattr(self,k)) is not int or getattr(self,k)<=0: raise ValueError(f'{k}: 양의 정수 필요')
         if type(self.ALLOW_OVERNIGHT) is not bool or type(self.costs_confirmed) is not bool or type(self.replacement_enabled) is not bool or type(self.entry_context_enabled) is not bool or type(self.stable_position_book_confirmation) is not bool:
             raise ValueError('불리언 설정 오류')
-        if any(type(getattr(self,k)) is not bool for k in ('confirmed_box_direction','confirmed_structure_protection','fresh_box_basis_enabled','setup_aware_watch_priority','structural_pullback_enabled','structural_breakout_enabled','intraday_context_enabled','confirmed_invalidation_enabled','after_momentum_failure_enabled','exit_plan_reward_guard_enabled')):
+        if any(type(getattr(self,k)) is not bool for k in ('confirmed_box_direction','confirmed_structure_protection','fresh_box_basis_enabled','setup_aware_watch_priority','structural_pullback_enabled','structural_breakout_enabled','intraday_context_enabled','confirmed_invalidation_enabled','after_momentum_failure_enabled','exit_plan_reward_guard_enabled','fast_momentum_enabled')):
             raise ValueError('불리언 설정 오류')
         for k in ('new_entry_cutoff','force_flatten_start','after_prep_start','after_market_start','after_entry_cutoff','after_force_flatten_start','after_market_close'):
             datetime.strptime(getattr(self,k),'%H:%M:%S')
@@ -159,8 +160,9 @@ class Policy:
             raise ValueError('주문 기록이 연결된 승인은 취소할 수 없습니다.')
         self.state.pop('test_capital_release',None)    
     
-    def command(self,command,symbol=None,confirmation=None):
+    def command(self,command,symbol=None,confirmation=None,approval_basis=None):
         self.refresh()
+        prev_mode = self.state.get('mode')
         if command=='TEST_CAPITAL_RELEASE':
             self.approve_test_release(symbol,confirmation)
         elif command=='CANCEL_TEST_CAPITAL_RELEASE':
@@ -174,14 +176,47 @@ class Policy:
             self.state['mode']='STOP'
             self.state['live_authorized']=False
             self.state['after_live_authorized']=False
+            try:
+                from automation.release_integrity import record_mode_transition
+                record_mode_transition(
+                    root=self.path.resolve().parent.parent,
+                    from_mode='KILL',
+                    to_mode='STOP',
+                    approval_basis=approval_basis or 'USER_RESET_KILL',
+                    symbol=symbol
+                )
+            except Exception:
+                pass
         elif command in MODES:
             if command=='LIVE':
                 if confirmation!='LIVE': raise ValueError('명시적 LIVE 확인 필요')
+                from automation.release_integrity import check_runtime_integrity
+                code_root = self.path.resolve().parent.parent
+                if not (code_root / 'automation').exists():
+                    code_root = Path(__file__).resolve().parent.parent
+                integrity = check_runtime_integrity(code_root)
+                if not integrity['valid']:
+                    raise ValueError(f"UNVERIFIED_CODE_BLOCKED_FOR_LIVE: 미검증 또는 구버전 코드로는 LIVE를 실행할 수 없습니다: {integrity['reasons']}")
                 self.state['live_authorized']=True
             elif command=='KILL':
                 self.state['live_authorized']=False
                 self.state['after_live_authorized']=False
             self.state['mode']=command
+            if prev_mode != command:
+                try:
+                    from automation.release_integrity import record_mode_transition
+                    rec_root = self.path.resolve().parent.parent
+                    if not (rec_root / 'automation').exists():
+                        rec_root = Path(__file__).resolve().parent.parent
+                    record_mode_transition(
+                        root=rec_root,
+                        from_mode=prev_mode,
+                        to_mode=command,
+                        approval_basis=approval_basis or ('USER_LIVE_CONFIRMATION' if command == 'LIVE' else 'OPERATOR_COMMAND'),
+                        symbol=symbol
+                    )
+                except Exception:
+                    pass
         else: raise ValueError('지원하지 않는 명령')
         self.state['revision']+=1
         self.state['commands'].append({'time':now().isoformat(),'command':command,'symbol':symbol,'revision':self.state['revision']})

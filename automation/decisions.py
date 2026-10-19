@@ -1,9 +1,9 @@
 """events.jsonl에 동일 스키마로 기록하는 작은 어댑터. 새 DB나 매 틱 로그 없음."""
 import json
 import math
-STRATEGY_VERSION='V1.5-structural-continuation-20261014'
-BUILD_ID='V1.5-risk2-watch12-bc20M-observation-r5-20261014'
-STRATEGY_EXPERIMENT='20261007-risk2-daily4-dynamiccap-watch12-accelA-bc20M-bclose20261008-dailyoverride20261012-context-optin-matched-rest-hold-box-direction-pivot-protection-v15entry-feedcatchup-structuralB-structuralAE3-close-invalidation-after-failed-rebound-brokerpnl-exitplan-ohlcv-wiring-shared-emergency-local-confirmed-continuation-day-lineage-policy-attribution-session-ceiling-cap-continuation-source-parity-opening-qualified-progress-observation-receiver-history-warmup-focus-structuralC'
+STRATEGY_VERSION='V1.6-fast-live-20261015'
+BUILD_ID='V1.6-risk2-daily4-fast-live-r6-20261015'
+STRATEGY_EXPERIMENT='20261015-risk2-daily4-dynamiccap-watch12-fast-momentum-live-r6'
 
 def check_experiment_consistency(cfg, build_id=BUILD_ID, experiment=STRATEGY_EXPERIMENT):
     """BUILD_ID 또는 STRATEGY_EXPERIMENT에 risk2/daily4가 적혀 있는데
@@ -57,11 +57,25 @@ def gate(passed,**values):
     return {'result':'UNKNOWN' if passed is None else 'PASS' if passed else 'FAIL','values':safe_values(values)}
 
 class DecisionLog:
-    def __init__(self,engine): self.engine=engine; self.last={}
+    def __init__(self,engine):
+        from collections import Counter
+        self.engine=engine; self.last={}
+        self.rejection_counts=Counter()
+        self.signal_keys_by_setup={'FAST':set(),'A':set(),'B':set(),'C':set()}
+        self.buy_candidates=set()
     def emit(self,kind,symbol,decision,reason,gates=None,position=None,signal=None,price=None,extra=None,force=False):
         e=self.engine; p=position or {}; sig=signal or p.get('signal') or {}; extra=extra or {}
         gates=gates or {}; key=(kind,symbol)
         reason=reason_code(reason,p)
+        if kind=='ENTRY_EVAL':
+            pat=sig.get('pattern')
+            if pat in self.signal_keys_by_setup and sig.get('limit') and sig.get('stop'):
+                self.signal_keys_by_setup[pat].add((symbol,sig.get('limit'),sig.get('stop'),sig.get('target')))
+                self.buy_candidates.add((symbol,pat,sig.get('limit')))
+            if decision=='NO_BUY' and reason:
+                self.rejection_counts[reason]+=1
+            elif decision=='BUY':
+                self.buy_candidates.add((symbol,pat or 'UNKNOWN',sig.get('limit')))
         if kind=='ENTRY_EVAL' and hasattr(e,'candidate_audit'):
             e.candidate_audit.observe(symbol,reason,gates,decision,{'timestamp':e.clock().isoformat(),'current_price':price,'setup_trials':sig.get('setup_trials',extra.get('setup_trials'))})
         state=('EXIT_PENDING' if p.get('exit_requested') else 'BOT_POSITION') if p else e.policy.mode

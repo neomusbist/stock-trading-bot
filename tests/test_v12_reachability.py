@@ -303,12 +303,14 @@ class V12ReachabilityTests(unittest.TestCase):
     def test_existing_policies_preserved(self):
         self.assertEqual(EXISTING_POLICIES['005930'], 'MANUAL_HOLD')
         self.assertEqual(EXISTING_POLICIES['017900'], 'HARD_LOCK')
-        self.assertEqual(EXISTING_POLICIES['052260'], 'BREAKEVEN_EXIT')
+        self.assertEqual(EXISTING_POLICIES['052260'], 'HARD_LOCK')
         self.assertEqual(EXISTING_POLICIES['267320'], 'EXTERNAL_HOLD')
 
         # HARD_LOCK 종목 주문 차단 검증
         with self.assertRaises(Exception):
             self.engine.order_guard('kt10000', {'stk_cd': '017900', 'ord_qty': '1', 'ord_uv': '10000'})
+        with self.assertRaises(Exception):
+            self.engine.order_guard('kt10001', {'stk_cd': '052260', 'ord_qty': '1', 'ord_uv': '5840'})
 
 
 if __name__ == '__main__':

@@ -28,12 +28,15 @@ def invalidation_lines(cfg, auto, position):
     initial = position['initial_stop']
     stop = position.get('stop', initial)
     policy = position.get('signal', {}).get('invalidation_policy') or {}
-    close_based = (auto.confirmed_invalidation_enabled and policy.get('enabled', True)
+    close_based = ((auto.confirmed_invalidation_enabled or position.get('pattern') == 'FAST' or policy.get('policy_name') == 'FAST_MICRO_STRUCTURE')
+                   and policy.get('enabled', True)
                    and number(policy.get('structural_stop'))
                    and number(policy.get('noise_band')) and policy['noise_band'] > 0)
     if close_based:
         soft = max(policy['structural_stop'], stop)
-        hard = max(initial, floor_tick(soft-policy['noise_band']))
+        policy_emergency = policy.get('emergency_stop')
+        base_emergency = policy_emergency if number(policy_emergency) and policy_emergency > 0 else initial
+        hard = max(base_emergency, floor_tick(soft-policy['noise_band']))
         return {'initial_structure': policy['structural_stop'], 'active_structure': soft,
                 'emergency': hard, 'close_based': True}
     if auto.resilient_protection_enabled:
@@ -51,6 +54,10 @@ def build_plan(cfg, auto, signal, entry=None, quantity=None, filled=False):
     stop = signal.get('stop')
     policy = signal.get('invalidation_policy') or {}
     structure = policy.get('structural_stop', stop) if auto.confirmed_invalidation_enabled else stop
+    emergency = (policy.get('emergency_stop')
+                 if auto.confirmed_invalidation_enabled and number(policy.get('emergency_stop')) and 0 < policy['emergency_stop'] < (entry or float('inf'))
+                 else signal.get('emergency') if number(signal.get('emergency')) and 0 < signal['emergency'] < (entry or float('inf'))
+                 else stop)
     valid_risk = number(entry) and number(stop) and 0 < stop < entry
     valid_target = number(target) and number(entry) and target > entry > 0
     risk = entry-stop if valid_risk else None
@@ -58,7 +65,8 @@ def build_plan(cfg, auto, signal, entry=None, quantity=None, filled=False):
                  entry_slippage=cfg.entry_slippage_fraction, exit_slippage=cfg.exit_slippage_fraction)
     reward_net = (target*(1-auto.commission_sell-auto.sell_tax-cfg.exit_slippage_fraction)
                   - entry*(1+auto.commission_buy+(0 if filled else cfg.entry_slippage_fraction))) if valid_target else None
-    risk_net = (entry-stop+entry*auto.commission_buy+stop*(auto.commission_sell+auto.sell_tax+cfg.exit_slippage_fraction)) if valid_risk else None
+    risk_stop = emergency if number(emergency) and number(entry) and 0 < emergency < entry else stop
+    risk_net = (entry-risk_stop+entry*auto.commission_buy+risk_stop*(auto.commission_sell+auto.sell_tax+cfg.exit_slippage_fraction)) if valid_risk else None
     net_rr = reward_net/risk_net if reward_net is not None and risk_net and risk_net > 0 else None
     peak = policy.get('nearest_confirmed_peak')
     if not peak and isinstance(signal.get('price_context'), dict):
@@ -79,9 +87,9 @@ def build_plan(cfg, auto, signal, entry=None, quantity=None, filled=False):
                   '신선한 호가·체결의 비상선 이탈', '실제 전역 데이터 장애 확인', 'STOP_FLAT/KILL 청산 요청']
     if burst: conditions.append('AFTER 급등 후 낮은 반등 및 3개 확정봉 하락 실패')
     deadline = (auto.after_force_flatten_start if session == 'AFTER' else auto.force_flatten_start) if not auto.ALLOW_OVERNIGHT else None
-    return {'version': 1, 'setup': setup, 'entry_logic': {'A': '관측 돌파 또는 확정 상승 지속', 'B': '상승 후 확인된 눌림 회복', 'C': '관측 박스 돌파'}.get(setup, '진입 근거 미확인'),
+    return {'version': 1, 'setup': setup, 'entry_logic': {'A': '관측 돌파 또는 확정 상승 지속', 'B': '상승 후 확인된 눌림 회복', 'C': '관측 박스 돌파', 'FAST': '실시간 마이크로 구조 모멘텀 진입'}.get(setup, '진입 근거 미확인'),
             'entry': entry, 'quantity': quantity, 'entry_basis': 'ACTUAL_AVERAGE_FILL' if filled else 'ORDER_LIMIT',
-            'initial_invalidation': structure, 'initial_emergency': stop, 'initial_price_risk': risk,
+            'initial_invalidation': structure, 'initial_emergency': emergency, 'initial_price_risk': risk,
             'one_r_price': entry+risk if valid_risk else None,
             'profit_activation_price': entry+cfg.protect_at_r*risk if valid_risk else None,
             'activation_r': cfg.protect_at_r, 'target': target if valid_target else None,
@@ -243,6 +251,9 @@ def state_for_position(cfg, auto, position, asof, pending=0, order_allowed=False
     presentation = _profit_view(cfg, auto, position, plan, lines, data, asof, bar_fresh)
     return {'version': 2, 'asof': asof.isoformat(), 'plan': deepcopy(plan), 'lines': lines,
             'presentation': presentation, 'exit_reason': position.get('exit_reason'),
+            # Diagnostic state only; never promote the FAST micro line into
+            # the confirmed structure or single-quote emergency line.
+            'fast_exit': deepcopy(position.get('fast_exit_evidence')),
             'active_orders': [{'side': o.get('side'), 'status': o.get('status'), 'qty': o.get('qty'), 'filled': o.get('filled'),
                                'limit': o.get('limit'), 'created': o.get('created'), 'reason': (o.get('signal') or {}).get('reason')}
                               for o in (orders or [])],
