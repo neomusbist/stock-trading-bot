@@ -58,6 +58,15 @@ class StructuralPullbackTests(unittest.TestCase):
             (10220,10220,10150,10160,100),(10160,10160,10110,10120,100),
             (10120,10120,10090,10110,60),(10110,10130,10100,10130,50)])
         gates,_=self.gates(raw,10140,10130)
+        # The original fixture has only 160 won gross room. With the existing
+        # costs its net RR is ~0.69, so rejection is correct, not over-filtering.
+        self.assertEqual(gates['invalidation']['result'],'PASS')
+        self.assertEqual(gates['risk_reward']['result'],'FAIL')
+        self.assertLess(gates['risk_reward']['values']['calculated_rr'],1.5)
+        # Separate synthetic control: more room to an ALREADY completed high,
+        # with the same entry/support/stop and unchanged production RR gate.
+        raw[2]['high']=10600
+        gates,_=self.gates(raw,10140,10130)
         self.assertTrue(all(g['result']=='PASS' for g in gates.values()),gates)
         self.assertLess(gates['invalidation']['values']['distance_pct'],.012)
         self.assertGreaterEqual(gates['risk_reward']['values']['calculated_rr'],1.5)

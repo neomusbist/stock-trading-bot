@@ -282,8 +282,13 @@ class SubscriptionState:
     def accepted(self,symbol):
         self.waiting.pop(symbol,None)
 
-def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,drops,sink=None,shadow_detector=None):
-    """구독 라우팅 경계에서 승격 종목의 기존 예열 큐와 관찰 상태를 인계한다. 주문은 하지 않는다."""
+def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,drops,sink=None,shadow_detector=None,
+                    on_opportunity=None):
+    """Preserve FIFO history, then evaluate bounded fresh opportunities on main.
+
+    The callback uses existing order guards. Diagnostic depth/ticks stay off
+    the protected order/position queue; no worker gains order authority.
+    """
     priority=set(real_symbols)
     if shadow_detector is None:
         if hasattr(sink,'__self__') and not str(type(sink)).startswith("<class 'unittest.mock."):
@@ -303,11 +308,19 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
     if not isinstance(getattr(feed,'observation_q',None),queue.Queue):
         if hasattr(feed,'configure_observation'):feed.configure_observation(priority,observed,sink)
         return drops,priority
+    pending=getattr(feed,'_opportunity_pending',None)
+    if pending is None:pending={};feed._opportunity_pending=pending
+    for sym in list(pending):
+        if sym not in observed or sym in priority or sym in critical:pending.pop(sym,None)
     promoted=[]
     with getattr(feed,'subscription_lock',nullcontext()):
         if feed.observation_drops!=drops:
             drops=feed.observation_drops
-            for sym in observed-set(prior_priority)-critical:detector.forget(sym)
+            pending.clear()
+            for sym in observed-set(prior_priority)-critical:
+                detector.forget(sym)
+                fast=getattr(engine,'fast_strategy',None)
+                if fast is not None:fast.forget(sym,'OBSERVATION_QUEUE_GAP')
             engine.event('OBSERVATION_DATA_GAP',SHADOW_ONLY=True,dropped=drops,data_action='RESET_PREWARM',actual_order_permission=False)
         feed.configure_observation(priority,observed,sink)
     if promotions and hasattr(feed, 'observation_q'):
@@ -334,12 +347,34 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
     while drained < 512 and time.monotonic() < drain_deadline:
         try: observed_at, tick = feed.observation_q.get_nowait()
         except queue.Empty: break
+        feed.observation_q.task_done()
         drained += 1
         if tick.symbol in observed and tick.symbol not in priority and tick.symbol not in critical:
-            detector.ingest(tick, observed_at)
+            accepted=detector.ingest(tick, observed_at)
             if getattr(engine,'fast_strategy',None) is not None:
                 engine.fast_strategy.ingest_tick(tick, observed_at)
+            if accepted and on_opportunity is not None:
+                # Latest frame per symbol; replacement retains FIFO symbol
+                # order so a busy name cannot starve less active candidates.
+                pending[tick.symbol]=(observed_at,tick)
+    drain_observed_opportunities(engine,feed,on_opportunity,deadline=drain_deadline)
     return drops, priority
+
+
+def drain_observed_opportunities(engine,feed,on_opportunity,*,deadline=None):
+    """At most two fresh evaluations; controls and position ticks go first."""
+    pending=getattr(feed,'_opportunity_pending',{})
+    deadline=time.monotonic()+.002 if deadline is None else deadline
+    evaluated=0
+    while on_opportunity is not None and pending and evaluated<2 and time.monotonic()<deadline:
+        main_q=getattr(feed,'q',None)
+        if (getattr(feed,'transport_failed',False) or feed.overflow.is_set()
+                or isinstance(main_q,queue.Queue) and not main_q.empty()):break
+        sym=next(iter(pending));observed_at,tick=pending.pop(sym)
+        if not tick_freshness(tick,engine.clock(),engine.c.stale_seconds)['fresh']:continue
+        evaluated+=1
+        on_opportunity(tick,observed_at)
+    return evaluated
 
 def merge_verified_shadow_candidates(rows,shadow,lookup):
     """Merge ObservationWorker-verified SHADOW candidates that hit RadarWorker's per-cycle scan limit."""
@@ -493,7 +528,14 @@ def focus_readiness(detector,shadow_readiness,stamp):
             tick_at=evaluation.get('time')
             if not isinstance(tick_at,datetime) or tick_at.tzinfo is None:continue
             age=(stamp-tick_at).total_seconds()
-            if age<0 or tick_at.astimezone(stamp.tzinfo).date()!=stamp.date():continue
+            if tick_at.astimezone(stamp.tzinfo).date()!=stamp.date():continue
+            if age<0:
+                # Match the receiver's bounded exchange-clock rule, but only
+                # when the exact accepted source tick is still available.
+                source_tick=getattr(detector,'last',{}).get(sym)
+                if (source_tick is None or source_tick.time!=tick_at
+                        or not tick_freshness(source_tick,stamp,15)['fresh']):continue
+                age=0.
             gates=evaluation.get('gates',{})
             price_blocked=unviable_price_geometry({'setup_trials':evaluation.get('trials',[])})
             # Positive readiness still expires at 15s. A same-day negative
@@ -586,24 +628,61 @@ def evaluate_shadow_opportunity(engine,detector,t,watch,radar,prices,account,las
         cands=list(by_symbol.values())
         if not any(r.get('code')==t.symbol for r in cands):
             cands.append(watch)
-        readiness=focus_readiness(detector,{},t.time)
+        decision_at=engine.clock()
+        readiness=focus_readiness(detector,{},decision_at)
         selection=select_focus(
             current_watch=lookup,
             candidates=cands,
             readiness_map=readiness,
             max_watchlist=engine.c.max_watchlist,
             fallback_source1=engine.a.fallback_source1,
-            clock_iso=t.time.isoformat()
+            clock_iso=decision_at.isoformat()
         )
         if selection.applied and t.symbol in selection.promoted:
             apply_focus_selection(engine,lookup,by_symbol,selection)
             latency_ms=(time.perf_counter()-t_start)*1000.0
             pattern=sig.get('pattern') if sig else 'LIVE_GEOMETRY'
             engine.event('WATCH_DYNAMIC_PROMOTION',symbol=t.symbol,pattern=pattern,
-                         latency_ms=latency_ms,promoted_at=t.time.isoformat(),
+                         latency_ms=latency_ms,promoted_at=decision_at.isoformat(),
                          next_watch=selection.next_watch,previous_watch=selection.previous_watch)
             return True
     return False
+
+def evaluate_observed_entry(engine,detector,t,received,lookup,radar,prices,account,by_symbol,subscriptions=None):
+    """Bridge an actually received non-WATCH tick to existing order guards.
+
+    Promotion is not buy authorization. Re-evaluate the LIVE strategy with the
+    same causal tape, account, history, quote, sizing and PRE_HTTP checks.
+    """
+    if not engine.connected or not t.regular or not tick_freshness(t,engine.clock(),engine.c.stale_seconds)['fresh']:return None
+    if subscriptions is not None:
+        if not subscriptions.tick_ready(t,received):return None
+        subscriptions.accepted(t.symbol)
+    watch=lookup.get(t.symbol)
+    candidate=by_symbol.get(t.symbol)
+    if not watch and not candidate:return None
+    prices[t.symbol]=t.bid or t.price
+    engine.last_regular_tick_at=t.time;engine.last_regular_tick=t
+    timeline=getattr(engine,'observation_timeline',None)
+    if timeline is not None:
+        timeline.tick(t.symbol,t.time,detector.usable_bars(t.symbol),t.price,
+                      received=received,processed=engine.clock(),execution_fresh=True)
+    for name in ('_last_shadow_eval_frame','_last_eval_frame'):
+        if getattr(engine,name,None) is None:setattr(engine,name,{})
+    if not watch:
+        promoted=evaluate_shadow_opportunity(engine,detector,t,{**candidate,'status':'SHADOW'},
+            radar,prices,account,engine._last_shadow_eval_frame,by_symbol=by_symbol,lookup=lookup)
+        if not promoted:return None
+        watch=lookup.get(t.symbol)
+    if not watch:return None
+    context_provider=getattr(engine,'market_context_provider',None)
+    if context_provider:
+        indices=context_provider(t.time)
+        market_name=(watch.get('market_status',{}).get('raw') or {}).get('marketName')
+        benchmark='KOSDAQ' if market_name in {'코스닥','KOSDAQ'} else 'KOSPI' if market_name in {'코스피','KOSPI','거래소'} else None
+        watch={**watch,'index_context':indices.get(benchmark) if benchmark else None,'market_environment':indices}
+    return evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,engine._last_eval_frame)
+
 
 def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_evaluated_frame=None):
     if not watch or not engine.connected: return None
@@ -1365,10 +1444,14 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 retained_observation=record_observation_retention(
                     engine,retained,retained_observation,desired,observation_grace,
                     observation_settings.max_symbols)
+                opportunity_callback=(lambda tick,received:evaluate_observed_entry(
+                    engine,detector,tick,received,lookup,radar,prices,account,by_symbol,subscriptions)) \
+                    if in_session and radar_ok and not smoke_ended else None
                 observation_drops,priority_symbols=prewarm_handoff(
                     engine,detector,feed,observed,real_symbols,priority_symbols,observation_drops,
                     shadow.deliver,
-                    shadow_detector=getattr(getattr(shadow, 'observer', None), 'detector', None)
+                    shadow_detector=getattr(getattr(shadow, 'observer', None), 'detector', None),
+                    on_opportunity=opportunity_callback
                 )
                 if in_session:
                     subscriptions.refresh(engine,detector,feed,desired,now(),grace_seconds=observation_grace); symbols=set(subscriptions.symbols)
@@ -1392,6 +1475,10 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         if message.get('trnm')=='REG' and message.get('return_code') in (0,'0'):counts['subscription_acks']+=1
                         counts['ticks']+=process_message(engine,detector,message,received,real_symbols,lookup,radar,prices,account,radar_ok and not smoke_ended,subscriptions,by_symbol=by_symbol)
                     drain_feed(feed,consume_frame,timeout=.02)
+                    # Prewarm may have yielded to a pending control/fill frame.
+                    # Revisit only the bounded latest opportunities after FIFO
+                    # catch-up, rather than waiting for a 60-second radar scan.
+                    drain_observed_opportunities(engine,feed,opportunity_callback)
                 except queue.Empty:
                     if not in_session: time.sleep(.25)
                 position_health.prune()

@@ -1,3 +1,10 @@
+"""Historical exploratory script; INVALID as causal before/after evidence.
+
+The old implementation invents resistance from later prices, source counts
+and missing bid/ask values; reported names lack source identity linkage.
+Kept for audit provenance only. CLI execution is quarantined below.
+See INDEPENDENT_REVIEW_20261019.md for verified findings and limitations.
+"""
 import os
 import sys
 import json
@@ -7,7 +14,7 @@ from collections import defaultdict
 from dataclasses import replace
 
 # Add dev workspace to path
-dev_dir = Path(r"C:\Users\MJS\Documents\주식자동매매_개발\r6-target-cap-incident-20261015")
+dev_dir = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(dev_dir))
 
 from core.strategy import Tick
@@ -220,5 +227,7 @@ def analyze_before_and_after(ticks_by_symbol):
     print(f"\nSaved detailed results to {out_file}")
 
 if __name__ == '__main__':
-    ticks = load_target_ticks()
-    analyze_before_and_after(ticks)
+    print('INVALID_FOR_CAUSAL_REPLAY: future-derived resistance, invented source counts/quotes, '
+          'unverified symbol identity and hard-coded BEFORE results. '
+          'No logs scanned; no signal/order/profitability claim is valid from this script.',file=sys.stderr)
+    raise SystemExit(2)

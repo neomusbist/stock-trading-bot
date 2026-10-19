@@ -1,5 +1,13 @@
 # R6 Opportunity and Order Path Independent Audit Dossier (2026-10-19)
 
+> **Independent correction, 2026-10-19:** The PASS labels and 47-event/3-wave
+> claims below are historical, unverified claims and must not be used as
+> causal LIVE evidence. The replay uses future-derived resistance and invented
+> source counts/quotes, while its BEFORE results are hard-coded. Saved broker
+> radar metadata identifies `089230` as `THE E&M`, not FSN. The `018670` unit
+> test label has no linked original identity evidence. CLI replay is quarantined;
+> see [INDEPENDENT_REVIEW_20261019.md](INDEPENDENT_REVIEW_20261019.md).
+
 ## 1. Overview and Audit Purpose
 This dossier contains the forensic evidence, replay scripts, and quantitative datasets required for an independent audit (by ChatGPT Work and third-party reviewers) of the R6 AFTER session (16:00 ~ 18:00 KST, 2026-10-19) and the subsequent resolution of the WATCH promotion and live order path bottleneck.
 

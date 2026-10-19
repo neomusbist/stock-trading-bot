@@ -33,7 +33,10 @@ class ShadowTests(unittest.TestCase):
   row=self.row();row['shadow_view']['market_status']['pass']=None;self.s.update([row],self.start);self.assertEqual(self.s.rows,{})
   row2=self.row();row2['affordability']['entry_eligible']=False;self.s.update([row2],self.start);self.assertEqual(self.s.rows,{})
  def test_all_abc_failure_records(self):
-  self.s.update([self.row()],self.start);self.s.tick(self.tick(),self.start);e=self.events[-1][1];self.assertEqual([x['setup'] for x in e['setup_trials']],['A','B','C']);self.assertFalse(e['actual_order_permission']);self.assertTrue(all(x['failed_reasons'] for x in e['setup_trials']))
+  self.s.update([self.row()],self.start);self.s.tick(self.tick(),self.start);e=self.events[-1][1]
+  # Optional diagnostic trials do not remove the three required legacy records.
+  legacy=[x for x in e['setup_trials'] if x['setup'] in {'A','B','C'}]
+  self.assertEqual([x['setup'] for x in legacy],['A','B','C']);self.assertFalse(e['actual_order_permission']);self.assertTrue(all(x['failed_reasons'] for x in legacy))
  def test_virtual_risk_no_order_state(self):
   self.s.update([self.row()],self.start)
   with unittest.mock.patch.object(self.s.detector,'box',return_value={'pattern':'C','breakout':10000,'support':9900,'projection':10200}):self.s.tick(self.tick(),self.start)

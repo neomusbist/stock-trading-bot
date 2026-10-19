@@ -1,0 +1,38 @@
+{
+  "baseline": true,
+  "base_or_head_commit": "557e83c6bb13d39c7fc1f8d79f15798b2a576fc0",
+  "source_worktree": "r6-target-cap-incident-20261015",
+  "tests": 9,
+  "pass": 0,
+  "fail": 7,
+  "errors": 2,
+  "skipped": 0,
+  "network_attempts": 0,
+  "real_orders": 0,
+  "full_regression_run": false,
+  "seconds": 1.678,
+  "failed_tests": [
+    "test_one_tick_tolerance_cannot_authorize_a_different_unsent_limit (independent_counterexamples.OrderBoundaryTests.test_one_tick_tolerance_cannot_authorize_a_different_unsent_limit)",
+    "test_fresh_quote_does_not_revive_expired_abc_trigger (independent_counterexamples.OrderBoundaryTests.test_fresh_quote_does_not_revive_expired_abc_trigger)",
+    "test_receipt_counter_keeps_source_expired_after_wall_clock_correction (independent_counterexamples.OrderBoundaryTests.test_receipt_counter_keeps_source_expired_after_wall_clock_correction)",
+    "test_source_counter_is_bound_before_intent_and_not_renewed_at_http (independent_counterexamples.OrderBoundaryTests.test_source_counter_is_bound_before_intent_and_not_renewed_at_http)",
+    "test_shadow_redesign_cannot_raise_live_signal_or_geometry_tier (independent_counterexamples.FocusQuarantineTests.test_shadow_redesign_cannot_raise_live_signal_or_geometry_tier)",
+    "test_fast_receipt_timestamp_can_win_full_watch_priority (independent_counterexamples.ReceiverPromotionTests.test_fast_receipt_timestamp_can_win_full_watch_priority)",
+    "test_mk_hold_is_not_overridden_by_single_quote_at_micro_line (independent_counterexamples.FastPolicyWithoutGlobalFlagTests.test_mk_hold_is_not_overridden_by_single_quote_at_micro_line)"
+  ],
+  "error_tests": [
+    "test_real_receiver_queue_reaches_existing_fast_and_small_account_order (independent_counterexamples.ReceiverPromotionTests.test_real_receiver_queue_reaches_existing_fast_and_small_account_order)",
+    "test_bounded_future_exchange_tick_does_not_erase_fast_readiness (independent_counterexamples.ReceiverPromotionTests.test_bounded_future_exchange_tick_does_not_erase_fast_readiness)"
+  ],
+  "modules_or_cases": [
+    "independent_counterexamples.OrderBoundaryTests.test_one_tick_tolerance_cannot_authorize_a_different_unsent_limit",
+    "independent_counterexamples.OrderBoundaryTests.test_fresh_quote_does_not_revive_expired_abc_trigger",
+    "independent_counterexamples.OrderBoundaryTests.test_receipt_counter_keeps_source_expired_after_wall_clock_correction",
+    "independent_counterexamples.OrderBoundaryTests.test_source_counter_is_bound_before_intent_and_not_renewed_at_http",
+    "independent_counterexamples.FocusQuarantineTests.test_shadow_redesign_cannot_raise_live_signal_or_geometry_tier",
+    "independent_counterexamples.ReceiverPromotionTests.test_real_receiver_queue_reaches_existing_fast_and_small_account_order",
+    "independent_counterexamples.ReceiverPromotionTests.test_fast_receipt_timestamp_can_win_full_watch_priority",
+    "independent_counterexamples.ReceiverPromotionTests.test_bounded_future_exchange_tick_does_not_erase_fast_readiness",
+    "independent_counterexamples.FastPolicyWithoutGlobalFlagTests.test_mk_hold_is_not_overridden_by_single_quote_at_micro_line"
+  ]
+}
