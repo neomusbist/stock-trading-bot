@@ -7,7 +7,7 @@
 - 개발 브랜치: `feat/r6-opportunity-evidence-20261019`.
 - 핵심 기록·연구 코드 커밋: `2b8808a09351f552f780eee04c3328f03e155886`.
 - 오프라인 기록 재현 CLI 커밋: `8a144bbab93bb8fff51adbe179bfcee00fb2e26e`.
-- GitHub 대상: [개발 브랜치](https://github.com/neomusbist/stock-trading-bot/tree/feat/r6-opportunity-evidence-20261019). 이 문서 뒤의 문서 커밋도 포함한 최종 로컬 HEAD 전체 소스 트리를 게시 대상으로 삼는다. 실제 게시 결과와 로컬/원격 해시 대응은 최종 응답 및 저장소 밖 `PUBLICATION_RESULT.json`에 기록한다. 일반 Git 인증을 사용할 수 없어 연결된 GitHub의 트리·커밋·새 브랜치 생성 경로를 사용하며 원격 커밋 ID가 로컬과 다를 수 있다. 원본 로컬 커밋은 보존한다.
+- GitHub 게시 완료: [개발 브랜치](https://github.com/neomusbist/stock-trading-bot/tree/feat/r6-opportunity-evidence-20261019), 최초 전체 소스 스냅샷 `f8c394298770983fba59095ff310547a76ca35bb`. 로컬 `cf66dd0c0e7be794aa9502243c3637088b4b9fc4`의 전체 소스 트리 `68def15c534799f561d59a8092fea52fa440dd94`와 원격 트리가 동일함을 확인했다. 이 게시 성공 기록의 문서 갱신도 같은 브랜치에 반영한다. 최종 로컬/원격 HEAD 대응은 최종 응답 및 저장소 밖 `PUBLICATION_RESULT.json`에 기록한다. 일반 Git 인증을 사용할 수 없어 연결된 GitHub의 트리·커밋·브랜치 경로를 사용했으므로 원격 커밋 ID는 로컬과 다르다. 원본 로컬 커밋은 보존했다.
 - main 및 기존 원격 운영 브랜치는 갱신하지 않는다. 운영 설정·장부·인증·원본 로그는 게시하지 않는다.
 - 운영 BUILD는 `V1.6-risk2-daily4-fast-live-r6-20261015` 유지. 연구 모듈은 실제 주문에 연결하지 않았다.
 
