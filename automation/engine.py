@@ -139,7 +139,14 @@ class AutonomousEngine(ExistingExits,Engine):
         result=super().event(kind,**safe_values(info))
         capture=getattr(self,'trade_review',None)
         if capture is not None:
-            try:capture.event_ref(kind,data,self.clock(),self.s.get('positions',{}))
+            try:
+                captured_at=self.clock()
+                capture.event_ref(kind,data,captured_at,self.s.get('positions',{}))
+                if kind=='ENTRY_CANDIDATE' and data.get('pattern')=='FAST':
+                    decision_at=data.get('signal_detected_at') or data.get('time')
+                    if decision_at and hasattr(capture,'decision_tape'):
+                        snapshot=self.fast_strategy.snapshot_decision_tape(sym,decision_at)
+                        capture.decision_tape(sym,captured_at,snapshot)
             except Exception:self.trade_review_errors=getattr(self,'trade_review_errors',0)+1
         return result
     def session_ending(self):

@@ -79,7 +79,9 @@ class FastSignal:
             'decision': 'TRADE',
             'score': self.net_reward_risk,
             'basis': 'CAUSAL_FAST_MICRO_REACTION',
-            'cost_per_share': self.reward_net_per_share,
+            # Keep the existing net reward/ratio, but report the proportional
+            # fees/slippage drag rather than labelling the reward itself a fee.
+            'cost_per_share': (self.target - self.limit) - self.reward_net_per_share,
             'reward_after_cost': self.reward_net_per_share,
             'risk_per_share': self.risk_net_per_share,
             'inputs': {
@@ -321,6 +323,40 @@ class FastMomentumStrategy:
                 symbol=tape.symbol,
                 reset_reason=tape.reset_reason,
             )
+
+    def snapshot_decision_tape(self, symbol, asof, max_rows=256):
+        """Bounded audit copy of arrived prints, never a new signal or warmup.
+
+        A SHADOW-to-WATCH handoff can precede the recorder's next scope update.
+        Its WATCH ring may then be empty even though FAST used genuine history.
+        Copy that existing history at the signal's receipt-time cutoff, without
+        replaying it into the detector or treating later arrivals as evidence.
+        """
+        at = stamp(asof)
+        if at is None or type(max_rows) is not int or not 0 < max_rows <= 256:
+            return None
+        with self._lock:
+            tape = self.tapes.get(symbol)
+            if tape is None:return None
+            rows = deque(maxlen=max_rows); eligible = 0
+            cutoff = at - timedelta(seconds=tape.max_seconds)
+            for row, meta in zip(tape.ticks, tape.metadata):
+                if not (cutoff <= row[0] <= at + timedelta(seconds=MAX_EXCHANGE_LEAD_SECONDS)
+                        and row[0].date() == at.date() and meta['received_at'] <= at):
+                    continue
+                eligible += 1
+                rows.append(dict(exchange_at=row[0], received_at=meta['received_at'],
+                    received_monotonic=meta.get('received_monotonic'), price=row[1],
+                    volume=row[2], direction=row[3], bid=row[4], ask=row[5],
+                    book_time=meta.get('book_time'), bid_qty=meta.get('bid_qty'),
+                    ask_qty=meta.get('ask_qty'), depth_available=meta.get('depth_available'),
+                    cumulative=meta['fingerprint'][5]))
+            return saved_evidence(dict(asof=at, rows=list(rows), eligible_rows=eligible,
+                truncated=eligible > len(rows), max_rows=max_rows,
+                reset_reason=tape.reset_reason,
+                source='ACCEPTED_FAST_MICRO_TAPE_AT_SIGNAL_RECEIPT_CUTOFF',
+                coverage='BOUNDED_OBSERVED_PRINTS_NOT_CONTINUOUS_MARKET_COVERAGE',
+                direction_basis='TICK_RULE_PROXY_NOT_AGGRESSOR_ID'))
 
     def restore_tape(self, symbol, snapshot):
         if not snapshot or not snapshot.get('ticks'):
