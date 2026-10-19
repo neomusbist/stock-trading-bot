@@ -80,14 +80,14 @@ def is_deletable_diagnostic_archive(path: Path) -> bool:
     return False
 
 
-def get_free_disk_gb(path: Path) -> float:
-    """Return free disk space in GB for the drive containing path."""
+def get_free_disk_gb(path: Path) -> Optional[float]:
+    """Return free disk space in GB for the drive containing path. Returns None on failure."""
     try:
         usage = shutil.disk_usage(path)
         return usage.free / (1024 ** 3)
     except Exception as e:
         logger.error(f"Failed to check disk usage for {path}: {e}")
-        return 999.0
+        return None
 
 
 def prune_archive_dir(archive_dir: Path, max_bytes: int = MAX_ARCHIVE_DIR_BYTES,
@@ -192,18 +192,20 @@ def prune_shadow_ticks(runtime_dir: Path, max_rotations: int = MAX_SHADOW_TICK_R
     tick_files.sort(key=lambda x: x[0], reverse=True)
 
     for idx, f in tick_files:
-        if idx > max_rotations:
-            try:
-                stat = f.stat()
-                # Check age to avoid deleting current trading day's active rotations
-                if now_ts - stat.st_mtime > min_age_sec or len(tick_files) > max_rotations * 2:
-                    sz = stat.st_size
-                    f.unlink()
-                    files_removed += 1
-                    bytes_freed += sz
-                    action_logs.append(f"Pruned expired shadow tick rotation {f.name} ({sz / 1024**2:.2f} MB)")
-            except OSError as e:
-                logger.error(f"Error unlinking shadow tick rotation {f}: {e}")
+        try:
+            stat = f.stat()
+            file_age_sec = now_ts - stat.st_mtime
+            # STRICT PROTECTION: Recent trading days within min_age_days are 100% PROTECTED regardless of file count
+            if file_age_sec <= min_age_sec:
+                continue
+            if idx > max_rotations:
+                sz = stat.st_size
+                f.unlink()
+                files_removed += 1
+                bytes_freed += sz
+                action_logs.append(f"Pruned expired shadow tick rotation {f.name} ({sz / 1024**2:.2f} MB, age {file_age_sec / 86400:.1f}d > {min_age_days}d)")
+        except OSError as e:
+            logger.error(f"Error unlinking shadow tick rotation {f}: {e}")
 
     return files_removed, bytes_freed, action_logs
 
@@ -238,15 +240,24 @@ def truncate_console_log(log_path: Path, max_bytes: int = MAX_CONSOLE_LOG_BYTES,
 def check_disk_safety_gate(root_path: Path) -> Dict:
     """
     Evaluates actionable disk safety.
-    Returns status dictionary with free GB, warning/critical flags, and order block reason.
+    Conservative policy: If disk space is unknown or query fails, blocks new orders.
     """
     free_gb = get_free_disk_gb(root_path)
+    if free_gb is None:
+        return {
+            'free_gb': None,
+            'disk_emergency': True,
+            'disk_critical': True,
+            'order_blocked': True,
+            'order_block_reason': 'DISK_CAPACITY_UNKNOWN: 디스크 여유 공간 조회 실패로 신규매수를 보수적으로 차단합니다.'
+        }
+
     is_emergency = free_gb < EMERGENCY_FREE_GB_THRESHOLD
     is_critical = free_gb < CRITICAL_FREE_GB_THRESHOLD
 
     order_block_reason = None
     if is_critical:
-        order_block_reason = f"CRITICAL_LOW_DISK_SPACE: 여유 디스크가 {free_gb:.1f}GB로 극도로 부족합니다 (최소 5GB 필요). 신규 매수가 차단됩니다."
+        order_block_reason = f"CRITICAL_LOW_DISK_SPACE: 여유 디스크가 {free_gb:.1f}GB로 극도로 부족합니다 (최소 {CRITICAL_FREE_GB_THRESHOLD:.1f}GB 필요). 신규 매수가 차단됩니다."
 
     return {
         'free_gb': round(free_gb, 2),

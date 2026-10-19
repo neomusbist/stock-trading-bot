@@ -200,6 +200,13 @@ class AutonomousEngine(ExistingExits,Engine):
                 'account_fresh':fresh}
 
     def new_entry_reason(self,symbol):
+        try:
+            from automation.storage_governor import check_disk_safety_gate
+            gate = check_disk_safety_gate(getattr(self, 'folder', Path('.')))
+            if gate and gate.get('order_blocked'):
+                return 'CRITICAL_LOW_DISK_SPACE'
+        except Exception:
+            return 'CRITICAL_LOW_DISK_SPACE'
         self.policy.refresh()
         health=getattr(self,'position_health',None)
         if health is not None:health.prune()
@@ -307,6 +314,13 @@ class AutonomousEngine(ExistingExits,Engine):
             'efficiency':gate(signal.get('efficiency',{}).get('decision')=='TRADE',efficiency=signal.get('efficiency'))}
 
     def entry_market_reason(self,signal,quantity,fallback=None,phase='PRE_INTENT'):
+        try:
+            from automation.storage_governor import check_disk_safety_gate
+            gate = check_disk_safety_gate(getattr(self, 'folder', Path('.')))
+            if gate and gate.get('order_blocked'):
+                return 'CRITICAL_LOW_DISK_SPACE'
+        except Exception:
+            return 'CRITICAL_LOW_DISK_SPACE'
         if self.a.exit_plan_reward_guard_enabled or signal.get('pattern') == 'B':
             from automation.exit_plan import build_plan
             signal['exit_plan']=build_plan(self.c,self.a,signal,quantity=quantity)
@@ -631,6 +645,14 @@ class AutonomousEngine(ExistingExits,Engine):
 
     def live_order_allowed(self,side,symbol,qty,limit,signal):
         if symbol in HARD_LOCKS: return False
+        if side=='BUY':
+            try:
+                from automation.storage_governor import check_disk_safety_gate
+                gate=check_disk_safety_gate(getattr(self,'folder',Path('.')))
+                if gate and gate.get('order_blocked'):
+                    return False
+            except Exception:
+                return False
         if self.c.live_mode: return True
         return self.test_release_authorized('kt10001' if side=='SELL' else 'kt10000',
             {'stk_cd':symbol,'ord_qty':str(qty),'ord_uv':str(limit)})
@@ -1227,4 +1249,7 @@ class AutonomousEngine(ExistingExits,Engine):
         self.s['automation']['consecutive_losses']=0
         self.market='UNKNOWN'; self.connected=False; self.account_ok=False; self.save()
         return True
+
+
+AutomationEngine = AutonomousEngine
 

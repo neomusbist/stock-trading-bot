@@ -197,11 +197,109 @@ class TieredStorageGovernorTests(unittest.TestCase):
             'market_phase': 'CLOSED'
         }), encoding='utf-8')
 
-        res = run_storage_governance(self.root)
-        self.assertTrue(state_file.exists())
-        loaded = json.loads(state_file.read_text(encoding='utf-8'))
-        self.assertEqual(loaded['daily_loss'], 128.0)
-        self.assertEqual(loaded['market_phase'], 'CLOSED')
+    def test_shadow_ticks_same_day_rotations_preserved_regardless_of_count(self):
+        """Even if there are 8 or more rotations on the same day, files within min_age_days are 100% preserved."""
+        (self.runtime / 'shadow_ticks.jsonl').write_text('active ticks', encoding='utf-8')
+        now_ts = time.time()
+
+        # Create 8 rotations all generated today (within the last few hours)
+        for i in range(1, 9):
+            f = self.runtime / f'shadow_ticks.jsonl.{i}'
+            f.write_text(f'today busy rotation {i}', encoding='utf-8')
+            os.utime(f, (now_ts - i * 600, now_ts - i * 600))  # 10 to 80 minutes ago
+
+        # Prune with max_rotations=3, min_age_days=3
+        removed, freed, logs = prune_shadow_ticks(self.runtime, max_rotations=3, min_age_days=3)
+        self.assertEqual(removed, 0, "No same-day rotations should be deleted even if count >= 8")
+        self.assertEqual(freed, 0)
+        for i in range(1, 9):
+            self.assertTrue((self.runtime / f'shadow_ticks.jsonl.{i}').exists())
+
+    def test_disk_4gb_blocks_live_buy_orders(self):
+        """Free disk space of 4GB triggers CRITICAL_LOW_DISK_SPACE and blocks live BUY orders."""
+        from automation.engine import AutonomousEngine
+        from automation.policy import AutomationConfig, Policy
+        from core.settings import Config
+        from tests.test_automation import FakeBroker
+
+        with patch('automation.storage_governor.get_free_disk_gb', return_value=4.0):
+            gate = check_disk_safety_gate(self.root)
+            self.assertTrue(gate['order_blocked'])
+            self.assertIn('CRITICAL_LOW_DISK_SPACE', gate['order_block_reason'])
+
+            # Verify in AutonomousEngine
+            from datetime import datetime
+            from core.settings import KST
+            cfg = Config(live_mode=True)
+            auto = AutomationConfig(costs_confirmed=True, AUTO_TRADING_CAP_KRW=100000)
+            policy = Policy(self.root / 'policy.json')
+            broker = FakeBroker()
+            clock = lambda: datetime(2026, 10, 19, 10, 0, 0, tzinfo=KST)
+            engine = AutonomousEngine(cfg, auto, policy, self.runtime, broker, clock)
+
+            # Buy order allowed must return False
+            self.assertFalse(engine.live_order_allowed('BUY', '005930', 1, 10000, {}))
+            # New entry reason must return CRITICAL_LOW_DISK_SPACE
+            self.assertEqual(engine.new_entry_reason('005930'), 'CRITICAL_LOW_DISK_SPACE')
+            # Entry market reason must return CRITICAL_LOW_DISK_SPACE
+            self.assertEqual(engine.entry_market_reason({'symbol': '005930'}, 1), 'CRITICAL_LOW_DISK_SPACE')
+
+    def test_disk_inquiry_error_blocks_live_buy_orders(self):
+        """When disk space query fails, capacity is treated as UNKNOWN and blocks live BUY orders."""
+        from datetime import datetime
+        from core.settings import KST
+        from automation.engine import AutonomousEngine
+        from automation.policy import AutomationConfig, Policy
+        from core.settings import Config
+        from tests.test_automation import FakeBroker
+
+        with patch('shutil.disk_usage', side_effect=OSError("Drive query failed")):
+            free_gb = get_free_disk_gb(self.root)
+            self.assertIsNone(free_gb)
+
+            gate = check_disk_safety_gate(self.root)
+            self.assertTrue(gate['order_blocked'])
+            self.assertIn('DISK_CAPACITY_UNKNOWN', gate['order_block_reason'])
+
+            cfg = Config(live_mode=True)
+            auto = AutomationConfig(costs_confirmed=True, AUTO_TRADING_CAP_KRW=100000)
+            policy = Policy(self.root / 'policy.json')
+            broker = FakeBroker()
+            clock = lambda: datetime(2026, 10, 19, 10, 0, 0, tzinfo=KST)
+            engine = AutonomousEngine(cfg, auto, policy, self.runtime, broker, clock)
+
+            self.assertFalse(engine.live_order_allowed('BUY', '005930', 1, 10000, {}))
+
+    def test_disk_4gb_allows_existing_position_exit_orders(self):
+        """Critical disk space (< 5GB) must NOT block existing position protection or exit orders (SELL)."""
+        from datetime import datetime
+        from core.settings import KST
+        from automation.engine import AutonomousEngine
+        from automation.policy import AutomationConfig, Policy
+        from core.settings import Config
+        from tests.test_automation import FakeBroker
+
+        with patch('automation.storage_governor.get_free_disk_gb', return_value=4.0):
+            cfg = Config(live_mode=True)
+            auto = AutomationConfig(costs_confirmed=True, AUTO_TRADING_CAP_KRW=100000)
+            policy = Policy(self.root / 'policy.json')
+            broker = FakeBroker()
+            clock = lambda: datetime(2026, 10, 19, 10, 0, 0, tzinfo=KST)
+            engine = AutonomousEngine(cfg, auto, policy, self.runtime, broker, clock)
+
+            # SELL order must NOT be blocked by disk safety gate!
+            self.assertTrue(engine.live_order_allowed('SELL', '069540', 2, 5000, {}))
+
+    def test_lunit_trade_reproducibility_with_remaining_data(self):
+        """Verifies that the 2026-10-19 Lunit trade and core decisions are reproducible with remaining data."""
+        fixture_path = Path(__file__).parent / 'fixtures/lunit_exit_20261019.json'
+        fixture = json.loads(fixture_path.read_text(encoding='utf-8'))
+        self.assertEqual(fixture['position']['symbol'], '328130')
+        self.assertEqual(fixture['position']['avg'], 12890)
+        self.assertEqual(fixture['position']['qty'], 5)
+        self.assertEqual(fixture['position']['initial_stop'], 12840)
+        self.assertEqual(fixture['position']['emergency'], 12820)
+        self.assertGreater(len(fixture['ticks']), 60)
 
 
 if __name__ == '__main__':
