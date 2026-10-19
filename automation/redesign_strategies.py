@@ -71,7 +71,7 @@ def evaluate_early_momentum_breakout(bars: list, t, watch: dict, cfg, auto, cost
     Early momentum breakout using base high, real-time bid support, volume acceleration,
     and executable entry limit (ask1 + 1 tick) with strict net RR >= 1.40.
     """
-    if len(bars) < 3:
+    if len(bars) < 2:
         return None, {'reason': 'INSUFFICIENT_USABLE_BARS', 'pass': False}
 
     recent_bars = bars[-4:]

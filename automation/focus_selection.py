@@ -217,7 +217,8 @@ def select_focus(
             continue
         status = r.get('status')
         if status and status not in {'ELIGIBLE', 'WATCH', 'RESERVE', 'SHADOW'}:
-            continue
+            if not (r.get('intraday_surge_override') or r.get('has_ticks')):
+                continue
         src_count = r.get('source_count', 0)
         if src_count < 1:
             continue

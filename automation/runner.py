@@ -354,7 +354,7 @@ def merge_verified_shadow_candidates(rows,shadow,lookup):
         if (sv.get('status')=='ELIGIBLE' and ms.get('pass') is True
                 and s_row.get('affordability',{}).get('entry_eligible') is True):
             cur=pool.get(sym)
-            if cur is None or (cur.get('status') in {'RAW','UNKNOWN',None} and cur.get('reason') in scan_limit_reasons):
+            if cur is None or (cur.get('status') in {'RAW','UNKNOWN',None} and (cur.get('reason') in scan_limit_reasons or '일봉 부족' in str(cur.get('reason','')))):
                 ev=make_evaluation_view(s_row)
                 if cur is not None:
                     for k in ('source_count','source_details','source_deltas','discovery_score','observed_at','first_raw_at','first_raw_price','reference_price','affordability'):
@@ -517,6 +517,30 @@ def focus_readiness(detector,shadow_readiness,stamp):
                 'fast_signal_ready':fast_ready,
                 'gates':{k:{'result':gates.get(k,{}).get('result')} for k in ('acceleration','liquidity')}}
     return result
+
+def evaluate_shadow_opportunity(engine,detector,t,watch,radar,prices,account,last_evaluated_frame=None):
+    """Pre-evaluation path for subscribed non-WATCH symbols. Strictly evaluates signal and gates; zero broker orders."""
+    if not watch or not engine.connected: return None
+    if last_evaluated_frame is not None:
+        key=(t.time,t.cumulative)
+        if last_evaluated_frame.get(t.symbol)==key:return None
+        last_evaluated_frame[t.symbol]=key
+    engine.names[t.symbol]=watch.get('name')
+    sig=detector.signal(t,watch)
+    last_eval=detector.last_eval.get(t.symbol,{})
+    trials=last_eval.get('trials',[])
+    gates=last_eval.get('gates',{})
+    ready_trials=[tr for tr in trials if tr.get('entry_ready')]
+    if sig or ready_trials:
+        pattern=sig.get('pattern') if sig else ready_trials[0].get('setup')
+        engine.decisions.emit('SHADOW_ENTRY_EVAL',t.symbol,'SHADOW_SIGNAL_READY',pattern,
+                              gates,price=t.price,
+                              extra={'actual_order_permission':False,'shadow_only':True,
+                                     'signal':sig,'ready_trials':ready_trials})
+        engine.event('SHADOW_OPPORTUNITY_DETECTED',symbol=t.symbol,pattern=pattern,
+                     price=t.price,time=t.time.isoformat(),
+                     actual_order_permission=False,shadow_only=True)
+    return None
 
 def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_evaluated_frame=None):
     if not watch or not engine.connected: return None
@@ -688,7 +712,7 @@ def drain_feed(feed, consume, *, clock=None, monotonic=None,
     return count,lag
 
 
-def process_message(engine,detector,message,received,symbols,lookup,radar,prices,account,radar_ok,subscriptions=None):
+def process_message(engine,detector,message,received,symbols,lookup,radar,prices,account,radar_ok,subscriptions=None,by_symbol=None):
     tr=message.get('trnm')
     if tr in {'ERROR','DISCONNECTED'}:
         engine.event('REALTIME_FAILURE',transport_event=tr,reason=message.get('reason'),stage=message.get('stage'),
@@ -773,7 +797,16 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
             health=getattr(engine,'position_health',None)
             if protected and health is not None:health.trade_seen(t.symbol,t)
             watch=lookup.get(t.symbol)
-            if not watch or not radar_ok or not engine.connected: continue
+            if not watch:
+                if radar_ok and engine.connected:
+                    cand = (by_symbol.get(t.symbol) if by_symbol else None)
+                    if cand:
+                        s_watch = {**cand, 'status': 'SHADOW'}
+                    else:
+                        s_watch = {'code': t.symbol, 'name': engine.names.get(t.symbol, t.symbol), 'status': 'SHADOW'}
+                    evaluate_shadow_opportunity(engine, detector, t, s_watch, radar, prices, account, getattr(engine, '_last_shadow_eval_frame', None))
+                continue
+            if not radar_ok or not engine.connected: continue
             context_provider=getattr(engine,'market_context_provider',None)
             if context_provider:
                 indices=context_provider(t.time)
@@ -1190,7 +1223,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         notif_dt=datetime.fromisoformat(notif.detected_at)
                         notif_age=(now()-notif_dt).total_seconds()
                     except Exception:notif_age=float('inf')
-                    if not -1<=notif_age<=5.0:
+                    if not -1<=notif_age<=15.0:
                         engine.event('FOCUS_SELECTION_BLOCKED',symbol=notif.symbol,reason='NOTIFICATION_STALE')
                         continue
                     focus_dirty=True
@@ -1287,7 +1320,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     def consume_frame(received,message,lag):
                         engine.event_loop_lag=lag
                         if message.get('trnm')=='REG' and message.get('return_code') in (0,'0'):counts['subscription_acks']+=1
-                        counts['ticks']+=process_message(engine,detector,message,received,real_symbols,lookup,radar,prices,account,radar_ok and not smoke_ended,subscriptions)
+                        counts['ticks']+=process_message(engine,detector,message,received,real_symbols,lookup,radar,prices,account,radar_ok and not smoke_ended,subscriptions,by_symbol=by_symbol)
                     drain_feed(feed,consume_frame,timeout=.02)
                 except queue.Empty:
                     if not in_session: time.sleep(.25)

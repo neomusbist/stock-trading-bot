@@ -22,7 +22,17 @@ def observation_structure(bars,price,cfg,day,item=None):
     surge_override=False
     if item and isinstance(item,dict) and getattr(cfg,'intraday_surge_override_enabled',True):
         sources=item.get('source_details',{})
-        max_turnover=max(((d.get('values',{}).get('trde_prica') or 0.0) for d in sources.values()),default=0.0) if sources else 0.0
+        def _calc_turnover(d):
+            vals=d.get('values',{})
+            tp=vals.get('trde_prica')
+            if tp is not None and tp>0: return float(tp)
+            qty=vals.get('now_trde_qty') or vals.get('exp_cntr_qty')
+            raw=d.get('raw',{})
+            px=price or item.get('reference_price') or float(raw.get('cur_prc',0) or 0)
+            if qty and px and qty>0 and px>0:
+                return (float(qty)*float(px))/1_000_000.0
+            return 0.0
+        max_turnover=max((_calc_turnover(d) for d in sources.values()),default=0.0) if sources else 0.0
         max_gain=max(((d.get('values',{}).get('flu_rt') or 0.0) for d in sources.values()),default=0.0) if sources else 0.0
         min_turnover=getattr(cfg,'min_surge_turnover_million',3000.0)
         min_gain=getattr(cfg,'min_surge_gain_pct',2.0)
@@ -301,8 +311,9 @@ class RadarWorker:
         if key not in self.cache:
             path=self.root/'data/raw'/f'{sym}_daily.csv'
             bars=bars_from_csv(path,day) if path.exists() else []
+            min_bars = getattr(self.cfg, 'min_young_history_bars', 60)
             fresh=bars and (day-date.fromisoformat(bars[-1]['datetime'])).days<=self.cfg.max_history_age_days
-            if not fresh or len(bars)<self.cfg.min_history_bars:
+            if not fresh or len(bars)<min_bars:
                 if self.fetched>=self.a.max_scan_charts: return {'status':'UNKNOWN','reason':'이번 주기 차트 조회 한도; 다음 주기 재시도'}
                 bars=fetch_bars(self.rest,sym,self.cfg,self.root/'data/raw',day); self.fetched+=1
             self.cache[key]=bars

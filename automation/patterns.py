@@ -155,14 +155,15 @@ class PatternDetector(Detector):
         if not bars:return []
         cur=self.current.get(symbol)
         if cur is not None:
-            if cur.get('gap_reason')=='MISSING_MINUTE' or (cur['time']-bars[-1]['time']).total_seconds()!=60:
+            if not self.continuous_observation and (cur.get('gap_reason')=='MISSING_MINUTE' or (cur['time']-bars[-1]['time']).total_seconds()!=60):
                 return []
         valid=[]
         for bar in reversed(bars):
-            if bar.get('gap_reason') is not None or bar.get('first_second',0)>self.cfg.stale_seconds:break
+            if not self.continuous_observation and (bar.get('gap_reason') is not None or bar.get('first_second',0)>self.cfg.stale_seconds):break
+            if bar.get('gap_reason') not in (None, 'MISSING_MINUTE'):break
             if after_only and bar['time'].strftime('%H:%M:%S')<'15:40:00':
                 break
-            if valid and (valid[-1]['time']-bar['time']).total_seconds()!=60:
+            if not self.continuous_observation and valid and (valid[-1]['time']-bar['time']).total_seconds()!=60:
                 break
             valid.append(bar)
         return list(reversed(valid))
@@ -220,10 +221,13 @@ class PatternDetector(Detector):
             return 0
         valid_bars = []
         for i, b in enumerate(bars):
-            if b.get('gap_reason') is not None or b.get('first_second', 0) > self.cfg.stale_seconds:
+            if not self.continuous_observation and (b.get('gap_reason') is not None or b.get('first_second', 0) > self.cfg.stale_seconds):
                 valid_bars.clear()
                 continue
-            if i > 0 and valid_bars and (b['time'] - valid_bars[-1]['time']).total_seconds() != 60:
+            if b.get('gap_reason') not in (None, 'MISSING_MINUTE'):
+                valid_bars.clear()
+                continue
+            if not self.continuous_observation and i > 0 and valid_bars and (b['time'] - valid_bars[-1]['time']).total_seconds() != 60:
                 valid_bars.clear()
             valid_bars.append({
                 **deepcopy(b),
@@ -443,7 +447,7 @@ class PatternDetector(Detector):
         self.last_eval[t.symbol]={'time':t.time,'cumulative':t.cumulative,'gates':gates,'trials':trials}
         self._eval_keys[t.symbol]=self._evaluation_key(t,watch)
         is_after=after_supported(t.time)
-        if (not supported(t.time) and not is_after) or watch.get('status') not in {'WATCH','ELIGIBLE','RESERVE'}:return None
+        if (not supported(t.time) and not is_after) or watch.get('status') not in {'WATCH','ELIGIBLE','RESERVE','SHADOW'}:return None
         if is_after:
             if watch.get('vi_active') or getattr(t,'vi_active',False) or watch.get('single_price_auction'): return None
             if watch.get('is_etf_etn') or watch.get('after_ineligible'): return None
@@ -691,7 +695,7 @@ class PatternDetector(Detector):
                 'acceleration':accel_gate,
                 'liquidity':liq_gate,
                 'spread':gate(None if spread is None else spread<=c.max_spread,bid=t.bid,ask=t.ask,spread=spread,max_spread=c.max_spread),
-                'structure':gate(watch.get('status') in {'WATCH','ELIGIBLE','RESERVE'},status=watch.get('status'),resistance=watch.get('resistance'),overhead_share=watch.get('overhead_share_estimate')),
+                'structure':gate(watch.get('status') in {'WATCH','ELIGIBLE','RESERVE','SHADOW'},status=watch.get('status'),resistance=watch.get('resistance'),overhead_share=watch.get('overhead_share_estimate')),
                 'market_status':gate(watch.get('market_status',{}).get('pass'),status=watch.get('market_status')),
                 'pattern':gate(False,reason='완성봉/돌파/추격/무효화/효율 중 신호 미충족')}
         return gates,bars,len(fast),len(base)
