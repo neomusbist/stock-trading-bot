@@ -152,3 +152,4 @@ operator_*approval*.json
 # Reviewed, bounded public market-data incident fixture and forensic report.
 !/tests/fixtures/lunit_exit_20261019.json
 !/R6_LUNIT_INCIDENT_20261019.md
+!/R6_MIDDAY_GATES_20261019.md
