@@ -135,6 +135,7 @@ class SubscriptionRefreshTests(unittest.TestCase):
         self.assertIn(SYM,priority2);self.assertIn(SYM,self.feed.priority_symbols);self.assertEqual(self.broker.orders,[])
     def test_observation_queue_gap_and_independent_shadow_retention_invariants(self):
         self.warm();self.feed.observation_drops=1
+        self.feed.observation_gaps[SYM]=self.clock
         with patch('automation.runner.now',return_value=self.clock):
             dropped,_=prewarm_handoff(self.e,self.d,self.feed,{SYM},set(),set(),0,Mock())
         # Known queue loss invalidates continuity, not already completed bars.
