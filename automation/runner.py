@@ -329,7 +329,8 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
     # `observed`. Use the receiver's PREVIOUS routing scope as well, otherwise
     # this branch is empty in production and queued prewarm prints are dropped
     # exactly when their symbol becomes WATCH.
-    prior_observed=set(getattr(feed,'observation_symbols',()) or ())
+    prior_scope=getattr(feed,'observation_symbols',())
+    prior_observed=set(prior_scope) if isinstance(prior_scope,(set,frozenset,list,tuple)) else set()
     promotions=(priority-set(prior_priority))&(set(observed)|prior_observed)-critical
     demotions=(set(prior_priority)-priority)&observed-critical
     if shadow_detector:

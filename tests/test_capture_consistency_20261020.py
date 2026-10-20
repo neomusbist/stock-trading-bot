@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from unittest.mock import Mock
 
 from automation.capital import Costs
 from automation.patterns import PatternDetector
@@ -144,6 +145,13 @@ class CoverageTests(unittest.TestCase):
         _,priority=prewarm_handoff(engine,d,feed,set(),{held,SYM},priority,0)
         self.assertEqual(priority,{held,SYM})
         self.assertEqual(d.last[SYM].cumulative,self.cumulative)
+
+    def test_uninitialized_legacy_feed_scope_is_unknown_not_a_worker_exception(self):
+        feed=Mock();engine=SimpleNamespace(s={'positions':{},'automation':{'existing':{}}},
+            active_orders=lambda:[],event=lambda *a,**k:None)
+        drops,priority=prewarm_handoff(engine,self.detector,feed,set(),{SYM},set(),0)
+        self.assertEqual(drops,0)
+        self.assertEqual(priority,{SYM})
 
 
 class FairScanTests(unittest.TestCase):
