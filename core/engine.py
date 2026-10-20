@@ -133,8 +133,8 @@ class Engine:
                 self.s.setdefault('entry_failures',{})[o['symbol']]={'local':o['local'],'reason':str(reason),'day':self.s['day']}
         self.save()
 
-    def save(self):
-        atomic_json(self.path,self.s)
+    def save(self, fsync=True):
+        atomic_json(self.path,self.s,fsync=fsync)
 
     def event(self,kind,**data):
         row={'time':self.clock().isoformat(),'event':kind,**data}

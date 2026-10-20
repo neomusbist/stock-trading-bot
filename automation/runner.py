@@ -329,16 +329,12 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
     for sym in list(triggers):
         if sym not in observed or sym in priority or sym in critical:triggers.pop(sym,None)
     promoted=[]
-    with getattr(feed,'subscription_lock',nullcontext()):
+    with (getattr(feed,'subscription_lock',None) or nullcontext()):
         if feed.observation_drops!=drops:
             drops=feed.observation_drops
             pending.clear()
             triggers.clear()
-            for sym in observed-set(prior_priority)-critical:
-                detector.forget(sym)
-                fast=getattr(engine,'fast_strategy',None)
-                if fast is not None:fast.forget(sym,'OBSERVATION_QUEUE_GAP')
-            engine.event('OBSERVATION_DATA_GAP',SHADOW_ONLY=True,dropped=drops,data_action='RESET_PREWARM',actual_order_permission=False)
+            engine.event('OBSERVATION_DATA_GAP',SHADOW_ONLY=True,dropped=drops,data_action='RESET_PREWARM_TRIGGERS',actual_order_permission=False)
         feed.configure_observation(priority,observed,sink)
     if promotions and hasattr(feed, 'observation_q'):
         remaining=[]
@@ -360,11 +356,9 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
         engine.event('OBSERVATION_PREWARM_HANDOFF',symbols=sorted(promotions),queued_ticks=len(promoted),
             SHADOW_ONLY=True,actual_order_permission=False)
     drained = 0
-    drain_deadline = time.monotonic() + 0.01
+    drain_deadline = time.monotonic() + 0.015
     while drained < 512 and time.monotonic() < drain_deadline:
-        main_q=getattr(feed,'q',None)
-        if on_opportunity is not None and (getattr(feed,'transport_failed',False) or feed.overflow.is_set()
-                or isinstance(main_q,queue.Queue) and not main_q.empty()):break
+        if getattr(feed,'transport_failed',False) or feed.overflow.is_set():break
         try: observed_at, tick = feed.observation_q.get_nowait()
         except queue.Empty: break
         feed.observation_q.task_done()
@@ -1534,7 +1528,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         engine.event_loop_lag=lag
                         if message.get('trnm')=='REG' and message.get('return_code') in (0,'0'):counts['subscription_acks']+=1
                         counts['ticks']+=process_message(engine,detector,message,received,real_symbols,lookup,radar,prices,account,radar_ok and not smoke_ended,subscriptions,by_symbol=by_symbol)
-                    drain_feed(feed,consume_frame,timeout=.02)
+                    drain_feed(feed,consume_frame,timeout=.02,max_messages=256,max_seconds=.12)
                     drain_observed_opportunities(engine,feed,opportunity_callback)
                 except queue.Empty:
                     if not in_session: time.sleep(.25)

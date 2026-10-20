@@ -1013,7 +1013,7 @@ class AutonomousEngine(ExistingExits,Engine):
         fee_report=settle_broker_pnl(self.s,fills,self.costs,self.clock(),getattr(self.broker,'identity','paper'))
         if fee_report['cash_adjustment'] or fee_report['pnl_adjustment']:
             self.event('BROKER_PNL_RECONCILED',**fee_report)
-        self.s['equity']=self.risk_equity(); self.save()
+        self.s['equity']=self.risk_equity(); self.save(fsync=bool(fills or self.active_orders()))
         self.kill_checked=True
         self.reconciled_at=self.clock().isoformat()
         self.reconcile_query_started=snapshot.get('query_started_at',self.reconciled_at)
