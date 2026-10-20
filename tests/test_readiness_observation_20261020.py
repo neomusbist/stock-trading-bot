@@ -131,6 +131,7 @@ class R6ReadinessObservationTests(unittest.TestCase):
 
         feed = MockFeed()
         engine = FakeEngine(cur)
+        engine.clock = lambda: cur
         engine.s["automation"] = {"existing": {}}
         engine.event = lambda *args, **kwargs: None
         drops = 0
@@ -144,8 +145,10 @@ class R6ReadinessObservationTests(unittest.TestCase):
         )
         self.assertEqual(new_drops, 100)
 
-        # Symbol's history, usable bars, and observation start MUST REMAIN INTACT!
-        self.assertEqual(len(detector.usable_bars(symbol)), 3)
+        # Preserve confirmed history, but a KNOWN queue loss is no longer
+        # allowed to masquerade as continuous signal coverage.
+        self.assertEqual(len(detector.history[symbol]), 3)
+        self.assertEqual(len(detector.usable_bars(symbol)), 0)
         self.assertEqual(detector.observation_start[symbol], initial_start)
 
     def test_3_candidate_60s_refresh_does_not_wipe_bars(self):

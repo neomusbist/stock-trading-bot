@@ -39,15 +39,18 @@ def parse_tick(item,received,book=None,book_stale_seconds=5,received_monotonic=N
     book=book or {}
     ask=number(v['27']);bid=number(v['28'])
     depth_time=None;depth_available=False;depth_source='DATA_UNAVAILABLE'
+    book_received=None;book_monotonic=None
     ask_qty=bid_qty=0
     if all(v.get(k) not in (None,'') for k in ('61','71')):
         ask_qty=int(number(v['61']));bid_qty=int(number(v['71']))
         depth_available=True;depth_time=received;depth_source='0B_FIELDS'
+        book_received=received;book_monotonic=received_monotonic
     elif book:
         try:depth_time=datetime.fromisoformat(book['time'])
         except (KeyError,TypeError,ValueError):depth_time=None
         try:book_received=datetime.fromisoformat(book.get('received_at',book['time']))
         except (KeyError,TypeError,ValueError):book_received=None
+        book_monotonic=book.get('received_monotonic')
         fresh=market_freshness(depth_time,received,book_stale_seconds,
             received_at=book_received,received_monotonic=book.get('received_monotonic'),
             monotonic_now=received_monotonic)['fresh']
@@ -60,7 +63,9 @@ def parse_tick(item,received,book=None,book_stale_seconds=5,received_monotonic=N
     return Tick(stream_symbol(item['item']),dt,number(v['10']),int(number(v['15'])),int(number(v['13'])),
         ask,bid,v.get('290')=='2',ask_qty=ask_qty,bid_qty=bid_qty,venue=venue,
         depth_available=depth_available,book_time=depth_time,depth_source=depth_source,
-        received_at=received.isoformat(),received_monotonic=received_monotonic)
+        received_at=received.isoformat(),received_monotonic=received_monotonic,
+        book_received_at=book_received.isoformat() if book_received is not None else None,
+        book_received_monotonic=book_monotonic)
 
 class Feed:
     def __init__(self,rest,symbols,index_subscription_enabled=False):
@@ -70,6 +75,7 @@ class Feed:
         self.observation_symbols=frozenset(); self.priority_symbols=None; self.observation_sink=None
         self.trade_review=None  # bounded evidence sink, independent of SHADOW routing
         self.observation_q=queue.Queue(maxsize=8192);self.observation_drops=0
+        self.observation_gaps={}
         self.orderbooks={}
         self.latest_ticks={}
         from automation.market_context import IndexContext
@@ -149,7 +155,9 @@ class Feed:
                             item['_observation_tick']=(received,tick)
                             if self.observation_sink:self.observation_sink(tick,received)
                             if item.get('item') not in self.priority_symbols:self.observation_q.put_nowait((received,tick))
-                        except (queue.Full,ValueError,KeyError):self.observation_drops+=1
+                        except (queue.Full,ValueError,KeyError):
+                            self.observation_drops+=1
+                            self.observation_gaps[item.get('item')]=received
                     # Diagnostic books are already stored above for their paired ticks.
                     # Do not put all SHADOW depth traffic on the order/position queue.
                     # Order events, market state, and every protected/WATCH book stay FIFO.

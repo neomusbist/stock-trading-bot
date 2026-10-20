@@ -196,6 +196,13 @@ class RadarWorker:
         self.discovery_context=DiscoveryContext(limit=self.observation_settings.max_raw_symbols*2,
                                                 path=self.root/'runtime/discovery_context.json')
 
+    def status_needs_query(self,symbol,at=None):
+        status=self.status_cache.get(symbol)
+        try:age=((at or now())-date_time.fromisoformat(status['checked_at'])).total_seconds()
+        except (KeyError,TypeError,ValueError):return True
+        ttl=self.a.scan_seconds*(2 if symbol in self.status_priority_symbols else 3)
+        return not -1<=age<=ttl
+
     def scheduled_items(self,items):
         """Incumbent deadlines first; bounded FIFO admission for unqueried RAW.
 
@@ -234,20 +241,24 @@ class RadarWorker:
             tier_bonus=1.0 if mom.get('fast_signal_ready') else 0.5 if mom.get('tier') in (0,1) else 0.2 if mom.get('tier')==2 else 0.0
             if sym not in active and sym not in self.radar.watch and (gain>0 or (recent and rising_rank) or multi_source or shadow_ready):
                 moving.append((gain+tier_bonus,len(row.get('source_details',{})),-self.status_waiting[sym],sym))
-        active_needing=0
-        for s in active:
-            st=self.status_cache.get(s)
-            if not st or not st.get('checked_at'):active_needing+=1
-            else:
-                try:
-                    if (now()-date_time.fromisoformat(st['checked_at'])).total_seconds()>self.a.scan_seconds*2:active_needing+=1
-                except (ValueError,TypeError):active_needing+=1
-        slots=min(self.a.max_scan_charts,max(4,self.a.max_scan_charts-active_needing))
-        hot={sym for *_,sym in sorted(moving,reverse=True)[:slots]}
-        # Incumbent deadlines, then bounded movers, then the original aging FIFO.
-        # DynamicRadar still checks affordability and all status/structure gates.
+        clock=now()
+        needs={r['code'] for r in ordered if self.status_needs_query(r['code'],clock)}
+        active_needing=len(needs & active)
+        slots=max(0,self.a.max_scan_charts-active_needing)
+        waiting=[r['code'] for r in ordered if r['code'] in needs and r['code'] not in active
+                 and not self.radar.policy.locked(r['code'])
+                 and r['code'] not in BREAKEVEN_EXITS and r['code']!=TEST_RELEASE_SYMBOL
+                 and not self.radar.weak.get(r['code']) and self.radar.affordable(dict(r))]
+        # The existing four admission slots are a FIFO floor, not four extra
+        # requests. Previously all spare slots could go to repeatedly rising
+        # rows, so an older affordable row never received its first status scan.
+        aged=set(waiting[:min(4,slots)])
+        hot=set([sym for *_,sym in sorted(moving,reverse=True)
+                 if sym in needs and sym not in aged and sym in waiting][:max(0,slots-len(aged))])
+        # Cache hits do not consume scan slots or wait behind slow status HTTP.
+        # Only the actual current WATCH gets deadline priority over aging RAW.
         return sorted(ordered,key=lambda r:(r['code'] not in active,
-            r['code'] not in self.radar.watch,r['code'] not in hot,self.status_waiting[r['code']]))
+            r['code'] in needs,r['code'] not in hot,r['code'] not in aged,self.status_waiting[r['code']]))
 
     def get_cached_metadata(self,symbol):
         day=now().date()
@@ -257,18 +268,8 @@ class RadarWorker:
 
     def evaluate(self,item):
         day=now().date(); sym=item['code']; key=(day,sym)
-        cached_status=self.status_cache.get(sym)
-        if cached_status and cached_status.get('checked_at'):
-            try:age=(now()-date_time.fromisoformat(cached_status['checked_at'])).total_seconds()
-            except (ValueError,TypeError):age=float('inf')
-            ttl=self.a.scan_seconds*3
-            # Refresh actual WATCH one existing radar cycle before expiry.
-            # Keep the API budget and the order-side freshness guard unchanged.
-            if sym in self.status_priority_symbols:ttl=max(0,ttl-self.a.scan_seconds)
-            if -1<=age<=ttl:
-                status=cached_status
-            else:cached_status=None
-        else:cached_status=None
+        cached_status=None if self.status_needs_query(sym) else self.status_cache[sym]
+        if cached_status is not None:status=cached_status
         if cached_status is None:
             if self.status_fetched>=self.a.max_scan_charts: return {'status':'UNKNOWN','reason':'STATUS_SCAN_LIMIT'}
             self.status_fetched+=1

@@ -7,7 +7,7 @@ from statistics import median
 import math
 import threading
 from core.util import floor_tick, tick_size
-from core.market_time import market_freshness,tick_freshness,MAX_EXCHANGE_LEAD_SECONDS
+from core.market_time import market_freshness,tick_freshness,book_freshness,MAX_EXCHANGE_LEAD_SECONDS
 from automation.session import supported, after_supported
 
 
@@ -400,10 +400,19 @@ class FastMomentumStrategy:
         with self._lock:
             self.last_exit_by_symbol[symbol] = at; self.active_signals.pop(symbol, None)
 
-    def _note(self, t, status, reason, **details):
+    def _note(self, t, status, reason, decision_at=None, **details):
         record = dict(time=t.time.isoformat(), status=status, reason=reason,
                       actual_order_permission=False, SHADOW_ONLY=True)
         record.update(details)
+        if decision_at is not None:
+            record['quote_evidence']={'decision_at':decision_at.isoformat(),
+                'trade_at':t.time.isoformat(),'received_at':getattr(t,'received_at',None),
+                'book_time':saved_evidence(getattr(t,'book_time',None)),
+                'book_received_at':getattr(t,'book_received_at',None),
+                'bid':t.bid,'ask':t.ask,'bid_qty':getattr(t,'bid_qty',None),
+                'ask_qty':getattr(t,'ask_qty',None),'depth_available':getattr(t,'depth_available',None),
+                'depth_source':getattr(t,'depth_source','UNKNOWN'),
+                'book_freshness':book_freshness(t,decision_at,getattr(self.cfg,'stale_seconds',5))}
         self.last_evaluation[t.symbol] = record
         if status in {'REJECT', 'UNKNOWN'} and reason:
             self.rejection_counts[reason] += 1
@@ -442,7 +451,7 @@ class FastMomentumStrategy:
         if at is None or not tick_freshness(t,now,age)['fresh']:return 'CURRENT_TRADE_STALE_OR_FUTURE'
         bid, ask = getattr(t, 'bid', None), getattr(t, 'ask', None)
         if not number(bid) or not number(ask) or not 0 < bid <= ask:return 'EXECUTABLE_QUOTE_UNKNOWN'
-        if book is None or not market_freshness(book,now,age)['fresh']:
+        if book is None or not book_freshness(t,now,age)['fresh']:
             return 'BOOK_TIMESTAMP_UNKNOWN_OR_STALE'
         if getattr(t, 'depth_available', None) is not True:return 'EXECUTABLE_DEPTH_UNKNOWN'
         names = ('bid_qty',) if side == 'SELL' else ('ask_qty', 'bid_qty')
@@ -534,22 +543,22 @@ class FastMomentumStrategy:
         if ingest and not self.ingest_tick(t, received):return None
         tape = self.get_tape(t.symbol); m = tape.metrics(now)
         if not m or not m['data_fresh']:
-            self._note(t, 'UNKNOWN', 'CURRENT_MICRO_TAPE_UNAVAILABLE'); return None
+            self._note(t, 'UNKNOWN', 'CURRENT_MICRO_TAPE_UNAVAILABLE',decision_at=now); return None
         reason = self._quote(t, now)
-        if reason:self._note(t, 'UNKNOWN', reason); return None
+        if reason:self._note(t, 'UNKNOWN', reason,decision_at=now); return None
         if m['latest_time'] != t.time or m['last_price'] != t.price:
-            self._note(t, 'UNKNOWN', 'CURRENT_TRADE_NOT_IN_ACCEPTED_TAPE'); return None
+            self._note(t, 'UNKNOWN', 'CURRENT_TRADE_NOT_IN_ACCEPTED_TAPE',decision_at=now); return None
         exited = self.last_exit_by_symbol.get(t.symbol)
         if exited and exited.date() == now.date() and 0 <= (now - exited).total_seconds() < self.cooldown_seconds:
-            self._note(t, 'REJECT', 'SAME_SYMBOL_FILLED_EXIT_COOLDOWN'); return None
+            self._note(t, 'REJECT', 'SAME_SYMBOL_FILLED_EXIT_COOLDOWN',decision_at=now); return None
         phase = self.determine_phase(t.time)
         if phase == 'OFF_SESSION' or not (supported(t.time) or after_supported(t.time)):
-            self._note(t, 'REJECT', 'OFF_SESSION'); return None
+            self._note(t, 'REJECT', 'OFF_SESSION',decision_at=now); return None
         regime, reason, details = self.classify_regime(t, m, phase, watch)
-        if regime != 'A':self._note(t, 'REJECT', reason, regime=regime, details=details); return None
+        if regime != 'A':self._note(t, 'REJECT', reason, regime=regime, details=details,decision_at=now); return None
         geometry = self.calculate_invalidation_and_target(t, m, watch, capital_limit, risk_budget, asof=now)
         if not geometry.get('pass'):
-            self._note(t, 'UNKNOWN' if 'UNKNOWN' in geometry['reason'] or 'UNAVAILABLE' in geometry['reason'] else 'REJECT', geometry['reason'], geometry=geometry)
+            self._note(t, 'UNKNOWN' if 'UNKNOWN' in geometry['reason'] or 'UNAVAILABLE' in geometry['reason'] else 'REJECT', geometry['reason'], geometry=geometry,decision_at=now)
             return None
         actual_order = bool(live_authorized)
         signal = FastSignal(symbol=t.symbol, name=watch.get('name', t.symbol), limit=geometry['entry'],
@@ -577,7 +586,7 @@ class FastMomentumStrategy:
             SHADOW_ONLY=not actual_order,
         ))
         self._note(t, 'SIGNAL', 'FAST_LIVE_CANDIDATE' if actual_order else 'CAUSAL_FAST_RESEARCH_CANDIDATE',
-                   geometry=geometry, actual_order_permission=actual_order, SHADOW_ONLY=not actual_order)
+                    geometry=geometry, actual_order_permission=actual_order, SHADOW_ONLY=not actual_order,decision_at=now)
         return signal
 
     def evaluate_exit(self, position, t, current_time):

@@ -263,6 +263,9 @@ class SubscriptionState:
         for sym in removed:
             self.waiting.pop(sym,None)
             self.detached.add(sym);self.detached_at[sym]=stamp
+            if hasattr(detector,'mark_coverage_gap'):detector.mark_coverage_gap(sym,stamp)
+            fast=getattr(engine,'fast_strategy',None)
+            if fast is not None:fast.forget(sym,'SUBSCRIPTION_GAP')
             engine.event('OBSERVATION_RELEASED',symbol=sym,data_action='RETAIN_UNTIL_STALE_GAP',
                 stored_completed_bars=len(detector.history.get(sym,[])))
         for sym in added:
@@ -294,6 +297,14 @@ class SubscriptionState:
     def accepted(self,symbol):
         self.waiting.pop(symbol,None)
 
+def _protected_feed_work_pending(feed,critical):
+    main_q=getattr(feed,'q',None)
+    if not isinstance(main_q,queue.Queue):return False
+    with main_q.mutex:head=main_q.queue[0][1] if main_q.queue else None
+    return bool(head and (head.get('trnm') in {'REG','ERROR','DISCONNECTED'} or
+        any(item.get('type') in {'00','0s'} or item.get('item') in critical for item in head.get('data',[]))))
+
+
 def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,drops,sink=None,shadow_detector=None,
                     on_opportunity=None,opportunity_probe=None):
     """Preserve FIFO history and brief signals; trade only on current evidence.
@@ -310,7 +321,17 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
             shadow_detector = sink.shadow_detector
     critical=set(engine.s['positions'])|{o['symbol'] for o in engine.active_orders()}
     critical.update(set(engine.s['automation']['existing'])&set(BREAKEVEN_EXITS))
-    promotions=(priority-set(prior_priority))&observed-critical
+    # Defer the whole handoff, including queued promotion history, when a
+    # protected/control frame is waiting. Keep the old routing epoch so the
+    # same promotion can resume after the main FIFO handles that frame.
+    if _protected_feed_work_pending(feed,critical):return drops,set(prior_priority)
+    # The caller has already removed the new WATCH/critical set from
+    # `observed`. Use the receiver's PREVIOUS routing scope as well, otherwise
+    # this branch is empty in production and queued prewarm prints are dropped
+    # exactly when their symbol becomes WATCH.
+    prior_scope=getattr(feed,'observation_symbols',())
+    prior_observed=set(prior_scope) if isinstance(prior_scope,(set,frozenset,list,tuple)) else set()
+    promotions=(priority-set(prior_priority))&(set(observed)|prior_observed)-critical
     demotions=(set(prior_priority)-priority)&observed-critical
     if shadow_detector:
         for sym in promotions:
@@ -334,7 +355,16 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
             drops=feed.observation_drops
             pending.clear()
             triggers.clear()
-            engine.event('OBSERVATION_DATA_GAP',SHADOW_ONLY=True,dropped=drops,data_action='RESET_PREWARM_TRIGGERS',actual_order_permission=False)
+            gaps=getattr(feed,'observation_gaps',None)
+            affected=dict(gaps) if isinstance(gaps,dict) else {sym:engine.clock() for sym in observed-priority-critical}
+            if isinstance(gaps,dict):gaps.clear()
+            for sym,gap_at in affected.items():
+                if sym not in observed or sym in priority or sym in critical:continue
+                if hasattr(detector,'mark_coverage_gap'):detector.mark_coverage_gap(sym,gap_at,'OBSERVATION_QUEUE_GAP')
+                fast=getattr(engine,'fast_strategy',None)
+                if fast is not None:fast.forget(sym,'OBSERVATION_QUEUE_GAP')
+            engine.event('OBSERVATION_DATA_GAP',SHADOW_ONLY=True,dropped=drops,symbols=sorted(affected),
+                data_action='INVALIDATE_ENTRY_CONTINUITY_RETAIN_COMPLETED_BARS',actual_order_permission=False)
         feed.configure_observation(priority,observed,sink)
     if promotions and hasattr(feed, 'observation_q'):
         remaining=[]
@@ -359,6 +389,7 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
     drain_deadline = time.monotonic() + 0.015
     while drained < 512 and time.monotonic() < drain_deadline:
         if getattr(feed,'transport_failed',False) or feed.overflow.is_set():break
+        if _protected_feed_work_pending(feed,critical):break
         try: observed_at, tick = feed.observation_q.get_nowait()
         except queue.Empty: break
         feed.observation_q.task_done()
@@ -811,7 +842,7 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
         engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','PATTERN_OR_GATE_NOT_READY',
             gates,price=t.price,extra={'failed_gates':failed,'signal_detected':False,
                 'setup_trials':detector.last_eval.get(t.symbol,{}).get('trials',[]),
-                'fast_evaluation':{k:fast_evaluation.get(k) for k in ('time','status','reason','regime')} if isinstance(fast_evaluation,dict) else None})
+                'fast_evaluation':{k:fast_evaluation.get(k) for k in ('time','status','reason','regime','quote_evidence')} if isinstance(fast_evaluation,dict) else None})
         return None
     sig['name']=watch.get('name')
     sig['fallback_source1']=bool(watch.get('fallback_source1'))

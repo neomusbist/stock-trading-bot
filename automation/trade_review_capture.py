@@ -167,7 +167,8 @@ class TradeReviewCapture:
         row={'event':'TRADE','symbol':t.symbol,'exchange_at':iso(t.time),'received_at':iso(received),
              'received_monotonic':getattr(t,'received_monotonic',None),
              **{k:getattr(t,k,None) for k in ('price','volume','cumulative','bid','ask','bid_qty','ask_qty',
-                   'regular','depth_available','depth_source','venue')},'book_time':iso(getattr(t,'book_time',None))}
+                   'regular','depth_available','depth_source','venue','book_received_at',
+                   'book_received_monotonic')},'book_time':iso(getattr(t,'book_time',None))}
         self._record(row,t.symbol)
 
     def book(self,symbol,book,received):
@@ -227,7 +228,7 @@ class TradeReviewCapture:
                 'resistance_asof','observed_at','first_raw_at','first_watch_at')},
             'market_status':watch.get('market_status',{}),
             'gates':{k:gates[k] for k in ('warmup','spread','liquidity','acceleration','structure') if k in gates},
-            'trials':trials,'fast':{k:fast.get(k) for k in ('time','status','reason','regime')},
+            'trials':trials,'fast':{k:fast.get(k) for k in ('time','status','reason','regime','quote_evidence')},
             'sampling_interval_seconds':interval,'coverage':'SAMPLED_NOT_ALL_OPPORTUNITIES',
             'orders_enabled':False,'actual_order_permission':False},symbol,force=True)
 

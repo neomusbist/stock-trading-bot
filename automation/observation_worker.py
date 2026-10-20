@@ -86,6 +86,8 @@ class TickLogger:
             'depth_available': getattr(tick, 'depth_available', None),
             'depth_source': getattr(tick, 'depth_source', None),
             'book_time': self._iso(getattr(tick, 'book_time', None)),
+            'book_received_at': self._iso(getattr(tick, 'book_received_at', None)),
+            'book_received_monotonic': getattr(tick, 'book_received_monotonic', None),
             'venue': getattr(tick, 'venue', None),
             'venue_basis': getattr(tick, 'venue_basis', 'RECEIVER_PARSED_NOT_INDEPENDENTLY_VERIFIED'),
             'subscription_item': getattr(tick, 'subscription_item', None),

@@ -128,7 +128,7 @@ class OpportunityBottleneckTests(unittest.TestCase):
             bar = {
                 'time': b_time, 'open': 17000, 'high': 17100, 'low': 16950,
                 'close': 17050, 'volume': 500, 'first_second': 0, 'last_second': 59,
-                'tick_count': 10, 'gap_reason': None
+                'tick_count': 10, 'gap_reason': None, 'observation_source': 'ACTUAL_RECEIVED'
             }
             self.detector.price_context.record(SYM, bar, asof)
 

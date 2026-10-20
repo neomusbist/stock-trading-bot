@@ -24,6 +24,8 @@ class Tick:
     # Immutable receiver evidence, separate from the exchange's HHMMSS stamp.
     received_at: str | None = None
     received_monotonic: float | None = None
+    book_received_at: str | None = None
+    book_received_monotonic: float | None = None
 
 class Detector:
     def __init__(self,cfg):

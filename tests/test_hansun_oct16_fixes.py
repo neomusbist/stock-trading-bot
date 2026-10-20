@@ -358,7 +358,8 @@ class HansunOct16FixesTests(unittest.TestCase):
             bm = t_base + timedelta(minutes=m)
             det.price_context.record(symbol, {
                 'time': bm, 'open': 10000 + m * 50, 'high': 10100 + m * 50,
-                'low': 9990 + m * 50, 'close': 10050 + m * 50, 'venue': 'KRX'
+                'low': 9990 + m * 50, 'close': 10050 + m * 50, 'venue': 'KRX',
+                'observation_source': 'ACTUAL_RECEIVED'
             }, bm + timedelta(minutes=1))
 
         asof = t_base + timedelta(minutes=4, seconds=2)

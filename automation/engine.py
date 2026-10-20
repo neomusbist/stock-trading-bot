@@ -7,7 +7,7 @@ from pathlib import Path
 from core.engine import Engine, TERMINAL
 from core.broker import Rejected
 from core.settings import KST
-from core.market_time import market_freshness,tick_freshness
+from core.market_time import market_freshness,tick_freshness,book_freshness
 from core.util import code, floor_tick,tick_size,read_json_retry,atomic_json
 from automation.capital import Costs, initial_allocation, owned_equity
 from automation.policy import LEGACY_SYMBOL,BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL,HARD_LOCKS,legacy_test_release_enabled
@@ -512,7 +512,7 @@ class AutonomousEngine(ExistingExits,Engine):
             else:
                 if getattr(tick,'depth_available',None) is False:return 'ENTRY_DEPTH_UNAVAILABLE'
                 stamp=getattr(tick,'book_time',None)
-                if stamp is not None and not market_freshness(stamp,checked_at,self.c.stale_seconds)['fresh']:return 'ENTRY_DEPTH_UNAVAILABLE'
+                if stamp is not None and not book_freshness(tick,checked_at,self.c.stale_seconds)['fresh']:return 'ENTRY_DEPTH_UNAVAILABLE'
                 ask_qty=tick.ask_qty;bid_qty=tick.bid_qty
             if any(type(q) not in (int,float) or not math.isfinite(q) or q<0 for q in (ask_qty,bid_qty)):
                 return 'ENTRY_DEPTH_UNAVAILABLE'

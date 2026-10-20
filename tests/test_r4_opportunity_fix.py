@@ -130,7 +130,8 @@ class R4OpportunityFixTests(unittest.TestCase):
     def test_scheduled_items_admits_shadow_readiness_priority_to_hot_slots(self):
         worker = object.__new__(RadarWorker)
         worker.a = replace(AUTO, structural_breakout_enabled=True)
-        worker.radar = SimpleNamespace(watch={}, momentum={'77': {'fast_signal_ready': True, 'tier': 0}})
+        worker.radar = SimpleNamespace(watch={}, momentum={'77': {'fast_signal_ready': True, 'tier': 0}},
+            policy=SimpleNamespace(locked=lambda symbol: False), weak={}, affordable=lambda row: True)
         worker.status_waiting = {}
         worker.status_sequence = 0
         worker.status_cache = {}
