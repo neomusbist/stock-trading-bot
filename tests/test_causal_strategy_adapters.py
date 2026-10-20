@@ -307,6 +307,73 @@ class CausalStrategyAdapterTests(unittest.TestCase):
         self.assertEqual(cur['volume'], 50, "Volume must accumulate across ticks in the minute")
         self.assertEqual(cur['tick_count'], 4, "Tick count must reflect all 4 ingested ticks")
 
+    def test_12_continuous_observation_subscription_gap_prevents_nonconsecutive_bars(self):
+        """Under continuous_observation=True, bars before and after a subscription/time gap are not treated as consecutive."""
+        adapter = self.adapters['STRATEGY_A']
+        detector = adapter.detector
+        self.assertTrue(detector.continuous_observation)
+
+        base_time = datetime(2026, 10, 20, 9, 0, 0, tzinfo=KST)
+        sym = "999991"
+        cum = 1000
+
+        # Ingest 3 consecutive minutes: 09:00, 09:01, 09:02
+        for m in range(3):
+            t_start = base_time + timedelta(minutes=m)
+            for s in range(0, 60, 10):
+                t = t_start + timedelta(seconds=s)
+                cum += 10
+                detector.ingest(Tick(sym, t, 1000 + m, 10, cum, 1001 + m, 999 + m), t)
+
+        # Minute boundary tick at 09:03:00 completes bar 09:02 into history
+        t_0903 = base_time + timedelta(minutes=3)
+        cum += 10
+        detector.ingest(Tick(sym, t_0903, 1003, 10, cum, 1004, 1002), t_0903)
+        usable_before = detector.usable_bars(sym)
+        self.assertEqual(len(usable_before), 3, "Prior to gap, 3 consecutive completed bars must be usable")
+
+        # Mark subscription gap at 09:03:10
+        detector.mark_coverage_gap(sym, base_time + timedelta(minutes=3, seconds=10), reason='SUBSCRIPTION_GAP')
+
+        # Resume observation at 09:15:00 after a 12-minute subscription gap
+        t_0915 = base_time + timedelta(minutes=15)
+        cum += 10
+        detector.ingest(Tick(sym, t_0915, 1010, 10, cum, 1011, 1009), t_0915)
+
+        # First minute post-resumption is partial and flagged with gap_reason
+        usable_resuming = detector.usable_bars(sym)
+        self.assertEqual(len(usable_resuming), 0, "During the first resumed minute, usable_bars must be 0")
+        self.assertEqual(detector.current[sym].get('gap_reason'), 'SUBSCRIPTION_GAP')
+
+        # Complete minute 09:15
+        for s in range(10, 60, 10):
+            t = t_0915 + timedelta(seconds=s)
+            cum += 10
+            detector.ingest(Tick(sym, t, 1010, 10, cum, 1011, 1009), t)
+
+        # Ingest subsequent contiguous minute 09:16
+        t_0916 = base_time + timedelta(minutes=16)
+        cum += 10
+        detector.ingest(Tick(sym, t_0916, 1012, 10, cum, 1013, 1011), t_0916)
+        for s in range(10, 60, 10):
+            t = t_0916 + timedelta(seconds=s)
+            cum += 10
+            detector.ingest(Tick(sym, t, 1012, 10, cum, 1013, 1011), t)
+
+        # Push to 09:17:00
+        t_0917 = base_time + timedelta(minutes=17)
+        cum += 10
+        detector.ingest(Tick(sym, t_0917, 1014, 10, cum, 1015, 1013), t_0917)
+
+        # Verify: completed bar 09:15 has gap_reason='SUBSCRIPTION_GAP', so usable_bars scans back and halts.
+        # It MUST NOT bridge 09:16 with pre-gap bars (09:00, 09:01, 09:02)
+        usable_after = detector.usable_bars(sym)
+        self.assertEqual(len(usable_after), 1, "Only the contiguous post-gap bar (09:16) should be usable")
+        self.assertEqual(usable_after[0]['time'], t_0916.replace(second=0, microsecond=0))
+        self.assertNotIn('09:00', [b['time'].strftime('%H:%M') for b in usable_after])
+        self.assertNotIn('09:01', [b['time'].strftime('%H:%M') for b in usable_after])
+        self.assertNotIn('09:02', [b['time'].strftime('%H:%M') for b in usable_after])
+
 
 if __name__ == '__main__':
     unittest.main()
