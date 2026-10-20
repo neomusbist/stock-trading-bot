@@ -9,6 +9,7 @@ from automation.decisions import STRATEGY_VERSION
 from automation.focus_selection import calculate_tier, TIER_NAMES
 from automation.observation_retention import observation_residence_seconds
 from automation.fast_momentum import FastMomentumStrategy
+from automation.local_breakout import LocalBreakoutStrategy
 
 def make_evaluation_view(row):
     """구조 view + 당시 원본 row의 메타데이터를 명시적으로 병합한 EvaluationView."""
@@ -33,7 +34,7 @@ def make_evaluation_view(row):
 
 class ShadowObserver:
  def __init__(self,cfg,auto,costs,emit,risk=None,limit=32):
-  self.cfg=cfg;self.auto=auto;self.detector=PatternDetector(cfg,auto,costs);self.fast_strategy=FastMomentumStrategy(cfg,auto,costs);self.detector.fast_strategy=self.fast_strategy;self.emit=emit;self.risk=risk;self.limit=limit;self.rows={};self.first={};self.last_log={};self.previous={}
+  self.cfg=cfg;self.auto=auto;self.detector=PatternDetector(cfg,auto,costs);self.fast_strategy=FastMomentumStrategy(cfg,auto,costs);self.local_breakout=LocalBreakoutStrategy(cfg,auto,costs);self.detector.fast_strategy=self.fast_strategy;self.emit=emit;self.risk=risk;self.limit=limit;self.rows={};self.first={};self.last_log={};self.previous={}
   self.capital={};self.epoch=None;self.eval_seconds=2;self.selected_at={};self.latest={};self.detached=set()
   self.last_tier={};self.observation_seq=0;self.detached_at={};self.last_evaluated={}
  def reset_stream(self,reason,symbol=None,stamp=None):
@@ -151,6 +152,9 @@ class ShadowObserver:
   fast_sig=self.fast_strategy.evaluate(t,view,capital_limit=self.capital.get('entry_budget',self.capital.get('effective_auto_cap',81300.0)),risk_budget=min(self.capital.get('risk_equity',self.capital.get('effective_auto_cap',81300.0))*self.cfg.risk_fraction,self.capital.get('risk_remaining',1626.0)),ingest=False,received=received)
   if fast_sig:
    self.event('SHADOW_FAST_SIGNAL',received,symbol=t.symbol,name=row.get('name'),signal_at=fast_sig.created_at.isoformat(),limit=fast_sig.limit,stop=fast_sig.stop,target=fast_sig.target,emergency=fast_sig.emergency,quantity=fast_sig.quantity,net_reward_risk=fast_sig.net_reward_risk,regime=fast_sig.regime,phase=fast_sig.phase,ttl_seconds=fast_sig.ttl_seconds,max_chase_price=fast_sig.max_chase_price,geometry=fast_sig.extra.get('geometry'),tick_metrics=fast_sig.extra.get('metrics'),SHADOW_ONLY=True,actual_order_permission=False)
+  lb_sig,lb_details=self.local_breakout.evaluate(t,history,view,capital_limit=self.capital.get('entry_budget',self.capital.get('effective_auto_cap',81300.0)),risk_budget=min(self.capital.get('risk_equity',self.capital.get('effective_auto_cap',81300.0))*self.cfg.risk_fraction,self.capital.get('risk_remaining',1626.0)),asof=received)
+  if lb_sig:
+   self.event('SHADOW_LOCAL_BREAKOUT_SIGNAL',received,symbol=t.symbol,name=row.get('name'),signal_at=lb_sig.created_at.isoformat() if lb_sig.created_at else received.isoformat(),limit=lb_sig.limit,stop=lb_sig.stop,target=lb_sig.target,emergency=lb_sig.emergency,quantity=lb_sig.quantity,net_reward_risk=lb_sig.net_reward_risk,gross_reward_risk=lb_sig.gross_reward_risk,pattern='LOCAL_BREAKOUT',SHADOW_ONLY=True,actual_order_permission=False)
   usable=[]
   for bar in reversed(history):
    if bar['first_second']>self.cfg.stale_seconds:break
@@ -159,6 +163,16 @@ class ShadowObserver:
   # Reuse actual setup reachability; only virtual sizing is added here.
   for trial in trials:
    if gates['market_status']['result']!='PASS':trial['failed_reasons'].append('MARKET_STATUS_FAIL');trial['entry_ready']=False
+  trials.append({
+   'setup':'LB',
+   'evaluated':True,
+   'candidate_generated':bool(lb_sig is not None),
+   'entry_ready':bool(lb_sig is not None and gates.get('market_status',{}).get('result')=='PASS'),
+   'failed_reasons':[] if lb_sig else [lb_details.get('reason','LOCAL_BREAKOUT_NOT_READY')],
+   'virtual_entry':lb_sig.limit if lb_sig else None,
+   'virtual_invalidation':lb_sig.stop if lb_sig else None,
+   'details':lb_details
+  })
   self.observation_seq+=1
   fast_ready=bool(fast_sig is not None and gates.get('market_status',{}).get('result')=='PASS')
   current_tier=0 if fast_ready else calculate_tier(gates,trials,row)
