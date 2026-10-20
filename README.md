@@ -1,3 +1,25 @@
+# 주식자동매매
+
+| 확인할 항목 | 현재 기준 |
+|---|---|
+| 정식 운영 릴리스 | **[v1.6](https://github.com/neomusbist/stock-trading-bot/releases/tag/v1.6)** · `eac9bc5` |
+| 전체 이력 | [GitHub Releases](https://github.com/neomusbist/stock-trading-bot/releases) · [버전 대응표](VERSION_HISTORY.md) |
+| 차기 개발 | **v1.7 연구 중, 정식 미출시** · `dev`와 [연구 Draft PR](https://github.com/neomusbist/stock-trading-bot/pull/2) |
+| 다음 번호 | 안정성 후속 수정 `v1.61` / 주요 정식 변경 `v1.7` |
+| 기본 브랜치 main | 현재 프로그램 소스는 10월 7일 `1bbb215` 계열. 이 문서 갱신으로 운영 소스를 바꾸지 않음 |
+
+**운영 기준 코드는 위 v1.6 태그로 확인합니다. `main`의 프로그램 코드를 현재 운영본으로 오인하지 마세요.** `main` 소스를 LIVE 기준으로 통합하는 작업은 배포 참조 영향과 별도 승인을 확인한 뒤 진행합니다. 현재 운영 폴더·프로세스·위험 한도·장부·승인 기록은 이 GitHub 정리에서 변경하지 않았습니다.
+
+사용자 버전은 번호만 표시합니다. 정확한 BUILD, Git SHA, 파일 해시, 승인 신원은 별도 기술 정보로 유지합니다. 과거 v1.1~v1.5는 확인 가능한 소스 이정표를 소급 기록한 Historical·Pre-release이며 정식 출시를 증명하지 않습니다. v1.0 코드는 확인되지 않아 가상의 태그를 만들지 않았습니다.
+
+[버전 등록·태그·브랜치 관리 규칙](VERSION_POLICY.md) · [기계 판독 가능한 대응표](VERSION_INDEX.json)
+
+---
+
+## 아래 내용은 main에 남은 이전 운영 문서입니다
+
+현재 Release의 설명과 혼동하지 않습니다. 과거 BUILD 문자열은 이력 확인을 위해 보존합니다.
+
 # 주식자동매매 V1.3 — 개장 전 준비와 증거 기반 readiness
 
 빌드: **V1.3-preopen-risk2-20261007** / 전략 식별자: `V1.1-policy-20261001` / 위험관리 실험: `20261007-risk2-daily4-cap20000`.
