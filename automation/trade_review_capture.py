@@ -6,7 +6,7 @@ promotes its tick ring to disk. Holdings receive priority independent of SHADOW.
 Existing order/fill/fee logs are linked, not copied into a second ledger.
 """
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
@@ -17,6 +17,34 @@ import uuid
 
 def iso(value):
     return value.isoformat() if hasattr(value, 'isoformat') else value
+
+
+def bar_knowledge_time(bar, received, processed):
+    """Conservative research cutoff; never infer availability from bar label.
+
+    Historical confirmed_at meant the trigger tick's receipt. A queued tick can
+    be processed much later, or have an exchange second just ahead of the PC.
+    Keep that legacy field, but expose the actual receipt, processing and close
+    separately. This function has no connection to detector/order decisions.
+    """
+    def aware(value):
+        try:
+            value=datetime.fromisoformat(value) if isinstance(value,str) else value
+            return value if isinstance(value,datetime) and value.tzinfo is not None else None
+        except (TypeError,ValueError):return None
+    start=aware(bar.get('time')); receipt=aware(received); processing=aware(processed)
+    end=start+timedelta(minutes=1) if start and not (start.second or start.microsecond) else None
+    known=max(end,receipt,processing) if end and receipt and processing else None
+    return {'bar_closed_at':iso(end),'trigger_received_at':iso(receipt),
+            'known_at':iso(known),'knowledge_time_status':'KNOWN' if known else 'UNKNOWN',
+            'knowledge_time_basis':'MAX_BAR_CLOSE_TRIGGER_RECEIPT_PROCESSING'}
+
+
+def sampled_reward_ratio(values):
+    """Retain the producer's basis; do not turn an unknown ratio into zero."""
+    for key in ('calculated_rr','net_rr','rr'):
+        if values.get(key) is not None:return values[key],key
+    return None,'UNKNOWN'
 
 
 class TradeReviewCapture:
@@ -161,6 +189,7 @@ class TradeReviewCapture:
         self.last_bar[symbol]=key
         self._record({'event':'COMPLETED_BAR','symbol':symbol,'bar':dict(bar),
             'confirmed_at':iso(received),'processed_at':iso(processed),
+            **bar_knowledge_time(bar,received,processed),
             'source':'ACTUAL_RECEIVED_DETECTOR_HISTORY','reference_bars_used':False},symbol,
             force=symbol in self.watch or symbol in self.held)
 
@@ -183,10 +212,11 @@ class TradeReviewCapture:
         for trial in (evaluation or {}).get('trials',[]):
             price=trial.get('gates',{}).get('invalidation',{}).get('values',{})
             reward=trial.get('gates',{}).get('risk_reward',{}).get('values',{})
+            rr,rr_basis=sampled_reward_ratio(reward)
             trials.append({'setup':trial.get('setup'),'formed':trial.get('candidate_generated'),
                 'ready':trial.get('entry_ready'),'failures':trial.get('failed_reasons'),
                 'entry':price.get('entry'),'stop':price.get('stop'),'target':reward.get('target'),
-                'rr':reward.get('rr')})
+                'rr':rr,'rr_basis':rr_basis})
         fast=fast if isinstance(fast,dict) else {}
         self._record({'event':'OPPORTUNITY_SAMPLE','symbol':symbol,'asof':iso(asof),
             'exchange_at':iso(t.time),'received_at':getattr(t,'received_at',None),

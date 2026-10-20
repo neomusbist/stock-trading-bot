@@ -165,6 +165,18 @@ def qualify_raw(engine,rows,stamp,is_raw_phase=False):
         }
     engine.source_qualification=new_qual
 
+def record_opening_focus_change(engine,selection):
+    """A verified progress update is not necessarily a WATCH membership change."""
+    if not selection.applied:return False
+    engine.event('FOCUS_SELECTION_APPLIED',basis='OPENING_VERIFIED_PROGRESS',
+        promoted=selection.promoted,demoted=selection.demoted,
+        next_watch=selection.next_watch,previous_watch=selection.previous_watch,
+        primary_reason=selection.primary_reason,applied_at=selection.focus_epoch,
+        tier_map=selection.tier_map,priority_tuples=selection.priority_tuples,
+        compression_batch_complete=False)
+    return True
+
+
 def apply_qualified_progress(engine,lookup,rows,result,readiness,cfg,auto,stamp):
     """Feed already verified opening candidates to the existing FOCUS selector.
 
@@ -1361,12 +1373,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                                 focus_promotions.extend(selection.promoted)
                                 engine.candidate_audit.begin(rows,result['time'],result.get('capital_context',{}))
                                 submit_candidate_observation(engine,shadow,rows,result['time'],engine.capital_context())
-                                engine.event('FOCUS_SELECTION_APPLIED',basis='OPENING_VERIFIED_PROGRESS',
-                                    promoted=selection.promoted,demoted=selection.demoted,
-                                    next_watch=selection.next_watch,previous_watch=selection.previous_watch,
-                                    primary_reason=selection.primary_reason,applied_at=selection.focus_epoch,
-                                    tier_map=selection.tier_map,priority_tuples=selection.priority_tuples,
-                                    compression_batch_complete=False)
+                                record_opening_focus_change(engine,selection)
                             continue
                         if result.get('phase')=='RAW':
                             engine.observation_timeline.raw(result['rows'],datetime.fromisoformat(result['time']))

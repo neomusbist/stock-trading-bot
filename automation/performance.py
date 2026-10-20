@@ -1,6 +1,7 @@
 """부분청산을 묶는다. 확인된 증권사 비용을 우선하고 미확인 추정을 구분한다."""
 from collections import defaultdict
 from statistics import mean
+from math import isfinite
 
 def completed_trades(fragments):
     groups=defaultdict(list)
@@ -41,6 +42,9 @@ def summary(rows):
     capture=[r['mfe_capture_fraction'] for r in actual if r.get('mfe_capture_fraction') is not None]
     targets=[r['recorded_target_reached'] for r in rows if r.get('recorded_target_reached') is not None]
     covered=[r['recorded_target_reached'] for r in rows if r.get('price_history_complete') is True and r.get('recorded_target_reached') is not None]
+    holding=[r['holding_seconds'] for r in rows
+             if type(r.get('holding_seconds')) in (int,float)
+             and isfinite(r['holding_seconds']) and r['holding_seconds']>=0]
     return {'count':len(rows),'win_rate':len(wins)/len(rows) if rows else None,
         'broker_confirmed_count':len(actual),'broker_net_expectancy_krw':mean(r['pnl_estimate'] for r in actual) if actual else None,
         'broker_mfe_capture_fraction':mean(capture) if capture else None,
@@ -49,7 +53,11 @@ def summary(rows):
         'target_coverage_note':'관측 최고가 기준; 이력 누락 시 전체 목표 도달률은 UNKNOWN',
         'average_win':avgwin,'average_loss':avgloss,'payoff':avgwin/avgloss if avgwin is not None and avgloss else None,
         'net_expectancy_krw':mean(r['pnl_estimate'] for r in rows) if rows else None,
-        'average_holding_seconds':mean(r['holding_seconds'] for r in rows) if rows else None,
+        # An externally reconciled sale may have no execution clock. Neither
+        # zero nor its later reconciliation time is a valid holding duration.
+        'average_holding_seconds':mean(holding) if holding else None,
+        'holding_seconds_known_count':len(holding),
+        'holding_seconds_unknown_count':len(rows)-len(holding),
         'average_MFE':mean(r['MFE'] for r in rows) if rows else None,
         'average_MAE':mean(r['MAE'] for r in rows) if rows else None,'max_consecutive_losses':maximum,
         'cost_basis':('증권사 체결조회 수수료·세금 기준' if rows and all(r.get('pnl_source')=='BROKER_QUERY' for r in rows)
