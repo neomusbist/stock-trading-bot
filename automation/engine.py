@@ -991,7 +991,7 @@ class AutonomousEngine(ExistingExits,Engine):
             book=initial_allocation(snapshot,self.a.capital_limit); ledger['cash']=book; ledger['allocated']=True
             ledger['existing']={s:dict(h) for s,h in snapshot['holdings'].items() if s not in self.s['positions']}
         self.s['cash']=book
-        if super().reconcile(snapshot,fills) is False:
+        if super().reconcile(snapshot,fills,_final_checkpoint=False) is False:
             self.account_ok=False
             self.s['cash']=ledger['cash']
             self.save()
@@ -1021,7 +1021,11 @@ class AutonomousEngine(ExistingExits,Engine):
         fee_report=settle_broker_pnl(self.s,fills,self.costs,self.clock(),getattr(self.broker,'identity','paper'))
         if fee_report['cash_adjustment'] or fee_report['pnl_adjustment']:
             self.event('BROKER_PNL_RECONCILED',**fee_report)
-        self.s['equity']=self.risk_equity(); self.save(fsync=bool(fills or self.active_orders()))
+        self.s['equity']=self.risk_equity()
+        try:self.save(fsync=True)
+        except Exception:
+            self.account_ok=False
+            raise
         self.kill_checked=True
         self.reconciled_at=self.clock().isoformat()
         self.reconcile_query_started=snapshot.get('query_started_at',self.reconciled_at)

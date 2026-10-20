@@ -2,6 +2,16 @@
 
 운영 프로그램을 시작하거나 중지하는 명령은 없다. 모든 출력은 저장소·LIVE 밖의 비공개 폴더로 지정한다. 경로 예시의 자리표시자는 실제 경로로 대체한다.
 
+2026-10-20 후속 표적 회귀:
+
+```powershell
+python -B -m unittest tests.test_r6_delivery_fairness tests.test_reconcile_commit_latency tests.test_atomic_ledger_latency tests.test_atomic_json_contention tests.test_r6_execution_integrity tests.test_reconciliation_race
+```
+
+운영 무결성 자료가 없는 연구 checkout에서는 일부 기존 테스트의 LIVE 모드 준비 단계가 의도적으로 차단된다. 보호를 완화하거나 운영용 승인/manifest를 쓰지 않는다. 검증은 별도 source-only 오프라인 사본에 정확한 파일 해시의 OFFLINE_TEST_ONLY 자료를 만들고, 네트워크를 차단한 Fake/Paper 환경에서 수행한다. 실제 실행 범위와 중간 환경 오류는 비공개 로그에 보존한다.
+
+동일 과거 입력 비교의 범위·해시·지표 정의와 스케줄 가정은 [결과 문서](RESULTS.md)의 2026-10-20 후속 절에 있다. main WATCH·주문 큐 기록이 없는 부분은 재현된 LIVE 사실로 주장하지 않는다. 원시 입력 및 측정용 보존 장부는 이 저장소에 추가하지 않았다.
+
 ```powershell
 python -B -m unittest tests.test_causal_replay tests.test_local_breakout_strategy tests.test_local_breakout_e2e_integration tests.test_research_evidence_collector tests.test_shadow_clock_consistency tests.test_observation_reaction
 python -B tools/run_all_replays.py --output-dir <private-output>

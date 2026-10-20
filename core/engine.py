@@ -437,7 +437,7 @@ class Engine:
                 self.request_exit(sym,'시세 지연/연결 단절')
         self.drive_exits(prices)
 
-    def reconcile(self,snapshot,fills=()):
+    def reconcile(self,snapshot,fills=(),*,_final_checkpoint=True):
         """잔고와 미체결 조회가 불일치하면 신규 진입을 금지하고 기존 보호는 유지한다."""
         self.account_ok=False
         started=snapshot.get('query_started_at')
@@ -540,5 +540,7 @@ class Engine:
         self.s['excluded']=sorted(set(self.s['excluded'])|external)
         self.s['cash']=max(0,snapshot['cash']); self.s['equity']=min(self.c.account_equity,snapshot['equity'])
         self.account_ok=True; self.last_account=time.monotonic()
-        self.save()
+        # The autonomous subclass completes its cash/fee reconciliation before
+        # one final durable checkpoint. Intent/fill/error saves above stay eager.
+        if _final_checkpoint:self.save()
         return True

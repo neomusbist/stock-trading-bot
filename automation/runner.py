@@ -300,9 +300,10 @@ class SubscriptionState:
 def _protected_feed_work_pending(feed,critical):
     main_q=getattr(feed,'q',None)
     if not isinstance(main_q,queue.Queue):return False
-    with main_q.mutex:head=main_q.queue[0][1] if main_q.queue else None
-    return bool(head and (head.get('trnm') in {'REG','ERROR','DISCONNECTED'} or
-        any(item.get('type') in {'00','0s'} or item.get('item') in critical for item in head.get('data',[]))))
+    with main_q.mutex:messages=tuple(item[1] for item in main_q.queue)
+    return any(message.get('trnm') in {'REG','ERROR','DISCONNECTED'} or
+        any(item.get('type') in {'00','0s'} or item.get('item') in critical
+            for item in message.get('data',[])) for message in messages)
 
 
 def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,drops,sink=None,shadow_detector=None,
@@ -333,9 +334,10 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
     prior_observed=set(prior_scope) if isinstance(prior_scope,(set,frozenset,list,tuple)) else set()
     promotions=(priority-set(prior_priority))&(set(observed)|prior_observed)-critical
     demotions=(set(prior_priority)-priority)&observed-critical
+    copied_promotions=set()
     if shadow_detector:
         for sym in promotions:
-            detector.handoff_from(shadow_detector, sym)
+            if detector.handoff_from(shadow_detector,sym):copied_promotions.add(sym)
         for sym in demotions:
             shadow_detector.handoff_from(detector, sym)
     if not isinstance(getattr(feed,'observation_q',None),queue.Queue):
@@ -345,8 +347,11 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
     if pending is None:pending={};feed._opportunity_pending=pending
     triggers=getattr(feed,'_opportunity_triggers',None)
     if triggers is None:triggers={};feed._opportunity_triggers=triggers
+    evaluated=getattr(feed,'_opportunity_evaluated',{})
     for sym in list(pending):
-        if sym not in observed or sym in priority or sym in critical:pending.pop(sym,None)
+        if sym not in observed|priority or sym in critical:pending.pop(sym,None)
+    for sym in list(evaluated):
+        if sym not in observed|priority:evaluated.pop(sym,None)
     for sym in list(triggers):
         if sym not in observed or sym in priority or sym in critical:triggers.pop(sym,None)
     promoted=[]
@@ -367,20 +372,25 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
                 data_action='INVALIDATE_ENTRY_CONTINUITY_RETAIN_COMPLETED_BARS',actual_order_permission=False)
         feed.configure_observation(priority,observed,sink)
     if promotions and hasattr(feed, 'observation_q'):
-        remaining=[]
-        for _ in range(feed.observation_q.qsize()):
-            try:item=feed.observation_q.get_nowait()
-            except queue.Empty:break
-            feed.observation_q.task_done()
-            if item[1].symbol in promotions:promoted.append(item)
-            else:remaining.append(item)
-        for item in remaining:
-            try: feed.observation_q.put_nowait(item)
-            except queue.Full: break
+        # Partition under the queue lock. Pop-and-requeue can put new receiver
+        # frames before retained history, or drop history when the queue fills.
+        observation_q=feed.observation_q
+        with observation_q.mutex:
+            remaining=[]
+            for item in observation_q.queue:
+                (promoted if item[1].symbol in promotions else remaining).append(item)
+            observation_q.queue.clear();observation_q.queue.extend(remaining)
+            observation_q.unfinished_tasks-=len(promoted)
+            if not observation_q.unfinished_tasks:observation_q.all_tasks_done.notify_all()
+            observation_q.not_full.notify_all()
     for index,(received,tick) in enumerate(promoted):
-        detector.ingest(tick,received)
+        accepted=detector.ingest(tick,received)
         if getattr(engine,'fast_strategy',None) is not None:
             engine.fast_strategy.ingest_tick(tick,received)
+        gap=getattr(detector,'coverage_gaps',{}).get(tick.symbol)
+        copied=(tick.symbol in copied_promotions and detector.last.get(tick.symbol)==tick
+                and (not gap or received>gap['at']))
+        if (accepted or copied) and on_opportunity is not None:pending[tick.symbol]=(received,tick)
         if critical and (index+1)%64==0:engine.timer(engine.prices)
     if promoted:
         engine.event('OBSERVATION_PREWARM_HANDOFF',symbols=sorted(promotions),queued_ticks=len(promoted),
@@ -418,6 +428,11 @@ def drain_observed_opportunities(engine,feed,on_opportunity,*,deadline=None,max_
     if on_opportunity is None:return 0
     pending=getattr(feed,'_opportunity_pending',{})
     if not isinstance(pending,dict):return 0
+    completed=getattr(feed,'_opportunity_evaluated',None)
+    if completed is None:completed={};feed._opportunity_evaluated=completed
+    counters=getattr(feed,'_opportunity_delivery',None)
+    if counters is None:counters={};feed._opportunity_delivery=counters
+    def counted(reason):counters[reason]=counters.get(reason,0)+1
     deadline=time.monotonic()+.002 if deadline is None else deadline
     evaluated=0
     observation_q=getattr(feed,'observation_q',None)
@@ -428,9 +443,14 @@ def drain_observed_opportunities(engine,feed,on_opportunity,*,deadline=None,max_
     inspected=0
     pending_count=len(pending)
     while on_opportunity is not None and pending and inspected<pending_count and evaluated<max_evaluations and time.monotonic()<deadline:
-        main_q=getattr(feed,'q',None)
+        # The preceding callback may have created an order or position. Refresh
+        # protection before considering the next candidate in this same pass.
+        state=getattr(engine,'s',{})
+        critical=set(state.get('positions',{}))|{o['symbol'] for o in engine.active_orders()}
+        critical.update(set(state.get('automation',{}).get('existing',{}))&set(BREAKEVEN_EXITS))
         if (getattr(feed,'transport_failed',False) or feed.overflow.is_set()
-                or isinstance(main_q,queue.Queue) and not main_q.empty()):break
+                or _protected_feed_work_pending(feed,critical)):
+            counted('PROTECTED_OR_TRANSPORT_DEFERRED');break
         sym=next(iter(pending));observed_at,tick=pending.pop(sym)
         inspected+=1
         latest=getattr(feed,'latest_ticks',{}).get(sym)
@@ -438,11 +458,20 @@ def drain_observed_opportunities(engine,feed,on_opportunity,*,deadline=None,max_
         # has already reached this receiver. Wait until this symbol catches up.
         if sym in queued_symbols or (latest is not None and
                 (latest.time,latest.cumulative)!=(tick.time,tick.cumulative)):
+            if latest is not None and getattr(engine,'_last_eval_frame',{}).get(sym)==(latest.time,latest.cumulative):
+                counted('ALREADY_EVALUATED');continue
+            counted('HISTORY_PENDING')
             pending[sym]=(observed_at,tick)
             continue
         if not tick_freshness(tick,engine.clock(),engine.c.stale_seconds)['fresh']:
+            counted('STALE')
             getattr(feed,'_opportunity_triggers',{}).pop(sym,None)
             continue
+        key=(tick.time,tick.cumulative)
+        if completed.get(sym)==key:
+            counted('DUPLICATE');continue
+        completed[sym]=key
+        counted('EVALUATED')
         evaluated+=1
         result=on_opportunity(tick,observed_at)
         trigger=getattr(feed,'_opportunity_triggers',{}).pop(sym,None)
@@ -1560,6 +1589,13 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         if message.get('trnm')=='REG' and message.get('return_code') in (0,'0'):counts['subscription_acks']+=1
                         counts['ticks']+=process_message(engine,detector,message,received,real_symbols,lookup,radar,prices,account,radar_ok and not smoke_ended,subscriptions,by_symbol=by_symbol)
                     drain_feed(feed,consume_frame,timeout=.02,max_messages=256,max_seconds=.12)
+                    # Catch receiver arrivals during the main FIFO drain before
+                    # evaluating them. Never replace a prefix with an uningested
+                    # latest tick; prewarm retains the existing bounded budget.
+                    observation_drops,priority_symbols=prewarm_handoff(
+                        engine,detector,feed,observed,real_symbols,priority_symbols,observation_drops,
+                        shadow.deliver,shadow_detector=getattr(getattr(shadow,'observer',None),'detector',None),
+                        on_opportunity=opportunity_callback)
                     drain_observed_opportunities(engine,feed,opportunity_callback)
                 except queue.Empty:
                     if not in_session: time.sleep(.25)
