@@ -183,7 +183,8 @@ class PatternDetector(Detector):
         if not bars:return []
         cur=self.current.get(symbol)
         if cur is not None:
-            if cur.get('gap_reason') is not None or (cur['time']-bars[-1]['time']).total_seconds()!=60:
+            if (cur.get('gap_reason')=='MISSING_MINUTE' or cur.get('coverage_resumed_at')
+                    or (cur['time']-bars[-1]['time']).total_seconds()!=60):
                 return []
         valid=[]
         for bar in reversed(bars):

@@ -102,6 +102,14 @@ class CoverageTests(unittest.TestCase):
         d.history.pop(SYM)
         self.assertEqual(d.preload_from_context(SYM,asof),3)
 
+    def test_partial_current_minute_does_not_erase_prior_confirmed_bars(self):
+        self.history();d=self.detector
+        d.current[SYM]['gap_reason']='FIRST_TRADE_AFTER_5S_COVERAGE_UNKNOWN'
+        d.current[SYM]['first_second']=20
+        self.assertEqual(len(d.usable_bars(SYM)),3)
+        d.mark_coverage_gap(SYM,AT+timedelta(seconds=186))
+        self.assertEqual(d.usable_bars(SYM),[])
+
     def test_duplicate_gap_does_not_erase_new_recovered_history(self):
         self.history();gap=AT+timedelta(seconds=186)
         self.detector.mark_coverage_gap(SYM,gap)
