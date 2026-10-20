@@ -38,6 +38,7 @@
 !/tests/fixtures/README.md
 !/reference/contract.json
 !/tools/repo_guard.py
+!/tools/live_overlay.py
 !/tools/setup_local.py
 !/tools/export_source.py
 !/tools/preflight_live_check.py
