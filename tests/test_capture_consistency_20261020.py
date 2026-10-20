@@ -127,6 +127,24 @@ class CoverageTests(unittest.TestCase):
         self.assertEqual(d.current[SYM]['close'],1001)
         self.assertEqual(feed.observation_q.unfinished_tasks,0)
 
+    def test_held_position_frame_preempts_and_does_not_erase_promotion(self):
+        self.history();d=self.detector;at=AT+timedelta(seconds=186)
+        self.cumulative+=100;t=Tick(SYM,at,1001,100,self.cumulative,1001,1000)
+        held='999991'
+        feed=SimpleNamespace(observation_symbols=frozenset({SYM}),observation_drops=0,
+            observation_q=queue.Queue(),q=queue.Queue(),overflow=SimpleNamespace(is_set=lambda:False),
+            transport_failed=False,subscription_lock=None,configure_observation=lambda *a:None)
+        feed.observation_q.put((at,t));feed.q.put((at,{'trnm':'REAL','data':[{'type':'0B','item':held}]}))
+        engine=SimpleNamespace(s={'positions':{held:{'qty':1}},'automation':{'existing':{}}},
+            active_orders=lambda:[],event=lambda *a,**k:None)
+        _,priority=prewarm_handoff(engine,d,feed,set(),{held,SYM},{held},0)
+        self.assertEqual(priority,{held})
+        self.assertEqual(feed.observation_q.qsize(),1)
+        feed.q.get_nowait()
+        _,priority=prewarm_handoff(engine,d,feed,set(),{held,SYM},priority,0)
+        self.assertEqual(priority,{held,SYM})
+        self.assertEqual(d.last[SYM].cumulative,self.cumulative)
+
 
 class FairScanTests(unittest.TestCase):
     def setUp(self):

@@ -297,6 +297,14 @@ class SubscriptionState:
     def accepted(self,symbol):
         self.waiting.pop(symbol,None)
 
+def _protected_feed_work_pending(feed,critical):
+    main_q=getattr(feed,'q',None)
+    if not isinstance(main_q,queue.Queue):return False
+    with main_q.mutex:head=main_q.queue[0][1] if main_q.queue else None
+    return bool(head and (head.get('trnm') in {'REG','ERROR','DISCONNECTED'} or
+        any(item.get('type') in {'00','0s'} or item.get('item') in critical for item in head.get('data',[]))))
+
+
 def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,drops,sink=None,shadow_detector=None,
                     on_opportunity=None,opportunity_probe=None):
     """Preserve FIFO history and brief signals; trade only on current evidence.
@@ -313,6 +321,10 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
             shadow_detector = sink.shadow_detector
     critical=set(engine.s['positions'])|{o['symbol'] for o in engine.active_orders()}
     critical.update(set(engine.s['automation']['existing'])&set(BREAKEVEN_EXITS))
+    # Defer the whole handoff, including queued promotion history, when a
+    # protected/control frame is waiting. Keep the old routing epoch so the
+    # same promotion can resume after the main FIFO handles that frame.
+    if _protected_feed_work_pending(feed,critical):return drops,set(prior_priority)
     # The caller has already removed the new WATCH/critical set from
     # `observed`. Use the receiver's PREVIOUS routing scope as well, otherwise
     # this branch is empty in production and queued prewarm prints are dropped
@@ -376,12 +388,7 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
     drain_deadline = time.monotonic() + 0.015
     while drained < 512 and time.monotonic() < drain_deadline:
         if getattr(feed,'transport_failed',False) or feed.overflow.is_set():break
-        main_q=getattr(feed,'q',None)
-        if isinstance(main_q,queue.Queue):
-            with main_q.mutex:head=main_q.queue[0][1] if main_q.queue else None
-            if head and (head.get('trnm') in {'REG','ERROR','DISCONNECTED'} or
-                    any(item.get('type') in {'00','0s'} or item.get('item') in critical
-                        for item in head.get('data',[]))):break
+        if _protected_feed_work_pending(feed,critical):break
         try: observed_at, tick = feed.observation_q.get_nowait()
         except queue.Empty: break
         feed.observation_q.task_done()
