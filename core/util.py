@@ -43,7 +43,10 @@ def _atomic_json(path, value, fsync=True):
     tmp = Path(name)
     try:
         with os.fdopen(fd,'w',encoding='utf-8') as f:
-            json.dump(value,f,ensure_ascii=False,indent=2,allow_nan=False)
+            # Encode before one write: a large trade ledger otherwise performs
+            # hundreds of thousands of tiny writes on the quote/control thread.
+            # Keep identical JSON, flush/fsync and atomic-replace semantics.
+            f.write(json.dumps(value,ensure_ascii=False,indent=2,allow_nan=False))
             f.flush()
             if fsync:
                 os.fsync(f.fileno())
