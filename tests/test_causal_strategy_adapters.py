@@ -285,6 +285,28 @@ class CausalStrategyAdapterTests(unittest.TestCase):
                 self.assertTrue(sig.get('SHADOW_ONLY'))
                 self.assertFalse(sig.get('actual_order_permission'))
 
+    def test_11_abc_ingest_tick_bar_accumulation_preserves_ohlcv(self):
+        """Ticks in the same minute must accumulate open, high, low, close, and volume rather than overwriting."""
+        adapter = self.adapters['STRATEGY_A']
+        t0 = AT.replace(second=0, microsecond=0)
+        t1 = Tick(SYM, t0, 1000.0, 10, 10, 1000.0, 999.0, True)
+        t2 = Tick(SYM, t0 + timedelta(seconds=10), 1020.0, 20, 30, 1020.0, 1019.0, True)
+        t3 = Tick(SYM, t0 + timedelta(seconds=20), 990.0, 15, 45, 990.0, 989.0, True)
+        t4 = Tick(SYM, t0 + timedelta(seconds=30), 1010.0, 5, 50, 1010.0, 1009.0, True)
+
+        adapter.ingest_tick(t1, t0)
+        adapter.ingest_tick(t2, t0 + timedelta(seconds=10))
+        adapter.ingest_tick(t3, t0 + timedelta(seconds=20))
+        adapter.ingest_tick(t4, t0 + timedelta(seconds=30))
+
+        cur = adapter.detector.current[SYM]
+        self.assertEqual(cur['open'], 1000.0, "Open must remain the first tick price of the minute")
+        self.assertEqual(cur['high'], 1020.0, "High must be the maximum price seen in the minute")
+        self.assertEqual(cur['low'], 990.0, "Low must be the minimum price seen in the minute")
+        self.assertEqual(cur['close'], 1010.0, "Close must be the latest tick price")
+        self.assertEqual(cur['volume'], 50, "Volume must accumulate across ticks in the minute")
+        self.assertEqual(cur['tick_count'], 4, "Tick count must reflect all 4 ingested ticks")
+
 
 if __name__ == '__main__':
     unittest.main()

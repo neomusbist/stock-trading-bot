@@ -57,21 +57,39 @@ class _BaseABCAdapter(BaseStrategyAdapter):
     def __init__(self, cfg: Config, auto: AutomationConfig, costs: Costs):
         super().__init__(cfg, auto, costs)
         self.detector = PatternDetector(cfg, auto, costs)
+        self.detector.continuous_observation = True
 
     def ingest_bar(self, known: datetime, sym: str, b: Dict[str, Any]) -> None:
         self.detector.history.setdefault(sym, deque(maxlen=30)).append(b)
         self.detector.price_context.record(sym, b, b['time'], self.cfg.stale_seconds)
 
     def ingest_tick(self, t: Tick, received: datetime) -> None:
-        self.detector.buffers.setdefault(t.symbol, deque(maxlen=300)).append(t)
-        self.detector.current[t.symbol] = {
-            'time': t.time.replace(second=0, microsecond=0),
-            'open': t.price, 'high': t.price, 'low': t.price, 'close': t.price,
-            'volume': t.volume
-        }
-        self.detector.observation_start.setdefault(t.symbol, t.time)
-        self.detector.day_high[t.symbol] = max(t.price, self.detector.day_high.get(t.symbol, t.price))
-        self.detector.prior_high.setdefault(t.symbol, t.price)
+        ingested = self.detector.ingest(t, received)
+        if not ingested:
+            # Fallback for synthetic/out-of-session test ticks: accumulate into current bar without destroying OHLC
+            minute = t.time.replace(second=0, microsecond=0)
+            self.detector.buffers.setdefault(t.symbol, deque(maxlen=300)).append(t)
+            self.detector.observation_start.setdefault(t.symbol, t.time)
+            self.detector.day_high[t.symbol] = max(t.price, self.detector.day_high.get(t.symbol, t.price))
+            self.detector.prior_high.setdefault(t.symbol, t.price)
+            b = self.detector.current.get(t.symbol)
+            if b is None or b.get('time') != minute:
+                if b is not None and (minute - b['time']).total_seconds() == 60:
+                    self.detector.history.setdefault(t.symbol, deque(maxlen=30)).append(b)
+                    self.detector.price_context.record(t.symbol, {**b, 'venue': 'KRX'}, t.time, self.cfg.stale_seconds)
+                b = {
+                    'time': minute, 'open': t.price, 'high': t.price, 'low': t.price, 'close': t.price,
+                    'volume': t.volume, 'observation_source': 'ACTUAL_RECEIVED', 'tick_count': 1,
+                    'first_second': t.time.second, 'last_second': t.time.second, 'gap_reason': None
+                }
+                self.detector.current[t.symbol] = b
+            else:
+                b['high'] = max(b['high'], t.price)
+                b['low'] = min(b['low'], t.price)
+                b['close'] = t.price
+                b['volume'] += t.volume
+                b['tick_count'] = b.get('tick_count', 0) + 1
+                b['last_second'] = t.time.second
 
     def evaluate(self, t: Tick, bars: list, watch: Dict[str, Any],
                  capital_limit: float, risk_budget: float, asof: datetime) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
