@@ -21,6 +21,7 @@ from research.causal_data import (aware,finite,file_sha,json_values,audit_cache,
                                   read_frames,captured_bars,frozen_lines)
 from research.causal_account import PaperAccount
 from research.retest_strategy import ConfirmedRetestStrategy,paper_engine_signal
+from research.causal_strategy_adapters import build_all_strategy_adapters
 
 
 def read_config(path,kind):
@@ -80,8 +81,7 @@ class HypothesisReplay:
         self.cfg=cfg;self.auto=auto;self.clock_basis=clock_basis
         self.costs=Costs(auto.commission_buy,auto.commission_sell,auto.sell_tax,
                          cfg.entry_slippage_fraction,cfg.exit_slippage_fraction)
-        self.strategies={'LOCAL_CAUSAL':LocalBreakoutStrategy(cfg,auto,self.costs),
-                         'RETEST_EXPERIMENT':ConfirmedRetestStrategy(cfg,auto,self.costs)}
+        self.strategies=build_all_strategy_adapters(cfg,auto,self.costs)
         self.accounts={};self.account_params=dict(cfg=cfg,auto=auto,initial_cash=initial_cash,
             approved_cap=approved_cap,latency_ms=latency_ms,adverse_ticks=adverse_ticks)
         self.with_accounts=with_accounts
@@ -104,6 +104,8 @@ class HypothesisReplay:
                 self.peaks[sym].append({'price':middle['high'],'time':middle['time'].isoformat(),
                     'confirmed_at':(right['time']+timedelta(minutes=1)).isoformat(),
                     'available_at':known.isoformat(),'observation_source':'ACTUAL_RECEIVED'})
+        for adapter in self.strategies.values():
+            adapter.ingest_bar(known,sym,b)
 
     def frame(self,f,new_bars=()):
         t=f.tick;at=f.available_at;self.frame_count+=1
@@ -112,6 +114,8 @@ class HypothesisReplay:
         self.delays['<=1s' if delay<=1 else '<=5s' if delay<=5 else '>5s']+=1
         quote_reason=f.quote_reason(at,self.cfg.stale_seconds)
         self.quote_reasons[quote_reason or 'MEASURED_FRESH_PAIRED_QUOTE']+=1
+        for adapter in self.strategies.values():
+            adapter.ingest_tick(t,at)
         for key in self.strategies:
             if self.with_accounts and key not in self.accounts:self.accounts[key]=PaperAccount(at,**self.account_params)
             account=self.accounts.get(key)
@@ -137,17 +141,25 @@ class HypothesisReplay:
             signal,detail=strategy.evaluate(t,h,view,capital,risk,at)
             if signal is None:self.reasons[key][detail.get('reason','UNKNOWN')]+=1;continue
             # Independent structural opportunity, not every repeated tick.
-            identity=(t.symbol,signal.pattern,signal.stop,signal.extra.get('local_high',signal.extra.get('breakout_level')))
+            extra=signal.get('extra') or {} if isinstance(signal,dict) else getattr(signal,'extra',{})
+            pattern=signal.get('pattern') if isinstance(signal,dict) else getattr(signal,'pattern')
+            stop=signal.get('stop') if isinstance(signal,dict) else getattr(signal,'stop')
+            lvl=extra.get('local_high',extra.get('breakout_level',signal.get('limit') if isinstance(signal,dict) else getattr(signal,'limit',0)))
+            identity=(t.symbol,pattern,stop,lvl)
             encoded='|'.join(map(str,identity));episode=hashlib.sha256(encoded.encode()).hexdigest()[:24]
             if episode in self.episodes[key]:continue
+            sig_dict=signal if isinstance(signal,dict) else asdict(signal)
             record={'episode_id':episode,'at':at.isoformat(),'source_id':f.source_id,
-                'symbol':t.symbol,'signal':json_values(asdict(signal)),
+                'symbol':t.symbol,'signal':json_values(sig_dict),
                 'quote_basis':'MEASURED_PAIRED_L1_NOT_AN_ACTUAL_FILL',
                 'clock_basis':self.clock_basis,'engine_order':None}
             if account:
-                source={'source_count':view.get('source_count'),'fallback_source1':view.get('fallback_source1',False),
-                        'timestamp':meta['asof']}
-                adapted=paper_engine_signal(signal,self.cfg,self.auto,self.costs,source_evidence=source)
+                if isinstance(signal,dict):
+                    adapted=signal
+                else:
+                    source={'source_count':view.get('source_count'),'fallback_source1':view.get('fallback_source1',False),
+                            'timestamp':meta['asof']}
+                    adapted=paper_engine_signal(signal,self.cfg,self.auto,self.costs,source_evidence=source)
                 order=account.enter(adapted)
                 record['engine_order']=order['local'] if order else None
             self.episodes[key][episode]=record

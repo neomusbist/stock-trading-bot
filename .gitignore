@@ -167,6 +167,7 @@ operator_*approval*.json
 !/research/causal_data.py
 !/research/causal_account.py
 !/research/causal_replay.py
+!/research/causal_strategy_adapters.py
 !/research/retest_strategy.py
 !/research/evidence_collector.py
 !/audit/r6_causal_validation_20261020/HANDOFF_TO_AG.md

@@ -15,6 +15,7 @@ TOOLS.update({'reproduce_89_signals.py','full_universe_backtest.py','account_lev
               'eval_1019_theoretical.py','build_1019_bars.py','run_all_replays.py'})
 CAUSAL_RESEARCH_FILES={
     'research/causal_data.py','research/causal_account.py','research/causal_replay.py',
+    'research/causal_strategy_adapters.py',
     'research/retest_strategy.py','research/evidence_collector.py',
     'audit/r6_causal_validation_20261020/RESULTS.md',
     'audit/r6_causal_validation_20261020/REPRODUCE.md',
