@@ -18,6 +18,7 @@ CAUSAL_RESEARCH_FILES={
     'research/retest_strategy.py','research/evidence_collector.py',
     'audit/r6_causal_validation_20261020/RESULTS.md',
     'audit/r6_causal_validation_20261020/REPRODUCE.md',
+    'audit/r6_causal_validation_20261020/HANDOFF_TO_AG.md',
     'audit/r6_causal_validation_20261020/RESULTS.json'}
 R6_REPAIR_FILES={
     'HANDOFF_TO_ANTIGRAVITY.md',

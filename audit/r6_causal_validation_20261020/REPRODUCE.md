@@ -3,11 +3,13 @@
 운영 프로그램을 시작하거나 중지하는 명령은 없다. 모든 출력은 저장소·LIVE 밖의 비공개 폴더로 지정한다. 경로 예시의 자리표시자는 실제 경로로 대체한다.
 
 ```powershell
-python -B -m unittest tests.test_causal_replay tests.test_local_breakout_strategy tests.test_local_breakout_e2e_integration tests.test_research_evidence_collector tests.test_shadow_clock_consistency
+python -B -m unittest tests.test_causal_replay tests.test_local_breakout_strategy tests.test_local_breakout_e2e_integration tests.test_research_evidence_collector tests.test_shadow_clock_consistency tests.test_observation_reaction
 python -B tools/run_all_replays.py --output-dir <private-output>
 ```
 
 캐시만 읽은 결과는 UNKNOWN이다. 최초 89건 및 계좌 5건의 원형은 인수 커밋 `8174b5d`에 남아 있다. 실행 시 import 부작용이 있는 원형을 현재 연구 모듈과 혼합하지 않는다.
+
+위 여섯 모듈의 마지막 표적 검사 결과는 65 PASS다. 전체 회귀검사를 다시 완료한 결과가 아니다. 정확한 상태·원본 경로·AG 후속 순서는 [최종 인계](HANDOFF_TO_AG.md)를 따른다.
 
 실측 재생:
 

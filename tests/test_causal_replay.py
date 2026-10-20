@@ -109,6 +109,29 @@ class PaperEngineTests(unittest.TestCase):
     def test_direct_broker_submit_is_not_an_integration_test(self):
         with self.assertRaises(Rejected):self.account.broker.submit('BUY',SYM,1,1004)
         self.assertEqual(self.account.broker.submissions,[])
+    def test_synthetic_engine_fill_is_not_reported_as_measured_market_evidence(self):
+        _,sig=self.prepare();self.account.enter(sig)
+        fill=self.account.result()['fills'][0]
+        self.assertEqual(fill['basis'],'SYNTHETIC_TEST_L1_SIMULATION')
+        self.assertEqual(fill['input_evidence_basis'],'SYNTHETIC_TEST_QUOTE')
+        self.assertFalse(fill['actual_fill'])
+    def test_measured_engine_fill_preserves_the_recorded_quote_basis(self):
+        _,sig=self.prepare()
+        self.account.step(replace(self.account.frame,basis='MEASURED_PAIRED_TRADE_QUOTE'))
+        self.account.enter(sig)
+        fill=self.account.result()['fills'][0]
+        self.assertEqual(fill['basis'],'MEASURED_L1_MARKETABLE_SIMULATION')
+        self.assertEqual(fill['input_evidence_basis'],'MEASURED_PAIRED_TRADE_QUOTE')
+        self.assertFalse(fill['actual_fill'])
+    def test_adverse_sell_sensitivity_does_not_hide_its_synthetic_input(self):
+        _,sig=self.prepare();self.account.enter(sig)
+        self.account.broker.adverse_ticks=1
+        self.account.step(frame(AT+timedelta(seconds=1),988))
+        fill=self.account.result()['fills'][-1]
+        self.assertEqual(fill['side'],'SELL')
+        self.assertEqual(fill['basis'],'EXPLICIT_ADVERSE_TICK_SENSITIVITY')
+        self.assertEqual(fill['input_evidence_basis'],'SYNTHETIC_TEST_QUOTE')
+        self.assertFalse(fill['actual_fill'])
     def test_completed_breakout_retest_reaches_engine_buy_fill_and_real_exit_functions(self):
         original,sig=self.prepare()
         order=self.account.enter(sig)

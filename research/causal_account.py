@@ -105,9 +105,17 @@ class QuoteReplayBroker:
             order=next(x for x in e.s['orders'].values() if x['id']==oid)
             e.cumulative_fill(order,o['filled'],o['amount'])
             changed=True
+            if self.adverse_ticks:
+                fill_basis='EXPLICIT_ADVERSE_TICK_SENSITIVITY'
+            elif frame.basis=='MEASURED_PAIRED_TRADE_QUOTE':
+                fill_basis='MEASURED_L1_MARKETABLE_SIMULATION'
+            elif frame.basis=='SYNTHETIC_TEST_QUOTE':
+                fill_basis='SYNTHETIC_TEST_L1_SIMULATION'
+            else:
+                fill_basis='UNKNOWN_OR_UNVERIFIED_L1_SIMULATION'
             self.fills.append({'at':frame.available_at.isoformat(),'side':side,'symbol':t.symbol,
                 'qty':qty,'price':price,'order':oid,'source_id':frame.source_id,
-                'basis':'MEASURED_L1_MARKETABLE_SIMULATION' if not self.adverse_ticks else 'EXPLICIT_ADVERSE_TICK_SENSITIVITY',
+                'basis':fill_basis,'input_evidence_basis':frame.basis,
                 'latency_ms':self.latency.total_seconds()*1000,'actual_fill':False})
         # Reconciliation and cancel acknowledgement use the real state machine.
         # Holdings reflect only prior simulated fills, never a future close.
