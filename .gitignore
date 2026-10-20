@@ -38,6 +38,12 @@
 !/tools/repo_guard.py
 !/tools/setup_local.py
 !/tools/export_source.py
+!/tools/validate_versions.py
+!/VERSION_HISTORY.md
+!/VERSION_POLICY.md
+!/VERSION_INDEX.json
+!/BRANCH_HISTORY.md
+!/AGENTS.md
 
 # Reviewed current sources and public documentation
 !/AUDIT_REPORT.md
