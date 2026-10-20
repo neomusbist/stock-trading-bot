@@ -184,18 +184,21 @@ class ReferenceTests(unittest.TestCase):
         self.assertEqual(len(selected),14);self.assertTrue(set(map(str,range(12)))<=set(selected))
         self.assertEqual(len(context_targets([],rows,'KRX',AT+timedelta(seconds=6))),0)
     def test_moving_affordable_raw_gets_bounded_early_status_admission(self):
-        worker=object.__new__(RadarWorker);worker.a=AUTO;worker.radar=SimpleNamespace(watch={})
+        worker=object.__new__(RadarWorker);worker.a=AUTO;worker.radar=SimpleNamespace(watch={},weak={},policy=SimpleNamespace(locked=lambda s:False),affordable=lambda r:True)
         worker.status_waiting={};worker.status_sequence=0;worker.status_cache={};worker.status_priority_symbols=frozenset(str(i) for i in range(12))
         rows=[{'code':str(i),'source_details':{'s':{}},'discovery_context':{'last_cycle_return':.012 if i==55 else 0}} for i in range(85)]
         with patch('automation.radar.now',return_value=AT):order=worker.scheduled_items(rows)
         self.assertEqual([x['code'] for x in order[:12]],list(map(str,range(12))))
         self.assertEqual(order[12]['code'],'55');self.assertEqual(order[13]['code'],'12')
         self.assertEqual(len(order),85)
-        worker.status_cache['55']={'checked_at':AT.isoformat()}
+        worker.status_cache['55']={'checked_at':AT.isoformat(),'pass':True}
         with patch('automation.radar.now',return_value=AT):order=worker.scheduled_items(rows)
-        self.assertEqual(order[12]['code'],'12')
+        # Cheap fresh cache reuse is evaluated before the first admission HTTP;
+        # it consumes no part of the aging floor or the 20-query scan budget.
+        self.assertEqual(order[12]['code'],'55')
+        self.assertEqual(order[13]['code'],'12')
     def test_recently_discovered_rising_rank_is_admitted_before_its_next_delta(self):
-        worker=object.__new__(RadarWorker);worker.a=AUTO;worker.radar=SimpleNamespace(watch={})
+        worker=object.__new__(RadarWorker);worker.a=AUTO;worker.radar=SimpleNamespace(watch={},weak={},policy=SimpleNamespace(locked=lambda s:False),affordable=lambda r:True)
         worker.status_waiting={};worker.status_sequence=0;worker.status_cache={};worker.status_priority_symbols=frozenset()
         rows=[{'code':str(i),'source_details':{'s':{'values':{'flu_rt':5.81}}},'first_raw_at':(AT-timedelta(minutes=10)).isoformat()} for i in range(85)]
         rows[55]['first_raw_at']=(AT-timedelta(seconds=20)).isoformat()

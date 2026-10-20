@@ -60,7 +60,8 @@ class PriceContext:
             row['context_venue']=venue
         if row['bars'] and stamp<=row['bars'][-1]['time']:return False
         row['bars'].append({**{k:deepcopy(bar[k]) for k in ('time','open','high','low','close')},
-            'first_second':bar.get('first_second',0),'gap_reason':bar.get('gap_reason')})
+            'first_second':bar.get('first_second',0),'gap_reason':bar.get('gap_reason'),
+            'observation_source':bar.get('observation_source','REFERENCE_UNKNOWN')})
         if self.bar_limit>30 and 'volume' in bar:row['bars'][-1]['volume']=bar['volume']
         row['last_complete_at']=(stamp+timedelta(minutes=1)).isoformat()
         # Retain the reference and its clearance evidence. A completed close over
@@ -83,7 +84,7 @@ class PriceContext:
         if self.day!=received.date():self.rows.clear();self.day=received.date()
         prior=self.rows.get(symbol)
         if prior and prior.get('context_venue')!=venue:prior=None
-        merged={b['time']:dict(b) for b in bars}
+        merged={b['time']:{**b,'observation_source':'REST_REFERENCE'} for b in bars}
         last_rest=max(merged,default=None)
         if prior:merged.update({b['time']:dict(b) for b in prior['bars'] if last_rest is None or b['time']>last_rest})
         self.rows.pop(symbol,None)

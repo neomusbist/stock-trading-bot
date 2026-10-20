@@ -80,3 +80,10 @@ def tick_freshness(tick, asof, stale_seconds):
     return market_freshness(getattr(tick, 'time', None), asof, stale_seconds,
                             received_at=getattr(tick, 'received_at', None),
                             received_monotonic=getattr(tick, 'received_monotonic', None))
+
+
+def book_freshness(tick, asof, stale_seconds):
+    """Keep the book's own receipt clock; a later trade cannot refresh it."""
+    return market_freshness(getattr(tick, 'book_time', None), asof, stale_seconds,
+                            received_at=getattr(tick, 'book_received_at', None),
+                            received_monotonic=getattr(tick, 'book_received_monotonic', None))

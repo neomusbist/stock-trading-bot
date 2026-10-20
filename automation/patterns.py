@@ -28,6 +28,7 @@ class PatternDetector(Detector):
         self._eval_keys={}
         self.continuous_observation=False
         self.last_gap_reason={}
+        self.coverage_gaps={}
         self.observation_start={}; self.observation_session={}
         self._state_lock=RLock()
         self.price_context=PriceContext(bar_limit=120 if auto.intraday_context_enabled or auto.structural_breakout_enabled else 30)
@@ -37,14 +38,21 @@ class PatternDetector(Detector):
         super().reset(); self.history.clear(); self.current.clear(); self.day_high.clear(); self.prior_high.clear()
         self.after_day_high.clear(); self.after_prior_high.clear()
         self.last_eval.clear(); self.last_gap_reason.clear()
+        self.coverage_gaps.clear()
         self._eval_keys.clear()
         self.observation_start.clear(); self.observation_session.clear()
 
     @observation_locked
     def ingest(self,t,received):
         if (not supported(t.time) and not after_supported(t.time)) or (not supported(received) and not after_supported(received)): return False
+        gap=self.coverage_gaps.get(t.symbol)
+        if gap and received<=gap['at']:return False
+        resuming=bool(gap and gap.get('pending'))
         old=self.last.get(t.symbol)
         if not super().ingest(t,received,preserve_observation=self.continuous_observation): return False
+        if resuming:
+            gap['pending']=False
+            self.observation_start[t.symbol]=t.time
         if old and (t.time-old.time).total_seconds()>self.cfg.stale_seconds and not self.continuous_observation:
             self.history.pop(t.symbol,None); self.current.pop(t.symbol,None)
             self.last_gap_reason[t.symbol]='DISCONNECT_GAP'
@@ -89,9 +97,28 @@ class PatternDetector(Detector):
                'tick_count':0,'coverage_start':minute.isoformat(),
                'coverage_end':(minute+timedelta(seconds=60)).isoformat(),
                'local_drop_count':0,'gap_reason':gap_reason}
+            b['observation_source']='ACTUAL_RECEIVED'
             self.current[t.symbol]=b
+        if resuming:
+            # Retained bars are references, not evidence for an unobserved
+            # interval. The first resumed minute is explicitly partial.
+            b['gap_reason']=gap['reason']
+            b['coverage_resumed_at']=received.isoformat()
         b['high']=max(b['high'],t.price); b['low']=min(b['low'],t.price); b['close']=t.price; b['volume']+=t.volume
         b['last_second']=t.time.second; b['last_trade_time']=t.time.isoformat(); b['tick_count']+=1
+        return True
+
+    @observation_locked
+    def mark_coverage_gap(self,symbol,at,reason='SUBSCRIPTION_GAP'):
+        """Invalidate entry continuity without deleting genuine completed bars."""
+        prior=self.coverage_gaps.get(symbol)
+        if prior and at<=prior['at']:return False
+        self.coverage_gaps[symbol]={'at':at,'reason':reason,'pending':True}
+        self.last_gap_reason[symbol]=reason
+        for mapping in (self.buffers,self.minutes,self.completed):mapping.pop(symbol,None)
+        current=self.current.get(symbol)
+        if current is not None:current['gap_reason']=reason
+        self.last_eval.pop(symbol,None);self._eval_keys.pop(symbol,None)
         return True
 
     def pullback(self,bars):
@@ -151,11 +178,12 @@ class PatternDetector(Detector):
 
     @observation_locked
     def usable_bars(self,symbol,after_only=False):
+        if self.coverage_gaps.get(symbol,{}).get('pending'):return []
         bars=list(self.history.get(symbol,()))
         if not bars:return []
         cur=self.current.get(symbol)
         if cur is not None:
-            if cur.get('gap_reason')=='MISSING_MINUTE' or (cur['time']-bars[-1]['time']).total_seconds()!=60:
+            if cur.get('gap_reason') is not None or (cur['time']-bars[-1]['time']).total_seconds()!=60:
                 return []
         valid=[]
         for bar in reversed(bars):
@@ -215,7 +243,12 @@ class PatternDetector(Detector):
         row = self.price_context.rows.get(symbol)
         if not row or not row.get('bars'):
             return 0
-        bars = [b for b in row['bars'] if isinstance(b.get('time'), datetime) and b['time'].date() == asof.date() and b['time'] + timedelta(minutes=1) <= asof]
+        # REST/reference bars may bound a target, but cannot stand in for
+        # receiver-built signal bars or bridge a known subscription gap.
+        gap=self.coverage_gaps.get(symbol)
+        if gap:return 0
+        bars = [b for b in row['bars'] if b.get('observation_source')=='ACTUAL_RECEIVED'
+                and isinstance(b.get('time'), datetime) and b['time'].date() == asof.date() and b['time'] + timedelta(minutes=1) <= asof]
         if not bars:
             return 0
         valid_bars = []
@@ -242,12 +275,13 @@ class PatternDetector(Detector):
     def forget(self,symbol):
         for mapping in (self.buffers,self.minutes,self.completed,self.last,self.history,self.current,self.day_high,self.prior_high,self.after_day_high,self.after_prior_high,self.last_eval,self.observation_start,self.observation_session):mapping.pop(symbol,None)
         self._eval_keys.pop(symbol,None)
+        self.coverage_gaps.pop(symbol,None)
 
     def handoff_from(self,source,symbol):
         if source is None or source is self or not hasattr(getattr(source, '_state_lock', None), '__enter__'):return False
         names=('history','buffers','current','minutes','completed','observation_start',
                'observation_session','day_high','prior_high','after_day_high',
-               'after_prior_high','last','last_gap_reason')
+               'after_prior_high','last','last_gap_reason','coverage_gaps')
         # Never hold both detector locks: promotion and demotion can run concurrently.
         with source._state_lock:
             src_fast=getattr(source,'fast_strategy',None)
@@ -262,6 +296,9 @@ class PatternDetector(Detector):
             if has_ref:
                 reference.rows[symbol]=deepcopy(source.price_context.rows[symbol])
         with self._state_lock:
+            own_gap=self.coverage_gaps.get(symbol)
+            src_gap=snapshot.get('coverage_gaps')
+            if own_gap and (src_gap is None or src_gap['at']<own_gap['at']):return False
             if has_ref:
                 self.price_context.transfer(reference,symbol)
             tgt_fast=getattr(self,'fast_strategy',None)
