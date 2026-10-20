@@ -115,7 +115,11 @@ class PatternDetector(Detector):
         if prior and at<=prior['at']:return False
         self.coverage_gaps[symbol]={'at':at,'reason':reason,'pending':True}
         self.last_gap_reason[symbol]=reason
-        for mapping in (self.buffers,self.minutes,self.completed):mapping.pop(symbol,None)
+        # Keep the retained observation container stable for short detach/rejoin
+        # handoffs, but never reuse pre-gap prints as an acceleration baseline.
+        buffer=self.buffers.get(symbol)
+        if buffer is not None:buffer.clear()
+        for mapping in (self.minutes,self.completed):mapping.pop(symbol,None)
         current=self.current.get(symbol)
         if current is not None:current['gap_reason']=reason
         self.last_eval.pop(symbol,None);self._eval_keys.pop(symbol,None)

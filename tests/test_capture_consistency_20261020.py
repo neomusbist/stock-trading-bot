@@ -42,9 +42,11 @@ class CoverageTests(unittest.TestCase):
 
     def test_gap_preserves_closed_bars_but_rejects_false_continuity(self):
         self.history();d=self.detector
-        before=list(d.history[SYM]);gap=AT+timedelta(seconds=186)
+        before=list(d.history[SYM]);buffer=d.buffers[SYM];gap=AT+timedelta(seconds=186)
         d.mark_coverage_gap(SYM,gap)
         self.assertEqual(list(d.history[SYM]),before)
+        self.assertIs(d.buffers[SYM],buffer)
+        self.assertEqual(list(buffer),[])
         self.assertEqual(d.usable_bars(SYM),[])
         self.assertTrue(self.feed(gap+timedelta(seconds=2)))
         self.assertEqual(d.usable_bars(SYM),[])
@@ -56,7 +58,7 @@ class CoverageTests(unittest.TestCase):
         self.detector.mark_coverage_gap(SYM,gap,'OBSERVATION_QUEUE_GAP')
         self.assertFalse(self.feed(gap-timedelta(seconds=1)))
         self.assertFalse(self.feed(gap))
-        self.assertNotIn(SYM,self.detector.buffers)
+        self.assertEqual(list(self.detector.buffers[SYM]),[])
 
     def test_recovery_requires_new_consecutive_complete_minutes(self):
         self.history();gap=AT+timedelta(seconds=186)
