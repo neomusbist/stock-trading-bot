@@ -137,7 +137,10 @@ class SubscriptionRefreshTests(unittest.TestCase):
         self.warm();self.feed.observation_drops=1
         with patch('automation.runner.now',return_value=self.clock):
             dropped,_=prewarm_handoff(self.e,self.d,self.feed,{SYM},set(),set(),0,Mock())
-        self.assertEqual(dropped,1);self.assertNotIn(SYM,self.d.history)
+        # Known queue loss invalidates continuity, not already completed bars.
+        self.assertEqual(dropped,1);self.assertEqual(len(self.d.history[SYM]),2)
+        self.assertEqual(self.d.usable_bars(SYM),[])
+        self.assertEqual(self.d.base_gates(self.d.last[SYM],self.watch)['warmup']['result'],'FAIL')
         shadow=ShadowObserver(self.cfg,self.auto,self.e.costs,Mock());shadow.detector.continuous_observation=True
         row={'code':SYM,'status':'REJECT','source_count':1,'reference_price':10000,'affordability':{'entry_eligible':True},'market_status':{'pass':True}}
         shadow.update([row],START);shadow.detector.ingest(self.tick(),START);buf=shadow.detector.buffers[SYM]
