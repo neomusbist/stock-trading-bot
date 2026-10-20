@@ -42,6 +42,14 @@
 !/tools/export_source.py
 !/tools/preflight_live_check.py
 !/tools/recovery_guard.py
+!/tools/reproduce_89_signals.py
+!/tools/full_universe_backtest.py
+!/tools/account_level_replay.py
+!/tools/eval_1019_theoretical.py
+!/tools/build_1019_bars.py
+!/tools/run_all_replays.py
+!/audit_data/
+!/audit_data/**
 
 # Reviewed current sources and public documentation
 !/AUDIT_REPORT.md
