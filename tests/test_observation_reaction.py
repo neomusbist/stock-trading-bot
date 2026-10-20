@@ -94,7 +94,16 @@ class ObservationReactionTests(unittest.TestCase):
         t=self.tick(126,100000)
         with patch.object(observer.detector,'evaluation_snapshot',side_effect=concurrent_handoff):observer.tick(t,t.time)
         evaluation=next(data for kind,data in records if kind=='SHADOW_EVAL')
-        self.assertEqual(len(evaluation['setup_trials']),3)
+        # AG added an independent LB research trial after this ABC handoff
+        # regression was written. Preserve all three ABC assertions and check
+        # the extra diagnostic separately instead of counting it as an order.
+        abc=[trial for trial in evaluation['setup_trials'] if trial['setup'] in {'A','B','C'}]
+        lb=[trial for trial in evaluation['setup_trials'] if trial['setup']=='LB']
+        self.assertEqual(len(abc),3)
+        self.assertEqual({trial['setup'] for trial in abc},{'A','B','C'})
+        self.assertEqual(len(lb),1)
+        self.assertFalse(lb[0]['entry_ready'])
+        self.assertTrue(lb[0]['failed_reasons'])
         self.assertFalse(evaluation['actual_order_permission'])
         self.assertTrue(evaluation['SHADOW_ONLY'])
     def test_verified_candidate_published_before_blocking_history_fetch(self):

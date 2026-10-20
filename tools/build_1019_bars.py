@@ -15,12 +15,13 @@ from research.causal_data import read_frames,file_sha,json_values
 
 
 def build(paths,day):
+    limits={str(p):Path(p).stat().st_size for p in paths}
     rows=defaultdict(dict);current={};stats=Counter();prior={}
     def finish(symbol,bar,known):
         bar=dict(bar);bar['available_at']=known;bar['observation_source']='SAMPLED_JOURNAL_REFERENCE'
         bar['gap_reason']='SELECTED_JOURNAL_NOT_FULL_RECEIVER_COVERAGE'
         rows[symbol][bar['time']]=bar
-    for f in read_frames(paths,day,stats=stats):
+    for f in read_frames(paths,day,stats=stats,limits=limits):
         t=f.tick;minute=t.time.replace(second=0,microsecond=0);b=current.get(t.symbol)
         previous=prior.get(t.symbol)
         if previous and t.cumulative<=previous.cumulative:stats['DUPLICATE_OR_REVERSED_CUMULATIVE']+=1;continue
@@ -37,9 +38,9 @@ def build(paths,day):
     # EOF is not proof that the current minute was complete. Retain separately
     # with UNKNOWN availability instead of creating a fake close-time fill.
     result={'day':day,'rows':{s:{'bars':[bs[k] for k in sorted(bs)]} for s,bs in rows.items()},
-        'unconfirmed_eof_bars':list(current.values()),'source':'SAMPLED_JOURNAL_REFERENCE_ONLY',
+        'unconfirmed_eof_bars':[{'symbol':s,**b} for s,b in current.items()],'source':'SAMPLED_JOURNAL_REFERENCE_ONLY',
         'counts':dict(stats),'tradeability':'UNKNOWN','actual_order_permission':False,
-        'inputs':[{'name':Path(p).name,'sha256':file_sha(p)} for p in paths]}
+        'inputs':[{'name':Path(p).name,'frozen_bytes':limits[str(p)],'sha256_prefix':file_sha(p,limits[str(p)])} for p in paths]}
     return json_values(result)
 
 
