@@ -108,7 +108,7 @@ class ObservationReactionTests(unittest.TestCase):
         self.assertTrue(evaluation['SHADOW_ONLY'])
     def test_verified_candidate_published_before_blocking_history_fetch(self):
         worker=ObservationWorker(self.cfg,self.auto,self.costs,self.root);worker.clock=lambda:START
-        row=self.row();row['market_status']={'pass':True};published=[]
+        row=self.row();row['market_status']={'pass':True,'checked_at':START.isoformat()};published=[]
         def publish(rows,stamp,capital):
             worker.publish(rows,stamp,capital);published.append(rows)
         def chart(*args):
@@ -124,7 +124,7 @@ class ObservationReactionTests(unittest.TestCase):
         self.assertEqual(published[0][0]['shadow_view']['status'],'UNKNOWN')
     def test_cached_normal_candidate_not_delayed_by_other_status_query(self):
         rest=Mock();worker=ObservationWorker(self.cfg,self.auto,self.costs,self.root,rest);worker.clock=lambda:START
-        worker.metadata[SYM]={'checked':START,'status':{'pass':True}}
+        worker.metadata[SYM]={'checked':START,'status':{'pass':True,'checked_at':START.isoformat()}}
         def check(symbol):
             self.assertIn(SYM,worker.runtime_view()['symbols']);return {'pass':False}
         rest.stock_status.side_effect=check

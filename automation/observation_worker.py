@@ -286,6 +286,16 @@ class ObservationWorker:
             while len(self.daily_cache)>2*self.observer.limit:self.daily_cache.popitem(last=False)
         else:self.daily_cache.pop(symbol,None)
         return bars
+    @staticmethod
+    def _status_checked_at(status,clock):
+        try:
+            checked=datetime.fromisoformat(status['checked_at'])
+            if checked.tzinfo is None or checked.date()!=clock.date() or (clock-checked).total_seconds() < -1:
+                return None
+            return checked
+        except (KeyError,TypeError,ValueError):
+            return None
+
     def prepare(self,rows,stamp,capital,allow_metadata=True,publish=True,progress=None):
         started=time.perf_counter(); clock=datetime.fromisoformat(stamp) if isinstance(stamp,str) else stamp
         eligible=[r for r in rows if r.get('affordability',{}).get('entry_eligible') is True
@@ -297,29 +307,45 @@ class ObservationWorker:
             # Admission collects observations only. Missing daily structure stays
             # UNKNOWN; this does not make a raw candidate eligible for an order.
             row['shadow_view']={**row.get('shadow_view',{'status':'UNKNOWN'}),'market_status':saved['status']}
+        def cache_status(sym,saved,status):
+            status=dict(status)
+            checked=self._status_checked_at(status,clock)
+            prior=self._status_checked_at((saved or {}).get('status',{}),clock)
+            # A repeated older Radar snapshot cannot roll back a newer check.
+            if checked is not None and prior is not None and checked<prior:
+                saved={**saved,'checked':prior};self.metadata[sym]=saved
+                return saved
+            if checked is None:
+                status={**status,'pass':False,'reason_code':'MARKET_STATUS_CHECK_TIME_UNKNOWN'}
+            saved={**(saved or {}),'checked':checked,'status':status}
+            self.metadata[sym]=saved
+            return saved
+        def fresh(saved):
+            checked=(saved or {}).get('checked')
+            return checked is not None and 0<=(clock-checked).total_seconds()<=self.settings.metadata_ttl_seconds
         # Publish already verified candidates before unrelated REST/chart calls.
         for row in eligible:
             saved=self.metadata.get(row['code'])
             if row.get('market_status'):
-                saved={**(saved or {}),'checked':clock,'status':row['market_status']};self.metadata[row['code']]=saved
-            if saved and 0<=(clock-saved['checked']).total_seconds()<=self.settings.metadata_ttl_seconds:
+                saved=cache_status(row['code'],saved,row['market_status'])
+            if fresh(saved):
                 admit(row,saved)
         if progress:progress(deepcopy(rows),clock,dict(capital))
         attempts=0;chart_attempted=False
         for row in eligible:
             sym=row['code']; saved=self.metadata.get(sym)
             if row.get('market_status'):
-                saved={**(saved or {}),'checked':clock,'status':row['market_status']}; self.metadata[sym]=saved
-            if saved is None or (clock-saved['checked']).total_seconds()>self.settings.metadata_ttl_seconds:
+                saved=cache_status(sym,saved,row['market_status'])
+            if not fresh(saved):
                 if not self.rest or not allow_metadata or attempts>=self.settings.metadata_budget:continue
                 # 같은 API 키의 호출 대기를 제한한다. 봇 포지션/미체결 중에는 새 진단 조회를 시작하지 않는다.
                 attempts+=1; self.apis+=1
                 try:
                     status=self.rest.stock_status(sym)
-                    saved={**(saved or {}),'checked':clock,'status':status}; self.metadata[sym]=saved
+                    saved=cache_status(sym,saved,status)
                 except Exception as error:
                     self.event('SHADOW_METADATA_ERROR',timestamp=clock.isoformat(),symbol=sym,SHADOW_ONLY=True,**exception_details(error));continue
-            if saved['status'].get('pass') is not True:continue
+            if not fresh(saved) or saved['status'].get('pass') is not True:continue
             admit(row,saved)
             if progress:progress(deepcopy(rows),clock,dict(capital))
             path=self.root/'data/raw'/f'{sym}_daily.csv'

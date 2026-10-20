@@ -191,13 +191,20 @@ class AutonomousEngine(ExistingExits,Engine):
         risk_qty=int(risk_budget//unit) if unit>0 else 0
         fresh=self.capital_account_valid()
         qty=max(0,min(cash_qty,risk_qty)) if fresh and valid else 0
+        planned=signal.get('planned_qty')
+        planned_valid=planned is None or (type(planned) is int and planned>=0)
+        if not planned_valid:
+            qty=0
+        elif planned is not None:
+            qty=min(qty,planned)
         reason=('ACCOUNT_CAPITAL_UNAVAILABLE' if not fresh else 'INVALIDATION_UNKNOWN_OR_INVALID' if not valid else
+                'INVALID_PLANNED_QUANTITY' if not planned_valid else 'STRATEGY_ZERO_QUANTITY' if planned==0 else
                 'CAP_EXHAUSTED' if amount<=0 else 'ONE_SHARE_UNAFFORDABLE' if cash_qty==0 else
                 'RISK_BUDGET_ZERO_QTY' if risk_qty==0 else 'QUANTITY_AVAILABLE')
         return {'quantity':qty,'reason_code':reason,'capital_quantity':cash_qty,'risk_quantity':risk_qty,
                 'effective_auto_cap':self.auto_available_capital(),'entry_budget':amount,
                 'risk_budget':risk_budget,'risk_per_share':unit,'one_share_cost':entry*(1+self.a.commission_buy),
-                'account_fresh':fresh}
+                'account_fresh':fresh,'strategy_quantity':planned if planned_valid else None}
 
     def new_entry_reason(self,symbol):
         try:
@@ -582,6 +589,7 @@ class AutonomousEngine(ExistingExits,Engine):
                 'session':sess,'venue':venue}
         signal.update(entry_build_id=BUILD_ID,entry_strategy_version=STRATEGY_VERSION,
                       entry_strategy_experiment=STRATEGY_EXPERIMENT)
+        signal.setdefault('strategy_planned_qty',signal.get('planned_qty'))
         signal['planned_qty']=qty
         fast_signal = signal.get('pattern') == 'FAST'
         sig_time_raw = signal.get('signal_detected_at') or signal.get('time')

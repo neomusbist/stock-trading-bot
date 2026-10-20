@@ -23,7 +23,7 @@ from automation.patterns import PatternDetector
 from automation.fast_momentum import FastMomentumStrategy
 from automation.local_breakout import LocalBreakoutStrategy
 from research.retest_strategy import ConfirmedRetestStrategy, paper_engine_signal
-from research.causal_data import aware, finite, known_signal_bars
+from research.causal_data import aware, finite, known_signal_bars, bar_evidence
 
 
 class BaseStrategyAdapter:
@@ -44,6 +44,10 @@ class BaseStrategyAdapter:
         """Called when a real trade/quote tick arrives."""
         pass
 
+    def mark_coverage_gap(self, symbol: str, at: datetime, reason='SUBSCRIPTION_GAP') -> None:
+        """Stateless adapters receive post-gap bars from the replay history."""
+        pass
+
     def evaluate(self, t: Tick, bars: list, watch: Dict[str, Any],
                  capital_limit: float, risk_budget: float, asof: datetime) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
         """Evaluate strategy. Returns (engine_signal, detail)."""
@@ -60,36 +64,48 @@ class _BaseABCAdapter(BaseStrategyAdapter):
         self.detector.continuous_observation = True
 
     def ingest_bar(self, known: datetime, sym: str, b: Dict[str, Any]) -> None:
-        self.detector.history.setdefault(sym, deque(maxlen=30)).append(b)
-        self.detector.price_context.record(sym, b, b['time'], self.cfg.stale_seconds)
+        known = aware(known)
+        bar = deepcopy(b)
+        if known is None:
+            return
+        bar.setdefault('available_at', known.isoformat())
+        evidence = bar_evidence(bar)
+        if not evidence['signal_source_verified'] or evidence['available_at'] > known:
+            self.rejection_counts['CAPTURE_BAR_UNAVAILABLE_OR_INVALID'] += 1
+            return
+        history = self.detector.history.setdefault(sym, deque(maxlen=30))
+        prior = next((old for old in history if old['time'] == bar['time']), None)
+        if prior is not None:
+            if any(prior.get(k) != bar.get(k) for k in ('open', 'high', 'low', 'close', 'volume')):
+                self.rejection_counts['CONFLICTING_COMPLETED_BAR'] += 1
+            return
+        if not history or bar['time'] > history[-1]['time']:
+            history.append(bar)
+        self._deduplicate_history(sym)
+        # The release time, rather than the minute label, is when this input
+        # becomes available. PriceContext itself rejects duplicate references.
+        self.detector.price_context.record(sym, bar, known, self.cfg.stale_seconds)
+
+    def _deduplicate_history(self, symbol):
+        history = self.detector.history.get(symbol)
+        if not history:
+            return
+        unique = {}
+        for bar in history:
+            prior = unique.get(bar['time'])
+            if prior is not None:
+                if any(prior.get(k) != bar.get(k) for k in ('open', 'high', 'low', 'close', 'volume')):
+                    self.rejection_counts['CONFLICTING_COMPLETED_BAR'] += 1
+                continue  # Keep the first genuine observation; never rewrite it.
+            unique[bar['time']] = bar
+        self.detector.history[symbol] = deque((unique[key] for key in sorted(unique)), maxlen=30)
 
     def ingest_tick(self, t: Tick, received: datetime) -> None:
-        ingested = self.detector.ingest(t, received)
-        if not ingested:
-            # Fallback for synthetic/out-of-session test ticks: accumulate into current bar without destroying OHLC
-            minute = t.time.replace(second=0, microsecond=0)
-            self.detector.buffers.setdefault(t.symbol, deque(maxlen=300)).append(t)
-            self.detector.observation_start.setdefault(t.symbol, t.time)
-            self.detector.day_high[t.symbol] = max(t.price, self.detector.day_high.get(t.symbol, t.price))
-            self.detector.prior_high.setdefault(t.symbol, t.price)
-            b = self.detector.current.get(t.symbol)
-            if b is None or b.get('time') != minute:
-                if b is not None and (minute - b['time']).total_seconds() == 60:
-                    self.detector.history.setdefault(t.symbol, deque(maxlen=30)).append(b)
-                    self.detector.price_context.record(t.symbol, {**b, 'venue': 'KRX'}, t.time, self.cfg.stale_seconds)
-                b = {
-                    'time': minute, 'open': t.price, 'high': t.price, 'low': t.price, 'close': t.price,
-                    'volume': t.volume, 'observation_source': 'ACTUAL_RECEIVED', 'tick_count': 1,
-                    'first_second': t.time.second, 'last_second': t.time.second, 'gap_reason': None
-                }
-                self.detector.current[t.symbol] = b
-            else:
-                b['high'] = max(b['high'], t.price)
-                b['low'] = min(b['low'], t.price)
-                b['close'] = t.price
-                b['volume'] += t.volume
-                b['tick_count'] = b.get('tick_count', 0) + 1
-                b['last_second'] = t.time.second
+        if self.detector.ingest(t, received):
+            self._deduplicate_history(t.symbol)
+
+    def mark_coverage_gap(self, symbol: str, at: datetime, reason='SUBSCRIPTION_GAP') -> None:
+        self.detector.mark_coverage_gap(symbol, at, reason)
 
     def evaluate(self, t: Tick, bars: list, watch: Dict[str, Any],
                  capital_limit: float, risk_budget: float, asof: datetime) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
@@ -185,6 +201,9 @@ class StrategyFastAdapter(BaseStrategyAdapter):
 
     def ingest_tick(self, t: Tick, received: datetime) -> None:
         self.fast_strategy.ingest_tick(t, received)
+
+    def mark_coverage_gap(self, symbol: str, at: datetime, reason='SUBSCRIPTION_GAP') -> None:
+        self.fast_strategy.forget(symbol, reason)
 
     def evaluate(self, t: Tick, bars: list, watch: Dict[str, Any],
                  capital_limit: float, risk_budget: float, asof: datetime) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:

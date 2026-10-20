@@ -38,12 +38,20 @@ def capture_metadata(paths,day,limits=None):
         for line in frozen_lines(path,(limits or {}).get(str(path))):
             try:r=json.loads(line)
             except ValueError:stats['MALFORMED_CAPTURE_JSON']+=1;continue
-            stamp=aware(r.get('asof') or r.get('at') or r.get('processed_at') or r.get('received_at'))
+            stamp=aware(r.get('asof') or r.get('at') or r.get('processed_at') or r.get('received_at')
+                        or r.get('timestamp') or r.get('time'))
             if not stamp or stamp.date().isoformat()!=day:continue
             if not '09:00:00'<=stamp.strftime('%H:%M:%S')<'15:30:00':continue
             ev=r.get('event');stats[ev]+=1
             session=r.get('capture_session','UNKNOWN')
             sessions[session]=max(sessions.get(session,0),r.get('capture_losses',0))
+            gap_events={'OBSERVATION_RELEASED','OBSERVATION_DATA_GAP','SHADOW_DATA_RESET',
+                        'SHADOW_STREAM_RESET','SHADOW_QUEUE_GAP','SHADOW_SEQUENCE_GAP'}
+            if ev in gap_events or (ev=='OBSERVATION_REJOINED' and finite(r.get('subscription_gap_seconds'))):
+                events.append((stamp,str(r.get('symbol') or ''),{
+                    'event':'COVERAGE_GAP','reason':ev,'symbols':r.get('symbols'),
+                    'capture_session':session}))
+                continue
             if ev!='OPPORTUNITY_SAMPLE':continue
             key=(session,r.get('capture_sequence'))
             if key in seen_samples:continue
@@ -89,10 +97,26 @@ class HypothesisReplay:
         self.watch={};self.evaluated={};self.episodes={k:{} for k in self.strategies}
         self.reasons={k:Counter() for k in self.strategies};self.quote_reasons=Counter();self.delays=Counter()
         self.seen=Counter();self.invalidations=Counter();self.frame_count=0;self.first=None;self.last=None
+        self.coverage_after={};self.global_coverage_after=None
+
+    def coverage_gap(self,stamp,symbol,meta):
+        targets={symbol} if symbol else set(meta.get('symbols') or ())
+        if not targets:
+            self.global_coverage_after=max(self.global_coverage_after or stamp,stamp)
+            targets=set(self.history)|set(self.watch)|set(self.seen)
+        for sym in targets:
+            if stamp<=self.coverage_after.get(sym,stamp-timedelta(microseconds=1)):continue
+            self.coverage_after[sym]=stamp
+            self.history.pop(sym,None)
+            for adapter in self.strategies.values():
+                adapter.mark_coverage_gap(sym,stamp,meta['reason'])
+        self.invalidations[meta['reason']]+=1
 
     def bar(self,known,sym,b):
+        gap=self.coverage_after.get(sym) or self.global_coverage_after
+        if gap and b['time']<=gap.replace(second=0,microsecond=0):return False
         h=self.history[sym]
-        if h and b['time']<=h[-1]['time']:return
+        if h and b['time']<=h[-1]['time']:return False
         h.append(b)
         for peak in self.peaks[sym]:
             if not peak.get('cleared_at') and b['close']>peak['price']:peak['cleared_at']=known
@@ -106,9 +130,12 @@ class HypothesisReplay:
                     'available_at':known.isoformat(),'observation_source':'ACTUAL_RECEIVED'})
         for adapter in self.strategies.values():
             adapter.ingest_bar(known,sym,b)
+        return True
 
     def frame(self,f,new_bars=()):
         t=f.tick;at=f.available_at;self.frame_count+=1
+        if self.global_coverage_after and t.symbol not in self.coverage_after:
+            self.coverage_gap(self.global_coverage_after,t.symbol,{'reason':'GLOBAL_OBSERVATION_GAP'})
         self.first=self.first or at;self.last=at;self.seen[t.symbol]+=1
         delay=(at-f.received_at).total_seconds()
         self.delays['<=1s' if delay<=1 else '<=5s' if delay<=5 else '>5s']+=1
@@ -167,6 +194,7 @@ class HypothesisReplay:
     def result(self):
         return {'clock_basis':self.clock_basis,'first':self.first,'last':self.last,
             'frames':self.frame_count,'observed_symbols':len(self.seen),
+            'coverage_invalidations':dict(self.invalidations),
             'receipt_to_processing_histogram':dict(self.delays),'quote_status':dict(self.quote_reasons),
             'policies':{key:{'independent_structural_candidates':len(self.episodes[key]),
                 'episodes':list(self.episodes[key].values()),'rejections':dict(self.reasons[key]),
@@ -192,10 +220,20 @@ def run_replay(tick_paths,capture_paths,day,cfg,auto,**kwargs):
     try:
         for f in read_frames(tick_paths,day,clock_basis=kwargs.get('clock_basis','processed'),stats=stats,limits=limits):
             released=[]
-            while bi<len(bars) and bars[bi][0]<=f.available_at:
-                known,sym,b=bars[bi];replay.bar(known,sym,b);released.append((sym,b));bi+=1
-            while mi<len(metadata) and metadata[mi][0]<=f.available_at:
-                stamp,sym,meta=metadata[mi];replay.watch[sym]=meta;mi+=1
+            # Merge releases by actual availability. A gap at the same time is
+            # applied before bars, so delayed capture records cannot bridge it.
+            while True:
+                next_bar=bars[bi][0] if bi<len(bars) else None
+                next_meta=metadata[mi][0] if mi<len(metadata) else None
+                if next_meta is not None and next_meta<=f.available_at and (next_bar is None or next_meta<=next_bar):
+                    stamp,sym,meta=metadata[mi];mi+=1
+                    if meta.get('event')=='COVERAGE_GAP':
+                        replay.coverage_gap(stamp,sym,meta)
+                    else:replay.watch[sym]=meta
+                elif next_bar is not None and next_bar<=f.available_at:
+                    known,sym,b=bars[bi];bi+=1
+                    if replay.bar(known,sym,b):released.append((sym,b))
+                else:break
             replay.frame(f,released)
         result=replay.result()
     finally:replay.close()
