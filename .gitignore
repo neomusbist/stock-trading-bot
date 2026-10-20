@@ -162,3 +162,10 @@ operator_*approval*.json
 !/R6_LUNIT_INCIDENT_20261019.md
 !/R6_MIDDAY_GATES_20261019.md
 !/R6_FULLPATH_OPPORTUNITIES_20261019.md
+
+# Reviewed offline causal replay code; evidence outputs remain private.
+!/research/causal_data.py
+!/research/causal_account.py
+!/research/causal_replay.py
+!/research/retest_strategy.py
+!/research/evidence_collector.py

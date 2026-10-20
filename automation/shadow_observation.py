@@ -1,5 +1,5 @@
 """주문 객체/브로커를 받지 않는 독립 진단 관찰기. 가상 평가/신호를 실제 주문에 전달하지 않는다."""
-from datetime import datetime
+from datetime import datetime,timedelta
 from core.util import floor_tick
 from core.util import tick_size
 from core.market_time import tick_freshness
@@ -37,14 +37,17 @@ class ShadowObserver:
   self.cfg=cfg;self.auto=auto;self.detector=PatternDetector(cfg,auto,costs);self.fast_strategy=FastMomentumStrategy(cfg,auto,costs);self.local_breakout=LocalBreakoutStrategy(cfg,auto,costs);self.detector.fast_strategy=self.fast_strategy;self.emit=emit;self.risk=risk;self.limit=limit;self.rows={};self.first={};self.last_log={};self.previous={}
   self.capital={};self.epoch=None;self.eval_seconds=2;self.selected_at={};self.latest={};self.detached=set()
   self.last_tier={};self.observation_seq=0;self.detached_at={};self.last_evaluated={}
+  self.research_bar_knowledge={}
  def reset_stream(self,reason,symbol=None,stamp=None):
   """A coverage break invalidates FAST microstructure as well as ABC bars."""
   if symbol is None:
    self.detector.reset();self.fast_strategy.reset(reason=reason)
    self.latest.clear();self.last_log.clear();self.last_tier.clear();self.last_evaluated.clear()
+   self.research_bar_knowledge.clear()
   else:
    self.detector.forget(symbol);self.fast_strategy.forget(symbol,reason=reason)
    self.latest.pop(symbol,None);self.last_log.pop(symbol,None);self.last_tier.pop(symbol,None);self.last_evaluated.pop(symbol,None)
+   self.research_bar_knowledge.pop(symbol,None)
   if stamp is not None:self.event('SHADOW_STREAM_RESET',stamp,symbol=symbol,reason=reason,actual_order_permission=False)
  def event(self,kind,stamp,**data):
   if kind=='SHADOW_EVAL':self.latest[data['symbol']]={'timestamp':stamp.isoformat(),**data}
@@ -53,6 +56,7 @@ class ShadowObserver:
  def update(self,rows,stamp):
   if isinstance(stamp,str):stamp=datetime.fromisoformat(stamp)
   if self.epoch!=stamp.date():
+   self.research_bar_knowledge.clear()
    self.fast_strategy.reset(reason='DAY_ROLLOVER');self.last_tier={};self.last_evaluated={}
    self.detector.reset();self.first={};self.previous={};self.rows={};self.last_log={};self.selected_at={};self.latest={};self.detached=set();self.detached_at={};self.epoch=stamp.date()
   eligible=[]
@@ -121,6 +125,18 @@ class ShadowObserver:
   # Genuine receiver-time frames may build historical bars while the consumer
   # catches up. They cannot publish a current signal/readiness when stale.
   if not self.detector.ingest(t,transport_received or received):return
+  # Research-only availability, never fed back into A/B/C warmup or the FAST
+  # MicroTape. A transferred historical cache has no invented earlier receipt.
+  closed=self.detector.history.get(t.symbol,())
+  if closed:
+   knowledge=self.research_bar_knowledge.setdefault(t.symbol,{})
+   bar=closed[-1];key=bar['time']
+   if key not in knowledge:
+    knowledge[key]=max(key+timedelta(minutes=1),received,transport_received or received).isoformat()
+    keep={b['time'] for b in closed}
+    for old_key in set(knowledge)-keep:knowledge.pop(old_key,None)
+   while len(self.research_bar_knowledge)>self.limit:
+    self.research_bar_knowledge.pop(next(iter(self.research_bar_knowledge)))
   # FAST needs EVERY accepted tick; the evaluation throttle below must not thin its MicroTape.
   self.fast_strategy.ingest_tick(t,received=transport_received or received)
   # The receiver, FAST and final order boundary share the same bounded clock
@@ -152,7 +168,8 @@ class ShadowObserver:
   fast_sig=self.fast_strategy.evaluate(t,view,capital_limit=self.capital.get('entry_budget',self.capital.get('effective_auto_cap',81300.0)),risk_budget=min(self.capital.get('risk_equity',self.capital.get('effective_auto_cap',81300.0))*self.cfg.risk_fraction,self.capital.get('risk_remaining',1626.0)),ingest=False,received=received)
   if fast_sig:
    self.event('SHADOW_FAST_SIGNAL',received,symbol=t.symbol,name=row.get('name'),signal_at=fast_sig.created_at.isoformat(),limit=fast_sig.limit,stop=fast_sig.stop,target=fast_sig.target,emergency=fast_sig.emergency,quantity=fast_sig.quantity,net_reward_risk=fast_sig.net_reward_risk,regime=fast_sig.regime,phase=fast_sig.phase,ttl_seconds=fast_sig.ttl_seconds,max_chase_price=fast_sig.max_chase_price,geometry=fast_sig.extra.get('geometry'),tick_metrics=fast_sig.extra.get('metrics'),SHADOW_ONLY=True,actual_order_permission=False)
-  lb_sig,lb_details=self.local_breakout.evaluate(t,history,view,capital_limit=self.capital.get('entry_budget',self.capital.get('effective_auto_cap',81300.0)),risk_budget=min(self.capital.get('risk_equity',self.capital.get('effective_auto_cap',81300.0))*self.cfg.risk_fraction,self.capital.get('risk_remaining',1626.0)),asof=received)
+  research_history=[{**b,'available_at':self.research_bar_knowledge.get(t.symbol,{}).get(b['time'])} for b in history]
+  lb_sig,lb_details=self.local_breakout.evaluate(t,research_history,view,capital_limit=self.capital.get('entry_budget',self.capital.get('effective_auto_cap',81300.0)),risk_budget=min(self.capital.get('risk_equity',self.capital.get('effective_auto_cap',81300.0))*self.cfg.risk_fraction,self.capital.get('risk_remaining',1626.0)),asof=received)
   if lb_sig:
    self.event('SHADOW_LOCAL_BREAKOUT_SIGNAL',received,symbol=t.symbol,name=row.get('name'),signal_at=lb_sig.created_at.isoformat() if lb_sig.created_at else received.isoformat(),limit=lb_sig.limit,stop=lb_sig.stop,target=lb_sig.target,emergency=lb_sig.emergency,quantity=lb_sig.quantity,net_reward_risk=lb_sig.net_reward_risk,gross_reward_risk=lb_sig.gross_reward_risk,pattern='LOCAL_BREAKOUT',SHADOW_ONLY=True,actual_order_permission=False)
   usable=[]

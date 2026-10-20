@@ -61,5 +61,21 @@ class ShadowClockTests(unittest.TestCase):
         self.assertNotIn('079650',s.latest)
         self.assertFalse(hasattr(s,'enter'))
 
+    def test_research_bar_knowledge_uses_processing_without_mutating_abc_history(self):
+        s,_=self.observer();start=AT.replace(second=0)
+        cumulative=0
+        for second in range(0,61,5):
+            stamp=start+timedelta(seconds=second);cumulative+=10
+            t=Tick('079650',stamp,7950,10,cumulative,7950,7940,True,
+                ask_qty=100,bid_qty=100,depth_available=True,depth_source='0D',book_time=stamp,
+                received_at=stamp.isoformat(),book_received_at=stamp.isoformat())
+            processed=stamp+timedelta(seconds=3)
+            s.tick(t,processed,transport_received=stamp)
+        self.assertEqual(s.research_bar_knowledge['079650'][start],
+            (start+timedelta(seconds=63)).isoformat())
+        self.assertNotIn('available_at',s.detector.history['079650'][-1])
+        s.reset_stream('TEST_GAP',symbol='079650',stamp=processed)
+        self.assertNotIn('079650',s.research_bar_knowledge)
+
 
 if __name__=='__main__':unittest.main()

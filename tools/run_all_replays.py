@@ -1,25 +1,17 @@
+"""Audit both inherited caches without inventing four account simulations."""
+import argparse
 import sys
 from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+from research.causal_replay import main as replay
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
+def main(argv=None):
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--cache-dir',type=Path,default=Path(__file__).resolve().parents[1]/'audit_data')
+    p.add_argument('--output-dir',type=Path,required=True)
+    a=p.parse_args(argv)
+    for day in ('20261019','20261020'):
+        replay(['--cache',str(a.cache_dir/('price_context_cache_'+day+'.json')),
+                '--output',str(a.output_dir/('CACHE_'+day+'.json'))])
 
-import tools.account_level_replay as alr
-
-print("#######################################################")
-print("### 2026-10-20 ACCOUNT REPLAY                       ###")
-print("#######################################################")
-p20 = REPO_ROOT / 'audit_data' / 'price_context_cache_20261020.json'
-print("\n--- 1. Max Position = 1 ---")
-alr.run_account_replay(p20, max_positions=1)
-print("\n--- 2. Max Position = 2 ---")
-alr.run_account_replay(p20, max_positions=2)
-
-print("\n#######################################################")
-print("### 2026-10-19 ACCOUNT REPLAY                       ###")
-print("#######################################################")
-p19 = REPO_ROOT / 'audit_data' / 'price_context_cache_20261019.json'
-print("\n--- 1. Max Position = 1 ---")
-alr.run_account_replay(p19, max_positions=1)
-print("\n--- 2. Max Position = 2 ---")
-alr.run_account_replay(p19, max_positions=2)
+if __name__=='__main__':main()

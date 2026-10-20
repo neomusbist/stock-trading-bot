@@ -42,6 +42,8 @@ class LocalBreakoutStrategyTests(unittest.TestCase):
                 'high': h,
                 'low': l,
                 'close': c,
+                'available_at': (t+timedelta(minutes=1)).isoformat(),
+                'observation_source': 'ACTUAL_RECEIVED',
                 'volume': 10000 + i * 1000
             })
         return bars
@@ -49,6 +51,8 @@ class LocalBreakoutStrategyTests(unittest.TestCase):
     def test_insufficient_bars_rejected(self):
         bars = self._make_bars(count=3)
         tick = Tick(SYM, BASE_TIME + timedelta(minutes=3), 9700.0, 100, 1000, 9700.0, 9690.0)
+        tick = replace(tick, depth_available=True, depth_source='0D', book_time=tick.time,
+            bid_qty=1000,ask_qty=1000,received_at=tick.time.isoformat(),book_received_at=tick.time.isoformat())
         sig, details = self.strategy.evaluate(tick, bars, self.watch)
         self.assertIsNone(sig)
         self.assertEqual(details['reason'], 'INSUFFICIENT_LOCAL_BARS')
@@ -57,6 +61,8 @@ class LocalBreakoutStrategyTests(unittest.TestCase):
         bars = self._make_bars(count=10)
         # Inverted quotes: bid > ask
         tick = Tick(SYM, BASE_TIME + timedelta(minutes=10), 9700.0, 100, 1000, 9690.0, 9710.0)
+        tick = replace(tick, depth_available=True, depth_source='0D', book_time=tick.time,
+            bid_qty=1000,ask_qty=1000,received_at=tick.time.isoformat(),book_received_at=tick.time.isoformat())
         sig, details = self.strategy.evaluate(tick, bars, self.watch)
         self.assertIsNone(sig)
         self.assertEqual(details['reason'], 'INVALID_EXECUTABLE_QUOTE')
@@ -65,6 +71,8 @@ class LocalBreakoutStrategyTests(unittest.TestCase):
         bars = self._make_bars(count=10)
         # Spread > 0.4% (e.g. 50 on 9700 = 0.51%)
         tick = Tick(SYM, BASE_TIME + timedelta(minutes=10), 9700.0, 100, 1000, 9730.0, 9680.0)
+        tick = replace(tick, depth_available=True, depth_source='0D', book_time=tick.time,
+            bid_qty=1000,ask_qty=1000,received_at=tick.time.isoformat(),book_received_at=tick.time.isoformat())
         sig, details = self.strategy.evaluate(tick, bars, self.watch)
         self.assertIsNone(sig)
         self.assertEqual(details['reason'], 'SPREAD_TOO_WIDE')
@@ -74,6 +82,8 @@ class LocalBreakoutStrategyTests(unittest.TestCase):
         local_high = max(b['high'] for b in bars)
         # Price below local high
         tick = Tick(SYM, BASE_TIME + timedelta(minutes=10), local_high - 10.0, 100, 1000, local_high - 5.0, local_high - 10.0)
+        tick = replace(tick, depth_available=True, depth_source='0D', book_time=tick.time,
+            bid_qty=1000,ask_qty=1000,received_at=tick.time.isoformat(),book_received_at=tick.time.isoformat())
         sig, details = self.strategy.evaluate(tick, bars, self.watch)
         self.assertIsNone(sig)
         self.assertEqual(details['reason'], 'LOCAL_RESISTANCE_NOT_BROKEN')
@@ -84,11 +94,13 @@ class LocalBreakoutStrategyTests(unittest.TestCase):
         # Price chased > 0.5% (e.g. +1.0%)
         chased_price = local_high * 1.010
         tick = Tick(SYM, BASE_TIME + timedelta(minutes=10), chased_price, 100, 1000, chased_price, chased_price - 10.0)
+        tick = replace(tick, depth_available=True, depth_source='0D', book_time=tick.time,
+            bid_qty=1000,ask_qty=1000,received_at=tick.time.isoformat(),book_received_at=tick.time.isoformat())
         sig, details = self.strategy.evaluate(tick, bars, self.watch)
         self.assertIsNone(sig)
         self.assertEqual(details['reason'], 'MAX_CHASE_EXCEEDED')
 
-    def test_valid_breakout_signal_generated(self):
+    def test_legacy_projected_2r_is_not_r6_order_eligibility(self):
         bars = []
         for i in range(10):
             t = BASE_TIME + timedelta(minutes=i)
@@ -96,8 +108,10 @@ class LocalBreakoutStrategyTests(unittest.TestCase):
                 'time': t,
                 'open': 9500.0,
                 'high': 9600.0,
-                'low': 9480.0,
+                'low': 9400.0,
                 'close': 9580.0,
+                'available_at': (t+timedelta(minutes=1)).isoformat(),
+                'observation_source': 'ACTUAL_RECEIVED',
                 'volume': 15000
             })
         local_high = max(b['high'] for b in bars)
@@ -105,18 +119,14 @@ class LocalBreakoutStrategyTests(unittest.TestCase):
         bid = breakout_entry - 5.0  # spread = 5 / 9600 = 0.05% < 0.4%
         tick = Tick(SYM, BASE_TIME + timedelta(minutes=10), breakout_entry, 1000, 50000, breakout_entry, bid)
 
+        tick = replace(tick, depth_available=True, depth_source='0D', book_time=tick.time,
+            bid_qty=1000,ask_qty=1000,received_at=tick.time.isoformat(),book_received_at=tick.time.isoformat())
         sig, details = self.strategy.evaluate(tick, bars, self.watch, capital_limit=81300., risk_budget=1626.)
-        self.assertIsNotNone(sig)
-        self.assertTrue(details['pass'])
-        self.assertEqual(sig.pattern, 'LOCAL_BREAKOUT')
-        self.assertEqual(sig.limit, breakout_entry)
-        self.assertLess(sig.stop, sig.limit)
-        self.assertGreater(sig.target, sig.limit)
-        self.assertGreater(sig.quantity, 0)
-        self.assertGreaterEqual(sig.gross_reward_risk, 1.5)
-        self.assertGreaterEqual(sig.net_reward_risk, 0.95)
-        self.assertFalse(sig.extra['actual_order_permission'])
-        self.assertTrue(sig.extra['SHADOW_ONLY'])
+        self.assertIsNone(sig)
+        self.assertEqual(details['reason'], 'COMMON_ENGINE_REWARD_GUARD')
+        self.assertLess(details['net_rr'], self.cfg.min_reward_risk)
+        self.assertLess(details['emergency_stop'], details['structural_stop'])
+
 
 
 if __name__ == '__main__':

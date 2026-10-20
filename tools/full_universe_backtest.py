@@ -1,16 +1,8 @@
-"""Full Universe Backtest for LocalBreakoutStrategy.
-
-Exact alias and reproduction entrypoint for reproducing the 89-signal backtest.
-Reads audit_data/price_context_cache_20261020.json and evaluates
-LocalBreakoutStrategy per symbol independently without portfolio cash/slot limits.
-"""
+"""Shared causal evaluator entry point; not a whole-market coverage claim."""
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+from research.causal_replay import main
 
-import tools.reproduce_89_signals
-
-if __name__ == '__main__':
-    pass
+if __name__=='__main__':main()

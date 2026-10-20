@@ -6,6 +6,9 @@ import math
 
 from core.util import floor_tick, tick_size
 from automation.decisions import gate
+from core.market_time import tick_freshness, book_freshness
+from core.market_evidence import known_signal_bars, finite
+from automation.exit_plan import build_plan
 
 def is_valid_number(val):
     if val is None:
@@ -70,6 +73,15 @@ class LocalBreakoutStrategy:
         if not bars or len(bars) < self.min_support_bars:
             return self._reject(symbol, 'INSUFFICIENT_LOCAL_BARS', count=len(bars) if bars else 0)
 
+        # Source correctness, not an additional momentum/volume multiplier.
+        # A cache's minute label or later OHLC does not prove live availability.
+        bars,reason=known_signal_bars(bars[-self.lookback_bars:],now,self.min_support_bars)
+        if reason:return self._reject(symbol,reason,data_status='UNKNOWN')
+        if any(not finite(b.get('volume')) for b in bars):
+            return self._reject(symbol,'BAR_VOLUME_EVIDENCE_MISSING',data_status='UNKNOWN')
+        if not getattr(t,'regular',False) or not tick_freshness(t,now,self.cfg.stale_seconds)['fresh']:
+            return self._reject(symbol,'TRADE_STALE_OR_FUTURE',data_status='UNKNOWN')
+
         # Quotes validation
         bid = getattr(t, 'bid', None)
         ask = getattr(t, 'ask', None)
@@ -80,6 +92,11 @@ class LocalBreakoutStrategy:
         spread = (ask - bid) / price
         if spread > self.max_spread:
             return self._reject(symbol, 'SPREAD_TOO_WIDE', spread=spread, max_spread=self.max_spread)
+        if (getattr(t,'depth_available',None) is not True
+                or getattr(t,'depth_source','UNKNOWN') not in {'0D','0B_FIELDS'}
+                or not book_freshness(t,now,self.cfg.stale_seconds)['fresh']
+                or not finite(getattr(t,'ask_qty',None)) or not finite(getattr(t,'bid_qty',None))):
+            return self._reject(symbol,'MEASURED_FRESH_BOOK_REQUIRED',data_status='UNKNOWN')
 
         # Local resistance from recent completed bars
         lookback = min(len(bars), self.lookback_bars)
@@ -122,27 +139,41 @@ class LocalBreakoutStrategy:
 
         # Check resistance ceiling if available
         overhead = watch.get('resistance') if isinstance(watch, dict) else None
-        if is_valid_number(overhead) and overhead > entry:
-            if overhead >= entry + 1.2 * (entry - structural_stop):
-                target = min(target, floor_tick(overhead))
+        if is_valid_number(overhead):
+            # A nearby known ceiling must not disappear merely because it is
+            # too close to satisfy this strategy's desired reward/risk.
+            if overhead<=entry:return self._reject(symbol,'KNOWN_RESISTANCE_AT_OR_BELOW_ENTRY')
+            target=min(target,floor_tick(overhead))
 
         # Full cost accounting
         fee = self.costs.estimate(entry, target)
-        roundtrip_cost = self.costs.roundtrip(entry, structural_stop) + structural_stop * self.costs.exit_slippage
+        roundtrip_cost = self.costs.roundtrip(entry, emergency_stop) + emergency_stop * self.costs.exit_slippage
         reward_net = (target - entry) - fee
-        risk_net = (entry - structural_stop) + roundtrip_cost
+        # Quantity and advertised risk must use the final executable emergency
+        # line, just as AutonomousEngine.quantity_details does.
+        risk_net = (entry - emergency_stop) + roundtrip_cost
 
         if risk_net <= 0:
             return self._reject(symbol, 'INVALID_RISK_NET')
 
         net_rr = reward_net / risk_net
-        gross_rr = (target - entry) / (entry - structural_stop) if entry > structural_stop else 0.0
+        gross_rr = (target - entry) / (entry - emergency_stop) if entry > emergency_stop else 0.0
 
         if gross_rr < self.min_gross_rr or net_rr < self.min_net_rr:
             return self._reject(symbol, 'REWARD_RISK_INSUFFICIENT',
                                 net_rr=net_rr, min_net_rr=self.min_net_rr,
                                 gross_rr=gross_rr, min_gross_rr=self.min_gross_rr,
                                 reward_net=reward_net, risk_net=risk_net)
+
+        common_plan=build_plan(self.cfg,self.auto,{'pattern':'LOCAL_BREAKOUT',
+            'limit':entry,'stop':emergency_stop,'emergency':emergency_stop,'target':target,
+            'invalidation_policy':{'enabled':True,'structural_stop':structural_stop,
+                                   'emergency_stop':emergency_stop}})
+        if not common_plan['reward_guard_pass']:
+            return self._reject(symbol,'COMMON_ENGINE_REWARD_GUARD',
+                net_rr=common_plan['net_reward_risk'],minimum_net_rr=common_plan['minimum_net_reward_risk'],
+                target=target,structural_stop=structural_stop,emergency_stop=emergency_stop,
+                basis='SAME_FINAL_EMERGENCY_AND_COSTS_AS_R6_ENGINE')
 
         # Risk-based quantity sizing
         cap_qty = int(capital_limit // (entry * (1.0 + self.costs.buy + self.costs.entry_slippage)))
@@ -180,6 +211,11 @@ class LocalBreakoutStrategy:
                 'SHADOW_ONLY': True,
                 'profitability_proven': False,
                 'strategy_policy': 'LOCAL_BREAKOUT_SHADOW_RESEARCH'
+                ,'risk_basis':'EMERGENCY_PLUS_ROUNDTRIP_AND_EXIT_RESERVE'
+                ,'bar_available_at':[b['available_at'] for b in bars]
+                ,'book_time':t.book_time.isoformat(),'book_received_at':getattr(t,'book_received_at',None)
+                ,'bar_volume_sum':sum(b['volume'] for b in bars)
+                ,'R6_common_engine_eligibility':'REWARD_CHECK_ONLY_OTHER_ORDER_GATES_STILL_REQUIRED'
             }
         )
         self.last_signal[symbol] = signal

@@ -11,6 +11,14 @@ ROOT_FILES={'main.py','candidate_builder.py','control.py','supervisor.py','opera
     '.gitignore','.gitattributes','.env.example','config.example.json','automation.example.json','requirements.txt',
     'README.md','AUDIT_REPORT.md','TEST_REPORT.md','NEXT_SESSION_CHECK.md','운영요약.md','사용자_시운전_가이드.txt','DEPLOYMENT_LAYOUT.md','observation.example.json','REPOSITORY_GUIDE.md','SECURITY.md','THIRD_PARTY_NOTICES.md','SOURCE_MANIFEST.json','V1.3_HANDOFF_20261007.md','V1.2_설계감사_구현명세.md','TEST_AUDIT_REPORT.md','STORAGE_AUDIT_REPORT.md','HANDOFF.md','cleanup_audit_trail.json','GUI_PERFORMANCE_REPORT.md','HANDOFF_TRADE_QUALITY_20261013.md'}
 TOOLS={'repo_guard.py','setup_local.py','export_source.py','session_audit.py','offline_benchmark.py','offline_regression.py','night_profile.py','verify_fault_injection.py','benchmark_gui_performance.py','trade_quality_replay.py','trade_quality_v15_replay.py','exit_policy_replay.py'}
+TOOLS.update({'reproduce_89_signals.py','full_universe_backtest.py','account_level_replay.py',
+              'eval_1019_theoretical.py','build_1019_bars.py','run_all_replays.py'})
+CAUSAL_RESEARCH_FILES={
+    'research/causal_data.py','research/causal_account.py','research/causal_replay.py',
+    'research/retest_strategy.py','research/evidence_collector.py',
+    'audit/r6_causal_validation_20261020/RESULTS.md',
+    'audit/r6_causal_validation_20261020/REPRODUCE.md',
+    'audit/r6_causal_validation_20261020/RESULTS.json'}
 R6_REPAIR_FILES={
     'HANDOFF_TO_ANTIGRAVITY.md',
     *('audit/r6_work_repair_20261014/'+name for name in (
@@ -21,6 +29,7 @@ R6_REPAIR_FILES={
         'TEST_RESULTS.json','replay.py','symbol_audit.py'))}
 
 def allowed(name):
+    if name.replace('\\','/') in CAUSAL_RESEARCH_FILES:return True
     if name.replace('\\','/') in R6_REPAIR_FILES:return True
     p=Path(name); parts=p.parts
     if len(parts)==1: return name in ROOT_FILES
