@@ -4,6 +4,7 @@ import os
 from contextlib import nullcontext
 from operator_process import process_identity
 import json
+import hashlib
 import queue
 import threading
 import time
@@ -297,6 +298,163 @@ class SubscriptionState:
     def accepted(self,symbol):
         self.waiting.pop(symbol,None)
 
+class PriceContextCheckpoint:
+    """One writer and one replaceable pending reference snapshot, never a ledger.
+
+    Cache recovery is best effort; unlike order INTENTs it has never been an
+    authority for fills, cash or tick warmup. Keep atomic fsync checkpoints but
+    take their disk latency off the order/position event loop.
+    """
+    def __init__(self,path):
+        self.path=Path(path);self.condition=threading.Condition()
+        self.pending=None;self.latest=None;self.stopping=False;self.inflight=False
+        self.generation=0;self.written_generation=0
+        self.stats={'submitted':0,'writes':0,'errors':0,'last_error':None,'last_write_seconds':0.}
+        self.thread=threading.Thread(target=self.run,daemon=True,name='reference-cache-checkpoint')
+        self.thread.start()
+
+    def submit(self,snapshot):
+        # Ownership transfers to the writer. The caller supplies a detached
+        # snapshot, never live PriceContext rows (see snapshot_reference_cache).
+        with self.condition:
+            if self.stopping:raise RuntimeError('REFERENCE_CACHE_CLOSED')
+            self.generation+=1;self.latest=(self.generation,snapshot)
+            self.pending=self.latest;self.stats['submitted']+=1
+            self.condition.notify_all()
+
+    def run(self):
+        while True:
+            with self.condition:
+                while self.pending is None and not self.stopping:self.condition.wait()
+                if self.pending is None:return
+                generation,snapshot=self.pending;self.pending=None;self.inflight=True
+            started=time.perf_counter()
+            try:
+                payload=snapshot
+                if isinstance(snapshot.get('rows'),dict):
+                    payload={**snapshot,'rows':{sym:{**row,'bars':[
+                        {k:v.isoformat() if isinstance(v,datetime) else v for k,v in bar.items()}
+                        for bar in row['bars']]} for sym,row in snapshot['rows'].items()}}
+                atomic_json(self.path,payload,fsync=True)
+                with self.condition:
+                    self.written_generation=generation;self.stats['writes']+=1
+                    self.stats['last_error']=None
+            except Exception as error:
+                with self.condition:
+                    self.stats['errors']+=1;self.stats['last_error']=type(error).__name__
+            finally:
+                with self.condition:
+                    self.inflight=False;self.stats['last_write_seconds']=time.perf_counter()-started
+                    self.condition.notify_all()
+
+    def snapshot(self):
+        with self.condition:
+            return {**self.stats,'pending':int(self.pending is not None),'inflight':self.inflight,
+                    'submitted_generation':self.generation,'written_generation':self.written_generation}
+
+    def close(self,timeout=1.):
+        with self.condition:
+            # Retry the latest failed snapshot once at clean shutdown. Never
+            # spin or hold up position protection on a permanently failed disk.
+            if not self.inflight and self.pending is None and self.written_generation<self.generation:
+                self.pending=self.latest
+            self.stopping=True;self.condition.notify_all()
+        self.thread.join(timeout=max(0.,timeout))
+        with self.condition:
+            return not self.thread.is_alive() and self.written_generation==self.generation
+
+
+def restore_reference_cache(context,cached,asof):
+    """Restore reference provenance/availability without restoring tick warmup."""
+    if not isinstance(cached,dict) or cached.get('day')!=asof.date().isoformat():return 0
+    sanitized={'day':cached['day'],'rows':{}};metadata={}
+    for sym,row in list(cached.get('rows',{}).items())[:context.limit]:
+        if not isinstance(row,dict):continue
+        received=row.get('history_received_at');stamp=None
+        try:
+            stamp=datetime.fromisoformat(received) if received else None
+            if stamp and (stamp.tzinfo is None or stamp.date()!=asof.date() or stamp>asof):continue
+        except (TypeError,ValueError):continue
+        bars=[]
+        for raw in row.get('bars',[]):
+            if not isinstance(raw,dict):continue
+            available=raw.get('available_at') or received
+            if raw.get('observation_source')=='REST_REFERENCE' and not available:continue
+            if available:
+                try:
+                    known=datetime.fromisoformat(available)
+                    if known.tzinfo is None or known.date()!=asof.date() or known>asof:continue
+                except (TypeError,ValueError):continue
+            bars.append(raw)
+        # A legacy cache can have per-bar availability without a row receipt.
+        # Keep the latest actual receipt on the row because reference_bars uses
+        # that field to prevent a later REST result from entering an earlier asof.
+        known=([received] if received else [])+[b.get('available_at') for b in bars
+            if b.get('observation_source')=='REST_REFERENCE' and b.get('available_at')]
+        if known:row={**row,'history_received_at':max(known,key=datetime.fromisoformat)}
+        sanitized['rows'][sym]={**row,'bars':bars};metadata[sym]=(row,bars)
+    recovered=context.load_cache(sanitized,asof)
+    for sym,(saved,bars) in metadata.items():
+        row=context.rows.get(sym)
+        if row is None:continue
+        if saved.get('context_venue') in {'KRX','NXT','SOR'}:row['context_venue']=saved['context_venue']
+        if saved.get('history_received_at'):row['history_received_at']=saved['history_received_at']
+        available={b['time']:b.get('available_at') or saved.get('history_received_at') for b in bars}
+        for bar in row['bars']:
+            known=available.get(bar['time'].isoformat())
+            if known:bar['available_at']=known
+    return recovered
+
+
+def snapshot_reference_cache(detector):
+    with detector._state_lock:
+        context=detector.price_context
+        if not context.day:return {}
+        # Native datetimes and scalar fields are immutable. Copy the bounded
+        # records under the detector lock, then perform ISO conversion and JSON
+        # serialization only on the single checkpoint writer.
+        snapshot={'day':context.day.isoformat(),'rows':{sym:{
+            'bars':[dict(bar) for bar in row['bars']],'peaks':[dict(p) for p in row['peaks']],
+            'first_observed_at':row['first_observed_at'],'last_complete_at':row['last_complete_at'],
+            'context_venue':row.get('context_venue'),'history_received_at':row.get('history_received_at')}
+            for sym,row in context.rows.items()}}
+    return snapshot
+
+
+def drain_intraday_context(engine,detector,shadow,worker,targets,venue,asof,checkpoint):
+    """Bounded REST references for WATCH and SHADOW, with no tick warmup."""
+    changed=False;processed=0
+    shadow_detector=getattr(getattr(shadow,'observer',None),'detector',None)
+    while processed<14:
+        try:packet=worker.q.get_nowait()
+        except queue.Empty:break
+        processed+=1
+        try:
+            sym=packet['symbol'];received=datetime.fromisoformat(packet['received_at'])
+            if (sym not in targets or packet['venue']!=venue or received.tzinfo is None
+                    or received.date()!=asof.date() or received>asof):continue
+        except (KeyError,TypeError,ValueError):continue
+        if not packet.get('error'):
+            for target in (detector,shadow_detector):
+                if target is None:continue
+                with target._state_lock:
+                    target.price_context.merge_history(sym,packet['bars'],received,venue)
+                    row=target.price_context.rows.get(sym)
+                    if row:
+                        # PriceContext.record intentionally keeps only structural
+                        # fields; retain actual REST availability at this boundary.
+                        rest_times={b['time'] for b in packet['bars']}
+                        for bar in row['bars']:
+                            if bar['time'] in rest_times:bar['available_at']=received.isoformat()
+            changed=True
+        engine.event('INTRADAY_REFERENCE_READY' if not packet.get('error') else 'INTRADAY_REFERENCE_PENDING',
+            symbol=sym,venue=venue,received_at=packet['received_at'],known_bars=len(packet.get('bars',[])),
+            source='REST_REFERENCE',restored_signal_bars=0,restored_warmup=False,error=packet.get('error'))
+    if changed:
+        checkpoint.submit(snapshot_reference_cache(detector))
+    return processed
+
+
 def _protected_feed_work_pending(feed,critical):
     main_q=getattr(feed,'q',None)
     if not isinstance(main_q,queue.Queue):return False
@@ -420,7 +578,10 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
                             'trigger_received_at':observed_at.isoformat(),'detected_at':engine.clock().isoformat()}
                         engine.event('OBSERVATION_SIGNAL_QUEUED',symbol=tick.symbol,**triggers[tick.symbol],
                             actual_order_permission=False)
-    drain_observed_opportunities(engine,feed,on_opportunity,deadline=drain_deadline)
+    # History ingestion and evaluation have separate existing bounded budgets.
+    # A fully used 15ms ingestion slice must not eliminate the 2ms/2-evaluation
+    # opportunity slice. Protected/control frames are rechecked by the drain.
+    drain_observed_opportunities(engine,feed,on_opportunity)
     return drops, priority
 
 def drain_observed_opportunities(engine,feed,on_opportunity,*,deadline=None,max_evaluations=2):
@@ -484,7 +645,7 @@ def drain_observed_opportunities(engine,feed,on_opportunity,*,deadline=None,max_
     return evaluated
 
 
-def merge_verified_shadow_candidates(rows,shadow,lookup):
+def merge_verified_shadow_candidates(rows,shadow,lookup,clock=None,max_age_seconds=None):
     """Merge ObservationWorker-verified SHADOW candidates that hit RadarWorker's per-cycle scan limit."""
     shadow_rows=getattr(getattr(shadow,'observer',None),'rows',{}) if shadow is not None else {}
     if not shadow_rows:return rows
@@ -493,12 +654,25 @@ def merge_verified_shadow_candidates(rows,shadow,lookup):
     scan_limit_reasons={'STATUS_SCAN_LIMIT','이번 주기 차트 조회 한도; 다음 주기 재시도',None,''}
     for sym,s_row in list(shadow_rows.items()):
         sv=s_row.get('shadow_view',{})
-        ms=sv.get('market_status') or s_row.get('market_status') or {}
-        if (sv.get('status')=='ELIGIBLE' and ms.get('pass') is True
+        if (sv.get('status')=='ELIGIBLE'
                 and s_row.get('affordability',{}).get('entry_eligible') is True):
             cur=pool.get(sym)
-            if cur is None or (cur.get('status') in {'RAW','UNKNOWN',None} and cur.get('reason') in scan_limit_reasons):
+            refresh_shadow=cur and (cur.get('status')=='SHADOW' or
+                cur.get('status')=='UNKNOWN' and cur.get('shadow_view',{}).get('status')=='ELIGIBLE')
+            if cur is None or refresh_shadow or (cur.get('status') in {'RAW','UNKNOWN',None} and cur.get('reason') in scan_limit_reasons):
                 ev=make_evaluation_view(s_row)
+                ev['market_status']=_newest_market_status((cur or {}).get('market_status'),ev.get('market_status'),clock=clock)
+                ev=latest_evaluation_watch(ev,None,sym,shadow,clock,max_age_seconds)
+                ms=ev.get('market_status',{})
+                if clock is not None and not ms.get('checked_at'):
+                    ms={**ms,'pass':None,'reason_code':ms.get('reason_code','MARKET_STATUS_UNKNOWN')};ev['market_status']=ms
+                if ms.get('pass') is not True:
+                    # Existing SHADOW rows must not retain an old normal state
+                    # after a newer unknown/special/expired check is published.
+                    if refresh_shadow:
+                        pool[sym]={**cur,'status':'UNKNOWN','reason':ms.get('reason_code','MARKET_STATUS_UNKNOWN'),
+                                   'market_status':dict(ms)}
+                    continue
                 if cur is not None:
                     for k in ('source_count','source_details','source_deltas','discovery_score','observed_at','first_raw_at','first_raw_price','reference_price','affordability'):
                         if cur.get(k) is not None:ev[k]=cur[k]
@@ -567,20 +741,61 @@ def resolve_radar_focus(engine,lookup,rows,rank_watch,readiness,cfg,auto,stamp):
     return selection
 
 
-def latest_evaluation_watch(watch,radar,symbol):
+def _newest_market_status(original,*updates,clock=None):
+    selected=dict(original) if isinstance(original,dict) else {}
+    def stamp(value):
+        try:
+            parsed=datetime.fromisoformat(value)
+            return parsed if parsed.tzinfo is not None else None
+        except (TypeError,ValueError):return None
+    prior=stamp(selected.get('checked_at'))
+    barrier=stamp(selected.get('unknown_observed_at'))
+    unknown_key=selected.get('unknown_status_key')
+    unresolved=barrier is not None
+    def unknown(candidate,reason='MARKET_STATUS_UNKNOWN'):
+        nonlocal selected,barrier,unknown_key,unresolved
+        key=hashlib.sha256(json.dumps(candidate,sort_keys=True,default=str,separators=(',',':')).encode()).hexdigest()
+        if barrier is None or key!=unknown_key:barrier=clock
+        unknown_key=key;unresolved=True
+        selected={'pass':None,'reason_code':reason,'unknown_status_key':key}
+        if prior is not None:selected['checked_at']=prior.isoformat()
+        if barrier is not None:selected['unknown_observed_at']=barrier.isoformat()
+    if selected.get('checked_at') and prior is None or selected.get('pass') is not True and 'pass' in selected and prior is None and not unresolved:
+        unknown(selected)
+    for candidate in updates:
+        if not isinstance(candidate,dict):continue
+        newer=stamp(candidate.get('checked_at'))
+        if newer is None:
+            unknown(candidate);continue
+        if unresolved and (barrier is None or newer<=barrier):continue
+        if newer==prior and selected.get('pass') is not True and candidate.get('pass') is True:continue
+        if prior is None or newer>=prior:
+            selected=dict(candidate);prior=newer
+            barrier=stamp(selected.get('unknown_observed_at'));unknown_key=selected.get('unknown_status_key')
+            unresolved=barrier is not None
+    return selected
+
+
+def latest_evaluation_watch(watch,radar,symbol,shadow=None,clock=None,max_age_seconds=None):
     """Use refreshed immutable metadata without REST work on the order thread."""
     view=dict(watch)
     cache=getattr(radar,'status_cache',None)
     cached=cache.get(symbol) if isinstance(cache,dict) else None
-    if not isinstance(cached,dict):return view
-    old=watch.get('market_status',{})
-    try:
-        newer=datetime.fromisoformat(cached['checked_at'])
-        prior=datetime.fromisoformat(old['checked_at']) if old.get('checked_at') else None
-        if prior is None or newer>=prior:view['market_status']=dict(cached)
-    except (KeyError,TypeError,ValueError):
-        # Malformed status is not fresh normal-status evidence.
-        view['market_status']={'pass':None,'reason_code':'MARKET_STATUS_UNKNOWN'}
+    metadata=getattr(shadow,'metadata',None)
+    saved=metadata.get(symbol) if isinstance(metadata,dict) else None
+    shadow_status=saved.get('status') if isinstance(saved,dict) else None
+    selected=_newest_market_status(watch.get('market_status'),cached,shadow_status,clock=clock)
+    if clock is not None and selected.get('checked_at'):
+        try:
+            checked=datetime.fromisoformat(selected['checked_at'])
+            age=(clock-checked).total_seconds()
+            ttl=180. if max_age_seconds is None else max_age_seconds
+            if checked.tzinfo is None or checked.date()!=clock.date() or not 0<=age<=ttl:
+                selected={**selected,'pass':None,'reason_code':'MARKET_STATUS_STALE'}
+        except (TypeError,ValueError):selected={'pass':None,'reason_code':'MARKET_STATUS_UNKNOWN'}
+    # No timestamp is invented. Legacy caller rows remain unchanged when no
+    # worker/cache refresh exists; malformed refreshes become explicit UNKNOWN.
+    view['market_status']=selected
     return view
 
 def verified_radar_cache_available(engine,stamp,scan_seconds):
@@ -829,7 +1044,11 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
     src_count=watch.get('source_count',len(watch.get('source_details',{})) if 'source_details' in watch else engine.a.min_source_count)
     if src_count<max(2,engine.a.min_source_count) and not watch.get('fallback_source1'):
         engine.event('NO_TRADE',symbol=t.symbol,reason='SOURCE_COUNT_BUY_PERMISSION_DENIED');return None
-    watch=latest_evaluation_watch(watch,radar,t.symbol)
+    prior_status=engine.market_status.get(t.symbol,{})
+    if prior_status.get('unknown_observed_at'):
+        watch={**watch,'market_status':_newest_market_status(prior_status,watch.get('market_status'),clock=engine.clock())}
+    watch=latest_evaluation_watch(watch,radar,t.symbol,getattr(engine,'observation_worker',None),
+                                 engine.clock(),engine.a.scan_seconds*3)
     engine.names[t.symbol]=watch.get('name')
     engine.market_status[t.symbol]=watch.get('market_status',{'pass':None,'reason_code':'MARKET_STATUS_UNKNOWN'})
     sig=detector.signal(t,watch)
@@ -1283,7 +1502,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
             try:
                 import json
                 with open(context_cache_path,'r',encoding='utf-8') as f:cached=json.load(f)
-                recovered=detector.price_context.load_cache(cached,now())
+                recovered=restore_reference_cache(detector.price_context,cached,now())
                 if recovered:engine.event('PRICE_CONTEXT_CACHE_RESTORED',recovered_bars=recovered,symbols=len(detector.price_context.rows))
             except Exception:pass
     # 검사 시간 종료는 STOP과 같으며 LIVE의 시간 제한 검사는 금지한다.
@@ -1316,16 +1535,18 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     from automation.observation_worker import ObservationWorker
     observation_rest=Rest(replace(effective,live_mode=False),auth_session=rest.auth_session);observation_rest.session_guard=lambda:control_supported(now()) or (getattr(effective,'after_enabled',False) and after_control_supported(now()));observation_rest.diagnostic_only=True
     shadow=ObservationWorker(effective,auto,engine.costs,root,observation_rest)
+    engine.observation_worker=shadow
     shadow.observer.timeline=engine.observation_timeline
     if auto.entry_context_enabled:shadow.observer.detector.price_context=copy.deepcopy(detector.price_context)
     shadow.start()
     bind_candidate_observation(radar,shadow,engine)
-    context_worker=None
+    context_worker=None;context_checkpoint=None
     if auto.intraday_context_enabled:
         from automation.intraday_context import IntradayContextWorker
         context_rest=Rest(replace(effective,live_mode=False),auth_session=rest.auth_session)
         context_rest.diagnostic_only=True;context_rest.session_guard=observation_rest.session_guard
         context_worker=IntradayContextWorker(context_rest);context_worker.start()
+        context_checkpoint=PriceContextCheckpoint(root/'runtime'/'price_context_cache.json')
     shadow_state={};observation_drops=0
     lookup={}; rows=[]; by_symbol={}; prices={}; counts={'ticks':0,'radar_cycles':0,'account_checks':0,'subscription_acks':0}
     engine._last_eval_frame={}
@@ -1441,7 +1662,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                             atomic_json(root/'runtime/candidate_summary.json',summary,fsync=False)
                             engine.event('CANDIDATE_CYCLE_SUMMARY',**summary)
                         prior_watch=set(lookup)
-                        rows=merge_verified_shadow_candidates(result['rows'],shadow,lookup);radar_ok=True;engine.last_radar_at=datetime.fromisoformat(result['time'])
+                        rows=merge_verified_shadow_candidates(result['rows'],shadow,lookup,now(),auto.scan_seconds*3);radar_ok=True;engine.last_radar_at=datetime.fromisoformat(result['time'])
                         selection=resolve_radar_focus(engine,lookup,rows,result['watch'],
                             focus_readiness(detector,shadow.runtime_view().get('evaluations',{}),now()),effective,auto,now())
                         focus_promotions.extend(selection.promoted)
@@ -1488,7 +1709,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         continue
                     focus_dirty=True
                 if focus_dirty:
-                    rows=merge_verified_shadow_candidates(rows,shadow,lookup)
+                    rows=merge_verified_shadow_candidates(rows,shadow,lookup,now(),auto.scan_seconds*3)
                     by_symbol={row['code']:row for row in rows}
                     readiness=focus_readiness(detector,shadow.runtime_view().get('evaluations',{}),now())
                     selection=select_focus(
@@ -1527,20 +1748,13 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     venue=effective.after_default_venue if after_supported(now()) else 'KRX'
                     reference_targets=context_targets(lookup,shadow.runtime_view().get('evaluations',{}),venue,now()) if in_session else {}
                     context_worker.set_targets(reference_targets)
-                    while not context_worker.q.empty():
-                        packet=context_worker.q.get_nowait()
-                        sym=packet['symbol'];received=datetime.fromisoformat(packet['received_at'])
-                        if sym not in reference_targets or packet['venue']!=venue or received.date()!=now().date():continue
-                        if not packet.get('error'):
-                            if sym in lookup:
-                                with detector._state_lock:detector.price_context.merge_history(sym,packet['bars'],received,venue)
-                            with shadow.observer.detector._state_lock:shadow.observer.detector.price_context.merge_history(sym,packet['bars'],received,venue)
-                            try:
-                                atomic_json(root/'runtime'/'price_context_cache.json',detector.price_context.dump_cache())
-                            except Exception:pass
-                        engine.event('INTRADAY_REFERENCE_READY' if not packet.get('error') else 'INTRADAY_REFERENCE_PENDING',
-                            symbol=sym,venue=venue,received_at=packet['received_at'],known_bars=len(packet['bars']),
-                            source='REST_REFERENCE',restored_signal_bars=0,restored_warmup=False,error=packet.get('error'))
+                    drain_intraday_context(engine,detector,shadow,context_worker,reference_targets,
+                        venue,now(),context_checkpoint)
+                    checkpoint_state=context_checkpoint.snapshot()
+                    if checkpoint_state['errors']>getattr(engine,'_reference_cache_errors',0):
+                        engine._reference_cache_errors=checkpoint_state['errors']
+                        engine.event('REFERENCE_CACHE_CHECKPOINT_PENDING',**checkpoint_state,
+                            scope='REFERENCE_CACHE_ONLY',order_ledger_affected=False)
                 shadow_state=shadow.runtime_view();radar.radar.momentum=focus_readiness(detector,shadow_state.get('evaluations',{}),now())
                 desired=set(lookup)|set(engine.s['positions'])|{o['symbol'] for o in engine.active_orders()}
                 desired.update(set(engine.s['automation']['existing'])&(set(BREAKEVEN_EXITS)|({TEST_RELEASE_SYMBOL} if legacy_test_release_enabled() else set())))
@@ -1678,6 +1892,10 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     finally:
         shadow.close()
         if context_worker:context_worker.close()
+        if context_checkpoint:
+            complete=context_checkpoint.close(timeout=1.)
+            engine.event('REFERENCE_CACHE_CHECKPOINT_CLOSED',complete=complete,
+                **context_checkpoint.snapshot(),scope='REFERENCE_CACHE_ONLY',order_ledger_affected=False)
         if data_active: feed.close(); radar.close(); account.close()
         capture=getattr(engine,'trade_review',None)
         if capture is not None:

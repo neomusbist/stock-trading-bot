@@ -1,5 +1,17 @@
 # 오프라인 재현 및 다음 장 증거 수집
 
+## 2026-10-21 추가 운영 수정의 재현
+
+기준은 `68978f660b65d48e57add44322b0e3145433f827`이며 Argon 원본 시험 4개는 결함 존재와 별도 패치 helper의 동작을 함께 확인한다. 원본 시험의 4 PASS를 실제 수정 프로그램의 회귀 통과로 계산하지 않는다. 새 실제 함수 시험은 `tests/test_oct21_shadow_ttl.py`, `tests/test_oct21_status_handoff.py`, `tests/test_oct21_context_deadline.py`에 있다.
+
+검증은 기존 LIVE 원본의 별도 복제본에 허용된 운영 코드 4개만 교체하고 그 정확한 바이트로 새 배포 identity를 만든 격리 환경에서 수행한다. 기존 무결성 검사를 정상 통과한 뒤 socket 연결을 차단한다. 이전 88 PASS를 새 코드의 결과로 복사하지 않는다. `test_opening_loop_fairness`의 단순 engine fixture에도 실제 엔진이 제공하는 clock과 scan_seconds를 추가했다.
+
+LIVE에 없는 LB trial 및 research_bar_knowledge를 요구하는 연구 전용 시험 2개는 운영 패키지 범위 밖으로 기록한다. 기준 실제 설치 소스에서도 같은 실패가 확인되며 이를 고치기 위해 연구 전략 파일을 배포하지 않는다. 그 시험의 ABC snapshot/handoff 안전 검증은 `DiagnosticHandoffBoundary`에서 연구 trial 없이 별도로 수행한다. websocket 의존성은 기존 LIVE vendor의 읽기 전용 사본을 비공개 시험 환경에만 넣는다. 운영 vendor나 환경을 변경하지 않는다.
+
+참조 캐시 측정은 실제 보존 파일 3,986,852바이트를 복사해 5회 실행했다. snapshot CPU를 포함한 메인 처리 중앙값은 312.14ms에서 12.32ms로 줄었으며 별도 writer의 JSON 변환·원자 저장·fsync 비용은 남아 있다. 이 측정은 캐시 비용이며 실제 장중 평가 지연 감소량이 아니다. 재현 harness·원본 사본·측정 JSON·배포 manifest는 계좌 관련 비공개 자료와 함께 저장소 밖에 보존한다.
+
+배포 도구의 실제 지원 모드는 `check`, `apply`, `rollback`뿐이다. 기본 check는 읽기 전용이며 실제 LIVE에 apply/rollback을 실행하려면 별도 사용자 승인이 필요하다. 최종 payload의 복제본 적용·롤백에서 원본 해시, STOP, 장부·설정 불변성을 검사한다.
+
 ## 2026-10-21 최소 운영 수정본 준비
 
 최신 요청으로 LIVE 원본을 읽기 전용 확인하고, 실제 원본 복제본에 `973ed65`의 운영 수정 4개 파일만 반영했다. 아래 검사는 실제 운영 프로세스를 실행하지 않는다. 배포 도구의 `apply`와 `rollback`은 별도 사용자 승인이 필요하며 자동 시작하지 않는다.

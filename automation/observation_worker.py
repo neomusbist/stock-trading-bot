@@ -300,9 +300,6 @@ class ObservationWorker:
         started=time.perf_counter(); clock=datetime.fromisoformat(stamp) if isinstance(stamp,str) else stamp
         eligible=[r for r in rows if r.get('affordability',{}).get('entry_eligible') is True
             and r['code'] not in HARD_LOCKS and r['code'] not in BREAKEVEN_EXITS and r['code']!=TEST_RELEASE_SYMBOL]
-        # 미관찰 종목도 순서대로 확인하고 WATCH 관찰은 유지한다.
-        eligible.sort(key=lambda r:(r.get('status')!='WATCH',r['code'] in self.metadata,
-            -r.get('discovery_score',0),r['code']))
         def admit(row,saved):
             # Admission collects observations only. Missing daily structure stays
             # UNKNOWN; this does not make a raw candidate eligible for an order.
@@ -323,6 +320,14 @@ class ObservationWorker:
         def fresh(saved):
             checked=(saved or {}).get('checked')
             return checked is not None and 0<=(clock-checked).total_seconds()<=self.settings.metadata_ttl_seconds
+        # Refresh active observations before spending their TTL-expiry budget
+        # on new RAW rows. Fresh incumbents do not consume status calls, so
+        # discovery continues in the next pass with the same bounded budget.
+        # WATCH retains first claim; among inactive rows unqueried discoveries
+        # still precede previously cached failures rather than retrying forever.
+        eligible.sort(key=lambda r:(r.get('status')!='WATCH',r['code'] not in self.observer.rows,
+            bool(fresh(self.metadata.get(r['code']))),r['code'] in self.metadata,
+            -r.get('discovery_score',0),r['code']))
         # Publish already verified candidates before unrelated REST/chart calls.
         for row in eligible:
             saved=self.metadata.get(row['code'])
@@ -330,7 +335,14 @@ class ObservationWorker:
                 saved=cache_status(row['code'],saved,row['market_status'])
             if fresh(saved):
                 admit(row,saved)
-        if progress:progress(deepcopy(rows),clock,dict(capital))
+        pending_active={row['code'] for row in eligible if row['code'] in self.observer.rows
+            and not fresh(self.metadata.get(row['code']))}
+        def report_progress():
+            # Do not publish a half-refreshed active batch as a removal and
+            # immediately rejoin it. Final publication still drops statuses
+            # that expired, failed or could not be checked within the budget.
+            if progress and not pending_active:progress(deepcopy(rows),clock,dict(capital))
+        report_progress()
         attempts=0;chart_attempted=False
         for row in eligible:
             sym=row['code']; saved=self.metadata.get(sym)
@@ -340,6 +352,7 @@ class ObservationWorker:
                 if not self.rest or not allow_metadata or attempts>=self.settings.metadata_budget:continue
                 # 같은 API 키의 호출 대기를 제한한다. 봇 포지션/미체결 중에는 새 진단 조회를 시작하지 않는다.
                 attempts+=1; self.apis+=1
+                pending_active.discard(sym)
                 try:
                     status=self.rest.stock_status(sym)
                     saved=cache_status(sym,saved,status)
@@ -347,7 +360,7 @@ class ObservationWorker:
                     self.event('SHADOW_METADATA_ERROR',timestamp=clock.isoformat(),symbol=sym,SHADOW_ONLY=True,**exception_details(error));continue
             if not fresh(saved) or saved['status'].get('pass') is not True:continue
             admit(row,saved)
-            if progress:progress(deepcopy(rows),clock,dict(capital))
+            report_progress()
             path=self.root/'data/raw'/f'{sym}_daily.csv'
             try:
                 bars=self.daily_bars(sym,path,clock.date())

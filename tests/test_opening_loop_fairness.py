@@ -55,7 +55,8 @@ class AccountFairnessTests(unittest.TestCase):
 class CachedCashMarkerTests(unittest.TestCase):
     def build(self,fresh,reason='ACCOUNT_CAPITAL_UNAVAILABLE'):
         engine=SimpleNamespace(connected=True,capital_account_valid=Mock(return_value=fresh),
-            decisions=Mock(),a=SimpleNamespace(min_source_count=2),names={},market_status={})
+            decisions=Mock(),a=SimpleNamespace(min_source_count=2,scan_seconds=60),
+            clock=lambda:AT,names={},market_status={})
         detector=Mock();detector.signal.return_value=None;detector.evaluation_gates.return_value={}
         detector.last_eval={}
         tick=Tick('009900',AT,9750,1,1,9750,9740,True)
