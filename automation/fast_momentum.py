@@ -542,23 +542,24 @@ class FastMomentumStrategy:
         if now is None:return None
         if ingest and not self.ingest_tick(t, received):return None
         tape = self.get_tape(t.symbol); m = tape.metrics(now)
+        note_metrics=saved_evidence(m)
         if not m or not m['data_fresh']:
-            self._note(t, 'UNKNOWN', 'CURRENT_MICRO_TAPE_UNAVAILABLE',decision_at=now); return None
+            self._note(t, 'UNKNOWN', 'CURRENT_MICRO_TAPE_UNAVAILABLE',metrics=note_metrics,decision_at=now); return None
         reason = self._quote(t, now)
-        if reason:self._note(t, 'UNKNOWN', reason,decision_at=now); return None
+        if reason:self._note(t, 'UNKNOWN', reason,metrics=note_metrics,decision_at=now); return None
         if m['latest_time'] != t.time or m['last_price'] != t.price:
-            self._note(t, 'UNKNOWN', 'CURRENT_TRADE_NOT_IN_ACCEPTED_TAPE',decision_at=now); return None
+            self._note(t, 'UNKNOWN', 'CURRENT_TRADE_NOT_IN_ACCEPTED_TAPE',metrics=note_metrics,decision_at=now); return None
         exited = self.last_exit_by_symbol.get(t.symbol)
         if exited and exited.date() == now.date() and 0 <= (now - exited).total_seconds() < self.cooldown_seconds:
-            self._note(t, 'REJECT', 'SAME_SYMBOL_FILLED_EXIT_COOLDOWN',decision_at=now); return None
+            self._note(t, 'REJECT', 'SAME_SYMBOL_FILLED_EXIT_COOLDOWN',metrics=note_metrics,decision_at=now); return None
         phase = self.determine_phase(t.time)
         if phase == 'OFF_SESSION' or not (supported(t.time) or after_supported(t.time)):
-            self._note(t, 'REJECT', 'OFF_SESSION',decision_at=now); return None
+            self._note(t, 'REJECT', 'OFF_SESSION',metrics=note_metrics,decision_at=now); return None
         regime, reason, details = self.classify_regime(t, m, phase, watch)
-        if regime != 'A':self._note(t, 'REJECT', reason, regime=regime, details=details,decision_at=now); return None
+        if regime != 'A':self._note(t, 'REJECT', reason, regime=regime, details=details,metrics=note_metrics,decision_at=now); return None
         geometry = self.calculate_invalidation_and_target(t, m, watch, capital_limit, risk_budget, asof=now)
         if not geometry.get('pass'):
-            self._note(t, 'UNKNOWN' if 'UNKNOWN' in geometry['reason'] or 'UNAVAILABLE' in geometry['reason'] else 'REJECT', geometry['reason'], geometry=geometry,decision_at=now)
+            self._note(t, 'UNKNOWN' if 'UNKNOWN' in geometry['reason'] or 'UNAVAILABLE' in geometry['reason'] else 'REJECT', geometry['reason'], geometry=geometry,metrics=note_metrics,decision_at=now)
             return None
         actual_order = bool(live_authorized)
         signal = FastSignal(symbol=t.symbol, name=watch.get('name', t.symbol), limit=geometry['entry'],
@@ -586,7 +587,7 @@ class FastMomentumStrategy:
             SHADOW_ONLY=not actual_order,
         ))
         self._note(t, 'SIGNAL', 'FAST_LIVE_CANDIDATE' if actual_order else 'CAUSAL_FAST_RESEARCH_CANDIDATE',
-                    geometry=geometry, actual_order_permission=actual_order, SHADOW_ONLY=not actual_order,decision_at=now)
+                    geometry=geometry, metrics=note_metrics, actual_order_permission=actual_order, SHADOW_ONLY=not actual_order,decision_at=now)
         return signal
 
     def evaluate_exit(self, position, t, current_time):

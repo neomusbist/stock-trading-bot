@@ -7,7 +7,7 @@ import time
 from datetime import date,datetime as date_time
 from dataclasses import replace
 from pathlib import Path
-from candidate_builder import RANKS, bars_from_csv, fetch_bars, structure
+from candidate_builder import RANKS, bars_from_csv, fetch_bars, structure, history_refresh_required
 from core.settings import now
 from core.util import code, number, atomic_json, write_csv, exception_details
 from core.broker import Rejected
@@ -312,7 +312,7 @@ class RadarWorker:
         if key not in self.cache:
             path=self.root/'data/raw'/f'{sym}_daily.csv'
             bars=bars_from_csv(path,day) if path.exists() else []
-            fresh=bars and (day-date.fromisoformat(bars[-1]['datetime'])).days<=self.cfg.max_history_age_days
+            fresh=bars and (day-date.fromisoformat(bars[-1]['datetime'])).days<=self.cfg.max_history_age_days and not history_refresh_required(bars,day)
             if not fresh or len(bars)<self.cfg.min_history_bars:
                 if self.fetched>=self.a.max_scan_charts: return {'status':'UNKNOWN','reason':'이번 주기 차트 조회 한도; 다음 주기 재시도'}
                 bars=fetch_bars(self.rest,sym,self.cfg,self.root/'data/raw',day); self.fetched+=1

@@ -209,23 +209,29 @@ def select_focus(
 
     # 적격 후보 필터링
     eligible_candidates = []
+    blocked_reasons: Dict[str, str] = {}
     for r in by_code.values():
         sym = r.get('code')
         if not sym:
             continue
         reason = str(r.get('reason', ''))
         if reason.startswith('HARD_LOCK') or reason.startswith('EXISTING_POLICY'):
+            blocked_reasons[sym] = 'EXISTING_HOLDING_POLICY'
             continue
         afford = r.get('affordability', {})
         if afford.get('entry_eligible') is False or afford.get('reason_code') == 'ONE_SHARE_UNAFFORDABLE':
+            blocked_reasons[sym] = afford.get('reason_code') or 'AFFORDABILITY_NOT_ELIGIBLE'
             continue
         status = r.get('status')
         if status and status not in {'ELIGIBLE', 'WATCH', 'RESERVE', 'SHADOW'}:
+            blocked_reasons[sym] = 'CANDIDATE_STATUS_' + str(status)
             continue
         src_count = r.get('source_count', 0)
         if src_count < 1:
+            blocked_reasons[sym] = 'SOURCE_COUNT_ZERO'
             continue
         if not fallback_source1 and src_count < 2:
+            blocked_reasons[sym] = 'SOURCE_INTERSECTION_REQUIRED'
             continue
         eligible_candidates.append(r)
 
@@ -249,7 +255,6 @@ def select_focus(
     demoted = [s for s in prev_watch_symbols if s not in next_watch_symbols]
     applied = bool(promoted or demoted)
 
-    blocked_reasons: Dict[str, str] = {}
     for r in eligible_candidates[max_watchlist:]:
         sym = r['code']
         sym_tier = tier_map.get(sym, 3)

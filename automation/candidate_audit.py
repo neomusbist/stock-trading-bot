@@ -1,18 +1,40 @@
 """주기별 고유 종목의 최신 판단 집계. 기록은 기존 events와 작은 JSON만 사용한다."""
 from collections import Counter
 from automation.decisions import STRATEGY_VERSION
+from automation.entry_funnel import EntryFunnel
 
 class CandidateAudit:
     def __init__(self):
         self.rows={}; self.evaluations={}; self.started=None; self.context={}
+        self.funnel=EntryFunnel();self.funnel_errors=0
 
     def begin(self,rows,stamp,context):
         self.rows={r['code']:dict(r) for r in rows}; self.evaluations={}
         self.started=stamp; self.context=dict(context)
+        try:
+            self.funnel.rows(rows,stamp,'DISCOVERY_REVIEWED')
+            self.funnel.rows([r for r in rows if r.get('status') in {'WATCH','ELIGIBLE','RESERVE','SHADOW'}],stamp,'QUALIFIED')
+            self.funnel.rows([r for r in rows if r.get('status')=='WATCH'],stamp,'WATCH_AT_SCAN')
+        except Exception:self.funnel_errors+=1
 
     def observe(self,symbol,reason,gates,decision,metadata=None):
+        meta=metadata or {}
+        try:
+            self.funnel.boundary(symbol,meta.get('timestamp') or self.started,reason,gates,
+                                 {'pattern':meta.get('signal_pattern')})
+        except Exception:self.funnel_errors+=1
         if symbol in self.rows:
             self.evaluations[symbol]={'primary_reason_code':reason,'gates':gates,'decision':decision,**(metadata or {})}
+
+    def record_rows(self,rows,stamp,stage):
+        try:self.funnel.rows(rows,stamp,stage)
+        except Exception:self.funnel_errors+=1
+
+    def funnel_snapshot(self,stamp):
+        try:return self.funnel.snapshot(stamp)
+        except Exception:
+            self.funnel_errors+=1
+            return {'schema':'ENTRY_FUNNEL_V1','status':'UNKNOWN_DIAGNOSTIC_ERROR','errors':self.funnel_errors}
 
     def summary(self,stamp,context=None):
         counts=Counter(); reasons=Counter(); candidates=[]
@@ -54,4 +76,5 @@ class CandidateAudit:
                 **metrics,'shadow':getattr(self,'shadow_count',0),'refresh_seconds':getattr(self,'refresh_seconds',60),
                 'raw_definition':'5개 ranking API의 일반주 고유종목 합집합; HTS 0168과 동일 목록은 아님',
                 'reason_counts':dict(reasons),'candidates':candidates,
+                'entry_funnel':self.funnel_snapshot(stamp),
                 'count_basis':'주기 내 고유종목 최신판단; gate 탈락수는 중복 가능; 미평가를 통과로 세지 않음'}

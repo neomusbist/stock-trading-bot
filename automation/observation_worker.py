@@ -9,7 +9,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
-from candidate_builder import bars_from_csv, fetch_bars, structure
+from candidate_builder import bars_from_csv, fetch_bars, structure, history_refresh_required
 from core.util import atomic_json, exception_details
 from core.event_log import append_jsonl
 from automation.policy import HARD_LOCKS, BREAKEVEN_EXITS, TEST_RELEASE_SYMBOL
@@ -364,10 +364,21 @@ class ObservationWorker:
             path=self.root/'data/raw'/f'{sym}_daily.csv'
             try:
                 bars=self.daily_bars(sym,path,clock.date())
-                # 독립 일봉 캐시. 갱신당 최대 1종목. LIVE 캐시에 되돌려 쓰지 않는다.
-                if len(bars)<self.cfg.min_history_bars and self.rest and allow_metadata and not chart_attempted and saved.get('bars') is None and (clock-saved.get('last_chart_attempt',clock.replace(year=clock.year-1))).total_seconds()>=30:
-                    chart_attempted=True;self.apis+=1;saved['last_chart_attempt']=clock
-                    bars=fetch_bars(self.rest,sym,self.cfg,self.root/'data/observation',clock.date());saved['bars']=bars
+                needs_history=len(bars)<self.cfg.min_history_bars or history_refresh_required(bars,clock.date())
+                if needs_history and saved.get('history_verified_day')==clock.date() and saved.get('bars') is not None:
+                    bars=saved['bars'];needs_history=False
+                # A seven-day age ceiling is not proof that the most recent
+                # completed session was loaded. Refresh within the same one
+                # chart-per-update budget; a pending check cannot grant entry.
+                if needs_history:
+                    if self.rest and allow_metadata and not chart_attempted and (clock-saved.get('last_chart_attempt',clock.replace(year=clock.year-1))).total_seconds()>=30:
+                        chart_attempted=True;self.apis+=1;saved['last_chart_attempt']=clock
+                        bars=fetch_bars(self.rest,sym,self.cfg,self.root/'data/observation',clock.date())
+                        saved['bars']=bars;saved['history_verified_day']=clock.date()
+                    else:
+                        row['shadow_view']={'status':'UNKNOWN','market_status':saved['status'],
+                            'reason':'SHADOW_HISTORY_REFRESH_PENDING'}
+                        continue
                 if not bars:bars=saved.get('bars') or []
                 struct=observation_structure(bars,row['reference_price'],self.cfg,clock.date())
                 row['shadow_view']={**struct,'market_status':saved['status'],

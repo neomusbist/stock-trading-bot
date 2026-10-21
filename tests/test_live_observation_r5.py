@@ -2,6 +2,7 @@
 import copy
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from unittest.mock import Mock
 from automation.observation_retention import ObservationRetention, observation_residence_seconds
 from automation.policy import AutomationConfig
 from automation.radar import collect, RadarWorker
+from automation.observation_settings import ObservationSettings
 from automation.runner import handle_radar_failure, verified_radar_cache_available
 from core.settings import Config, KST
 import tests.test_subscription_refresh as fixture
@@ -41,7 +43,8 @@ class RadarCacheTests(unittest.TestCase):
 
 class RankingRowTests(unittest.TestCase):
     def rest(self,rows):
-        return SimpleNamespace(pages=lambda *a,**k:(copy.deepcopy(rows),{}))
+        return SimpleNamespace(pages=lambda *a,**k:(copy.deepcopy(rows),{}),
+            radar_observation_settings=replace(ObservationSettings(),live_early_discovery_enabled=False))
     def test_one_invalid_identity_does_not_lose_all_other_sources(self):
         r=self.rest([{'stk_cd':'invalid','stk_nm':'bad'}, {'stk_cd':'028670','stk_nm':'팬오션','cur_prc':'6970'}])
         rows=collect(r)
@@ -54,9 +57,16 @@ class RankingRowTests(unittest.TestCase):
         self.assertEqual(collect(r),[])
         self.assertEqual(len(r.radar_rejected_rows),15)
     def test_unknown_exchange_suffix_is_rejected_not_silently_normalized(self):
-        r=self.rest([{'stk_cd':'028670_NX','stk_nm':'팬오션'}])
+        r=self.rest([{'stk_cd':'028670_ZZ','stk_nm':'팬오션'}])
         self.assertEqual(collect(r),[])
         self.assertTrue(r.radar_rejected_rows)
+    def test_optional_early_source_preserves_supported_exchange_suffix(self):
+        r=self.rest([{'stk_cd':'028670_NX','stk_nm':'팬오션','cur_prc':'6970'}])
+        r.radar_observation_settings=replace(ObservationSettings(),live_early_discovery_enabled=True)
+        rows=collect(r)
+        self.assertEqual(rows[0]['code'],'028670')
+        self.assertEqual(len(rows[0]['source_details']),6)
+        self.assertIn('ka10023',rows[0]['source_details'])
     def test_source_failure_is_not_converted_to_verified_empty_data(self):
         def fail(*a,**k):raise ValueError('source field missing')
         with self.assertRaisesRegex(ValueError,'source field missing'):collect(SimpleNamespace(pages=fail))

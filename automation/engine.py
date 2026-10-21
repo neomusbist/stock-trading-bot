@@ -137,6 +137,10 @@ class AutonomousEngine(ExistingExits,Engine):
               'build_id':BUILD_ID,'strategy_experiment':STRATEGY_EXPERIMENT}
         info.update(data)
         result=super().event(kind,**safe_values(info))
+        audit=getattr(self,'candidate_audit',None)
+        if audit is not None and kind in {'ORDER_ACCEPTED','FILL','ORDER_REJECTED','ORDER_UNKNOWN'}:
+            try:audit.funnel.execution(kind,sym,self.clock(),side=data.get('side'))
+            except Exception:self.entry_funnel_errors=getattr(self,'entry_funnel_errors',0)+1
         capture=getattr(self,'trade_review',None)
         if capture is not None:
             try:

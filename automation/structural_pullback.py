@@ -9,6 +9,12 @@ from automation.trade_quality import complete_sequence
 from automation.price_context import PriceContext
 
 
+def pullback_peak_index(seq):
+    """One peak definition for B detection and its independent floor proof."""
+    first=0 if seq[0].get('open',0)>0 else 1
+    return max(range(first,len(seq)-1),key=lambda i:seq[i]['high'])
+
+
 def structural_pullback(raw, asof, setup, cfg, entry, bid, ask,close_policy=False):
     evidence={'asof':asof.isoformat(),'entry':entry,'bid':bid,'ask':ask,
               'policy':'CONFIRMED_PULLBACK_FLOOR_AND_KNOWN_OVERHEAD'}
@@ -19,7 +25,7 @@ def structural_pullback(raw, asof, setup, cfg, entry, bid, ask,close_policy=Fals
         return None,{**evidence,'reason':'PULLBACK_STRUCTURE_VOLUME_UNAVAILABLE'}
     if any(type(x) not in (int,float) or not math.isfinite(x) or x<=0 for x in (entry,bid,ask)) or bid>ask:
         return None,{**evidence,'reason':'PULLBACK_QUOTE_UNAVAILABLE'}
-    seq=bars[-12:];peak_i=max(range(1,len(seq)-1),key=lambda i:seq[i]['high'])
+    seq=bars[-12:];peak_i=pullback_peak_index(seq)
     impulse=seq[:peak_i+1];pull=seq[peak_i+1:]
     peak=seq[peak_i]['high'];base=min(b['low'] for b in impulse);support=min(b['low'] for b in pull)
     if setup.get('support')!=support or setup.get('peak')!=peak or setup.get('projection')!=peak+peak-base:

@@ -130,7 +130,13 @@ class PatternDetector(Detector):
 
     def pullback_analysis(self,bars):
         if len(bars)<4:return None,'INSUFFICIENT_USABLE_BARS',{}
-        seq=bars[-12:]; peak_i=max(range(1,len(seq)-1),key=lambda i:seq[i]['high'])
+        seq=bars[-12:]
+        # A complete opening candle can contain the impulse itself. Excluding
+        # it relabelled a lower pullback high as the peak, changing both the
+        # close-progress test and the volume denominator. Its actual open is
+        # required; a missing open cannot establish an intrabar rise.
+        from automation.structural_pullback import pullback_peak_index
+        peak_i=pullback_peak_index(seq)
         impulse=seq[:peak_i+1]; pull=seq[peak_i+1:]
         if not pull:return None,'NO_CONTROLLED_PULLBACK',{}
         peak=seq[peak_i]['high']; base=min(b['low'] for b in impulse); low=min(b['low'] for b in pull)

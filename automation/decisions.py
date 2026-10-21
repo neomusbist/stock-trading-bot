@@ -77,7 +77,7 @@ class DecisionLog:
             elif decision=='BUY':
                 self.buy_candidates.add((symbol,pat or 'UNKNOWN',sig.get('limit')))
         if kind=='ENTRY_EVAL' and hasattr(e,'candidate_audit'):
-            e.candidate_audit.observe(symbol,reason,gates,decision,{'timestamp':e.clock().isoformat(),'current_price':price,'setup_trials':sig.get('setup_trials',extra.get('setup_trials'))})
+            e.candidate_audit.observe(symbol,reason,gates,decision,{'timestamp':e.clock().isoformat(),'current_price':price,'setup_trials':sig.get('setup_trials',extra.get('setup_trials')),'signal_pattern':sig.get('pattern')})
         state=('EXIT_PENDING' if p.get('exit_requested') else 'BOT_POSITION') if p else e.policy.mode
         if sig.get('ownership')=='EXISTING_POLICY': state='EXTERNAL_POLICY_PENDING' if e.active_orders(symbol) else 'EXTERNAL_POLICY_HOLD'
         signature=json.dumps([state,decision,reason,p.get('stop'),p.get('qty'),

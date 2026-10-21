@@ -3,7 +3,7 @@ import argparse
 import csv
 import json
 import statistics
-from datetime import date
+from datetime import date,timedelta
 from pathlib import Path
 from core.settings import ROOT, load_config, now
 from core.util import number, code, read_csv, write_csv, atomic_json
@@ -43,6 +43,18 @@ def bars_from_csv(path,asof):
             raise ValueError('OHLC 오류')
         b['datetime']=d.isoformat(); result.append(b)
     return sorted(result,key=lambda x:x['datetime'])
+
+def history_refresh_required(bars,asof):
+    """Missing nominal prior session requires a fresh API check, not a bypass.
+
+    This weekday calculation is a refresh trigger, not a holiday calendar.
+    A verified same-day API response may legitimately end before a holiday;
+    the unchanged maximum-age/history/structure guards still apply to it.
+    """
+    if not bars:return True
+    previous=asof-timedelta(days=1)
+    while previous.weekday()>=5:previous-=timedelta(days=1)
+    return date.fromisoformat(str(bars[-1]['datetime'])[:10])<previous
 
 def fetch_bars(rest,symbol,cfg,folder,asof):
     rows,_=rest.pages('ka10081',{'stk_cd':symbol,'base_dt':asof.strftime('%Y%m%d'),'upd_stkpc_tp':'1'},

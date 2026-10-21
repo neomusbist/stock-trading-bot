@@ -45,6 +45,7 @@ from automation.entry_context_audit import review_entry_context
 from automation.performance import report
 from automation.session import supported,control_supported,assessment,market_phase,after_supported,after_control_supported,after_entry_supported
 from automation.candidate_audit import CandidateAudit
+from automation.entry_funnel import observe_evaluation
 from automation.observation_settings import ObservationSettings,load_observation
 from automation.focus_selection import select_focus
 
@@ -698,6 +699,10 @@ def merge_verified_shadow_candidates(rows,shadow,lookup,clock=None,max_age_secon
 
 def apply_focus_selection(engine,lookup,by_symbol,selection):
     """main thread에서 WATCH 자격 표시만 동기화한다. detector/주문 상태는 바꾸지 않는다."""
+    audit=getattr(engine,'candidate_audit',None)
+    if isinstance(audit,CandidateAudit):
+        try:audit.funnel.rows([{'code':s} for s in selection.promoted],selection.focus_epoch,'WATCH_ENTERED')
+        except Exception:engine.entry_funnel_errors=getattr(engine,'entry_funnel_errors',0)+1
     for sym in selection.demoted:
         lookup.pop(sym,None)
         if sym in engine.source_qualification:
@@ -866,6 +871,7 @@ def focus_readiness(detector,shadow_readiness,stamp):
         for sym,evaluation in detector.last_eval.items():
             tick_at=evaluation.get('time')
             if not isinstance(tick_at,datetime) or tick_at.tzinfo is None:continue
+            readiness_at=tick_at
             age=(stamp-tick_at).total_seconds()
             if tick_at.astimezone(stamp.tzinfo).date()!=stamp.date():continue
             if age<0:
@@ -875,6 +881,11 @@ def focus_readiness(detector,shadow_readiness,stamp):
                 if (source_tick is None or source_tick.time!=tick_at
                         or not tick_freshness(source_tick,stamp,15)['fresh']):continue
                 age=0.
+                # Timestamp readiness by the actual local observation, while
+                # retaining the original exchange clock. Passing a future
+                # exchange stamp to readiness_tier discarded this validated
+                # FAST signal again at the next layer.
+                readiness_at=stamp
             gates=evaluation.get('gates',{})
             price_blocked=unviable_price_geometry({'setup_trials':evaluation.get('trials',[])})
             # Positive readiness still expires at 15s. A same-day negative
@@ -892,7 +903,7 @@ def focus_readiness(detector,shadow_readiness,stamp):
                 active_fast=fast_strat.active_signals.get(sym)
                 if active_fast is not None and 0<=(stamp-active_fast.created_at).total_seconds()<=active_fast.ttl_seconds:
                     fast_ready=True
-            result[sym]={'timestamp':tick_at.isoformat(),
+            result[sym]={'timestamp':readiness_at.isoformat(),'exchange_time':tick_at.isoformat(),
                 'tier':0 if fast_ready else calculate_tier(gates,evaluation.get('trials',[])),
                 'price_blocked':False if fast_ready else price_blocked,
                 'fast_signal_ready':fast_ready,
@@ -1035,6 +1046,7 @@ def evaluate_shadow_opportunity(engine,detector,t,watch,radar,prices,account,las
 
     # Evaluate FAST strategy in SHADOW mode if enabled and no A/B/C signal yet
     fast_sig=None
+    fast_evaluation=None
     if not sig and getattr(engine.a,'fast_momentum_enabled',False) and getattr(engine,'fast_strategy',None) is not None:
         watch_eval=dict(watch)
         eval_now=engine.clock()
@@ -1056,12 +1068,15 @@ def evaluate_shadow_opportunity(engine,detector,t,watch,radar,prices,account,las
             received=eval_now,
             live_authorized=False
         )
+        fast_evaluation=engine.fast_strategy.last_evaluation.get(t.symbol)
         if raw_fast is not None:
             fast_sig=raw_fast.to_engine_signal(watch)
             sig=fast_sig
 
     live_signal_ready = (sig is not None and sig.get('pattern') in {'A', 'B', 'C', 'FAST'})
     live_trials_ready = any(tr.get('entry_ready') for tr in trials if tr.get('setup') in {'A', 'B', 'C'})
+    observe_evaluation(engine,t,watch,detector,fast_evaluation,
+        sig,'SHADOW_PROBE' if probe_only else 'SHADOW')
     if probe_only:return live_signal_ready or live_trials_ready
     ready_trials=[tr for tr in trials if tr.get('entry_ready')]
     if sig or ready_trials:
@@ -1212,6 +1227,7 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
         fast_evaluation=engine.fast_strategy.last_evaluation.get(t.symbol)
         if fast_sig is not None:
             sig = fast_sig.to_engine_signal(watch)
+    observe_evaluation(engine,t,watch,detector,fast_evaluation,sig,'WATCH')
     capture=getattr(engine,'trade_review',None)
     if capture is not None:
         try:capture.evaluation(t,watch,detector.last_eval.get(t.symbol,{}),fast_evaluation,engine.clock())
@@ -1787,6 +1803,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                                 record_opening_focus_change(engine,selection)
                             continue
                         if result.get('phase')=='RAW':
+                            engine.candidate_audit.record_rows(result['rows'],result['time'],'RAW')
                             engine.observation_timeline.raw(result['rows'],datetime.fromisoformat(result['time']))
                             qualify_raw(engine,result['rows'],result['time'],is_raw_phase=True)
                             engine.event('RAW_CANDIDATES',observed_at=result['time'],raw_count=len(result['rows']),
@@ -2020,6 +2037,8 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         'strategy':'MANAGE' if engine.s['positions'] else 'SCAN' if lookup else 'QUIET','counts':counts,
                         'entry_quote_retry':{'pending':len(getattr(engine,'_quote_entry_pending',{})),
                             'counts':dict(getattr(engine,'_quote_entry_counts',{}))},
+                        'entry_funnel':engine.candidate_audit.funnel_snapshot(now()),
+                        'entry_funnel_errors':getattr(engine,'entry_funnel_errors',0)+engine.candidate_audit.funnel_errors,
                         'trade_review_capture':capture.stats() if capture is not None else {'available':False}},fsync=False)
                     last_heartbeat=time.monotonic()
                 if done: break
@@ -2062,7 +2081,9 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 'subscription_refresh_pending':False,'subscription_tick_waiting':[],
                 'available_capital':0,'approved_cap':auto.capital_limit,
                 'bot_cash':engine.s.get('cash',0.),'positions':len(engine.s['positions']),'pending':len(engine.active_orders()),
-                'strategy':'STOPPED','counts':counts},fsync=False)
+                'strategy':'STOPPED','counts':counts,
+                'entry_funnel':engine.candidate_audit.funnel_snapshot(now()),
+                'entry_funnel_errors':getattr(engine,'entry_funnel_errors',0)+engine.candidate_audit.funnel_errors},fsync=False)
         except Exception: pass
         result={'started':started.isoformat(),'finished':now().isoformat(),'mode':policy.mode,'approved_cap':auto.capital_limit,
                 'counts':counts,'remaining_positions':len(engine.s['positions']),'remaining_orders':len(engine.active_orders()),
