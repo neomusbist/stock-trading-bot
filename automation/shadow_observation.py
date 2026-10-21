@@ -42,11 +42,11 @@ class ShadowObserver:
  def reset_stream(self,reason,symbol=None,stamp=None):
   """A coverage break invalidates FAST microstructure as well as ABC bars."""
   if symbol is None:
-   self.detector.reset();self.fast_strategy.reset(reason=reason)
+   self.detector.reset();self.fast_strategy.reset(reason=reason);self.early_impulse.reset(reason=reason)
    self.latest.clear();self.last_log.clear();self.last_tier.clear();self.last_evaluated.clear()
    self.research_bar_knowledge.clear()
   else:
-   self.detector.forget(symbol);self.fast_strategy.forget(symbol,reason=reason)
+   self.detector.forget(symbol);self.fast_strategy.forget(symbol,reason=reason);self.early_impulse.forget(symbol,reason=reason)
    self.latest.pop(symbol,None);self.last_log.pop(symbol,None);self.last_tier.pop(symbol,None);self.last_evaluated.pop(symbol,None)
    self.research_bar_knowledge.pop(symbol,None)
   if stamp is not None:self.event('SHADOW_STREAM_RESET',stamp,symbol=symbol,reason=reason,actual_order_permission=False)
@@ -58,7 +58,7 @@ class ShadowObserver:
   if isinstance(stamp,str):stamp=datetime.fromisoformat(stamp)
   if self.epoch!=stamp.date():
    self.research_bar_knowledge.clear()
-   self.fast_strategy.reset(reason='DAY_ROLLOVER');self.last_tier={};self.last_evaluated={}
+   self.fast_strategy.reset(reason='DAY_ROLLOVER');self.early_impulse.reset(reason='DAY_ROLLOVER');self.last_tier={};self.last_evaluated={}
    self.detector.reset();self.first={};self.previous={};self.rows={};self.last_log={};self.selected_at={};self.latest={};self.detached=set();self.detached_at={};self.epoch=stamp.date()
   eligible=[]
   for row in rows:
@@ -173,9 +173,9 @@ class ShadowObserver:
   lb_sig,lb_details=self.local_breakout.evaluate(t,research_history,view,capital_limit=self.capital.get('entry_budget',self.capital.get('effective_auto_cap',81300.0)),risk_budget=min(self.capital.get('risk_equity',self.capital.get('effective_auto_cap',81300.0))*self.cfg.risk_fraction,self.capital.get('risk_remaining',1626.0)),asof=received)
   if lb_sig:
    self.event('SHADOW_LOCAL_BREAKOUT_SIGNAL',received,symbol=t.symbol,name=row.get('name'),signal_at=lb_sig.created_at.isoformat() if lb_sig.created_at else received.isoformat(),limit=lb_sig.limit,stop=lb_sig.stop,target=lb_sig.target,emergency=lb_sig.emergency,quantity=lb_sig.quantity,net_reward_risk=lb_sig.net_reward_risk,gross_reward_risk=lb_sig.gross_reward_risk,pattern='LOCAL_BREAKOUT',SHADOW_ONLY=True,actual_order_permission=False)
-  ei_sig,ei_details=self.early_impulse.evaluate(t,research_history,view,capital_limit=self.capital.get('entry_budget',self.capital.get('effective_auto_cap',81300.0)),risk_budget=min(self.capital.get('risk_equity',self.capital.get('effective_auto_cap',81300.0))*self.cfg.risk_fraction,self.capital.get('risk_remaining',1626.0)),asof=received)
+  ei_sig,ei_details=self.early_impulse.evaluate_tick(t,research_history,view,capital_limit=self.capital.get('entry_budget',self.capital.get('effective_auto_cap',81300.0)),risk_budget=min(self.capital.get('risk_equity',self.capital.get('effective_auto_cap',81300.0))*self.cfg.risk_fraction,self.capital.get('risk_remaining',1626.0)),received=received)
   if ei_sig:
-   self.event('SHADOW_EARLY_IMPULSE_SIGNAL',received,symbol=t.symbol,name=row.get('name'),signal_at=ei_sig.created_at.isoformat() if ei_sig.created_at else received.isoformat(),limit=ei_sig.limit,stop=ei_sig.stop,target=ei_sig.target,emergency=ei_sig.emergency,quantity=ei_sig.quantity,net_reward_risk=ei_sig.net_reward_risk,gross_reward_risk=ei_sig.gross_reward_risk,pattern='EARLY_IMPULSE_PULLBACK',SHADOW_ONLY=True,actual_order_permission=False)
+   self.event('SHADOW_EARLY_IMPULSE_PULLBACK_SIGNAL',received,symbol=t.symbol,name=row.get('name'),signal_at=ei_sig.created_at.isoformat() if ei_sig.created_at else received.isoformat(),limit=ei_sig.limit,stop=ei_sig.stop,target=ei_sig.target,emergency=ei_sig.emergency,quantity=ei_sig.quantity,net_reward_risk=ei_sig.net_reward_risk,gross_reward_risk=ei_sig.gross_reward_risk,pattern='EARLY_IMPULSE_PULLBACK',SHADOW_ONLY=True,actual_order_permission=False)
   usable=[]
   for bar in reversed(history):
    if bar['first_second']>self.cfg.stale_seconds:break
@@ -195,7 +195,7 @@ class ShadowObserver:
    'details':lb_details
   })
   trials.append({
-   'setup':'D',
+   'setup':'D_SHADOW',
    'evaluated':True,
    'candidate_generated':bool(ei_sig is not None),
    'entry_ready':bool(ei_sig is not None and gates.get('market_status',{}).get('result')=='PASS'),

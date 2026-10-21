@@ -14,7 +14,9 @@ class ObservationSettings:
     far_evaluation_seconds:int=5
     rank_limit_multiplier:int=1
     max_raw_symbols:int=300
+    shadow_discovery_enabled:bool=False
     def validate(self):
+        if type(self.shadow_discovery_enabled) is not bool:raise ValueError('shadow_discovery_enabled는 bool')
         if type(self.rank_limit_multiplier) is not int or self.rank_limit_multiplier not in (1,2):raise ValueError('랭킹 범위 배수는 1 또는 2')
         if type(self.max_raw_symbols) is not int or not 100<=self.max_raw_symbols<=300:raise ValueError('원시 후보 한도는 100~300')
         if type(self.max_symbols) is not int or not 1<=self.max_symbols<=64:raise ValueError('관찰 최대종목수는 1~64')

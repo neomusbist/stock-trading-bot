@@ -1,98 +1,120 @@
-"""Early Discovery Collector for rapid intraday volume surge candidates.
+"""Early discovery ranking configuration and contract validation for active market hours.
 
-Operates within Kiwoom REST rate limits. Swaps or augments ranking definitions
-for SHADOW research mode during regular market hours, while strictly isolating
-LIVE trading from unverified rank endpoints.
-
-Kiwoom API Contracts:
-- ka10030: 당일거래량상위요청
-  Path: /api/dostk/rkinfo
-  Response key: 'tdy_trde_qty_upper'
-  Payload: {'mrkt_tp': '000', 'sort_tp': '1', 'trde_qty_cnd': '0', 'stk_cnd': '4', 'crd_cnd': '0', 'pric_cnd': '0', 'stex_tp': '1'}
-
-- ka10023: 거래량급증요청
-  Path: /api/dostk/rkinfo
-  Response key: 'trde_qty_sdnin'
-  Payload: {'mrkt_tp': '000', 'sort_tp': '1', 'time_tp': '1', 'time': '1', 'trde_qty_tp': '0', 'stk_cnd': '0', 'stex_tp': '1'}
+Official Kiwoom REST API (/api/dostk/rkinfo) contracts for early discovery:
+- ka10023: 거래량급증요청 (Volume Surge, HTS [0168]), response key 'trde_qty_sdnin'
+- ka10030: 당일거래량상위요청 (Today's Top Volume, HTS [0184]), response key 'tdy_trde_qty_upper'
 """
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Tuple
-from candidate_builder import RANKS
+from core.settings import now, KST
 from core.util import code, number
+from candidate_builder import RANKS
 
-# Official Kiwoom REST API definitions
-KA10030_TODAY_VOLUME_TOP: Tuple[str, str, int, Dict[str, str]] = (
-    'ka10030',
-    'tdy_trde_qty_upper',
-    30,
+# Official Kiwoom REST API (/api/dostk/rkinfo) contracts for early discovery
+OFFICIAL_EARLY_RANK_CONTRACTS: Dict[str, Dict[str, Any]] = {
+    'ka10023': {
+        'name': '거래량급증요청',
+        'path': '/api/dostk/rkinfo',
+        'response_key': 'trde_qty_sdnin',
+        'required_request_fields': (
+            'mrkt_tp', 'sort_tp', 'tm_tp', 'trde_qty_tp', 'tm', 'stk_cnd', 'pric_tp', 'stex_tp'
+        ),
+        'required_row_fields': ('stk_cd', 'stk_nm', 'cur_prc', 'trde_qty', 'sdnin_rt'),
+    },
+    'ka10030': {
+        'name': '당일거래량상위요청',
+        'path': '/api/dostk/rkinfo',
+        'response_key': 'tdy_trde_qty_upper',
+        'required_request_fields': (
+            'mrkt_tp', 'sort_tp', 'mang_stk_incls', 'crd_tp', 'trde_qty_tp',
+            'pric_tp', 'trde_prica_tp', 'mrkt_open_tp', 'stex_tp'
+        ),
+        'required_row_fields': ('stk_cd', 'stk_nm', 'cur_prc', 'trde_qty', 'trde_prica'),
+    },
+}
+
+# ka10023: 거래량급증요청 (Intraday rapid volume surge)
+INTRADAY_VOLUME_SURGE_RANK: Tuple[str, str, int, Dict[str, str]] = (
+    'ka10023', 'trde_qty_sdnin', 30,
     {
         'mrkt_tp': '000',
         'sort_tp': '1',
-        'trde_qty_cnd': '0',
+        'tm_tp': '1',
+        'trde_qty_tp': '5',
+        'tm': '3',
         'stk_cnd': '4',
-        'crd_cnd': '0',
-        'pric_cnd': '0',
-        'stex_tp': '1'
+        'pric_tp': '0',
+        'stex_tp': '1',
     }
 )
 
-KA10023_VOLUME_SURGE: Tuple[str, str, int, Dict[str, str]] = (
-    'ka10023',
-    'trde_qty_sdnin',
-    30,
+# ka10030: 당일거래량상위요청 (Today's cumulative top volume)
+INTRADAY_TOP_VOLUME_RANK: Tuple[str, str, int, Dict[str, str]] = (
+    'ka10030', 'tdy_trde_qty_upper', 30,
     {
         'mrkt_tp': '000',
         'sort_tp': '1',
-        'time_tp': '1',
-        'time': '1',
+        'mang_stk_incls': '1',
+        'crd_tp': '0',
         'trde_qty_tp': '0',
-        'stk_cnd': '0',
-        'stex_tp': '1'
+        'pric_tp': '0',
+        'trde_prica_tp': '0',
+        'mrkt_open_tp': '0',
+        'stex_tp': '1',
     }
 )
 
 
-def parse_ka10030_response(data: dict, received_at: str = None) -> List[dict]:
-    """Parses ka10030 (당일거래량상위) API response according to Kiwoom OpenAPI contract."""
+def validate_rank_spec(spec) -> bool:
+    """Validate (api, response_key, limit, payload) against official Kiwoom REST API contract."""
+    if not isinstance(spec, (tuple, list)) or len(spec) != 4:
+        raise ValueError('랭킹 스펙 형식 오류: (api, key, limit, payload) 4-튜플 필요')
+    api, key, limit, payload = spec
+    if not isinstance(api, str) or not isinstance(key, str) or not isinstance(limit, int) or limit <= 0:
+        raise ValueError(f'{api}: 랭킹 스펙 메타데이터 오류')
+    if not isinstance(payload, dict):
+        raise ValueError(f'{api}: 요청 payload dict 필요')
+    contract = OFFICIAL_EARLY_RANK_CONTRACTS.get(api)
+    if contract is not None:
+        expected_key = contract['response_key']
+        if key != expected_key:
+            raise ValueError(
+                f"{api} 응답 키 계약 불일치: expected='{expected_key}', got='{key}'"
+            )
+        missing = [f for f in contract['required_request_fields'] if f not in payload]
+        if missing:
+            raise ValueError(f"{api} 요청 필수 필드 누락: {missing}")
+    return True
+
+
+def validate_rank_response(api: str, key: str, data: dict) -> list:
+    """Validate broker response structure against the official contract."""
+    if api in OFFICIAL_EARLY_RANK_CONTRACTS:
+        dummy_payload = {f: '1' for f in OFFICIAL_EARLY_RANK_CONTRACTS[api]['required_request_fields']}
+    else:
+        dummy_payload = {'mrkt_tp': '000'}
+    validate_rank_spec((api, key, 1, dummy_payload))
     if not isinstance(data, dict):
-        return []
-    rows = data.get('tdy_trde_qty_upper')
+        raise ValueError(f'{api}: 응답 객체 dict 아님')
+    rows = data.get(key)
     if not isinstance(rows, list):
-        return []
-    parsed = []
-    for rank, r in enumerate(rows, 1):
-        if not isinstance(r, dict):
-            continue
-        sym = code(r.get('stk_cd') or '')
-        nm = (r.get('stk_nm') or '').strip()
-        if not sym or not nm:
-            continue
-        cur_prc = number(r.get('cur_prc'), signed=True)
-        trde_qty = number(r.get('trde_qty'))
-        flu_rt = number(r.get('flu_rt'), signed=True)
-        parsed.append({
-            'rank': rank,
-            'code': sym,
-            'name': nm,
-            'cur_prc': cur_prc,
-            'trde_qty': trde_qty,
-            'flu_rt': flu_rt,
-            'pred_rt': number(r.get('pred_rt'), signed=True),
-            'trde_tern_rt': number(r.get('trde_tern_rt'), signed=True),
-            'api': 'ka10030',
-            'received_at': received_at,
-            'raw': dict(r)
-        })
-    return parsed
+        raise ValueError(f'{api}: {key} 필드 없음/형식 오류')
+    return rows
+
+
+def _safe_number(val, signed=False) -> Optional[float]:
+    """Converts value to float safely without throwing exceptions on missing or empty data."""
+    if val in (None, ''):
+        return None
+    try:
+        return number(val, signed=signed)
+    except (TypeError, ValueError):
+        return None
 
 
 def parse_ka10023_response(data: dict, received_at: str = None) -> List[dict]:
     """Parses ka10023 (거래량급증) API response according to Kiwoom OpenAPI contract."""
-    if not isinstance(data, dict):
-        return []
-    rows = data.get('trde_qty_sdnin')
-    if not isinstance(rows, list):
-        return []
+    rows = validate_rank_response('ka10023', 'trde_qty_sdnin', data)
     parsed = []
     for rank, r in enumerate(rows, 1):
         if not isinstance(r, dict):
@@ -101,116 +123,184 @@ def parse_ka10023_response(data: dict, received_at: str = None) -> List[dict]:
         nm = (r.get('stk_nm') or '').strip()
         if not sym or not nm:
             continue
-        cur_prc = number(r.get('cur_prc'), signed=True)
-        now_trde_qty = number(r.get('now_trde_qty'))
-        prev_trde_qty = number(r.get('prev_trde_qty'))
-        sdnin_qty = number(r.get('sdnin_qty'), signed=True)
-        flu_rt = number(r.get('flu_rt'), signed=True)
         parsed.append({
             'rank': rank,
             'code': sym,
             'name': nm,
-            'cur_prc': cur_prc,
-            'now_trde_qty': now_trde_qty,
-            'prev_trde_qty': prev_trde_qty,
-            'sdnin_qty': sdnin_qty,
-            'flu_rt': flu_rt,
+            'cur_prc': _safe_number(r.get('cur_prc'), signed=True),
+            'now_trde_qty': _safe_number(r.get('now_trde_qty') or r.get('trde_qty')),
+            'prev_trde_qty': _safe_number(r.get('prev_trde_qty')),
+            'sdnin_qty': _safe_number(r.get('sdnin_qty'), signed=True),
+            'flu_rt': _safe_number(r.get('flu_rt'), signed=True),
+            'sdnin_rt': _safe_number(r.get('sdnin_rt'), signed=True),
             'api': 'ka10023',
             'received_at': received_at,
-            'raw': dict(r)
+            'raw': dict(r),
         })
     return parsed
 
 
-def extract_candidate_row(r: dict, api: str, rank: int, now_iso: str) -> dict:
-    """Parses a candidate row with defensive validation and exact attribution."""
-    sym = code(r.get('stk_cd') or '')
+def parse_ka10030_response(data: dict, received_at: str = None) -> List[dict]:
+    """Parses ka10030 (당일거래량상위) API response according to Kiwoom OpenAPI contract."""
+    rows = validate_rank_response('ka10030', 'tdy_trde_qty_upper', data)
+    parsed = []
+    for rank, r in enumerate(rows, 1):
+        if not isinstance(r, dict):
+            continue
+        sym = code(r.get('stk_cd') or '')
+        nm = (r.get('stk_nm') or '').strip()
+        if not sym or not nm:
+            continue
+        parsed.append({
+            'rank': rank,
+            'code': sym,
+            'name': nm,
+            'cur_prc': _safe_number(r.get('cur_prc'), signed=True),
+            'trde_qty': _safe_number(r.get('trde_qty')),
+            'flu_rt': _safe_number(r.get('flu_rt'), signed=True),
+            'pred_rt': _safe_number(r.get('pred_rt'), signed=True),
+            'trde_tern_rt': _safe_number(r.get('trde_tern_rt'), signed=True),
+            'trde_prica': _safe_number(r.get('trde_prica')),
+            'api': 'ka10030',
+            'received_at': received_at,
+            'raw': dict(r),
+        })
+    return parsed
+
+
+def extract_candidate_row(r: dict, rank: int, api: str, now_iso: str = None) -> dict:
+    """Normalize a raw ranking row into a candidate evaluation dictionary."""
+    if not isinstance(r, dict):
+        raise ValueError('랭킹 행 형식 오류')
+    sym = code(r.get('stk_cd', ''))
     name = (r.get('stk_nm') or '').strip()
     if not sym or not name:
-        return {}
-    item = {
+        raise ValueError('종목코드/종목명 결측')
+
+    cur_px = None
+    for field in ('cur_prc', 'past_curr_prc', 'exp_cntr_pric'):
+        px = _safe_number(r.get(field), signed=False)
+        if px is not None and px > 0:
+            cur_px = px
+            break
+
+    flu_rt = _safe_number(r.get('flu_rt'), signed=True)
+    vol = _safe_number(r.get('now_trde_qty') or r.get('trde_qty') or r.get('pred_trde_qty'), signed=False)
+    sdnin_rt = _safe_number(r.get('sdnin_rt'), signed=True)
+
+    iso_stamp = now_iso or now().isoformat()
+    return {
         'code': sym,
         'name': name,
-        'source_details': {},
-        'reference_price': None,
-        'first_raw_at': now_iso
+        'api': api,
+        'rank': rank,
+        'price': cur_px,
+        'reference_price': cur_px,
+        'first_raw_price': cur_px,
+        'first_raw_at': iso_stamp,
+        'flu_rt': flu_rt,
+        'volume': vol,
+        'sdnin_rt': sdnin_rt,
+        'source_details': {
+            api: {
+                'observed_rank': rank,
+                'raw': dict(r),
+                'received_at': iso_stamp,
+                'values': {
+                    'flu_rt': flu_rt,
+                    'now_trde_qty': vol,
+                    'sdnin_rt': sdnin_rt,
+                }
+            }
+        }
     }
-    cur_px = number(r.get('cur_prc') or r.get('past_curr_prc') or r.get('exp_cntr_pric'), signed=True)
-    if cur_px and cur_px > 0:
-        item['reference_price'] = cur_px
-        item['first_raw_price'] = cur_px
-    item['source_details'][api] = {
-        'observed_rank': rank,
-        'raw': dict(r),
-        'received_at': now_iso
-    }
-    return item
 
 
-def get_shadow_ranks(at: datetime = None) -> List[tuple]:
-    """Returns rank definitions for SHADOW research mode.
-    
-    During regular market (09:00~15:30), replaces preopen-only ka10029
-    with intraday volume top (ka10030) and volume surge (ka10023).
+def get_active_ranks(at: datetime = None, mode: str = 'LIVE', include_today_top_volume: bool = False) -> List[tuple]:
+    """Return active ranking API list based on execution mode and KST market time.
+
+    In LIVE mode:
+        Always returns the 5 production RANKS unmodified to guarantee operational isolation.
+
+    In SHADOW mode:
+        Before 09:05:00 KST: retains ka10029 (preopen expected prints).
+        From 09:05:00 KST onward: replaces preopen ka10029 with ka10023 (거래량급증요청, trde_qty_sdnin).
+        The total request count remains EXACTLY 5 to prevent rate limit spikes and event loop lag.
+        If include_today_top_volume is explicitly True: appends ka10030 (당일거래량상위요청, tdy_trde_qty_upper).
     """
-    if at is None:
+    if mode != 'SHADOW':
         return list(RANKS)
+
+    if at is None:
+        at = now()
+    elif isinstance(at, datetime) and at.tzinfo is not None:
+        at = at.astimezone(KST)
     t_str = at.strftime('%H:%M:%S')
-    if '09:00:00' <= t_str < '15:30:00':
-        active = []
-        for api, key, limit, payload in RANKS:
-            if api == 'ka10029':
-                active.append(KA10030_TODAY_VOLUME_TOP)
-                active.append(KA10023_VOLUME_SURGE)
-            else:
-                active.append((api, key, limit, payload))
-        return active
-    return list(RANKS)
+
+    if t_str < '09:05:00':
+        return list(RANKS)
+
+    active = []
+    for r in RANKS:
+        if r[0] == 'ka10029':
+            validate_rank_spec(INTRADAY_VOLUME_SURGE_RANK)
+            active.append(INTRADAY_VOLUME_SURGE_RANK)
+        else:
+            active.append(r)
+
+    if include_today_top_volume:
+        validate_rank_spec(INTRADAY_TOP_VOLUME_RANK)
+        active.append(INTRADAY_TOP_VOLUME_RANK)
+
+    return active
 
 
-def get_active_ranks(at: datetime = None, mode: str = 'LIVE') -> List[tuple]:
-    """Returns active rank definitions respecting execution isolation.
-    
-    LIVE mode returns the verified production RANKS unmodified.
-    SHADOW mode incorporates intraday volume top and surge ranking.
+def get_shadow_ranks(at: datetime = None, include_today_top_volume: bool = False) -> List[tuple]:
+    """Convenience alias for get_active_ranks(at, mode='SHADOW')."""
+    return get_active_ranks(at, mode='SHADOW', include_today_top_volume=include_today_top_volume)
+
+
+def verify_window_capture_feasibility(snapshots, symbol: str, start_time: str = '10:06:00', end_time: str = '10:17:00') -> dict:
+    """Verify whether a candidate could be captured in [start_time, end_time] from real ranking snapshots.
+
+    Never asserts 'IMPOSSIBLE' when snapshot data for the window is absent; returns 'UNKNOWN'.
     """
-    if mode == 'SHADOW':
-        return get_shadow_ranks(at)
-    return list(RANKS)
-
-
-def verify_historical_early_discovery_status(
-    symbol: str,
-    target_time_str: str,
-    radar_records: List[dict]
-) -> dict:
-    """Verifies whether an early discovery was actually provable at the target time.
-    
-    If no rank snapshot for ka10030 or ka10023 is recorded at target_time,
-    early discovery feasibility at that time is strictly UNKNOWN.
-    """
-    provable_sources = []
-    for rec in radar_records:
-        t = rec.get('time', '')
-        if target_time_str in t:
-            for row in rec.get('rows', []):
-                if row.get('code') == symbol:
-                    sources = row.get('source_details', {})
-                    for s in ('ka10030', 'ka10023'):
-                        if s in sources:
-                            provable_sources.append(s)
-    if not provable_sources:
+    if not snapshots:
         return {
             'status': 'UNKNOWN',
-            'reason': 'NO_INTRADAY_VOLUME_RANK_SNAPSHOT_RECORDED',
+            'reason': 'RANK_SNAPSHOT_DATA_ABSENT',
             'symbol': symbol,
-            'target_time': target_time_str,
-            'provable_sources': provable_sources
+            'window': (start_time, end_time),
+            'required_evidence': [
+                'runtime/radar_history.jsonl (time, rows[].code, rows[].source_details)',
+                'raw Kiwoom rkinfo snapshots for ka10023/ka10030/ka10027/ka10032/ka00198 in 10:06~10:17 KST',
+            ],
+        }
+    in_window = []
+    found_at = []
+    for snap in snapshots:
+        if not isinstance(snap, dict):
+            continue
+        ts = str(snap.get('time') or snap.get('source_observed_at') or '')
+        hhmmss = ts[11:19] if 'T' in ts and len(ts) >= 19 else ts
+        if start_time <= hhmmss <= end_time:
+            in_window.append(snap)
+            rows = snap.get('rows') or []
+            for row in rows:
+                if isinstance(row, dict) and row.get('code') == symbol:
+                    found_at.append({'time': ts, 'sources': list((row.get('source_details') or {}).keys())})
+    if not in_window:
+        return {
+            'status': 'UNKNOWN',
+            'reason': 'NO_SNAPSHOTS_IN_TARGET_WINDOW',
+            'symbol': symbol,
+            'window': (start_time, end_time),
         }
     return {
-        'status': 'CONFIRMED',
-        'reason': 'RECORDED_IN_INTRADAY_VOLUME_RANK',
+        'status': 'CAPTURED' if found_at else 'NOT_IN_RECORDED_SNAPSHOTS',
+        'reason': 'FOUND_IN_SNAPSHOT' if found_at else 'ABSENT_IN_RECORDED_SOURCES',
         'symbol': symbol,
-        'target_time': target_time_str,
-        'provable_sources': provable_sources
+        'window': (start_time, end_time),
+        'snapshot_count': len(in_window),
+        'matches': found_at,
     }

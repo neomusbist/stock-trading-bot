@@ -8,14 +8,14 @@ from datetime import date,datetime as date_time
 from dataclasses import replace
 from pathlib import Path
 from candidate_builder import RANKS, bars_from_csv, fetch_bars, structure
-from automation.early_discovery import get_shadow_ranks
+from automation.early_discovery import get_shadow_ranks, validate_rank_spec
 from core.settings import now
 from core.util import code, number, atomic_json, write_csv, exception_details
 from core.broker import Rejected
 from automation.policy import BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL,legacy_test_release_enabled
 from automation.observation_settings import ObservationSettings,load_observation
 
-FIELDS=('flu_rt','cntr_str','now_trde_qty','pred_trde_qty','exp_cntr_qty','trde_prica','bigd_rank','now_rank','base_comp_chgr')
+FIELDS=('flu_rt','cntr_str','now_trde_qty','pred_trde_qty','exp_cntr_qty','trde_prica','bigd_rank','now_rank','base_comp_chgr','sdnin_rt')
 
 def observation_structure(bars,price,cfg,day):
     strict=structure(bars,price,replace(cfg,max_recent_range=.99),day)
@@ -29,16 +29,20 @@ def ordinary(symbol,name):
     return symbol.endswith('0') and '스팩' not in name and not name.endswith('우') and 'ETN' not in upper and not any(
         upper.startswith(x) for x in ('KODEX','TIGER','ACE','RISE','SOL','PLUS','KOSEF','HANARO','ARIRANG','WOORI','TIMEFOLIO','KBSTAR'))
 
-def collect(rest):
-    result={}
-    rejected_rows=[]
-    rest.radar_rejected_rows=rejected_rows
-    settings=getattr(rest,'radar_observation_settings',None)
-    if not isinstance(settings,ObservationSettings):settings=ObservationSettings()
-    is_shadow = getattr(rest, 'shadow_discovery_enabled', False) or getattr(rest, 'mode', None) == 'SHADOW'
-    rank_sources = get_shadow_ranks(now()) if is_shadow else RANKS
-    for api,key,limit,payload in rank_sources:
-        path='/api/dostk/stkinfo' if api=='ka00198' else '/api/dostk/rkinfo'
+def collect(rest, at=None):
+    clock = at or now()
+    result = {}
+    rejected_rows = []
+    rest.radar_rejected_rows = rejected_rows
+    settings = getattr(rest, 'radar_observation_settings', None)
+    if not isinstance(settings, ObservationSettings):
+        settings = ObservationSettings()
+    is_shadow = getattr(settings, 'shadow_discovery_enabled', False) or getattr(rest, 'shadow_discovery_enabled', False) or getattr(rest, 'mode', None) == 'SHADOW'
+    rank_sources = get_shadow_ranks(clock) if is_shadow else list(RANKS)
+    rest.last_collected_ranks = [r[0] for r in rank_sources]
+    for api, key, limit, payload in rank_sources:
+        validate_rank_spec((api, key, limit, payload))
+        path = '/api/dostk/stkinfo' if api == 'ka00198' else '/api/dostk/rkinfo'
         if settings.rank_limit_multiplier>1:
             # Wider discovery uses only the already returned first page; no pagination burst.
             data=rest.query(api,payload,path=path)
@@ -366,7 +370,7 @@ class RadarWorker:
                         'api_wait_ms':getattr(self.rest,'profile',{}).get('api_wait_ms',0)-prior_profile.get('api_wait_ms',0),
                         'http_ms':getattr(self.rest,'profile',{}).get('http_ms',0)-prior_profile.get('http_ms',0),
                         'status_calls':self.status_fetched,'daily_fetches':self.fetched,'scan_wait_seconds':self.a.scan_seconds},
-                    'raw_definition':{'sources':[r[0] for r in RANKS],'basis':'5개 ranking 합집합; 일반주 명칭/종목코드 검사 후 고유종목','hts_0168_equivalence':False,
+                    'raw_definition':{'sources':getattr(self.rest,'last_collected_ranks',[r[0] for r in RANKS]),'basis':'5개 ranking 합집합; 일반주 명칭/종목코드 검사 후 고유종목','hts_0168_equivalence':False,
                         'rank_limit_multiplier':self.observation_settings.rank_limit_multiplier,'max_raw_symbols':self.observation_settings.max_raw_symbols,
                         'expanded_first_page_only':self.observation_settings.rank_limit_multiplier>1}}
                 rejected=getattr(self.rest,'radar_rejected_rows',[])
