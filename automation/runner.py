@@ -1062,8 +1062,9 @@ def evaluate_shadow_opportunity(engine,detector,t,watch,radar,prices,account,las
                 watch_eval['nearest_confirmed_peak'] = peak
         raw_fast=engine.fast_strategy.evaluate(
             t, watch_eval,
-            capital_limit=engine.auto_available_capital(),
-            risk_budget=engine.risk_equity()*engine.c.risk_fraction,
+            capital_limit=engine.watch_budget(),
+            risk_budget=min(engine.risk_equity()*engine.c.risk_fraction,
+                            engine.capital_context()['risk_remaining']),
             ingest=False,
             received=eval_now,
             live_authorized=False
@@ -1218,8 +1219,9 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
                 watch_eval['nearest_confirmed_peak'] = peak
         fast_sig = engine.fast_strategy.evaluate(
             t, watch_eval,
-            capital_limit=engine.auto_available_capital(),
-            risk_budget=engine.risk_equity() * engine.c.risk_fraction,
+            capital_limit=engine.watch_budget(),
+            risk_budget=min(engine.risk_equity()*engine.c.risk_fraction,
+                            engine.capital_context()['risk_remaining']),
             ingest=False,
             received=eval_now,
             live_authorized=is_live
