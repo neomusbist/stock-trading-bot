@@ -899,7 +899,121 @@ def focus_readiness(detector,shadow_readiness,stamp):
                 'gates':{k:{'result':gates.get(k,{}).get('result')} for k in ('acceleration','liquidity')}}
     return result
 
-def evaluate_shadow_opportunity(engine,detector,t,watch,radar,prices,account,last_evaluated_frame=None,by_symbol=None,lookup=None,*,probe_only=False):
+def current_entry_quote(engine,t,book=None):
+    """Pair a received 0D with the exact accepted trade, without renewing it.
+
+    The receiver can parse the matching book after it queued a trade. That
+    immutable trade's old attached book is not the receiver's current evidence.
+    A later trade, different prices, stale/future book or zero depth never
+    refreshes this frame. No detector/tape ingestion occurs here.
+    """
+    provider=getattr(engine,'entry_quote_provider',None)
+    if not callable(provider):return t
+    snapshot=provider(t.symbol)
+    if not isinstance(snapshot,(tuple,list)) or len(snapshot)!=2:return t
+    latest,current=snapshot
+    if not isinstance(latest,Tick) or (latest.time,latest.cumulative,latest.price,latest.bid,latest.ask)!=(t.time,t.cumulative,t.price,t.bid,t.ask):return t
+    book=current if book is None else book
+    if not isinstance(book,dict) or not book.get('depth_available'):return t
+    if (book.get('best_bid'),book.get('best_ask'))!=(t.bid,t.ask):return t
+    if any(type(book.get(k)) is not int or book[k]<=0 for k in ('ask_qty','bid_qty')):return t
+    try:
+        clock=engine.clock();received=datetime.fromisoformat(book['received_at'])
+        book_at=datetime.fromisoformat(book['time'])
+        if received.tzinfo is None or received>clock:return t
+        if not tick_freshness(t,clock,engine.c.stale_seconds)['fresh']:return t
+        if not market_freshness(book_at,clock,engine.c.stale_seconds,
+            received_at=received,received_monotonic=book.get('received_monotonic'))['fresh']:return t
+        old_received=datetime.fromisoformat(t.book_received_at) if t.book_received_at else None
+        if old_received is not None and received<old_received:return t
+        if t.book_time is not None and book_at<t.book_time:return t
+    except (KeyError,TypeError,ValueError):return t
+    return replace(t,ask_qty=book['ask_qty'],bid_qty=book['bid_qty'],depth_available=True,
+        book_time=book_at,depth_source='0D',book_received_at=received.isoformat(),
+        book_received_monotonic=book.get('received_monotonic'))
+
+
+def _quote_blocked(engine,detector,symbol):
+    fast=getattr(getattr(engine,'fast_strategy',None),'last_evaluation',{}).get(symbol,{})
+    if fast.get('reason') in {'BOOK_TIMESTAMP_UNKNOWN_OR_STALE','EXECUTABLE_DEPTH_UNKNOWN',
+                            'EXECUTABLE_QUOTE_UNKNOWN','FULL_QUANTITY_DEPTH_INSUFFICIENT'}:return True
+    # AFTER ABC can be fully formed except for its existing depth gate.
+    trials=getattr(detector,'last_eval',{}).get(symbol,{}).get('trials',[])
+    return any(t.get('candidate_generated') and t.get('gates',{}).get('liquidity',{}).get('result')!='PASS'
+        and t.get('gates',{}).get('liquidity',{}).get('values',{}).get('mode')=='depth'
+        and all(v.get('result')=='PASS' for k,v in t.get('gates',{}).items() if k!='liquidity')
+        for t in trials)
+
+
+def queue_current_quote_books(engine,detector,feed,symbols):
+    """SHADOW books stay off the protected FIFO; poll only quote-blocked rows."""
+    seen=getattr(engine,'_seen_entry_books',None)
+    if seen is None:seen={};engine._seen_entry_books=seen
+    pending=getattr(engine,'_quote_entry_pending',None)
+    if pending is None:pending={};engine._quote_entry_pending=pending
+    symbols=set(symbols)
+    for sym in set(seen)-symbols:seen.pop(sym,None)
+    for sym in set(pending)-symbols:pending.pop(sym,None)
+    books=getattr(feed,'orderbooks',{})
+    if not isinstance(books,dict):return
+    for sym in symbols:
+        if not _quote_blocked(engine,detector,sym):continue
+        book=books.get(sym) or {}
+        key=(book.get('time'),book.get('received_at'),book.get('received_monotonic'))
+        if key==(None,None,None) or seen.get(sym)==key:continue
+        seen[sym]=key;pending[sym]=True
+
+
+def drain_quote_opportunities(engine,detector,feed,lookup,radar,prices,account,radar_ok,*,max_evaluations=2,by_symbol=None,subscriptions=None):
+    """Retry quote-blocked WATCH frames after control/position FIFO work.
+
+    Coalesce pending books per WATCH symbol. Never add a trade, bypass a
+    subscription epoch, or evaluate an older prefix than the receiver holds.
+    The regular strategy, sizing, INTENT and PRE_HTTP guards remain owners.
+    """
+    pending=getattr(engine,'_quote_entry_pending',{})
+    if not pending or not radar_ok or not engine.connected:return 0
+    counters=getattr(engine,'_quote_entry_counts',None)
+    if counters is None:counters={};engine._quote_entry_counts=counters
+    def counted(name):counters[name]=counters.get(name,0)+1
+    deadline=time.monotonic()+.005;evaluated=0
+    for sym in list(pending):
+        if evaluated>=max_evaluations or time.monotonic()>=deadline:break
+        critical=set(engine.s['positions'])|{o['symbol'] for o in engine.active_orders()}
+        critical.update(set(engine.s.get('automation',{}).get('existing',{}))&set(BREAKEVEN_EXITS))
+        if getattr(feed,'transport_failed',False) or feed.overflow.is_set() or _protected_feed_work_pending(feed,critical):
+            counted('PROTECTED_OR_TRANSPORT_DEFERRED');break
+        if (sym not in lookup and sym not in (by_symbol or {})) or sym in critical or not _quote_blocked(engine,detector,sym):
+            pending.pop(sym,None);continue
+        t=detector.last.get(sym)
+        if t is None or not t.regular or not tick_freshness(t,engine.clock(),engine.c.stale_seconds)['fresh']:
+            pending.pop(sym,None);counted('STALE_TRADE');continue
+        latest=getattr(feed,'latest_ticks',{}).get(sym)
+        if latest is not None and (latest.time,latest.cumulative)!=(t.time,t.cumulative):
+            counted('HISTORY_PENDING');continue
+        pending.pop(sym,None)
+        updated=current_entry_quote(engine,t)
+        if updated==t:counted('BOOK_NOT_IMPROVED');continue
+        key=(t.time,t.cumulative,updated.book_time,updated.book_received_at,updated.ask_qty,updated.bid_qty)
+        prior=getattr(engine,'_last_quote_entry_frame',None)
+        if prior is None:prior={};engine._last_quote_entry_frame=prior
+        if prior.get(sym)==key:counted('DUPLICATE');continue
+        prior[sym]=key;evaluated+=1;counted('EVALUATED')
+        if sym in lookup:
+            order=evaluate_actual_entry(engine,detector,updated,lookup[sym],radar,prices,account,
+                getattr(engine,'_last_eval_frame',None),quote_retry=True)
+        else:
+            received=datetime.fromisoformat(t.received_at) if t.received_at else t.time
+            order=evaluate_observed_entry(engine,detector,updated,received,lookup,radar,prices,account,
+                by_symbol,subscriptions,quote_retry=True)
+        engine.event('ENTRY_QUOTE_RETRY',symbol=sym,trade_at=t.time.isoformat(),
+            trade_received_at=t.received_at,book_at=updated.book_time.isoformat(),
+            book_received_at=updated.book_received_at,order_created=bool(order),
+            data_action='MATCHED_BOOK_ONLY_NO_TRADE_INGESTION')
+    return evaluated
+
+
+def evaluate_shadow_opportunity(engine,detector,t,watch,radar,prices,account,last_evaluated_frame=None,by_symbol=None,lookup=None,*,probe_only=False,quote_retry=False):
     """Pre-evaluation path for subscribed non-WATCH symbols.
 
     1. Evaluates existing LIVE strategies (A, B, C, FAST) and SHADOW redesign trials.
@@ -910,8 +1024,9 @@ def evaluate_shadow_opportunity(engine,detector,t,watch,radar,prices,account,las
     if not watch or not engine.connected: return False
     if last_evaluated_frame is not None:
         key=(t.time,t.cumulative)
-        if last_evaluated_frame.get(t.symbol)==key:return False
+        if not quote_retry and last_evaluated_frame.get(t.symbol)==key:return False
         last_evaluated_frame[t.symbol]=key
+    t=current_entry_quote(engine,t)
     engine.names[t.symbol]=watch.get('name')
     sig=detector.signal(t,watch)
     last_eval=detector.last_eval.get(t.symbol,{})
@@ -995,7 +1110,7 @@ def evaluate_shadow_opportunity(engine,detector,t,watch,radar,prices,account,las
     return False
 
 
-def evaluate_observed_entry(engine,detector,t,received,lookup,radar,prices,account,by_symbol,subscriptions=None):
+def evaluate_observed_entry(engine,detector,t,received,lookup,radar,prices,account,by_symbol,subscriptions=None,*,quote_retry=False):
     """Bridge an actually received non-WATCH tick to existing order guards.
 
     Promotion is not buy authorization. Re-evaluate the LIVE strategy with the
@@ -1018,7 +1133,7 @@ def evaluate_observed_entry(engine,detector,t,received,lookup,radar,prices,accou
         if getattr(engine,name,None) is None:setattr(engine,name,{})
     if not watch:
         promoted=evaluate_shadow_opportunity(engine,detector,t,{**candidate,'status':'SHADOW'},
-            radar,prices,account,engine._last_shadow_eval_frame,by_symbol=by_symbol,lookup=lookup)
+            radar,prices,account,engine._last_shadow_eval_frame,by_symbol=by_symbol,lookup=lookup,quote_retry=quote_retry)
         if not promoted:return None
         watch=lookup.get(t.symbol)
     if not watch:return None
@@ -1028,10 +1143,10 @@ def evaluate_observed_entry(engine,detector,t,received,lookup,radar,prices,accou
         market_name=(watch.get('market_status',{}).get('raw') or {}).get('marketName')
         benchmark='KOSDAQ' if market_name in {'코스닥','KOSDAQ'} else 'KOSPI' if market_name in {'코스피','KOSPI','거래소'} else None
         watch={**watch,'index_context':indices.get(benchmark) if benchmark else None,'market_environment':indices}
-    return evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,engine._last_eval_frame)
+    return evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,engine._last_eval_frame,quote_retry=quote_retry)
 
 
-def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_evaluated_frame=None):
+def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_evaluated_frame=None,*,quote_retry=False):
     if not watch or not engine.connected: return None
     if watch.get('status') and watch.get('status') != 'WATCH':
         from automation.decisions import gate
@@ -1055,8 +1170,9 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
         return None
     if last_evaluated_frame is not None:
         key=(t.time,t.cumulative)
-        if last_evaluated_frame.get(t.symbol)==key:return None
+        if not quote_retry and last_evaluated_frame.get(t.symbol)==key:return None
         last_evaluated_frame[t.symbol]=key
+    t=current_entry_quote(engine,t)
     src_count=watch.get('source_count',len(watch.get('source_details',{})) if 'source_details' in watch else engine.a.min_source_count)
     if src_count<max(2,engine.a.min_source_count) and not watch.get('fallback_source1'):
         engine.event('NO_TRADE',symbol=t.symbol,reason='SOURCE_COUNT_BUY_PERMISSION_DENIED');return None
@@ -1236,6 +1352,10 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
             health=getattr(engine,'position_health',None)
             if health is not None and book:
                 health.accept_book(item['item'],book,engine.clock())
+            sym=item['item']
+            if book and radar_ok and engine.connected and sym in lookup and _quote_blocked(engine,detector,sym):
+                if not hasattr(engine,'_quote_entry_pending'):engine._quote_entry_pending={}
+                engine._quote_entry_pending[sym]=True
             if not after_supported(received):continue
             sym=item['item']; last_log=getattr(engine,'_depth_log_at',{}).get(sym)
             if book and (last_log is None or (received-last_log).total_seconds()>=5):
@@ -1830,6 +1950,9 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         shadow.deliver,shadow_detector=getattr(getattr(shadow,'observer',None),'detector',None),
                         on_opportunity=opportunity_callback)
                     drain_observed_opportunities(engine,feed,opportunity_callback)
+                    queue_current_quote_books(engine,detector,feed,real_symbols|set(observed))
+                    drain_quote_opportunities(engine,detector,feed,lookup,radar,prices,account,
+                        radar_ok and not smoke_ended,by_symbol=by_symbol,subscriptions=subscriptions)
                 except queue.Empty:
                     if not in_session: time.sleep(.25)
                 position_health.prune()
@@ -1895,6 +2018,8 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         'available_capital':min(engine.available_cash,auto.capital_limit),'approved_cap':auto.capital_limit,
                         'bot_cash':engine.s['cash'],'positions':len(engine.s['positions']),'pending':len(engine.active_orders()),
                         'strategy':'MANAGE' if engine.s['positions'] else 'SCAN' if lookup else 'QUIET','counts':counts,
+                        'entry_quote_retry':{'pending':len(getattr(engine,'_quote_entry_pending',{})),
+                            'counts':dict(getattr(engine,'_quote_entry_counts',{}))},
                         'trade_review_capture':capture.stats() if capture is not None else {'available':False}},fsync=False)
                     last_heartbeat=time.monotonic()
                 if done: break
