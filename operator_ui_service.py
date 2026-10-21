@@ -497,7 +497,7 @@ class UserOperations(OperatorService):
         market_fresh=(s['process']['running'] and 0<=age(hb.get('time'),self.clock())<=10
             and (not s['process'].get('managed') or hb.get('time','')>=s['process'].get('started','')))
         s.update(market_confirmed=bool(s['supported'] and market_fresh and hb.get('connected')
-                and hb.get('market')=='3' and hb.get('session')=='SUPPORTED_SESSION'),
+                and hb.get('market')=='3' and hb.get('session') in {'SUPPORTED_SESSION', 'REGULAR'}),
             market_code=hb.get('market'),session_classification=hb.get('session'),
             subscription_acks=hb.get('counts',{}).get('subscription_acks'),
             candidate_refresh_seconds=auto.scan_seconds,entry_cutoff=auto.new_entry_cutoff,flatten_start=auto.force_flatten_start,
