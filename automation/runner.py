@@ -16,6 +16,22 @@ from core.util import atomic_json,ProcessLock,exception_details
 from automation.observation_retention import ObservationRetention
 from core.broker import Rest,Rejected
 from core.realtime import Feed,parse_tick
+_orig_feed_run = Feed.run
+
+def _patched_feed_run(self):
+    try:
+        import websocket
+        _orig_run_forever = websocket.WebSocketApp.run_forever
+        def _safe_run_forever(ws_self, *args, **kwargs):
+            kwargs['ping_interval'] = 0
+            kwargs.pop('ping_timeout', None)
+            return _orig_run_forever(ws_self, *args, **kwargs)
+        websocket.WebSocketApp.run_forever = _safe_run_forever
+    except Exception:
+        pass
+    return _orig_feed_run(self)
+
+Feed.run = _patched_feed_run
 from core.strategy import Tick
 from core.market_time import market_freshness,tick_freshness
 from core.report import export
@@ -594,7 +610,7 @@ def drain_observed_opportunities(engine,feed,on_opportunity,*,deadline=None,max_
     counters=getattr(feed,'_opportunity_delivery',None)
     if counters is None:counters={};feed._opportunity_delivery=counters
     def counted(reason):counters[reason]=counters.get(reason,0)+1
-    deadline=time.monotonic()+.002 if deadline is None else deadline
+    deadline=time.monotonic()+.05 if deadline is None else deadline
     evaluated=0
     observation_q=getattr(feed,'observation_q',None)
     queued_symbols=set()
@@ -1660,7 +1676,10 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         if engine.candidate_audit.started:
                             summary=engine.candidate_audit.summary(now().isoformat(),engine.capital_context())
                             atomic_json(root/'runtime/candidate_summary.json',summary,fsync=False)
-                            engine.event('CANDIDATE_CYCLE_SUMMARY',**summary)
+                            compact_summary={**summary,'candidates':[{'symbol':c.get('symbol'),'primary_reason_code':c.get('primary_reason_code'),
+                                'discovery_status':c.get('discovery_status'),'source_count':c.get('source_count'),'current_price':c.get('current_price')}
+                                for c in summary.get('candidates',[])]}
+                            engine.event('CANDIDATE_CYCLE_SUMMARY',**compact_summary)
                         prior_watch=set(lookup)
                         rows=merge_verified_shadow_candidates(result['rows'],shadow,lookup,now(),auto.scan_seconds*3);radar_ok=True;engine.last_radar_at=datetime.fromisoformat(result['time'])
                         selection=resolve_radar_focus(engine,lookup,rows,result['watch'],
@@ -1802,7 +1821,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         engine.event_loop_lag=lag
                         if message.get('trnm')=='REG' and message.get('return_code') in (0,'0'):counts['subscription_acks']+=1
                         counts['ticks']+=process_message(engine,detector,message,received,real_symbols,lookup,radar,prices,account,radar_ok and not smoke_ended,subscriptions,by_symbol=by_symbol)
-                    drain_feed(feed,consume_frame,timeout=.02,max_messages=256,max_seconds=.12)
+                    drain_feed(feed,consume_frame,timeout=.02,max_messages=512,max_seconds=.25)
                     # Catch receiver arrivals during the main FIFO drain before
                     # evaluating them. Never replace a prefix with an uningested
                     # latest tick; prewarm retains the existing bounded budget.
@@ -1842,7 +1861,8 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 if time.monotonic()-last_heartbeat>=1:
                     capture=getattr(engine,'trade_review',None)
                     if capture is not None:capture.set_scope(lookup,engine.s['positions'],now())
-                    for stage in engine.observation_timeline.drain_events():
+                    drained_stages=engine.observation_timeline.drain_events()
+                    for stage in drained_stages[:8]:
                         engine.event('OPENING_PIPELINE_STAGE',**stage)
                     engine.observation_timeline.save(now())
                     if in_session:
