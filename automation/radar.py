@@ -40,13 +40,16 @@ def collect(rest):
     sources=list(RANKS)
     early={'enabled':False,'ok':None,'rows':0,'symbols':[],'error':None,'skipped':None}
     if getattr(settings,'live_early_discovery_enabled',False):
-        from automation.early_discovery import INTRADAY_VOLUME_SURGE_RANK
+        from automation.early_discovery import get_volume_surge_rank_spec, INTRADAY_VOLUME_SURGE_RANK
+        from automation.session import after_supported
         early['enabled']=True
         fails=getattr(rest,'_early_fail',(0,0.))
         if fails[0]>=3 and time.monotonic()<fails[1]:
             early['skipped']='BACKOFF_AFTER_REPEATED_FAILURE'
         else:
-            sources.append(INTRADAY_VOLUME_SURGE_RANK)
+            is_after = after_supported(now())
+            spec = get_volume_surge_rank_spec(session='AFTER' if is_after else 'REGULAR', venue='SOR' if is_after else 'KRX')
+            sources.append(spec)
     rest.early_discovery_status=early
     for api,key,limit,payload in sources:
         optional=api=='ka10023'

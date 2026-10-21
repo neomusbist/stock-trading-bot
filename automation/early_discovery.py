@@ -33,20 +33,35 @@ OFFICIAL_EARLY_RANK_CONTRACTS: Dict[str, Dict[str, Any]] = {
     },
 }
 
-# ka10023: 거래량급증요청 (Intraday rapid volume surge)
-INTRADAY_VOLUME_SURGE_RANK: Tuple[str, str, int, Dict[str, str]] = (
-    'ka10023', 'trde_qty_sdnin', 30,
-    {
-        'mrkt_tp': '000',
-        'sort_tp': '1',
-        'tm_tp': '1',
-        'trde_qty_tp': '5',
-        'tm': '3',
-        'stk_cnd': '4',
-        'pric_tp': '0',
-        'stex_tp': '1',
-    }
-)
+def get_volume_surge_rank_spec(session: str = 'REGULAR', venue: str = 'KRX') -> Tuple[str, str, int, Dict[str, str]]:
+    """Return ka10023 rank specification adapted for the session/venue.
+
+    stex_tp values according to Kiwoom OpenAPI contract:
+    - '1': KRX only (Regular market)
+    - '2': NXT only
+    - '3': 통합 (KRX + NXT combined) - Optimal for AFTER session / SOR routing
+    """
+    stex_tp = '1'
+    if session == 'AFTER' or venue == 'SOR':
+        stex_tp = '3'
+    elif venue == 'NXT':
+        stex_tp = '2'
+    return (
+        'ka10023', 'trde_qty_sdnin', 30,
+        {
+            'mrkt_tp': '000',
+            'sort_tp': '1',
+            'tm_tp': '1',
+            'trde_qty_tp': '5',
+            'tm': '3',
+            'stk_cnd': '4',
+            'pric_tp': '0',
+            'stex_tp': stex_tp,
+        }
+    )
+
+# ka10023: 거래량급증 (Intraday rapid volume surge)
+INTRADAY_VOLUME_SURGE_RANK: Tuple[str, str, int, Dict[str, str]] = get_volume_surge_rank_spec('REGULAR', 'KRX')
 
 # ka10030: 당일거래량상위요청 (Today's cumulative top volume)
 INTRADAY_TOP_VOLUME_RANK: Tuple[str, str, int, Dict[str, str]] = (

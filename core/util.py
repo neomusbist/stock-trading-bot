@@ -22,8 +22,12 @@ def code(value):
     x = str(value).strip().lstrip("'")
     if len(x) == 7 and x.startswith('A'):
         x = x[1:]
+    if x.endswith(('_NX', '_AL')):
+        x = x[:-3]
+    if len(x) == 7 and x.startswith('A'):
+        x = x[1:]
     if not re.fullmatch('[0-9A-Z]{6}', x):
-        raise ValueError('KRX 종목코드 오류')
+        raise ValueError('KRX 코드 오류')
     return x
 
 _json_locks = {}
