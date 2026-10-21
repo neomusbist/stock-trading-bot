@@ -10,6 +10,7 @@ from automation.focus_selection import calculate_tier, TIER_NAMES
 from automation.observation_retention import observation_residence_seconds
 from automation.fast_momentum import FastMomentumStrategy
 from automation.local_breakout import LocalBreakoutStrategy
+from automation.early_impulse_pullback import EarlyImpulsePullbackStrategy
 
 def make_evaluation_view(row):
     """구조 view + 당시 원본 row의 메타데이터를 명시적으로 병합한 EvaluationView."""
@@ -34,7 +35,7 @@ def make_evaluation_view(row):
 
 class ShadowObserver:
  def __init__(self,cfg,auto,costs,emit,risk=None,limit=32):
-  self.cfg=cfg;self.auto=auto;self.detector=PatternDetector(cfg,auto,costs);self.fast_strategy=FastMomentumStrategy(cfg,auto,costs);self.local_breakout=LocalBreakoutStrategy(cfg,auto,costs);self.detector.fast_strategy=self.fast_strategy;self.emit=emit;self.risk=risk;self.limit=limit;self.rows={};self.first={};self.last_log={};self.previous={}
+  self.cfg=cfg;self.auto=auto;self.detector=PatternDetector(cfg,auto,costs);self.fast_strategy=FastMomentumStrategy(cfg,auto,costs);self.local_breakout=LocalBreakoutStrategy(cfg,auto,costs);self.early_impulse=EarlyImpulsePullbackStrategy(cfg,auto,costs);self.detector.fast_strategy=self.fast_strategy;self.emit=emit;self.risk=risk;self.limit=limit;self.rows={};self.first={};self.last_log={};self.previous={}
   self.capital={};self.epoch=None;self.eval_seconds=2;self.selected_at={};self.latest={};self.detached=set()
   self.last_tier={};self.observation_seq=0;self.detached_at={};self.last_evaluated={}
   self.research_bar_knowledge={}
@@ -172,6 +173,9 @@ class ShadowObserver:
   lb_sig,lb_details=self.local_breakout.evaluate(t,research_history,view,capital_limit=self.capital.get('entry_budget',self.capital.get('effective_auto_cap',81300.0)),risk_budget=min(self.capital.get('risk_equity',self.capital.get('effective_auto_cap',81300.0))*self.cfg.risk_fraction,self.capital.get('risk_remaining',1626.0)),asof=received)
   if lb_sig:
    self.event('SHADOW_LOCAL_BREAKOUT_SIGNAL',received,symbol=t.symbol,name=row.get('name'),signal_at=lb_sig.created_at.isoformat() if lb_sig.created_at else received.isoformat(),limit=lb_sig.limit,stop=lb_sig.stop,target=lb_sig.target,emergency=lb_sig.emergency,quantity=lb_sig.quantity,net_reward_risk=lb_sig.net_reward_risk,gross_reward_risk=lb_sig.gross_reward_risk,pattern='LOCAL_BREAKOUT',SHADOW_ONLY=True,actual_order_permission=False)
+  ei_sig,ei_details=self.early_impulse.evaluate(t,research_history,view,capital_limit=self.capital.get('entry_budget',self.capital.get('effective_auto_cap',81300.0)),risk_budget=min(self.capital.get('risk_equity',self.capital.get('effective_auto_cap',81300.0))*self.cfg.risk_fraction,self.capital.get('risk_remaining',1626.0)),asof=received)
+  if ei_sig:
+   self.event('SHADOW_EARLY_IMPULSE_SIGNAL',received,symbol=t.symbol,name=row.get('name'),signal_at=ei_sig.created_at.isoformat() if ei_sig.created_at else received.isoformat(),limit=ei_sig.limit,stop=ei_sig.stop,target=ei_sig.target,emergency=ei_sig.emergency,quantity=ei_sig.quantity,net_reward_risk=ei_sig.net_reward_risk,gross_reward_risk=ei_sig.gross_reward_risk,pattern='EARLY_IMPULSE_PULLBACK',SHADOW_ONLY=True,actual_order_permission=False)
   usable=[]
   for bar in reversed(history):
    if bar['first_second']>self.cfg.stale_seconds:break
@@ -189,6 +193,16 @@ class ShadowObserver:
    'virtual_entry':lb_sig.limit if lb_sig else None,
    'virtual_invalidation':lb_sig.stop if lb_sig else None,
    'details':lb_details
+  })
+  trials.append({
+   'setup':'D',
+   'evaluated':True,
+   'candidate_generated':bool(ei_sig is not None),
+   'entry_ready':bool(ei_sig is not None and gates.get('market_status',{}).get('result')=='PASS'),
+   'failed_reasons':[] if ei_sig else [ei_details.get('reason','EARLY_IMPULSE_NOT_READY')],
+   'virtual_entry':ei_sig.limit if ei_sig else None,
+   'virtual_invalidation':ei_sig.stop if ei_sig else None,
+   'details':ei_details
   })
   self.observation_seq+=1
   fast_ready=bool(fast_sig is not None and gates.get('market_status',{}).get('result')=='PASS')

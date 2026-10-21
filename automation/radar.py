@@ -8,6 +8,7 @@ from datetime import date,datetime as date_time
 from dataclasses import replace
 from pathlib import Path
 from candidate_builder import RANKS, bars_from_csv, fetch_bars, structure
+from automation.early_discovery import get_shadow_ranks
 from core.settings import now
 from core.util import code, number, atomic_json, write_csv, exception_details
 from core.broker import Rejected
@@ -34,7 +35,9 @@ def collect(rest):
     rest.radar_rejected_rows=rejected_rows
     settings=getattr(rest,'radar_observation_settings',None)
     if not isinstance(settings,ObservationSettings):settings=ObservationSettings()
-    for api,key,limit,payload in RANKS:
+    is_shadow = getattr(rest, 'shadow_discovery_enabled', False) or getattr(rest, 'mode', None) == 'SHADOW'
+    rank_sources = get_shadow_ranks(now()) if is_shadow else RANKS
+    for api,key,limit,payload in rank_sources:
         path='/api/dostk/stkinfo' if api=='ka00198' else '/api/dostk/rkinfo'
         if settings.rank_limit_multiplier>1:
             # Wider discovery uses only the already returned first page; no pagination burst.
