@@ -58,7 +58,7 @@ class EntryFunnelTests(unittest.TestCase):
     def test_signal_and_order_gate_and_ack_are_separate(self):
         f=EntryFunnel()
         f.evaluation('000001',AT,'WATCH',[trial(ready=True)],None,{'pattern':'B'})
-        f.boundary('000001',AT,'DAILY_RISK_LIMIT',{'risk_quantity':gate(False,risk_quantity=0)},{'pattern':'B'})
+        f.boundary('000001',AT,'DAILY_RISK_LIMIT',{'risk_quantity':gate(False,quantity=0,risk_quantity=0)},{'pattern':'B'})
         f.execution('ORDER_ACCEPTED','000001',AT,'SELL')
         s=f.snapshot(AT)
         self.assertEqual(s['stages']['SIZING_ZERO'],1)

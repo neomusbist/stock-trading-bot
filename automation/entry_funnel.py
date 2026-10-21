@@ -5,6 +5,7 @@ are separate populations, not additive unique trading opportunities. Snapshots
 use the existing heartbeat/summary writer; this module does no hot-path I/O.
 """
 from collections import Counter, OrderedDict, defaultdict
+import math
 
 SETUPS = ('A', 'B', 'C', 'FAST')
 
@@ -146,9 +147,16 @@ class EntryFunnel:
         sizing = gates.get('risk_quantity', {}).get('values')
         if isinstance(sizing, dict):
             self._stage('SIZING_REACHED', symbol, at)
-            qty = sizing.get('risk_quantity')
-            if isinstance(qty, (float, int)):
-                self.stages['SIZING_POSITIVE' if qty > 0 else 'SIZING_ZERO'] += 1
+            # Risk allowance alone cannot buy a share: cash or a strategy cap
+            # can still make final quantity zero. Keep all three populations.
+            for field, prefix in (('quantity', 'SIZING'),
+                                  ('risk_quantity', 'RISK_QUANTITY'),
+                                  ('capital_quantity', 'CAPITAL_QUANTITY')):
+                qty = sizing.get(field)
+                status = ('UNKNOWN' if type(qty) not in (int, float)
+                          or not math.isfinite(qty) or qty < 0
+                          else 'POSITIVE' if qty > 0 else 'ZERO')
+                self.stages[prefix + '_' + status] += 1
 
     def execution(self, kind, symbol, stamp, side=None):
         if kind not in {'ORDER_ACCEPTED', 'FILL', 'ORDER_REJECTED', 'ORDER_UNKNOWN'}:

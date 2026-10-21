@@ -1,6 +1,7 @@
 from core.event_log import append_jsonl
 """랭킹은 발견 레이더다. 동일 소스의 연속 스냅샷을 비교하고 일봉 구조를 붙인다."""
 import json
+import math
 import queue
 import threading
 import time
@@ -115,12 +116,18 @@ class DynamicRadar:
         self.fallback_source1=fallback_source1 or getattr(auto,'watch_fallback_source1',False)
 
     def affordable(self,x):
-        price=x.get('reference_price'); budget=self.capital_context.get('effective_auto_cap',self.available_capital)
+        price=x.get('reference_price')
+        # Broker cash is not the per-entry budget: the latter also includes
+        # the bot book, position fraction and pending reservations.
+        # Explicit zero/unknown budgets must not fall back to the larger cap.
+        budget=self.capital_context.get('entry_budget',
+            self.capital_context.get('effective_auto_cap',self.available_capital))
         x['affordability']={'budget':budget,'one_share_cost':price*(1+self.a.commission_buy) if price else None,
                             'entry_eligible':False if self.a.capital_limit==0 else None,
                             'reason_code':'OBSERVATION_ONLY_ZERO_CAP' if self.a.capital_limit==0 else None}
         if self.a.capital_limit==0: return True
-        if self.capital_context and not self.capital_context.get('account_fresh'):
+        if self.capital_context and (not self.capital_context.get('account_fresh')
+                or type(budget) not in (int,float) or not math.isfinite(budget) or budget<0):
             x['affordability'].update(entry_eligible=None,reason_code='ACCOUNT_CAPITAL_UNAVAILABLE')
             return False
         if budget is None: return True

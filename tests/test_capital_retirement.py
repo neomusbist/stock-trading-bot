@@ -6,6 +6,7 @@ from tests import test_automation as f
 from tests import test_operator_interface as ui
 from automation.policy import legacy_test_release_enabled,AutomationConfig
 from automation.radar import DynamicRadar,collect
+from automation.observation_settings import ObservationSettings
 from automation.candidate_audit import CandidateAudit
 from automation.decisions import gate
 from automation.allocation import efficiency
@@ -159,6 +160,7 @@ class CapitalRetirementTests(unittest.TestCase):
     def test_existing_five_sources_unchanged_no_price_preference(self):
         from candidate_builder import RANKS
         rest=Mock(); rest.pages.return_value=([{'stk_cd':'999990','stk_nm':'합성','cur_prc':'2500'}],{})
+        rest.radar_observation_settings=replace(ObservationSettings(),live_early_discovery_enabled=False)
         rows=collect(rest); self.assertEqual(rest.pages.call_count,5); self.assertEqual(len(rows[0]['source_details']),5)
         self.assertEqual(len(RANKS),5)
     def test_retired_direct_policy_approve_and_cancel_fail(self):
