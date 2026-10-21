@@ -8,14 +8,13 @@ from datetime import date,datetime as date_time
 from dataclasses import replace
 from pathlib import Path
 from candidate_builder import RANKS, bars_from_csv, fetch_bars, structure
-from automation.early_discovery import get_shadow_ranks, validate_rank_spec
 from core.settings import now
 from core.util import code, number, atomic_json, write_csv, exception_details
 from core.broker import Rejected
 from automation.policy import BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL,legacy_test_release_enabled
 from automation.observation_settings import ObservationSettings,load_observation
 
-FIELDS=('flu_rt','cntr_str','now_trde_qty','pred_trde_qty','exp_cntr_qty','trde_prica','bigd_rank','now_rank','base_comp_chgr','sdnin_rt')
+FIELDS=('flu_rt','cntr_str','now_trde_qty','pred_trde_qty','exp_cntr_qty','trde_prica','bigd_rank','now_rank','base_comp_chgr')
 
 def observation_structure(bars,price,cfg,day):
     strict=structure(bars,price,replace(cfg,max_recent_range=.99),day)
@@ -29,29 +28,46 @@ def ordinary(symbol,name):
     return symbol.endswith('0') and '스팩' not in name and not name.endswith('우') and 'ETN' not in upper and not any(
         upper.startswith(x) for x in ('KODEX','TIGER','ACE','RISE','SOL','PLUS','KOSEF','HANARO','ARIRANG','WOORI','TIMEFOLIO','KBSTAR'))
 
-def collect(rest, at=None, rank_sources=None):
-    clock = at or now()
-    result = {}
-    rejected_rows = []
-    rest.radar_rejected_rows = rejected_rows
-    settings = getattr(rest, 'radar_observation_settings', None)
-    if not isinstance(settings, ObservationSettings):
-        settings = ObservationSettings()
-    # LIVE Candidate Collection: Strictly defaults to production RANKS.
-    # Isolated research ranks are only passed if explicitly provided.
-    if rank_sources is None:
-        rank_sources = list(RANKS)
-    rest.last_collected_ranks = [r[0] for r in rank_sources]
-    for api, key, limit, payload in rank_sources:
-        validate_rank_spec((api, key, limit, payload))
-        path = '/api/dostk/stkinfo' if api == 'ka00198' else '/api/dostk/rkinfo'
-        if settings.rank_limit_multiplier>1:
-            # Wider discovery uses only the already returned first page; no pagination burst.
-            data=rest.query(api,payload,path=path)
-            if not isinstance(data.get(key),list):raise ValueError(f'{api}: {key} 필드 없음/형식 오류')
-            rows=data[key][:min(100,limit*settings.rank_limit_multiplier)]
+def collect(rest):
+    result={}
+    rejected_rows=[]
+    rest.radar_rejected_rows=rejected_rows
+    settings=getattr(rest,'radar_observation_settings',None)
+    if not isinstance(settings,ObservationSettings):settings=ObservationSettings()
+    # LIVE_EARLY_DISCOVERY: ka10023 (volume surge) is an OPTIONAL extra source of the normal LIVE pipeline.
+    # Its rows pass through the identical ordinary()/status/affordability/WATCH/subscription/signal path.
+    # Any failure (contract, auth, rate, backoff) is recorded and skipped; the 5 verified RANKS are never blocked.
+    sources=list(RANKS)
+    early={'enabled':False,'ok':None,'rows':0,'symbols':[],'error':None,'skipped':None}
+    if getattr(settings,'live_early_discovery_enabled',False):
+        from automation.early_discovery import INTRADAY_VOLUME_SURGE_RANK
+        early['enabled']=True
+        fails=getattr(rest,'_early_fail',(0,0.))
+        if fails[0]>=3 and time.monotonic()<fails[1]:
+            early['skipped']='BACKOFF_AFTER_REPEATED_FAILURE'
         else:
-            rows,_=rest.pages(api,payload,key,path=path,limit=limit)
+            sources.append(INTRADAY_VOLUME_SURGE_RANK)
+    rest.early_discovery_status=early
+    for api,key,limit,payload in sources:
+        optional=api=='ka10023'
+        path='/api/dostk/stkinfo' if api=='ka00198' else '/api/dostk/rkinfo'
+        try:
+            if settings.rank_limit_multiplier>1:
+                # Wider discovery uses only the already returned first page; no pagination burst.
+                data=rest.query(api,payload,path=path)
+                if not isinstance(data.get(key),list):raise ValueError(f'{api}: {key} 필드 없음/형식 오류')
+                rows=data[key][:min(100,limit*settings.rank_limit_multiplier)]
+            else:
+                rows,_=rest.pages(api,payload,key,path=path,limit=limit)
+        except Exception as error:
+            if not optional:raise
+            n=getattr(rest,'_early_fail',(0,0.))[0]+1
+            rest._early_fail=(n,time.monotonic()+300.)
+            early.update(ok=False,error=f'{type(error).__name__}: {error}'[:300])
+            continue
+        if optional:
+            rest._early_fail=(0,0.)
+            early.update(ok=True,rows=len(rows))
         for rank,r in enumerate(rows,1):
             try:
                 if not isinstance(r,dict):raise ValueError('랭킹 행 형식 오류')
@@ -64,6 +80,7 @@ def collect(rest, at=None, rank_sources=None):
                 continue
             if not ordinary(sym,name): continue
             item=result.setdefault(sym,{'code':sym,'name':name,'source_details':{},'reference_price':None})
+            if optional and len(early['symbols'])<15:early['symbols'].append({'code':sym,'name':name,'rank':rank})
             detail={'observed_rank':rank,'raw':dict(r),'values':{}}
             for field in FIELDS:
                 try: detail['values'][field]=number(r[field],signed=True)
@@ -109,11 +126,10 @@ class DynamicRadar:
         return ok
 
     def update(self,items,evaluate,stamp,progress=None):
+        items=[x for x in items if not x.get('SHADOW_ONLY') and not x.get('shadow_research_only')]  # research rows never enter LIVE WATCH
         self.affordability_ms=0.
         if self.day!=stamp.date():
             self.previous={}; self.missing={}; self.weak={}; self.watch={}; self.day=stamp.date()
-        # LIVE Isolation Gate: strictly filter out any research/SHADOW-only candidate
-        items=[x for x in items if not x.get('SHADOW_ONLY') and not x.get('shadow_research_only')]
         rows=[]; selected=[]; present=set()
         for original in items:
             x=dict(original); sym=x['code']; present.add(sym); old=self.previous.get(sym)
@@ -221,8 +237,6 @@ class RadarWorker:
         to the same high-source rows every time a status TTL expires.
         Affordability is still checked by DynamicRadar before any API call.
         """
-        # LIVE Isolation Gate: strictly filter out any research/SHADOW-only candidate
-        items=[x for x in items if not x.get('SHADOW_ONLY') and not x.get('shadow_research_only')]
         present={r['code'] for r in items}
         self.status_waiting={s:n for s,n in self.status_waiting.items() if s in present}
         ranked=sorted(enumerate(items),key=lambda pair:(-len(pair[1]['source_details']),pair[0]))
@@ -329,6 +343,10 @@ class RadarWorker:
                 prior_profile=dict(getattr(self.rest,'profile',{}))
                 if self.refresh_account: self.refresh_account()
                 self.fetched=0; self.status_fetched=0; fetch_started=time.perf_counter();items=collect(self.rest)
+                try:
+                    status=dict(getattr(self.rest,'early_discovery_status',{}) or {})
+                    if status.get('enabled'):append_jsonl(self.root/'runtime/early_discovery_live.jsonl',{'time':now().isoformat(),**status})
+                except Exception:pass
                 stage='DISCOVERY_CONTEXT'
                 items=self.discovery_context.update(items,now())
                 rank_ms=(time.perf_counter()-fetch_started)*1000
@@ -376,7 +394,7 @@ class RadarWorker:
                         'api_wait_ms':getattr(self.rest,'profile',{}).get('api_wait_ms',0)-prior_profile.get('api_wait_ms',0),
                         'http_ms':getattr(self.rest,'profile',{}).get('http_ms',0)-prior_profile.get('http_ms',0),
                         'status_calls':self.status_fetched,'daily_fetches':self.fetched,'scan_wait_seconds':self.a.scan_seconds},
-                    'raw_definition':{'sources':getattr(self.rest,'last_collected_ranks',[r[0] for r in RANKS]),'basis':'5개 ranking 합집합; 일반주 명칭/종목코드 검사 후 고유종목','hts_0168_equivalence':False,
+                    'raw_definition':{'sources':[r[0] for r in RANKS],'basis':'5개 ranking 합집합; 일반주 명칭/종목코드 검사 후 고유종목','hts_0168_equivalence':False,
                         'rank_limit_multiplier':self.observation_settings.rank_limit_multiplier,'max_raw_symbols':self.observation_settings.max_raw_symbols,
                         'expanded_first_page_only':self.observation_settings.rank_limit_multiplier>1}}
                 rejected=getattr(self.rest,'radar_rejected_rows',[])

@@ -14,6 +14,7 @@ class ObservationSettings:
     far_evaluation_seconds:int=5
     rank_limit_multiplier:int=1
     max_raw_symbols:int=300
+    live_early_discovery_enabled:bool=True  # ka10023 joins the LIVE rank pipeline; failure never blocks the 5 verified ranks
     shadow_discovery_enabled:bool=False
     discovery_interval_seconds:float=30.0
     include_today_top_volume:bool=False
@@ -27,6 +28,7 @@ class ObservationSettings:
         if type(self.metadata_budget) is not int or not 1<=self.metadata_budget<=8:raise ValueError('진단 조회 예산은 1~8')
         if not 30<=self.metadata_ttl_seconds<=300 or not .5<=self.evaluation_seconds<=10:raise ValueError('관찰 신선도/평가 주기 범위 확인 필요')
         if not 5<=self.far_book_seconds<=30 or not 0<self.near_threshold_fraction<=.05 or not 1<=self.far_evaluation_seconds<=5:raise ValueError('외부보유 감시 주기 범위 확인 필요')
+        if type(self.live_early_discovery_enabled) is not bool:raise ValueError('live_early_discovery_enabled는 bool')
         return self
 
 def load_observation(root):
