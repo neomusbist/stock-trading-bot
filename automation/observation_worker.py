@@ -410,13 +410,43 @@ class ObservationWorker:
             import sys
             print(json.dumps({'event':'SHADOW_LOG_ERROR','original':details,'logging_error':exception_details(log_error)},ensure_ascii=False),file=sys.stderr,flush=True)
     def prepare_loop(self):
+        last_discovery_mono = 0.0
         while not self.stop.is_set():
             try:
                 try:item=self.updates.get(timeout=.1)
-                except queue.Empty:continue
-                ready=self.prepare(*item,publish=False,
-                    progress=lambda rows,stamp,capital:self.latest_put(self.prepared,(rows,stamp,capital)))
-                if not self.stop.is_set():self.latest_put(self.prepared,ready)
+                except queue.Empty:item=None
+                if item is not None:
+                    ready=self.prepare(*item,publish=False,
+                        progress=lambda rows,stamp,capital:self.latest_put(self.prepared,(rows,stamp,capital)))
+                    if not self.stop.is_set():self.latest_put(self.prepared,ready)
+
+                # Periodic SHADOW early discovery collection strictly for research
+                if getattr(self.settings, 'shadow_discovery_enabled', False) and self.rest:
+                    mono = time.monotonic()
+                    interval = float(getattr(self.settings, 'discovery_interval_seconds', 30.0))
+                    if mono - last_discovery_mono >= interval:
+                        last_discovery_mono = mono
+                        from automation.early_discovery import collect_shadow_early_candidates
+                        try:
+                            early_cands = collect_shadow_early_candidates(
+                                self.rest,
+                                at=self.clock(),
+                                include_today_top_volume=getattr(self.settings, 'include_today_top_volume', False)
+                            )
+                            if early_cands:
+                                self.event('SHADOW_EARLY_DISCOVERY_COLLECTED',
+                                           timestamp=self.clock().isoformat(),
+                                           count=len(early_cands),
+                                           symbols=[c['code'] for c in early_cands[:10]],
+                                           SHADOW_ONLY=True,
+                                           actual_order_permission=False)
+                                self.submit(early_cands, self.clock().isoformat(),
+                                            getattr(self, 'current_capital', {}), allow_metadata=False)
+                        except Exception as disc_err:
+                            self.event('SHADOW_EARLY_DISCOVERY_ERROR',
+                                       timestamp=self.clock().isoformat(),
+                                       SHADOW_ONLY=True,
+                                       **exception_details(disc_err))
             except Exception as error:self.record_error(error)
     def run(self):
         last_save=0.; dropped=0

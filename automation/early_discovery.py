@@ -304,3 +304,76 @@ def verify_window_capture_feasibility(snapshots, symbol: str, start_time: str = 
         'snapshot_count': len(in_window),
         'matches': found_at,
     }
+
+def collect_shadow_early_candidates(
+    rest,
+    at: Optional[datetime] = None,
+    include_today_top_volume: bool = False
+) -> List[dict]:
+    """Collect early discovery candidates strictly for independent SHADOW research observation.
+
+    Architectural Guarantees:
+    1. 100% Isolated from LIVE WATCH: All candidates are explicitly tagged with
+       SHADOW_ONLY=True and actual_order_permission=False.
+    2. Zero Live Order Risk: DynamicRadar and RadarWorker filter out SHADOW_ONLY candidates.
+    3. Rate Limit Preservation: Uses observation_rest with diagnostic_only=True, yielding
+       automatically to live broker operations.
+    4. Validates API requests and broker responses against official contracts.
+    """
+    if at is None:
+        at = now()
+    elif isinstance(at, datetime) and at.tzinfo is not None:
+        at = at.astimezone(KST)
+
+    candidates = []
+    iso_stamp = at.isoformat()
+
+    # 1. Query ka10023 (Volume surge: trde_qty_sdnin)
+    api, key, limit, payload = INTRADAY_VOLUME_SURGE_RANK
+    validate_rank_spec((api, key, limit, payload))
+    try:
+        data = rest.query(api, payload, path='/api/dostk/rkinfo')
+        rows = validate_rank_response(api, key, data)
+        for rank, r in enumerate(rows, 1):
+            if not isinstance(r, dict):
+                continue
+            try:
+                cand = extract_candidate_row(r, rank, api, now_iso=iso_stamp)
+            except (ValueError, KeyError, TypeError):
+                continue
+            cand['SHADOW_ONLY'] = True
+            cand['actual_order_permission'] = False
+            cand['pipeline'] = 'SHADOW_RESEARCH_EARLY_DISCOVERY'
+            cand['status'] = 'SHADOW_RAW'
+            cand['affordability'] = {'entry_eligible': True, 'reason_code': 'SHADOW_OBSERVATION_ONLY'}
+            candidates.append(cand)
+    except Exception as e:
+        if hasattr(rest, 'record_error'):
+            rest.record_error(e)
+
+    # 2. Optionally query ka10030 (Today's top volume: tdy_trde_qty_upper)
+    if include_today_top_volume:
+        api30, key30, limit30, payload30 = INTRADAY_TOP_VOLUME_RANK
+        validate_rank_spec((api30, key30, limit30, payload30))
+        try:
+            data30 = rest.query(api30, payload30, path='/api/dostk/rkinfo')
+            rows30 = validate_rank_response(api30, key30, data30)
+            for rank, r in enumerate(rows30, 1):
+                if not isinstance(r, dict):
+                    continue
+                try:
+                    cand = extract_candidate_row(r, rank, api30, now_iso=iso_stamp)
+                except (ValueError, KeyError, TypeError):
+                    continue
+                cand['SHADOW_ONLY'] = True
+                cand['actual_order_permission'] = False
+                cand['pipeline'] = 'SHADOW_RESEARCH_EARLY_DISCOVERY'
+                cand['status'] = 'SHADOW_RAW'
+                cand['affordability'] = {'entry_eligible': True, 'reason_code': 'SHADOW_OBSERVATION_ONLY'}
+                candidates.append(cand)
+        except Exception as e:
+            if hasattr(rest, 'record_error'):
+                rest.record_error(e)
+
+    return candidates
+

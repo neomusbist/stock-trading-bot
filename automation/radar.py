@@ -29,7 +29,7 @@ def ordinary(symbol,name):
     return symbol.endswith('0') and '스팩' not in name and not name.endswith('우') and 'ETN' not in upper and not any(
         upper.startswith(x) for x in ('KODEX','TIGER','ACE','RISE','SOL','PLUS','KOSEF','HANARO','ARIRANG','WOORI','TIMEFOLIO','KBSTAR'))
 
-def collect(rest, at=None):
+def collect(rest, at=None, rank_sources=None):
     clock = at or now()
     result = {}
     rejected_rows = []
@@ -37,8 +37,10 @@ def collect(rest, at=None):
     settings = getattr(rest, 'radar_observation_settings', None)
     if not isinstance(settings, ObservationSettings):
         settings = ObservationSettings()
-    is_shadow = getattr(settings, 'shadow_discovery_enabled', False) or getattr(rest, 'shadow_discovery_enabled', False) or getattr(rest, 'mode', None) == 'SHADOW'
-    rank_sources = get_shadow_ranks(clock) if is_shadow else list(RANKS)
+    # LIVE Candidate Collection: Strictly defaults to production RANKS.
+    # Isolated research ranks are only passed if explicitly provided.
+    if rank_sources is None:
+        rank_sources = list(RANKS)
     rest.last_collected_ranks = [r[0] for r in rank_sources]
     for api, key, limit, payload in rank_sources:
         validate_rank_spec((api, key, limit, payload))
@@ -110,6 +112,8 @@ class DynamicRadar:
         self.affordability_ms=0.
         if self.day!=stamp.date():
             self.previous={}; self.missing={}; self.weak={}; self.watch={}; self.day=stamp.date()
+        # LIVE Isolation Gate: strictly filter out any research/SHADOW-only candidate
+        items=[x for x in items if not x.get('SHADOW_ONLY') and not x.get('shadow_research_only')]
         rows=[]; selected=[]; present=set()
         for original in items:
             x=dict(original); sym=x['code']; present.add(sym); old=self.previous.get(sym)
@@ -217,6 +221,8 @@ class RadarWorker:
         to the same high-source rows every time a status TTL expires.
         Affordability is still checked by DynamicRadar before any API call.
         """
+        # LIVE Isolation Gate: strictly filter out any research/SHADOW-only candidate
+        items=[x for x in items if not x.get('SHADOW_ONLY') and not x.get('shadow_research_only')]
         present={r['code'] for r in items}
         self.status_waiting={s:n for s,n in self.status_waiting.items() if s in present}
         ranked=sorted(enumerate(items),key=lambda pair:(-len(pair[1]['source_details']),pair[0]))

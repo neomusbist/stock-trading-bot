@@ -18,7 +18,7 @@ Integrates verification standards from AG c296ae3 and Argon independent audit:
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
-from core.settings import KST
+from core.settings import now, KST
 from core.util import floor_tick, tick_size, number
 
 

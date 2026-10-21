@@ -15,8 +15,12 @@ class ObservationSettings:
     rank_limit_multiplier:int=1
     max_raw_symbols:int=300
     shadow_discovery_enabled:bool=False
+    discovery_interval_seconds:float=30.0
+    include_today_top_volume:bool=False
     def validate(self):
         if type(self.shadow_discovery_enabled) is not bool:raise ValueError('shadow_discovery_enabled는 bool')
+        if not isinstance(self.discovery_interval_seconds, (int, float)) or not 5.0<=self.discovery_interval_seconds<=300.0:raise ValueError('조기발견 조회 주기 5~300초')
+        if type(self.include_today_top_volume) is not bool:raise ValueError('include_today_top_volume은 bool')
         if type(self.rank_limit_multiplier) is not int or self.rank_limit_multiplier not in (1,2):raise ValueError('랭킹 범위 배수는 1 또는 2')
         if type(self.max_raw_symbols) is not int or not 100<=self.max_raw_symbols<=300:raise ValueError('원시 후보 한도는 100~300')
         if type(self.max_symbols) is not int or not 1<=self.max_symbols<=64:raise ValueError('관찰 최대종목수는 1~64')
