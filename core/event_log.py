@@ -86,7 +86,9 @@ def rotate_if_large(path,max_bytes=MAX_LOG_BYTES):
     """Lossless rename; stdout logs call only while the runner is stopped."""
     path=Path(path)
     with log_lock(path):
-        if not path.exists() or path.stat().st_size<max_bytes:return None
+        try:size=path.stat().st_size
+        except FileNotFoundError:return None
+        if size<max_bytes:return None
         archive=path.parent/'archive';archive.mkdir(exist_ok=True)
         target=archive/(path.name+'.'+datetime.now().strftime('%Y%m%d-%H%M%S-%f')+'.'+str(os.getpid())+'.'+uuid.uuid4().hex[:8])
         for attempt in range(6):
@@ -102,9 +104,14 @@ def append_jsonl(path,row,default=None,max_bytes=MAX_LOG_BYTES):
     path=Path(path)
     line=json.dumps(row,ensure_ascii=False,allow_nan=False,**({'default':default} if default else {}))+'\n'
     with log_lock(path):
-        path.parent.mkdir(parents=True,exist_ok=True)
         rotate_if_large(path,max_bytes)
-        with path.open('a',encoding='utf-8') as stream:stream.write(line)
+        try:stream=path.open('a',encoding='utf-8')
+        except FileNotFoundError:
+            # The ordinary event path already exists. Create directories only
+            # for first use, retaining synchronous append and real-size rotation.
+            path.parent.mkdir(parents=True,exist_ok=True)
+            stream=path.open('a',encoding='utf-8')
+        with stream:stream.write(line)
 
 class HumanConsole:
     diagnostic={'ENTRY_EVAL','SHADOW_EVAL','POSITION_EVAL','EXIT_EVAL','RAW_CANDIDATES','BOOK_DEPTH_OBSERVED','CANDIDATE_CYCLE_SUMMARY','RADAR_UPDATED','CANDIDATE_LATENCY','ACCOUNT_LATENCY','OBSERVATION_RELEASED','OBSERVATION_REJOINED','SHADOW_CAPACITY','NO_TRADE'}

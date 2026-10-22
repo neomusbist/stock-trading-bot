@@ -315,6 +315,91 @@ class SubscriptionState:
     def accepted(self,symbol):
         self.waiting.pop(symbol,None)
 
+class DiagnosticSnapshotWriter:
+    """Two latest-only diagnostic snapshots; no ledger or order writes.
+
+    A snapshot keeps its capture time. Delayed disk publication cannot make
+    stale readiness fresh. The main loop must check errors and must join this
+    writer before publishing its terminal STOP snapshot directly.
+    """
+    def __init__(self,paths,*,write=None,retry_seconds=.25):
+        self.paths=frozenset(Path(p).absolute() for p in paths)
+        if len(self.paths)!=2 or {p.name for p in self.paths}!={'heartbeat.json','candidate_summary.json'}:
+            raise ValueError('EXACT_DIAGNOSTIC_PATHS_REQUIRED')
+        self.write=atomic_json if write is None else write
+        self.retry_seconds=max(.001,float(retry_seconds))
+        self.condition=threading.Condition();self.pending={};self.retry_at={};self.failures={}
+        self.closing=False;self.inflight=False;self.error=None
+        self.stats={'submitted':0,'writes':0,'errors':0,'coalesced':0,'last_write_seconds':0.}
+        self.thread=threading.Thread(target=self.run,daemon=True,name='diagnostic-snapshots')
+        self.thread.start()
+
+    def submit(self,path,value):
+        path=Path(path).absolute()
+        if path not in self.paths:raise ValueError('UNREVIEWED_DIAGNOSTIC_PATH')
+        snapshot=copy.deepcopy(value)
+        with self.condition:
+            if self.closing:raise RuntimeError('DIAGNOSTIC_WRITER_CLOSED')
+            self.stats['submitted']+=1
+            self.stats['coalesced']+=path in self.pending
+            self.pending[path]=snapshot
+            self.condition.notify_all()
+
+    def check_error(self):
+        with self.condition:
+            failure=self.error;self.error=None
+        if failure is not None:
+            path,error=failure
+            if isinstance(error,OSError):raise error
+            raise OSError(None,'DIAGNOSTIC_SNAPSHOT_WRITE_FAILED: '+str(error),str(path)) from error
+
+    def snapshot(self):
+        with self.condition:
+            return {**self.stats,'pending':len(self.pending),'inflight':self.inflight,
+                    'closing':self.closing,'error_pending':self.error is not None}
+
+    def run(self):
+        while True:
+            with self.condition:
+                while not self.pending:
+                    if self.closing:return
+                    self.condition.wait()
+                current=time.monotonic()
+                due=[p for p in self.pending if self.closing or self.retry_at.get(p,0)<=current]
+                if not due:
+                    self.condition.wait(max(.001,min(self.retry_at[p]-current for p in self.pending)))
+                    continue
+                path=due[0];value=self.pending.pop(path);self.inflight=True
+            started=time.perf_counter()
+            try:
+                self.write(path,value,fsync=False)
+            except Exception as error:
+                with self.condition:
+                    self.stats['errors']+=1
+                    if self.error is None:self.error=(path,error)
+                    self.failures[path]=self.failures.get(path,0)+1
+                    self.retry_at[path]=time.monotonic()+min(2.,self.retry_seconds*2**min(self.failures[path]-1,4))
+                    # Never replace a more recent captured snapshot with a
+                    # failed older one, and never retry forever on shutdown.
+                    if not self.closing and path not in self.pending:self.pending[path]=value
+            else:
+                with self.condition:
+                    self.stats['writes']+=1;self.retry_at.pop(path,None);self.failures.pop(path,None)
+            finally:
+                with self.condition:
+                    self.inflight=False;self.stats['last_write_seconds']=time.perf_counter()-started
+                    self.condition.notify_all()
+
+    def close(self,timeout=5.):
+        with self.condition:
+            self.closing=True;self.condition.notify_all()
+        self.thread.join(timeout=max(0.,timeout))
+        # False means the caller MUST NOT race the in-flight filesystem write
+        # with a direct STOP/summary write. Preserve the old timestamp so the
+        # normal heartbeat expiry remains fail-closed.
+        return not self.thread.is_alive()
+
+
 class PriceContextCheckpoint:
     """One writer and one replaceable pending reference snapshot, never a ledger.
 
@@ -1743,9 +1828,11 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     engine.event('AUTOMATION_STARTED',mode=policy.mode,approved_cap=auto.capital_limit,live_mode=cfg.live_mode,build_id=BUILD_ID,strategy_experiment=STRATEGY_EXPERIMENT,risk_fraction=cfg.risk_fraction,max_daily_loss_fraction=cfg.max_daily_loss_fraction,allowed_risk_krw=context['risk_equity']*cfg.risk_fraction,remaining_daily_risk_krw=context['risk_remaining'],
                  daily_risk_budget_krw=context['daily_risk_budget_krw'],daily_risk_override_day=context['daily_risk_override_day'],daily_risk_override_active=context['daily_risk_override_active'],
                  message='기존 보유 평가금액 제외; 기본 실제 신규 주문 불가')
+    diagnostics=DiagnosticSnapshotWriter((root/'runtime/candidate_summary.json',folder/'heartbeat.json'))
     try:
         while True:
             try:
+                diagnostics.check_error()
                 in_session=control_supported(now()) or (getattr(cfg,'after_enabled',False) and after_control_supported(now()))
                 t_str=now().strftime('%H:%M:%S')
                 if not session_transition_done and t_str>=getattr(auto,'after_prep_start','15:40:00') and engine.current_session()=='AFTER':
@@ -1836,7 +1923,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         if 'source_observed_at' in result or any('source_count' in row for row in result['rows']):qualify_raw(engine,result['rows'],result.get('source_observed_at',result['time']),is_raw_phase=False)
                         if engine.candidate_audit.started:
                             summary=engine.candidate_audit.summary(now().isoformat(),engine.capital_context())
-                            atomic_json(root/'runtime/candidate_summary.json',summary,fsync=False)
+                            diagnostics.submit(root/'runtime/candidate_summary.json',summary)
                             compact_summary={**summary,'candidates':[{'symbol':c.get('symbol'),'primary_reason_code':c.get('primary_reason_code'),
                                 'discovery_status':c.get('discovery_status'),'source_count':c.get('source_count'),'current_price':c.get('current_price')}
                                 for c in summary.get('candidates',[])]}
@@ -2006,7 +2093,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     summary=engine.candidate_audit.summary(now().isoformat(),engine.capital_context());summary['shadow']=len(observed)
                     summary['raw_definition']='5개 ranking API의 일반주 고유종목 합집합; HTS 0168과 동일 목록은 아님'
                     summary['refresh_seconds']=auto.scan_seconds
-                    atomic_json(root/'runtime/candidate_summary.json',summary,fsync=False);last_board=time.monotonic()
+                    diagnostics.submit(root/'runtime/candidate_summary.json',summary);last_board=time.monotonic()
                 ready=readiness_snapshot(engine,counts,radar_ok,now(),detector)
                 record_order_readiness_transition(engine,ready)
                 if ready['state']!=getattr(engine,'last_readiness_state',None):
@@ -2020,7 +2107,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     done=not engine.s['positions'] and not engine.active_orders()
                 if time.monotonic()-last_report>=60:
                     summary=engine.candidate_audit.summary(now().isoformat(),engine.capital_context())
-                    atomic_json(root/'runtime/candidate_summary.json',summary,fsync=False)
+                    diagnostics.submit(root/'runtime/candidate_summary.json',summary)
                     engine.save(); reporter.submit(rows,engine.s); last_report=time.monotonic()
                 if time.monotonic()-last_heartbeat>=1:
                     capture=getattr(engine,'trade_review',None)
@@ -2047,7 +2134,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         if '15:40:00'<=t_now<'16:00:00': hb_session='AFTER_PREP'
                         elif '08:00:00'<=t_now<'09:00:00': hb_session='PREOPEN'
                         else: hb_session='CLOSED'
-                    atomic_json(folder/'heartbeat.json',{'time':now().isoformat(),'mode':policy.mode,'market':engine.market,
+                    diagnostics.submit(folder/'heartbeat.json',{'time':now().isoformat(),'mode':policy.mode,'market':engine.market,
                         'market_environment':position_health.market_context(now()),
                         'session':hb_session,'market_phase':phase_str,'venue':getattr(engine,'after_default_venue','SOR') if sess_name=='AFTER' else 'KRX',
                         'session_classification':assessment(now())['classification'],'readiness':ready,'build_id':BUILD_ID,'strategy_experiment':STRATEGY_EXPERIMENT,
@@ -2063,7 +2150,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                             'counts':dict(getattr(engine,'_quote_entry_counts',{}))},
                         'entry_funnel':engine.candidate_audit.funnel_snapshot(now()),
                         'entry_funnel_errors':getattr(engine,'entry_funnel_errors',0)+engine.candidate_audit.funnel_errors,
-                        'trade_review_capture':capture.stats() if capture is not None else {'available':False}},fsync=False)
+                        'trade_review_capture':capture.stats() if capture is not None else {'available':False}})
                     last_heartbeat=time.monotonic()
                 if done: break
             except KeyboardInterrupt:
@@ -2078,6 +2165,14 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     except Exception as e:
         fatal=type(e).__name__; engine.event('WORKER_FATAL',**error_record(e)); raise
     finally:
+        diagnostic_complete=diagnostics.close(timeout=5.)
+        if not diagnostic_complete:fatal=fatal or 'DIAGNOSTIC_SNAPSHOT_CLOSE_TIMEOUT'
+        try:diagnostics.check_error()
+        except OSError as error:
+            fatal=fatal or type(error).__name__;engine.account_ok=False
+            engine.event('DIAGNOSTIC_SNAPSHOT_ERROR',**error_record(error))
+        engine.event('DIAGNOSTIC_SNAPSHOT_WRITER_CLOSED',complete=diagnostic_complete,
+            **diagnostics.snapshot(),order_ledger_affected=False)
         shadow.close()
         if context_worker:context_worker.close()
         if context_checkpoint:
@@ -2091,9 +2186,11 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
             engine.event('TRADE_REVIEW_CAPTURE_CLOSED',capture=capture.stats())
         if engine.candidate_audit.started:
             summary=engine.candidate_audit.summary(now().isoformat(),engine.capital_context())
-            atomic_json(root/'runtime/candidate_summary.json',summary,fsync=False); engine.event('CANDIDATE_CYCLE_SUMMARY',**summary)
+            if diagnostic_complete:atomic_json(root/'runtime/candidate_summary.json',summary,fsync=False)
+            engine.event('CANDIDATE_CYCLE_SUMMARY',**summary)
         engine.save(); reporter.submit(rows,engine.s); reporter.close()
         try:
+            if not diagnostic_complete:raise RuntimeError('DIAGNOSTIC_WRITER_STILL_ACTIVE_NO_TERMINAL_OVERWRITE')
             atomic_json(folder/'heartbeat.json',{'time':now().isoformat(),'mode':policy.mode,'market':getattr(engine,'market','3'),
                 'session':'CLOSED' if not in_session else 'WORKER_TERMINATED',
                 'market_phase':'CLOSED',
