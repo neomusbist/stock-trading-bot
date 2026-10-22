@@ -571,11 +571,12 @@ class PatternDetector(Detector):
         references=self.price_context.snapshot(t.symbol,t,limit) if self.a.entry_context_enabled else {}
         peak=references.get('nearest_confirmed_peak')
         original_target=target
-        if self.a.entry_context_enabled and peak:target=min(target,peak['price'])
+        if self.a.entry_context_enabled and peak and setup['pattern'] != 'B':
+            target = min(target, peak['price'])
         structural=None;structural_pass=None
         if self.a.structural_pullback_enabled and setup['pattern']=='B':
             from automation.structural_pullback import structural_pullback
-            structural_pass,structural=structural_pullback(bars,t.time,setup,c,limit,t.bid,t.ask,close_policy=self.a.confirmed_invalidation_enabled)
+            structural_pass,structural=structural_pullback(bars,t.time,setup,c,limit,t.bid,t.ask,close_policy=self.a.confirmed_invalidation_enabled,auto=self.a)
             if structural.get('buffered_stop') is not None:stop=structural.get('emergency_stop',structural['buffered_stop'])
             if structural.get('target_ceiling') is not None:target=min(target,structural['target_ceiling'])
         breakout_evidence=None;breakout_pass=None

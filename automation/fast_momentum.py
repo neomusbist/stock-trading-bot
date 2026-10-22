@@ -573,9 +573,10 @@ class FastMomentumStrategy:
             intraday_cap = intraday_ceiling
             target = floor_tick(min(overhead, intraday_ceiling))
         else:
-            # Confirmed genuine breakout above the known intraday ceiling to a new high
+            # Confirmed genuine breakout above the known intraday ceiling to a new high.
+            # Realizable intraday wave projection: bounded by overhead resistance or reasonable intraday expansion (7.0%).
             intraday_cap = None
-            target = floor_tick(overhead)
+            target = floor_tick(min(overhead, entry * 1.07))
 
         if target <= entry:
             reason = 'KNOWN_CEILING_NET_REWARD_RISK_LOW' if (intraday_cap and target <= floor_tick(intraday_cap)) else 'NET_REWARD_RISK_LOW'

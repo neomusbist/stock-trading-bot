@@ -1329,8 +1329,10 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
         watch_eval = dict(watch)
         eval_now = engine.clock()
         cur_day_high = None
+        prior_day_high = None
         if hasattr(detector, 'day_high'):
-            cur_day_high = max(t.price, detector.day_high.get(t.symbol, t.price))
+            prior_day_high = detector.day_high.get(t.symbol)
+            cur_day_high = max(t.price, prior_day_high if prior_day_high is not None else t.price)
             detector.day_high[t.symbol] = cur_day_high
         if getattr(detector, 'price_context', None) is not None:
             structure_now = engine.fast_strategy.get_tape(t.symbol).structure(eval_now)
@@ -1343,12 +1345,17 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
             if peak:
                 watch_eval['nearest_confirmed_peak'] = peak
             pc_day_high = detector.price_context.day_high(t.symbol)
-            if pc_day_high and (cur_day_high is None or pc_day_high > cur_day_high):
-                cur_day_high = pc_day_high
-                if hasattr(detector, 'day_high'):
-                    detector.day_high[t.symbol] = cur_day_high
+            if pc_day_high:
+                if cur_day_high is None or pc_day_high > cur_day_high:
+                    cur_day_high = pc_day_high
+                    if hasattr(detector, 'day_high'):
+                        detector.day_high[t.symbol] = cur_day_high
+                if prior_day_high is None or (pc_day_high < t.price and pc_day_high > (prior_day_high or 0)):
+                    prior_day_high = pc_day_high
         if cur_day_high is not None:
             watch_eval['day_high'] = cur_day_high
+        if prior_day_high is not None:
+            watch_eval['prior_day_high'] = prior_day_high
         watch_eval['daily_high_20d'] = watch.get('daily_high_20d') or watch.get('recent_high')
         fast_sig = engine.fast_strategy.evaluate(
             t, watch_eval,

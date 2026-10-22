@@ -323,5 +323,61 @@ class TestR6TradeFlawFixes20261022(unittest.TestCase):
 # Duplicate synthetic lists previously labelled real archive replay were removed.
 # Recorded point-in-time evidence is verified separately from these fixtures.
 
+    def test_setup_b_pullback_expansion_target_resolves_mathematical_impossibility(self):
+        """
+        Prove that when pullback_expansion_target_enabled=True, Setup B resolves the
+        mathematical impossibility where target was artificially squashed to peak,
+        allowing net_reward_risk >= 1.5 with realistic 50% impulse continuation.
+        """
+        now = datetime(2026, 10, 22, 11, 0, 0, tzinfo=KST)
+        # Impulse: 10000 -> 10600 (rise = 600). Pullback to 10300 (50% retrace).
+        # Rebound: close 10350. Entry at 10380.
+        bars = [
+            {'time': now - timedelta(minutes=6), 'open': 10000, 'high': 10200, 'low': 9980, 'close': 10180, 'volume': 5000, 'first_second': 0},
+            {'time': now - timedelta(minutes=5), 'open': 10180, 'high': 10400, 'low': 10150, 'close': 10380, 'volume': 8000, 'first_second': 0},
+            {'time': now - timedelta(minutes=4), 'open': 10380, 'high': 10600, 'low': 10350, 'close': 10580, 'volume': 10000, 'first_second': 0},
+            {'time': now - timedelta(minutes=3), 'open': 10550, 'high': 10550, 'low': 10400, 'close': 10420, 'volume': 3000, 'first_second': 0},
+            {'time': now - timedelta(minutes=2), 'open': 10420, 'high': 10420, 'low': 10300, 'close': 10320, 'volume': 2000, 'first_second': 0},
+            {'time': now - timedelta(minutes=1), 'open': 10320, 'high': 10360, 'low': 10310, 'close': 10350, 'volume': 4000, 'first_second': 0},
+        ]
+        tick = Tick('000050', now, 10380.0, 500, 10000, 10380.0, 10370.0,
+                    ask_qty=5000, bid_qty=5000, depth_available=True, book_time=now)
+        watch_mock = {
+            'code': '000050',
+            'name': 'PullbackStock',
+            'status': 'WATCH',
+            'reference_price': 10000.0,
+            'resistance': 12000.0,
+            'source_count': 2,
+            'source_details': {'a': {}, 'b': {}},
+        }
+
+        # 1. Under legacy logic (pullback_expansion_target_enabled=False), target is capped at peak (10600)
+        # Entry 10380, peak 10600 -> gross reward = 220 won.
+        # Support 10300 -> stop 10250 -> gross risk = 130 won.
+        # With roundtrip frictions (~75 won), net reward is ~145 won, net risk is ~205 won -> net RR ~0.52 < 1.5 -> REJECTED!
+        auto_legacy = replace(self.auto, structural_pullback_enabled=True, confirmed_invalidation_enabled=True,
+                              pullback_expansion_target_enabled=False)
+        det_legacy = PatternDetector(self.cfg, auto_legacy, self.costs)
+        setup_legacy = det_legacy.pullback(bars)
+        self.assertIsNotNone(setup_legacy)
+        gates_legacy = det_legacy.setup_gates(tick, watch_mock, setup_legacy, bars)
+        self.assertEqual(gates_legacy['risk_reward']['result'], 'FAIL',
+                         "Legacy ceiling=peak must fail risk_reward gate due to mathematical impossibility")
+        self.assertLess(gates_legacy['risk_reward']['values']['calculated_rr'], 1.0)
+
+        # 2. Under improved logic (pullback_expansion_target_enabled=True), target projects to peak + 0.5*rise = 10910
+        # Entry 10380, target 10910 -> gross reward = 530 won.
+        # Net reward = ~455 won, net risk = ~205 won -> net RR > 2.2 >= 1.5 -> PASS!
+        auto_improved = replace(self.auto, structural_pullback_enabled=True, confirmed_invalidation_enabled=True,
+                               pullback_expansion_target_enabled=True)
+        det_improved = PatternDetector(self.cfg, auto_improved, self.costs)
+        setup_improved = det_improved.pullback(bars)
+        self.assertIsNotNone(setup_improved)
+        gates_improved = det_improved.setup_gates(tick, watch_mock, setup_improved, bars)
+        self.assertEqual(gates_improved['risk_reward']['result'], 'PASS',
+                         "Improved expansion target must PASS risk_reward gate with net RR >= 1.5")
+        self.assertGreaterEqual(gates_improved['risk_reward']['values']['calculated_rr'], 1.5)
+
 if __name__ == '__main__':
     unittest.main()
