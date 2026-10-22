@@ -68,6 +68,18 @@ def check_diagnostic_event_writer(engine,writer):
         engine.diagnostic_event_writer=None
         raise
 
+def record_regular_tick_progress(engine,tick):
+    """Historical FIFO ingestion cannot move global market evidence backwards."""
+    prior=getattr(engine,'last_regular_tick',None)
+    prior_at=getattr(prior,'time',None) or getattr(engine,'last_regular_tick_at',None)
+    if isinstance(prior_at,datetime):
+        if tick.time<prior_at:return False
+        if tick.time==prior_at and prior is not None:
+            old=getattr(prior,'received_at',None);new=getattr(tick,'received_at',None)
+            if old and new and datetime.fromisoformat(new)<datetime.fromisoformat(old):return False
+    engine.last_regular_tick_at=tick.time;engine.last_regular_tick=tick
+    return True
+
 class AccountWorker:
     def __init__(self,rest,interval):
         self.rest=rest; self.interval=interval; self.need_fills=False; self.q=queue.Queue(maxsize=2)
@@ -1241,7 +1253,7 @@ def evaluate_observed_entry(engine,detector,t,received,lookup,radar,prices,accou
     candidate=by_symbol.get(t.symbol)
     if not watch and not candidate:return None
     prices[t.symbol]=t.bid or t.price
-    engine.last_regular_tick_at=t.time;engine.last_regular_tick=t
+    record_regular_tick_progress(engine,t)
     timeline=getattr(engine,'observation_timeline',None)
     if timeline is not None:
         timeline.tick(t.symbol,t.time,detector.usable_bars(t.symbol),t.price,
@@ -1511,7 +1523,7 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
             if getattr(engine.a, 'fast_momentum_enabled', False) and hasattr(engine, 'fast_strategy') and engine.fast_strategy is not None:
                 engine.fast_strategy.ingest_tick(t, received)
             if subscriptions is not None:subscriptions.accepted(t.symbol)
-            accepted+=1;engine.last_regular_tick_at=t.time;engine.last_regular_tick=t
+            accepted+=1;record_regular_tick_progress(engine,t)
             timeline=getattr(engine,'observation_timeline',None)
             if timeline is not None:timeline.tick(t.symbol,t.time,detector.usable_bars(t.symbol),t.price,received=received,processed=wall_clock,
                 execution_fresh=timing['fresh'])

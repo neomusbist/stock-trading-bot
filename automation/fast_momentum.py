@@ -233,7 +233,8 @@ class MicroTape:
                 received_monotonic=eligible[-1][1].get('received_monotonic'))['fresh'],
             'direction_basis': 'TICK_RULE_PROXY_NOT_AGGRESSOR_ID', 'reset_reason': self.reset_reason}
         for seconds in (10, 30, 60):
-            rows = [r for r, _ in eligible if r[0] >= now - timedelta(seconds=seconds)]
+            cutoff=now-timedelta(seconds=seconds)
+            rows = [r for r, _ in eligible if r[0] >= cutoff]
             volume = sum(r[2] for r in rows); turnover = sum(r[1] * r[2] for r in rows)
             result.update({f'ticks_{seconds}': len(rows), f'volume_{seconds}': volume, f'turnover_{seconds}': turnover})
             if seconds in (30, 60):
@@ -255,9 +256,9 @@ class MicroTape:
         # Exchange time is second-resolution. A bounded clock lead cannot
         # erase a print which has actually arrived; unreceived prints remain
         # unavailable, and old prints still count in their existing windows.
+        day=asof.date();latest=asof+timedelta(seconds=MAX_EXCHANGE_LEAD_SECONDS)
         return [(row,meta) for row,meta in zip(self.ticks,self.metadata)
-                if meta['received_at']<=asof and row[0].date()==asof.date()
-                and row[0]<=asof+timedelta(seconds=MAX_EXCHANGE_LEAD_SECONDS)]
+                if meta['received_at']<=asof and row[0].date()==day and row[0]<=latest]
 
     def structure(self, asof, exclude_decision=True):
         """An earlier rise and higher micro-low must already have rebounded."""
@@ -268,13 +269,23 @@ class MicroTape:
             if not turns or row[1] != turns[-1][1]:turns.append(row)
         evidence = {'basis': 'PREDECISION_OBSERVED_PULLBACK_REBOUND', 'asof': asof.isoformat(),
                     'price_points': len(turns), 'synthetic_bars_used': False}
+        # Preserve first-tie max/min semantics while building each prefix once.
+        # Repeating max(range(i)) for every low made a declining busy tape O(n²).
+        peaks=[];origins=[];peak_i=origin_i=0
+        for j,row in enumerate(turns):
+            peaks.append(peak_i);origins.append(origin_i)
+            if row[1]>turns[peak_i][1]:peak_i=j
+            if row[1]<turns[origin_i][1]:origin_i=j
+        suffix=[None]*len(turns)
+        for j in range(len(turns)-1,-1,-1):
+            suffix[j]=turns[j][1] if j==len(turns)-1 or turns[j][1]<suffix[j+1] else suffix[j+1]
         for i in range(len(turns) - 2, 0, -1):
             left, low, right = turns[i - 1:i + 2]
             if not left[1] > low[1] < right[1]:continue
-            peak_i = max(range(i), key=lambda n: turns[n][1]); peak = turns[peak_i]
+            peak_i=peaks[i];peak=turns[peak_i]
             if peak_i == 0:continue
-            origin = min(turns[:peak_i], key=lambda r: r[1])
-            if low[1] <= origin[1] or any(r[1] < low[1] for r in turns[peak_i + 1:]):continue
+            origin=turns[origins[peak_i]]
+            if low[1]<=origin[1] or suffix[peak_i+1]<low[1]:continue
             noise = median([abs(b[1] - a[1]) for a, b in zip(turns, turns[1:])])
             return {**evidence, 'pass': True, 'support': low[1], 'support_at': low[0].isoformat(),
                 'confirmation_at': right[0].isoformat(), 'breakout': peak[1], 'breakout_at': peak[0].isoformat(),
