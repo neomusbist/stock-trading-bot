@@ -127,7 +127,11 @@ class AsyncDiagnosticEventWriter:
     Physical diagnostic order may follow a later critical event; original event
     times and session-scoped ingress sequence preserve that provenance.
     """
-    DIAGNOSTIC_KINDS=frozenset({'ENTRY_EVAL','NO_TRADE','ORDER_READINESS_CHANGED','READINESS_CHANGED'})
+    DIAGNOSTIC_KINDS=frozenset({'ENTRY_EVAL','NO_TRADE','ORDER_READINESS_CHANGED','READINESS_CHANGED',
+        'OBSERVATION_REJOINED','WATCH_TRANSITION','ENTRY_QUOTE_RETRY','ACCOUNT_LATENCY',
+        'FOCUS_SELECTION_BLOCKED','FOCUS_SELECTION_APPLIED','INTRADAY_REFERENCE_READY',
+        'INTRADAY_REFERENCE_PENDING','SUBSCRIPTION_REFRESH','RAW_CANDIDATES',
+        'CANDIDATE_LATENCY','RADAR_UPDATED','CANDIDATE_CYCLE_SUMMARY'})
 
     def __init__(self,path,capacity=64,max_line_bytes=256*1024,max_bytes=MAX_LOG_BYTES):
         if type(capacity) is not int or not 1<=capacity<=64:raise ValueError('diagnostic capacity must be 1..64')
@@ -144,7 +148,7 @@ class AsyncDiagnosticEventWriter:
         if row.get('event') not in cls.DIAGNOSTIC_KINDS:return False
         if row.get('decision') not in (None,'NO_BUY'):return False
         if row.get('side') in {'BUY','SELL'}:return False
-        if any(row.get(key) for key in ('signal_detected','signal_at','signal','setup','pattern')):return False
+        if any(row.get(key) for key in ('signal_detected','signal_at','signal','setup','pattern','order_created')):return False
         if row.get('event')=='ENTRY_EVAL' and row.get('decision')!='NO_BUY':return False
         return True
 

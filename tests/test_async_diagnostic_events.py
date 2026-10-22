@@ -128,6 +128,22 @@ class AsyncDiagnosticEventTests(unittest.TestCase):
         with self.assertRaises(OSError):
             writer.append(self.diagnostic())
 
+    def test_measured_hot_observation_records_are_async_but_created_order_stays_sync(self):
+        writer=self.writer()
+        kinds=('OBSERVATION_REJOINED','WATCH_TRANSITION','ENTRY_QUOTE_RETRY','ACCOUNT_LATENCY',
+            'FOCUS_SELECTION_BLOCKED','FOCUS_SELECTION_APPLIED','INTRADAY_REFERENCE_READY',
+            'INTRADAY_REFERENCE_PENDING','SUBSCRIPTION_REFRESH','RAW_CANDIDATES',
+            'CANDIDATE_LATENCY','RADAR_UPDATED','CANDIDATE_CYCLE_SUMMARY')
+        try:
+            for kind in kinds:
+                self.assertEqual(writer.append({'time':AT.isoformat(),'event':kind,
+                    'order_created':False}), 'ASYNC')
+                self.assertEqual(writer.append({'time':AT.isoformat(),'event':kind,
+                    'order_created':True}), 'SYNC_CRITICAL')
+                self.assertEqual(writer.append({'time':AT.isoformat(),'event':kind,
+                    'signal_detected':True}), 'SYNC_CRITICAL')
+        finally:writer.close()
+
     def test_background_io_error_is_propagated_to_main_as_original_oserror(self):
         writer = self.writer()
         error = PermissionError(13, 'blocked diagnostic append', str(self.path))
