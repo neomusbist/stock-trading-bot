@@ -98,6 +98,13 @@ class LiveReadyLifecycle(unittest.TestCase):
         rows,selected,changes=self.dynamic.update([raw],lambda r:structure(history,r['reference_price'],self.cfg,AT.date()),AT)
         self.assertEqual([r['code'] for r in selected],[SYM],rows)
         self.lookup={r['code']:r for r in selected}
+        if name=='FAST':
+            # Explicit independent intraday level known before this synthetic
+            # print stream; the daily CSV high alone is not a FAST target.
+            self.lookup[SYM]['nearest_confirmed_peak']=dict(price=1045,
+                time=(AT-timedelta(minutes=3)).isoformat(),
+                confirmed_at=(AT-timedelta(minutes=1)).isoformat(),
+                available_at=(AT-timedelta(minutes=1)).isoformat(),basis='SYNTHETIC_PREKNOWN_INTRADAY_LEVEL')
         self.radar.cache[(AT.date(),SYM)]=history;self.radar.status_cache[SYM]=status
         self.assertEqual(self.lookup[SYM]['status'],'WATCH')
 

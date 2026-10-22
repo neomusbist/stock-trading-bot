@@ -75,6 +75,9 @@ class PipelineMixin:
         w = {'code': sym, 'name': '합성', 'status': 'WATCH', 'source_count': 2, 'fallback_source1': True,
              'source_details': {'a': {}, 'b': {}}, 'market_status': {'pass': True, 'reason_code': 'SYNTHETIC_NORMAL_STATUS'},
              'resistance': 1045, 'reference_price': 984, 'observed_at': self.clock[0].isoformat()}
+        w['nearest_confirmed_peak']=dict(price=1045,time=(self.clock[0]-timedelta(minutes=1)).isoformat(),
+            confirmed_at=self.clock[0].isoformat(),available_at=self.clock[0].isoformat(),
+            basis='SYNTHETIC_PREKNOWN_INTRADAY_LEVEL')
         w.update(extra); return w
 
     def set_history(self, low=880, high=950, close=900, volume=2000000, symbols=(SYM, SYM2)):

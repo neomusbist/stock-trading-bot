@@ -28,6 +28,15 @@ def current_book_tick(tick, book, checked_at, stale_seconds):
     try:
         received=datetime.fromisoformat(book['received_at']);book_at=datetime.fromisoformat(book['time'])
         if received.tzinfo is None or received>checked_at:return tick
+        # A different BBO may supersede the print only when it arrived after
+        # that print. A still-fresh older 0D is not evidence for the new price.
+        if (bid,ask)!=(tick.bid,tick.ask):
+            trade_received=datetime.fromisoformat(tick.received_at) if tick.received_at else tick.time
+            if received<trade_received:return tick
+            trade_mono=getattr(tick,'received_monotonic',None)
+            book_mono=book.get('received_monotonic')
+            if (type(trade_mono) in (int,float) and type(book_mono) in (int,float)
+                    and book_mono<trade_mono):return tick
         if not tick_freshness(tick,checked_at,stale_seconds)['fresh']:return tick
         if not market_freshness(book_at,checked_at,stale_seconds,received_at=received,
                 received_monotonic=book.get('received_monotonic'))['fresh']:return tick

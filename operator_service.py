@@ -52,6 +52,28 @@ def age(stamp,clock):
         return max(0.0, seconds) if seconds>=-2.0 else math.inf
     except (ValueError,TypeError): return math.inf
 
+def current_capital_snapshot(state,heartbeat,clock,max_age):
+    """Fresh observation proof may advance time, never financial values.
+
+    Quiet reconciles retain their durable financial checkpoint. A heartbeat
+    can report the newer account query only when its amounts still exactly
+    match that checkpoint and the existing readiness proof is fresh.
+    """
+    saved=state.get('automation',{}).get('capital_snapshot',{})
+    candidate=heartbeat.get('capital_snapshot')
+    if (not isinstance(candidate,dict) or heartbeat.get('account_ok') is not True
+            or not heartbeat.get('readiness',{}).get('gates',{}).get('account_fresh')
+            or age(heartbeat.get('time'),clock)>10 or age(candidate.get('timestamp'),clock)>max_age):return saved
+    keys=('actual_orderable_cash','approved_cap','auto_available_capital')
+    if any(type(saved.get(k)) not in (int,float) or type(candidate.get(k)) not in (int,float)
+           or not math.isfinite(candidate[k]) or candidate[k]!=saved[k] for k in keys):return saved
+    try:
+        at=datetime.fromisoformat(candidate['timestamp']);old=datetime.fromisoformat(saved['timestamp'])
+        hb_at=datetime.fromisoformat(heartbeat['time'])
+        if at.tzinfo is None or not old<=at<=hb_at<=clock or at.date()!=clock.date():return saved
+    except (ValueError,TypeError,KeyError):return saved
+    return candidate
+
 def in_window(stamp,start,end):
     try:
         value=datetime.fromisoformat(stamp)
@@ -237,6 +259,10 @@ class OperatorService:
         supervisor_restarting=bool(alert and alert.get('exit_code') and age(alert.get('time'),self.clock())<=alert.get('retry_seconds',30)+5)
         fresh=age(hb.get('time'),self.clock())<=10 and process['running'] and worker_alive and not hb.get('fatal') and not supervisor_restarting
         if process.get('managed'): fresh=fresh and in_window(hb.get('time'),datetime.fromisoformat(process['started']),self.clock())
+        if fresh:
+            current=current_capital_snapshot(state,hb,self.clock(),cfg.reconcile_seconds*3)
+            if age(current.get('timestamp'),self.clock())<age(saved.get('timestamp'),self.clock()):
+                saved=current;cash=saved.get('actual_orderable_cash')
         events=tail_events(folder/'events.jsonl') if recent_events is None else recent_events; decisions=[x for x in events if x.get('decision')][-10:]
         errors=[x for x in events if x.get('error') or x.get('event') in {'ENTRY_HALTED','ORDER_UNKNOWN','ORDER_REJECTED','RUNTIME_ERROR','WORKER_FATAL'}]
         if state.get('halt'): last_error=state['halt']
@@ -817,7 +843,7 @@ class OperatorService:
             process = self.process_info()
             folder, state, hb = self.latest()
             ready = hb.get('readiness',{})
-            snapshot = state.get('automation',{}).get('capital_snapshot',{})
+            snapshot = current_capital_snapshot(state,hb,stamp,cfg.reconcile_seconds*3)
             tick_age = ready.get('regular_tick_age')
             if (not process.get('running') or not process.get('managed')
                 or hb.get('build_id') != BUILD_ID or age(hb.get('time'),stamp)>10

@@ -141,6 +141,10 @@ class FunnelPipelineTests(unittest.TestCase):
             self.assertEqual(s['stages']['ORDER_ACCEPTED:SELL'],1)
             self.assertGreaterEqual(s['stages']['FILL:BUY'],2)
             self.assertGreaterEqual(s['stages']['FILL:SELL'],1)
+            buy=next(o for o in h.e.s['orders'].values() if o['side']=='BUY')
+            route=EntryFunnel.strategy_name(buy['signal'])
+            self.assertEqual(s['unique_execution_orders']['REGULAR:BROKER:'+route+':BUY:FILL'],1)
+            self.assertEqual(s['unique_execution_orders']['REGULAR:BROKER:'+route+':SELL:FILL'],1)
         self.assertEqual(h.e.s['positions'],{})
         self.assertEqual(h.e.active_orders(),[])
 

@@ -39,7 +39,8 @@ class TestR6TradeFlawFixes20261022(unittest.TestCase):
     def test_trade_a_hj_heavy_industries_rejected(self):
         """
         Synthetic HJ-like near-ceiling counterexample, not actual tick replay:
-        - Price at 13,380 KRW, day high at 13,390 KRW, overhead daily resistance at 15,630 KRW.
+        - Price at 13,380 KRW, overhead daily resistance at 15,630 KRW.
+        - No later 13,390 high is supplied as entry-time evidence.
         - Nearest confirmed peak was None (stock just arrived in WATCH).
         - Micro-structure had support at 13,350 KRW, stop at 13,310 KRW (0.52% distance).
         Must be REJECTED before placing any order.
@@ -66,7 +67,6 @@ class TestR6TradeFlawFixes20261022(unittest.TestCase):
             'name': 'HJ중공업',
             'status': 'WATCH',
             'reference_price': 13300.0,
-            'day_high': 13390.0,        # Hypothetical ceiling, not a proven entry-time fact
             'daily_high_20d': 15630.0,  # 20-day high from daily candidate builder
             'recent_high': 15630.0,     # Disambiguated 20-day high
             'resistance': 15630.0,      # Distant daily swing resistance
@@ -81,7 +81,7 @@ class TestR6TradeFlawFixes20261022(unittest.TestCase):
         self.assertIsNone(sig, "Trade A (HJ중공업) must NOT generate a buy signal")
         last_eval = strat.last_evaluation.get('097230', {})
         reason = last_eval.get('reason')
-        self.assertIn(reason, ['STOP_TOO_TIGHT_NOISE_RISK', 'KNOWN_CEILING_NET_REWARD_RISK_LOW'],
+        self.assertIn(reason, ['STOP_TOO_TIGHT_NOISE_RISK', 'KNOWN_CEILING_NET_REWARD_RISK_LOW', 'INTRADAY_TARGET_CONTEXT_UNAVAILABLE'],
                       f"Expected structural ceiling or stop distance rejection, got: {reason}")
 
     def test_trade_b_an_robotics_rejected(self):
@@ -162,6 +162,8 @@ class TestR6TradeFlawFixes20261022(unittest.TestCase):
             'reference_price': 1000.0,
             'resistance': 1100.0,
             'resistance_asof': now.isoformat(),
+            'nearest_confirmed_peak': {'price':1100.0,'time':(now-timedelta(minutes=3)).isoformat(),
+                'confirmed_at':(now-timedelta(minutes=1)).isoformat()},
         }
 
         sig = strat.evaluate(eval_tick, watch_mock, capital_limit=81300.0, risk_budget=1626.0,
@@ -244,6 +246,8 @@ class TestR6TradeFlawFixes20261022(unittest.TestCase):
             'reference_price': 980.0,
             'resistance': 1050.0,
             'resistance_asof': now.isoformat(),
+            'nearest_confirmed_peak': {'price':1050.0,'time':(now-timedelta(minutes=3)).isoformat(),
+                'confirmed_at':(now-timedelta(minutes=1)).isoformat()},
             'source_count': 2,
         }
 

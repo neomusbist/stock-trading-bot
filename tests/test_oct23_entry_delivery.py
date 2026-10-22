@@ -28,6 +28,7 @@ class CurrentBookTests(unittest.TestCase):
         self.h.setUp(); self.addCleanup(self.h.doCleanups)
         # Known before the first print; enough net headroom at the new ask.
         self.h.h.watch[SYM]['resistance'] = 1060
+        self.h.h.watch[SYM]['nearest_confirmed_peak']['price'] = 1060
 
     def test_changed_fresh_bbo_reaches_intent_fill_and_protection(self):
         h = self.h; tick = h.seed()

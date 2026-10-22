@@ -340,6 +340,7 @@ class FastMomentumStrategy:
                 if self.high_day.get(t.symbol)!=t.time.date():
                     self.day_high.pop(t.symbol,None);self.prior_high.pop(t.symbol,None)
                     self.high_day[t.symbol]=t.time.date()
+                tape.metadata[-1]['prior_observed_day_high']=self.day_high.get(t.symbol)
                 if t.symbol in self.day_high and t.price > self.day_high[t.symbol]:
                     self.prior_high[t.symbol] = self.day_high[t.symbol]
                     self.day_high[t.symbol] = t.price
@@ -496,14 +497,11 @@ class FastMomentumStrategy:
         reference = watch.get('reference_price') or watch.get('first_raw_price')
         if number(reference) and reference > 0 and t.price < reference * .985 and m['p_max_60'] < reference * .990:
             return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'reference': reference}
-        ref_high = None
-        peak = active_confirmed_peak(watch,stamp(asof) if asof is not None else stamp(t.time))
-        if peak:
-            ref_high = peak['price']
-        elif number(watch.get('day_high')):
-            ref_high = watch['day_high']
-        elif number(self.day_high.get(t.symbol)):
-            ref_high = self.day_high[t.symbol]
+        # An overhead resistance is a target constraint, not evidence that
+        # this observed tape fell from that price. Retain the drawdown rule
+        # against actual received highs, separately from reference resistance.
+        observed=[v for v in (m.get('p_max_60'),self.day_high.get(t.symbol)) if number(v)]
+        ref_high=max(observed) if observed else None
         if ref_high and ref_high > 0 and t.price < ref_high * .975:
             return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'peak_price': ref_high, 'drawdown': 1 - t.price / ref_high}
         extension = t.price / m['p_min_60'] - 1; limit = .022 if phase == 'OPENING_EARLY' else .020
@@ -573,10 +571,13 @@ class FastMomentumStrategy:
             intraday_cap = intraday_ceiling
             target = floor_tick(min(overhead, intraday_ceiling))
         else:
-            # Confirmed genuine breakout above the known intraday ceiling to a new high.
-            # Realizable intraday wave projection: bounded by overhead resistance or reasonable intraday expansion (7.0%).
-            intraday_cap = None
-            target = floor_tick(min(overhead, entry * 1.07))
+            # Clearing the last observed high does not establish a new target.
+            # Neither distant daily resistance nor an unvalidated fixed 7%
+            # projection can supply missing intraday reward evidence.
+            return reject('INTRADAY_TARGET_CONTEXT_UNAVAILABLE',entry=entry,
+                predecision_ceiling=intraday_ceiling,ceiling_source=ceiling_source,
+                daily_reference=overhead,structure=structure,
+                target_basis='UNKNOWN_AFTER_CLEARING_OBSERVED_CEILING')
 
         if target <= entry:
             reason = 'KNOWN_CEILING_NET_REWARD_RISK_LOW' if (intraday_cap and target <= floor_tick(intraday_cap)) else 'NET_REWARD_RISK_LOW'
@@ -613,10 +614,13 @@ class FastMomentumStrategy:
         reward = target * sell_multiplier - buy_outlay
         risk = buy_outlay - emergency * sell_multiplier
         net_rr = reward / risk if risk > 0 else None
+        target_known=max(known_at,stamp(peak.get('available_at',peak['confirmed_at']))) if peak and intraday_cap else known_at
         geometry = dict(entry=entry, stop=stop, emergency=emergency, target=target,
             net_rr=net_rr, gross_rr=(target - entry) / (entry - emergency),
             reward_net_per_share=reward, risk_net_per_share=risk, risk_budget=risk_budget,
-            target_basis='KNOWN_RESISTANCE_CEILING_NOT_PRICE_FORECAST', target_known_at=known_at.isoformat(),
+            target_basis='MIN_KNOWN_INTRADAY_CEILING_AND_DAILY_REFERENCE', target_known_at=target_known.isoformat(),
+            predecision_day_high=self.get_tape(t.symbol).metadata[-1].get('prior_observed_day_high') if self.get_tape(t.symbol).metadata else None,
+            decision_trade_price=t.price,intraday_ceiling=intraday_ceiling,ceiling_source=ceiling_source,
             nearest_confirmed_peak=peak if intraday_cap else None,
             structural_evidence=structure, buffer=buffer, noise_band=noise,
             cost_basis='ASK_AND_EXIT_BID_PLUS_PROPORTIONAL_FEES_TAX_SLIPPAGE_ONCE',

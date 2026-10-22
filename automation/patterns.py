@@ -571,7 +571,7 @@ class PatternDetector(Detector):
         references=self.price_context.snapshot(t.symbol,t,limit) if self.a.entry_context_enabled else {}
         peak=references.get('nearest_confirmed_peak')
         original_target=target
-        if self.a.entry_context_enabled and peak and setup['pattern'] != 'B':
+        if self.a.entry_context_enabled and peak:
             target = min(target, peak['price'])
         structural=None;structural_pass=None
         if self.a.structural_pullback_enabled and setup['pattern']=='B':

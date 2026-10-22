@@ -43,6 +43,23 @@ class AfterApprovalTests(unittest.TestCase):
         self.before={p:p.read_bytes() for p in [self.root/'config.json',self.root/'automation.json',self.root/'runtime/operator_user_authorization.json']}
     def save_state(self):
         atomic_json(self.folder/'state.json',self.state);atomic_json(self.folder/'heartbeat.json',self.hb)
+    def test_fresh_matching_heartbeat_advances_timestamp_only_checkpoint_for_after_approval(self):
+        snapshot=self.state['automation']['capital_snapshot']
+        snapshot.update(approved_cap=20000,auto_available_capital=20000,
+                        timestamp=(self.stamp-timedelta(minutes=10)).isoformat())
+        self.hb['capital_snapshot']={**snapshot,'timestamp':self.stamp.isoformat()}
+        self.save_state()
+        self.s.activate_after_live('20000',True)
+        self.assertTrue(read_json(self.policy.path)['after_live_authorized'])
+
+    def test_heartbeat_cannot_replace_changed_cash_in_durable_checkpoint(self):
+        snapshot=self.state['automation']['capital_snapshot']
+        snapshot.update(approved_cap=20000,auto_available_capital=20000,
+                        timestamp=(self.stamp-timedelta(minutes=10)).isoformat())
+        self.hb['capital_snapshot']={**snapshot,'timestamp':self.stamp.isoformat(),'actual_orderable_cash':20421}
+        self.save_state()
+        with self.assertRaises(ValueError):self.s.activate_after_live('20000',True)
+        self.assert_unapproved()
     def assert_unapproved(self):
         self.assertFalse(read_json(self.policy.path).get('after_live_authorized',False))
         self.s.gateway.snapshot.assert_not_called();self.s.gateway.start.assert_not_called()

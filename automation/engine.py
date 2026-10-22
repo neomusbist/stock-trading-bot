@@ -131,15 +131,21 @@ class AutonomousEngine(ExistingExits,Engine):
 
     def event(self,kind,**data):
         # 기존 이벤트명/체결 순서는 유지하고 공통 식별정보만 보강한다.
-        sym=data.get('symbol'); p=self.s.get('positions',{}).get(sym,{})
+        order=self.s.get('orders',{}).get(data.get('local'),{})
+        sym=data.get('symbol') or order.get('symbol'); p=self.s.get('positions',{}).get(sym,{})
+        order_signal=p.get('signal') or order.get('signal') or {}
+        if order and order_signal.get('pattern') not in {'A','B','C','FAST'}:
+            order_signal=next((t.get('signal') or {} for t in reversed(self.s.get('trades',[]))
+                               if t.get('exit_order_local')==order.get('local')), {})
         info={'timestamp':self.clock().isoformat(timespec='milliseconds'),'strategy_version':STRATEGY_VERSION,
-              'name':self.names.get(sym),'setup':(p.get('signal') or {}).get('pattern'),
+              'name':self.names.get(sym),'symbol':sym,'setup':order_signal.get('pattern'),
               'build_id':BUILD_ID,'strategy_experiment':STRATEGY_EXPERIMENT}
         info.update(data)
         result=super().event(kind,**safe_values(info))
         audit=getattr(self,'candidate_audit',None)
         if audit is not None and kind in {'ORDER_ACCEPTED','FILL','ORDER_REJECTED','ORDER_UNKNOWN'}:
-            try:audit.funnel.execution(kind,sym,self.clock(),side=data.get('side'))
+            try:audit.funnel.execution(kind,sym,self.clock(),side=data.get('side') or order.get('side'),
+                                      order={**order,'signal':order_signal} if order else None)
             except Exception:self.entry_funnel_errors=getattr(self,'entry_funnel_errors',0)+1
         capture=getattr(self,'trade_review',None)
         if capture is not None:
@@ -1029,10 +1035,29 @@ class AutonomousEngine(ExistingExits,Engine):
         if fee_report['cash_adjustment'] or fee_report['pnl_adjustment']:
             self.event('BROKER_PNL_RECONCILED',**fee_report)
         self.s['equity']=self.risk_equity()
-        try:self.save(fsync=True)
+        # A healthy, flat account refresh can change only its observation time.
+        # Do not fsync the same financial state every five seconds. Every cash,
+        # fee, order, position, risk or HALT change still checkpoints eagerly;
+        # holdings/active orders never use this flat-account fast path.
+        from copy import deepcopy
+        projection=deepcopy(self.s)
+        projection.get('automation',{}).get('capital_snapshot',{}).pop('timestamp',None)
+        unchanged=(self.account_ok and not self.s['positions'] and not self.active_orders()
+                   and not self.s.get('halt')
+                   and projection==getattr(self,'_durable_reconcile_projection',None))
+        commit_started=time.perf_counter()
+        try:
+            if not unchanged:
+                self.save(fsync=True)
+                self._durable_reconcile_projection=projection
         except Exception:
             self.account_ok=False
             raise
+        stats=getattr(self,'reconcile_checkpoint_stats',{'written':0,'unchanged_flat':0})
+        stats['unchanged_flat' if unchanged else 'written']+=1
+        stats['last_commit_seconds']=time.perf_counter()-commit_started
+        stats['last_action']='UNCHANGED_FLAT' if unchanged else 'DURABLE_CHECKPOINT'
+        self.reconcile_checkpoint_stats=stats
         self.kill_checked=True
         self.reconciled_at=self.clock().isoformat()
         self.reconcile_query_started=snapshot.get('query_started_at',self.reconciled_at)

@@ -6,6 +6,8 @@ use the existing heartbeat/summary writer; this module does no hot-path I/O.
 """
 from collections import Counter, OrderedDict, defaultdict
 import math
+import hashlib
+import json
 
 SETUPS = ('A', 'B', 'C', 'FAST')
 
@@ -27,6 +29,22 @@ class EntryFunnel:
         self.timeline = OrderedDict()
         self.distinct_overflow = Counter()
         self.discovery_examples = OrderedDict()
+        self.signal_ids = defaultdict(set)
+        self.execution_ids = defaultdict(set)
+
+    def _identity(self, mapping, group, key):
+        ids=mapping[group]
+        if key not in ids and len(ids)>=self.symbol_limit:
+            self.distinct_overflow[group]+=1
+            return
+        ids.add(key)
+
+    @staticmethod
+    def strategy_name(signal):
+        setup=(signal or {}).get('pattern')
+        if setup=='A':
+            return 'A_continuation' if signal.get('entry_confirmation_basis')=='CONFIRMED_CONTINUATION' else 'A_burst'
+        return setup if setup in SETUPS else 'UNKNOWN'
 
     def _stamp(self, stamp):
         text = stamp.isoformat() if hasattr(stamp, 'isoformat') else str(stamp)
@@ -118,6 +136,19 @@ class EntryFunnel:
                  'target': rr.get('target'),
                  'failed_reasons': list(trial.get('failed_reasons', []))[:16],
                  'gate_results': {k: v.get('result') for k, v in gates.items()}})
+            if name=='A':
+                route=self.strategy_name({'pattern':'A','entry_confirmation_basis':trial.get('entry_confirmation_basis')})
+                self.strategies[phase+':'+scope+':'+route][status]+=1
+                self.strategies[phase+':'+scope+':'+route]['evaluated']+=1
+        if signal and signal.get('pattern') in SETUPS:
+            group=phase+':'+scope+':'+self.strategy_name(signal)
+            if all(type(signal.get(k)) in (int,float) and math.isfinite(signal[k]) and signal[k]>0
+                   for k in ('limit','stop','target')):
+                body=[symbol,signal['pattern'],signal['limit'],signal['stop'],signal['target'],
+                      signal.get('entry_confirmation_basis'),signal.get('invalidation_policy')]
+                fingerprint=hashlib.sha256(json.dumps(body,sort_keys=True,default=str).encode()).hexdigest()
+                self._identity(self.signal_ids,group,fingerprint)
+            else:self._reason(group,'SIGNAL_IDENTITY_INCOMPLETE')
         group = phase + ':' + scope + ':FAST'
         if not isinstance(fast, dict):
             reason = 'DISABLED' if not fast_enabled else 'ABC_PRIORITY' if signal else 'EVALUATION_NOT_AVAILABLE'
@@ -158,11 +189,15 @@ class EntryFunnel:
                           else 'POSITIVE' if qty > 0 else 'ZERO')
                 self.stages[prefix + '_' + status] += 1
 
-    def execution(self, kind, symbol, stamp, side=None):
+    def execution(self, kind, symbol, stamp, side=None, order=None):
         if kind not in {'ORDER_ACCEPTED', 'FILL', 'ORDER_REJECTED', 'ORDER_UNKNOWN'}:
             return
-        at, _ = self._stamp(stamp)
+        at, phase = self._stamp(stamp)
         self._stage(kind + ':' + str(side or 'UNSPECIFIED'), symbol or 'UNKNOWN', at)
+        if order and order.get('local'):
+            setup=self.strategy_name(order.get('signal'))
+            group=phase+':BROKER:'+setup+':'+str(side or order.get('side'))+':'+kind
+            self._identity(self.execution_ids,group,str(order['local']))
 
     def snapshot(self, stamp):
         at, _ = self._stamp(stamp)
@@ -176,6 +211,11 @@ class EntryFunnel:
             distinct_overflow=dict(self.distinct_overflow),
             raw_not_evaluated=sorted(raw-evaluated)[:32],
             strategies={k: dict(v) for k, v in self.strategies.items()},
+            unique_signal_fingerprints={k:len(v) for k,v in self.signal_ids.items()},
+            unique_execution_orders={k:len(v) for k,v in self.execution_ids.items()},
+            signal_identity_basis='SYMBOL_SETUP_ENTRY_INVALIDATION_TARGET_POLICY; NOT_INDEPENDENT_MARKET_OPPORTUNITIES',
+            independent_market_opportunities='UNKNOWN_REQUIRES_COMPLETE_TIME_AVAILABLE_TAPE',
+            execution_provenance='BROKER_INTERFACE_EVENTS; REAL_EXECUTION_REQUIRES_PRODUCTION_LEDGER_AND_BROKER_RECEIPTS',
             reasons={k: dict(v) for k, v in self.reasons.items()},
             boundaries=dict(self.boundaries), examples=list(self.examples.values()),
             discovery_examples=list(self.discovery_examples.values()),

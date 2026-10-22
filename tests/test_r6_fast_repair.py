@@ -22,7 +22,10 @@ def ticks(values=CAUSAL, start=BASE, symbol='999990', initial_cumulative=0):
 
 def watch(resistance=1045, at=BASE):
     return dict(name='Synthetic causal support', status='WATCH', reference_price=984,
-                resistance=resistance, resistance_asof=at.isoformat(), source_count=2)
+                resistance=resistance, resistance_asof=at.isoformat(), source_count=2,
+                nearest_confirmed_peak=dict(price=resistance,
+                    time=(at-timedelta(minutes=1)).isoformat(),confirmed_at=at.isoformat(),
+                    available_at=at.isoformat(),basis='SYNTHETIC_PREKNOWN_INTRADAY_LEVEL'))
 
 
 class FastRepairTests(unittest.TestCase):

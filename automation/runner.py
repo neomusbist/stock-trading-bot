@@ -1331,9 +1331,12 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
         cur_day_high = None
         prior_day_high = None
         if hasattr(detector, 'day_high'):
-            prior_day_high = detector.day_high.get(t.symbol)
+            # Detector ingestion has already included this decision print.
+            # FAST's accepted tape captured its high before that ingestion.
+            tape=engine.fast_strategy.get_tape(t.symbol)
+            prior_day_high=tape.metadata[-1].get('prior_observed_day_high') if tape.metadata else None
             cur_day_high = max(t.price, prior_day_high if prior_day_high is not None else t.price)
-            detector.day_high[t.symbol] = cur_day_high
+            cur_day_high=max(cur_day_high,detector.day_high.get(t.symbol,t.price))
         if getattr(detector, 'price_context', None) is not None:
             structure_now = engine.fast_strategy.get_tape(t.symbol).structure(eval_now)
             ctx_snapshot = detector.price_context.snapshot(
@@ -1350,7 +1353,7 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
                     cur_day_high = pc_day_high
                     if hasattr(detector, 'day_high'):
                         detector.day_high[t.symbol] = cur_day_high
-                if prior_day_high is None or (pc_day_high < t.price and pc_day_high > (prior_day_high or 0)):
+                if pc_day_high != t.price and (prior_day_high is None or pc_day_high > prior_day_high):
                     prior_day_high = pc_day_high
         if cur_day_high is not None:
             watch_eval['day_high'] = cur_day_high
@@ -1938,6 +1941,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                             position_health.accept_book(sym,book,now(),source='ka10004')
                         engine.event('ACCOUNT_LATENCY',**result['snapshot'].get('performance',{}),
                             reconcile_ms=reconcile_ms,pending_results=account.q.qsize(),
+                            reconcile_checkpoint=dict(getattr(engine,'reconcile_checkpoint_stats',{})),
                             result_age_seconds=max(0,time.monotonic()-result['started']))
                         external=set(engine.s['automation']['existing'])&(set(BREAKEVEN_EXITS)|({TEST_RELEASE_SYMBOL} if legacy_test_release_enabled() else set()))
                         account.external_symbols=external
@@ -2192,6 +2196,8 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         'session_classification':assessment(now())['classification'],'readiness':ready,'build_id':BUILD_ID,'strategy_experiment':STRATEGY_EXPERIMENT,
                         'pid':os.getpid(),'identity':process_identity(os.getpid()),
                         'account_ok':engine.account_ok,'radar_ok':radar_ok,'connected':ready['gates']['websocket_reg_ack'],
+                        'capital_snapshot':dict(engine.s.get('automation',{}).get('capital_snapshot',{})),
+                        'reconcile_checkpoint':dict(getattr(engine,'reconcile_checkpoint_stats',{})),
                         'subscription_refresh_pending':subscriptions.refresh_pending,'subscription_tick_waiting':sorted(subscriptions.waiting),
                         'watch_observation':{s:dict(engine.observation_timeline.rows.get(s,{})) for s in lookup},
                         'feed_queue_depth':getattr(engine,'feed_queue_size',None),'event_loop_lag_seconds':getattr(engine,'event_loop_lag',None),

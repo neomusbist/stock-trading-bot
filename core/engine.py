@@ -315,7 +315,7 @@ class Engine:
         if sym in positions: positions[sym]['last_fill_at']=o['last_fill_at']
         o['filled']=total; o['amount']=amount
         if total==o['qty']: o['status']='FILLED'
-        self.save(); self.event('FILL',side=o['side'],symbol=sym,qty=delta,price=price)
+        self.save(); self.event('FILL',local=o['local'],id=o['id'],side=o['side'],symbol=sym,qty=delta,price=price)
 
     def on_order_event(self,v):
         order_id=str(v.get('9203','')); original=str(v.get('904',''))
