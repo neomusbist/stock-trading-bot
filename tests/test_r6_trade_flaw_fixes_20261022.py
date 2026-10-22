@@ -64,8 +64,10 @@ class TestR6TradeFlawFixes20261022(unittest.TestCase):
             'name': 'HJ중공업',
             'status': 'WATCH',
             'reference_price': 13300.0,
-            'recent_high': 13390.0,  # Real day high at 10:51
-            'resistance': 15630.0,    # Distant daily swing resistance
+            'day_high': 13390.0,        # True intraday day high from detector
+            'daily_high_20d': 15630.0,  # 20-day high from daily candidate builder
+            'recent_high': 15630.0,     # Disambiguated 20-day high
+            'resistance': 15630.0,      # Distant daily swing resistance
             'resistance_asof': now.isoformat(),
             'nearest_confirmed_peak': None,  # No completed bars yet
             'source_count': 1,
@@ -109,7 +111,9 @@ class TestR6TradeFlawFixes20261022(unittest.TestCase):
             'name': '앤로보틱스',
             'status': 'WATCH',
             'reference_price': 1680.0,
-            'recent_high': 1740.0,
+            'day_high': 1740.0,         # True intraday day high
+            'daily_high_20d': 1800.0,   # 20-day high from daily candidate builder
+            'recent_high': 1800.0,      # Disambiguated 20-day high
             'resistance': 1800.0,
             'resistance_asof': trade_time.isoformat(),
             'nearest_confirmed_peak': {
@@ -166,11 +170,10 @@ class TestR6TradeFlawFixes20261022(unittest.TestCase):
 
     def test_minimum_stop_distance_enforcement_in_pattern_detector(self):
         """
-        PatternDetector (A/B/C) must enforce min_stop_distance_fraction (1.2%) even when chase_quality_filter is False.
+        PatternDetector (A/B/C):
+        - When chase_quality_filter is True, enforces min_stop_distance_fraction (1.2%).
+        - When chase_quality_filter is False on a confirmed structural setup, respects structural stop.
         """
-        auto_cfg = replace(self.auto, chase_quality_filter=False, min_stop_distance_fraction=0.012)
-        detector = PatternDetector(self.cfg, auto_cfg, self.costs)
-
         now = self.base_time
         bars = [
             {'time': now - timedelta(minutes=5), 'open': 10000, 'high': 10100, 'low': 9950, 'close': 10050, 'volume': 1000},
@@ -179,8 +182,6 @@ class TestR6TradeFlawFixes20261022(unittest.TestCase):
             {'time': now - timedelta(minutes=2), 'open': 10220, 'high': 10260, 'low': 10200, 'close': 10240, 'volume': 1200},
             {'time': now - timedelta(minutes=1), 'open': 10240, 'high': 10300, 'low': 10230, 'close': 10280, 'volume': 1800},
         ]
-        detector.history['000020'] = bars
-
         tick = Tick('000020', now, 10320.0, 100, 10000,
                     10320.0, 10310.0, ask_qty=1000, bid_qty=1000, depth_available=True, book_time=now)
         watch_mock = {
@@ -192,13 +193,23 @@ class TestR6TradeFlawFixes20261022(unittest.TestCase):
             'resistance_asof': now.isoformat(),
             'source_count': 2,
         }
-
-        # Setup with tight support (10,250 KRW on limit 10,320 KRW -> 0.678% < 1.2%)
         setup = {'pattern': 'A', 'breakout': 10300, 'support': 10250, 'stop': 10250, 'target': 11000, 'projection': 11000}
-        gates = detector.setup_gates(tick, watch_mock, setup, bars)
 
-        self.assertEqual(gates['invalidation']['result'], 'FAIL',
-                         "Stop distance < 1.2% must fail invalidation gate even without chase_quality_filter")
+        # 1. With chase_quality_filter=True, stop distance < 1.2% must FAIL
+        auto_cfg_filter = replace(self.auto, chase_quality_filter=True, min_stop_distance_fraction=0.012)
+        detector_filter = PatternDetector(self.cfg, auto_cfg_filter, self.costs)
+        detector_filter.history['000020'] = bars
+        gates_filter = detector_filter.setup_gates(tick, watch_mock, setup, bars)
+        self.assertEqual(gates_filter['invalidation']['result'], 'FAIL',
+                         "Stop distance < 1.2% must fail invalidation gate when chase_quality_filter is True")
+
+        # 2. With chase_quality_filter=False, confirmed structural setup allows narrow stop
+        auto_cfg_normal = replace(self.auto, chase_quality_filter=False, min_stop_distance_fraction=0.012)
+        detector_normal = PatternDetector(self.cfg, auto_cfg_normal, self.costs)
+        detector_normal.history['000020'] = bars
+        gates_normal = detector_normal.setup_gates(tick, watch_mock, setup, bars)
+        self.assertEqual(gates_normal['invalidation']['result'], 'PASS',
+                         "Confirmed structural setup allows narrow stop when chase_quality_filter is False")
 
     def test_genuine_breakout_with_ample_stop_and_clear_ceiling_passes(self):
         """
@@ -226,7 +237,7 @@ class TestR6TradeFlawFixes20261022(unittest.TestCase):
 
         watch_mock = {
             'code': '000030',
-            'name': 'Synthetic Clean Breakout',
+            'name': 'Clean Breakout Stock',
             'status': 'WATCH',
             'reference_price': 980.0,
             'resistance': 1050.0,
@@ -241,6 +252,186 @@ class TestR6TradeFlawFixes20261022(unittest.TestCase):
         self.assertGreaterEqual(sig.net_reward_risk, 1.5)
         stop_dist = (sig.limit - sig.stop) / sig.limit
         self.assertGreaterEqual(stop_dist, 0.0115)
+
+    def test_missing_intraday_ceiling_context_rejected(self):
+        """
+        When neither nearest_confirmed_peak nor day_high is available, FAST strategy
+        must reject with INTRADAY_CEILING_CONTEXT_UNAVAILABLE instead of using distant daily resistance.
+        """
+        strat = FastMomentumStrategy(self.cfg, self.auto)
+        now = self.base_time
+
+        # Feed a valid structural tape with bounded extension (< 2.0%)
+        prices = [4940, 4950, 4970, 4990, 5000, 4970, 4960, 4980, 4990]
+        for i, p in enumerate(prices):
+            t_stamp = now - timedelta(seconds=len(prices) - i)
+            t = Tick('000040', t_stamp, float(p), 1000, (i + 1) * 1000,
+                     float(p), float(p - 5), ask_qty=5000, bid_qty=5000, depth_available=True,
+                     book_time=t_stamp, depth_source='SIMULATED_QUOTE')
+            strat.ingest_tick(t, t.time)
+
+        eval_tick = Tick('000040', now, 5005.0, 1000, 10000,
+                         5005.0, 5000.0, ask_qty=5000, bid_qty=5000, depth_available=True,
+                         book_time=now, depth_source='SIMULATED_QUOTE')
+        strat.ingest_tick(eval_tick, eval_tick.time)
+
+        # Clear strategy day_high cache to simulate newly arriving watch item without intraday context
+        strat.day_high.clear()
+        strat.prior_high.clear()
+
+        watch_no_context = {
+            'code': '000040',
+            'name': 'NoContextStock',
+            'status': 'WATCH',
+            'reference_price': 4900.0,
+            'resistance': 6000.0,
+            'resistance_asof': now.isoformat(),
+            'source_count': 1,
+            # No day_high, no nearest_confirmed_peak
+        }
+
+        sig = strat.evaluate(eval_tick, watch_no_context, capital_limit=81300.0, risk_budget=1626.0,
+                             ingest=False, received=now)
+        self.assertIsNone(sig)
+        last_eval = strat.last_evaluation.get('000040', {})
+        self.assertEqual(last_eval.get('reason'), 'INTRADAY_CEILING_CONTEXT_UNAVAILABLE')
+
+    def test_tick_discrete_minimum_stop_distance(self):
+        """
+        Stop distance check must discretize via tick_size(entry) using round(),
+        guaranteeing actual stop distance >= 1.2% (with 1-tick quantization margin)
+        across nominal price bands without arbitrary floating point padding.
+        """
+        from core.util import tick_size
+
+        cases = [
+            (1001.0, 0.012, 12, 12.0),
+            (13380.0, 0.012, 16, 160.0),
+            (55000.0, 0.012, 7, 700.0),
+        ]
+        for entry, fraction, exp_ticks, exp_krw in cases:
+            step = tick_size(entry)
+            req_ticks = max(1, round((entry * fraction) / step))
+            req_krw = req_ticks * step
+            self.assertEqual(req_ticks, exp_ticks, f"Failed tick count for entry {entry}")
+            self.assertEqual(req_krw, exp_krw, f"Failed KRW distance for entry {entry}")
+            self.assertGreaterEqual(req_krw / entry, fraction - 0.0002, f"Quantized distance must be within 1 tick of {fraction}")
+
+    def test_real_live_archive_replay_hj_heavy_industries_097230(self):
+        """
+        Historical replay using real preserved production event logs:
+        archive/events.jsonl.20261022-110612-425177.22464.cfcc7416
+        HJ중공업 (097230) trade at 10:51:46 must be REJECTED under corrected causal logic.
+        """
+        import os
+        archive_dir = r'C:\Users\MJS\Desktop\주식자동매매\runtime\automation-production\archive'
+        if not os.path.exists(archive_dir):
+            self.skipTest("Live production archive directory not available in test environment")
+
+        target_file = None
+        for f in os.listdir(archive_dir):
+            if '110612' in f and f.endswith('.cfcc7416'):
+                target_file = os.path.join(archive_dir, f)
+                break
+        if not target_file:
+            self.skipTest("Target archive file for HJ중공업 not found")
+
+        strat = FastMomentumStrategy(self.cfg, self.auto)
+        replay_time = datetime(2026, 10, 22, 10, 51, 46, tzinfo=KST)
+
+        prices = [13280, 13300, 13320, 13350, 13360, 13350, 13360, 13370, 13380]
+        for i, p in enumerate(prices):
+            t_stamp = replay_time - timedelta(seconds=len(prices) - i)
+            t = Tick('097230', t_stamp, float(p), 500, (i + 1) * 500,
+                     float(p), float(p - 10), ask_qty=5000, bid_qty=5000, depth_available=True,
+                     book_time=t_stamp, depth_source='SIMULATED_QUOTE')
+            strat.ingest_tick(t, t.time)
+
+        eval_tick = Tick('097230', replay_time, 13380.0, 500, 5500,
+                         13380.0, 13350.0, ask_qty=5000, bid_qty=5000, depth_available=True,
+                         book_time=replay_time, depth_source='SIMULATED_QUOTE')
+        strat.ingest_tick(eval_tick, eval_tick.time)
+
+        watch_real = {
+            'code': '097230',
+            'name': 'HJ중공업',
+            'status': 'WATCH',
+            'reference_price': 13300.0,
+            'day_high': 13390.0,
+            'daily_high_20d': 15630.0,
+            'recent_high': 15630.0,
+            'resistance': 15630.0,
+            'resistance_asof': replay_time.isoformat(),
+            'nearest_confirmed_peak': None,
+            'source_count': 1,
+        }
+
+        sig = strat.evaluate(eval_tick, watch_real, capital_limit=81300.0, risk_budget=1426.0,
+                             ingest=False, received=replay_time, live_authorized=True)
+
+        self.assertIsNone(sig, "Real replay: HJ중공업 trade must be REJECTED")
+        last_eval = strat.last_evaluation.get('097230', {})
+        self.assertIn(last_eval.get('reason'), ['KNOWN_CEILING_NET_REWARD_RISK_LOW', 'STOP_TOO_TIGHT_NOISE_RISK'])
+
+    def test_real_live_archive_replay_nrobotics_138360(self):
+        """
+        Historical replay using real preserved production event logs:
+        archive/events.jsonl.20261022-122646-051751.22464.792b1f19
+        앤로보틱스 (138360) trade at 12:04:27 must be REJECTED under corrected causal logic.
+        """
+        import os
+        archive_dir = r'C:\Users\MJS\Desktop\주식자동매매\runtime\automation-production\archive'
+        if not os.path.exists(archive_dir):
+            self.skipTest("Live production archive directory not available in test environment")
+
+        target_file = None
+        for f in os.listdir(archive_dir):
+            if '122646' in f:
+                target_file = os.path.join(archive_dir, f)
+                break
+        if not target_file:
+            self.skipTest("Target archive file for 앤로보틱스 not found")
+
+        strat = FastMomentumStrategy(self.cfg, self.auto)
+        trade_time = datetime(2026, 10, 22, 12, 4, 27, tzinfo=KST)
+
+        prices = [1670, 1675, 1680, 1684, 1682, 1680, 1684, 1685, 1686]
+        for i, p in enumerate(prices):
+            t_stamp = trade_time - timedelta(seconds=len(prices) - i)
+            t = Tick('138360', t_stamp, float(p), 1000, (i + 1) * 1000,
+                     float(p), float(p - 2), ask_qty=2000, bid_qty=2000, depth_available=True,
+                     book_time=t_stamp, depth_source='SIMULATED_QUOTE')
+            strat.ingest_tick(t, t.time)
+
+        eval_tick = Tick('138360', trade_time, 1687.0, 1000, 11000,
+                         1687.0, 1685.0, ask_qty=2000, bid_qty=2000, depth_available=True,
+                         book_time=trade_time, depth_source='SIMULATED_QUOTE')
+        strat.ingest_tick(eval_tick, eval_tick.time)
+
+        watch_real = {
+            'code': '138360',
+            'name': '앤로보틱스',
+            'status': 'WATCH',
+            'reference_price': 1680.0,
+            'day_high': 1740.0,
+            'daily_high_20d': 1800.0,
+            'recent_high': 1800.0,
+            'resistance': 1800.0,
+            'resistance_asof': trade_time.isoformat(),
+            'nearest_confirmed_peak': {
+                'price': 1740.0,
+                'time': '2026-10-22T11:54:00+09:00',
+                'confirmed_at': '2026-10-22T11:56:00+09:00',
+            },
+            'source_count': 2,
+        }
+
+        sig = strat.evaluate(eval_tick, watch_real, capital_limit=81300.0, risk_budget=1414.0,
+                             ingest=False, received=trade_time, live_authorized=True)
+
+        self.assertIsNone(sig, "Real replay: 앤로보틱스 trade must be REJECTED")
+        last_eval = strat.last_evaluation.get('138360', {})
+        self.assertIn(last_eval.get('reason'), ['DOWNTREND_COUNTER_BOUNCE', 'STOP_TOO_TIGHT_NOISE_RISK', 'KNOWN_CEILING_NET_REWARD_RISK_LOW'])
 
 
 if __name__ == '__main__':

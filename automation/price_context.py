@@ -92,6 +92,11 @@ class PriceContext:
         if symbol in self.rows:
             self.rows[symbol].update(context_venue=venue,history_received_at=received.isoformat())
 
+    def day_high(self,symbol):
+        row=self.rows.get(symbol)
+        if not row or not row.get('bars'):return None
+        return max((b['high'] for b in row['bars'] if b.get('high') is not None),default=None)
+
     def reference_bars(self,symbol,asof,venue=None):
         row=self.rows.get(symbol) if self.day==asof.date() else None
         if not row or (venue and row.get('context_venue')!=venue):return []
@@ -114,7 +119,7 @@ class PriceContext:
             return False
         peaks=[p for p in row['peaks'] if _active_peak(p)] if row else []
         peak=min(peaks,key=lambda p:p['price']) if peaks else None
-        return {'asof':tick.time.isoformat(),'nearest_confirmed_peak':deepcopy(peak),
+        return {'asof':tick.time.isoformat(),'nearest_confirmed_peak':deepcopy(peak),'day_high':self.day_high(symbol),
             'known_peak_count':len(peaks),
             'cleared_peak_count':sum(bool(p.get('cleared_at') and p['cleared_at']<=tick.time.isoformat()) for p in row['peaks']) if row else 0,
             'first_observed_at':row['first_observed_at'] if row else None,

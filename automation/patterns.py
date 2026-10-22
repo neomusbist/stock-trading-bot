@@ -5,6 +5,7 @@ from dataclasses import replace
 from copy import deepcopy
 from functools import wraps
 from threading import RLock
+import math
 from core.strategy import Detector
 from core.util import floor_tick,tick_size
 from automation.allocation import efficiency
@@ -597,9 +598,12 @@ class PatternDetector(Detector):
             # Price distance is not account risk. The unchanged final risk gate
             # sizes from the emergency stop or refuses even a single share.
             invalidation_pass=bool(distance is not None and 0<stop<limit and distance>=c.min_stop_fraction)
-        if distance is not None:
+        if getattr(self.a, 'chase_quality_filter', False) and distance is not None and limit > 0:
             min_dist = getattr(self.a, 'min_stop_distance_fraction', 0.012)
-            if distance < min_dist:
+            step = tick_size(limit)
+            required_ticks = math.ceil((limit * min_dist) / step)
+            min_stop_distance_krw = required_ticks * step
+            if (limit - stop) < min_stop_distance_krw:
                 invalidation_pass = False
         if bars and invalidation_pass:
             swing_low=min(b['low'] for b in bars)

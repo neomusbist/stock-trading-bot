@@ -159,6 +159,10 @@ class ShadowObserver:
   sig,gates,trials,history=self.detector.evaluation_snapshot(t,view)
   if sig:
    sig['SHADOW_ONLY']=True;sig['actual_order_permission']=False;sig['diagnostic_only']=True
+  cur_day_high=None
+  if hasattr(self.detector,'day_high'):
+   cur_day_high=max(t.price,self.detector.day_high.get(t.symbol,t.price))
+   self.detector.day_high[t.symbol]=cur_day_high
   if getattr(self.detector,'price_context',None) is not None:
    structure_now=self.fast_strategy.get_tape(t.symbol).structure(received)
    ctx_snapshot=self.detector.price_context.snapshot(t.symbol,t,t.ask,
@@ -166,6 +170,12 @@ class ShadowObserver:
     breakout=structure_now.get('breakout') if structure_now.get('pass') else None)
    if ctx_snapshot.get('nearest_confirmed_peak'):
     view['nearest_confirmed_peak']=ctx_snapshot['nearest_confirmed_peak']
+   pc_day_high=self.detector.price_context.day_high(t.symbol)
+   if pc_day_high and (cur_day_high is None or pc_day_high>cur_day_high):
+    cur_day_high=pc_day_high
+    if hasattr(self.detector,'day_high'):self.detector.day_high[t.symbol]=cur_day_high
+  if cur_day_high is not None:view['day_high']=cur_day_high
+  view['daily_high_20d']=view.get('daily_high_20d') or view.get('recent_high')
   fast_sig=self.fast_strategy.evaluate(t,view,capital_limit=self.capital.get('entry_budget',self.capital.get('effective_auto_cap',81300.0)),risk_budget=min(self.capital.get('risk_equity',self.capital.get('effective_auto_cap',81300.0))*self.cfg.risk_fraction,self.capital.get('risk_remaining',1626.0)),ingest=False,received=received)
   if fast_sig:
    self.event('SHADOW_FAST_SIGNAL',received,symbol=t.symbol,name=row.get('name'),signal_at=fast_sig.created_at.isoformat(),limit=fast_sig.limit,stop=fast_sig.stop,target=fast_sig.target,emergency=fast_sig.emergency,quantity=fast_sig.quantity,net_reward_risk=fast_sig.net_reward_risk,regime=fast_sig.regime,phase=fast_sig.phase,ttl_seconds=fast_sig.ttl_seconds,max_chase_price=fast_sig.max_chase_price,geometry=fast_sig.extra.get('geometry'),tick_metrics=fast_sig.extra.get('metrics'),SHADOW_ONLY=True,actual_order_permission=False)

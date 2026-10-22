@@ -103,7 +103,7 @@ def structure(bars,reference,cfg,asof):
         'reference_price':p,'reference_basis':'장전 예상체결가' if reference else '전일 종가',
         'previous_close':bars[-1]['close'],'long_low':lo,'long_high':hi,'long_position':(p-lo)/(hi-lo),
         'overhead_share_estimate':overhead/total,'resistance':resistance,'resistance_room':room,
-        'recent_high':recent_high,'recent_support':support,'range20':range20,'median_turnover20':turnover}
+        'recent_high':recent_high,'daily_high_20d':recent_high,'recent_support':support,'range20':range20,'median_turnover20':turnover}
 
 def build(cfg,rest=None,offline=False,asof=None,root=ROOT):
     asof=asof or now().date(); root=Path(root)

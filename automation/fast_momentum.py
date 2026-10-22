@@ -306,6 +306,8 @@ class FastMomentumStrategy:
         if sum(self.costs[k] for k in ('sell', 'tax', 'exit_slippage')) >= 1:raise ValueError('invalid sell proceeds model')
         self._lock = threading.RLock()
         self.tapes = {}; self.active_signals = {}; self.last_exit_by_symbol = {}; self.last_evaluation = {}
+        self.day_high = {}
+        self.prior_high = {}
         self.rejection_counts = Counter(); self.signal_history = deque(maxlen=256)
         self.cooldown_seconds = getattr(auto, 'cooldown_seconds', 900.)
 
@@ -318,6 +320,12 @@ class FastMomentumStrategy:
         with self._lock:
             tape = self.get_tape(t.symbol)
             accepted = tape.ingest(t, received, coverage_gap)
+            if accepted and number(getattr(t, 'price', None)):
+                if t.symbol in self.day_high and t.price > self.day_high[t.symbol]:
+                    self.prior_high[t.symbol] = self.day_high[t.symbol]
+                    self.day_high[t.symbol] = t.price
+                elif t.symbol not in self.day_high:
+                    self.day_high[t.symbol] = t.price
             if not accepted:self._note(t, 'UNKNOWN', tape.last_rejection)
             return accepted
 
@@ -390,12 +398,24 @@ class FastMomentumStrategy:
             tape.day = snapshot.get('day')
             tape.symbol = snapshot.get('symbol', symbol)
             tape.reset_reason = snapshot.get('reset_reason')
+            if src_ticks:
+                prices = [tk[1] for tk in src_ticks if len(tk) > 1 and number(tk[1])]
+                if prices:
+                    self.day_high[symbol] = max(prices)
+                    if len(prices) > 1:
+                        self.prior_high[symbol] = max(prices[:-1])
             return True
 
     def handoff_from(self, source, symbol):
         if source is None or source is self or not hasattr(source, 'snapshot_tape'):
             return False
-        return self.restore_tape(symbol, source.snapshot_tape(symbol))
+        restored = self.restore_tape(symbol, source.snapshot_tape(symbol))
+        if restored:
+            if hasattr(source, 'day_high') and symbol in source.day_high:
+                self.day_high[symbol] = source.day_high[symbol]
+            if hasattr(source, 'prior_high') and symbol in source.prior_high:
+                self.prior_high[symbol] = source.prior_high[symbol]
+        return restored
 
     def forget(self, symbol, reason='OBSERVATION_COVERAGE_LOST'):
         with self._lock:
@@ -448,11 +468,16 @@ class FastMomentumStrategy:
         reference = watch.get('reference_price') or watch.get('first_raw_price')
         if number(reference) and reference > 0 and t.price < reference * .985 and m['p_max_60'] < reference * .990:
             return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'reference': reference}
+        ref_high = None
         peak = watch.get('nearest_confirmed_peak')
         if peak and isinstance(peak, dict) and number(peak.get('price')):
-            peak_price = peak['price']
-            if peak_price > 0 and t.price < peak_price * .975:
-                return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'peak_price': peak_price, 'drawdown': 1 - t.price / peak_price}
+            ref_high = peak['price']
+        elif number(watch.get('day_high')):
+            ref_high = watch['day_high']
+        elif number(self.day_high.get(t.symbol)):
+            ref_high = self.day_high[t.symbol]
+        if ref_high and ref_high > 0 and t.price < ref_high * .975:
+            return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'peak_price': ref_high, 'drawdown': 1 - t.price / ref_high}
         extension = t.price / m['p_min_60'] - 1; limit = .022 if phase == 'OPENING_EARLY' else .020
         if extension > limit:return 'B', 'EXTENDED_IMPULSE_CHASE_OVEREXTENDED', {'extension': extension}
         if m['uptick_ratio_30'] < .55:return 'B', 'EXTENDED_IMPULSE_MOMENTUM_EXHAUSTION', {'uptick_ratio_30': m['uptick_ratio_30']}
@@ -491,42 +516,47 @@ class FastMomentumStrategy:
         overhead = watch.get('resistance'); known_at = stamp(watch.get('resistance_asof') or watch.get('observed_at'))
         if not number(overhead) or overhead <= entry or known_at is None or known_at > now or known_at.date() != now.date():
             return reject('KNOWN_OVERHEAD_TARGET_UNAVAILABLE', structure=structure)
-        peak = watch.get('nearest_confirmed_peak')
+        intraday_ceiling = None
+        ceiling_source = None
         intraday_cap = None
+
+        peak = watch.get('nearest_confirmed_peak')
         if peak and isinstance(peak, dict):
             peak_price = peak.get('price')
             peak_conf = stamp(peak.get('confirmed_at'))
             peak_cleared = stamp(peak.get('cleared_at')) if peak.get('cleared_at') else None
-            if (number(peak_price)
+            if (number(peak_price) and peak_price > 0
                     and peak_conf and peak_conf <= now and peak_conf.date() == now.date()
                     and (peak_cleared is None or peak_cleared > now)):
-                confirmed_breakout = (
-                    entry > peak_price + tick_size(peak_price)
-                    and breakout > peak_price
-                    and support >= peak_price
-                )
-                if not confirmed_breakout:
-                    intraday_cap = peak_price
-                    target = floor_tick(min(overhead, peak_price))
+                intraday_ceiling = peak_price
+                ceiling_source = 'CONFIRMED_SWING_PEAK'
+
+        if intraday_ceiling is None:
+            dh = watch.get('day_high') or self.day_high.get(t.symbol)
+            prior_dh = watch.get('prior_day_high') or self.prior_high.get(t.symbol)
+            if number(dh) and dh > 0:
+                if prior_dh and entry > prior_dh and dh == t.price:
+                    intraday_ceiling = prior_dh
                 else:
-                    target = floor_tick(overhead)
-            else:
-                target = floor_tick(overhead)
+                    intraday_ceiling = dh
+                ceiling_source = 'INTRADAY_DAY_HIGH'
+
+        if intraday_ceiling is None:
+            # Without verified intraday ceiling or day high, we cannot establish upside headroom.
+            # Do NOT fall back to distant daily resistance!
+            return reject('INTRADAY_CEILING_CONTEXT_UNAVAILABLE', entry=entry, structure=structure)
+
+        if entry <= intraday_ceiling:
+            intraday_cap = intraday_ceiling
+            target = floor_tick(min(overhead, intraday_ceiling))
         else:
-            intraday_ref = watch.get('recent_high') or watch.get('day_high') or getattr(t, 'high', None)
-            if number(intraday_ref) and intraday_ref > 0:
-                if entry <= intraday_ref:
-                    intraday_cap = intraday_ref
-                    target = floor_tick(min(overhead, intraday_ref))
-                else:
-                    return reject('INTRADAY_CEILING_CONTEXT_UNAVAILABLE', entry=entry, recent_high=intraday_ref, structure=structure)
-            elif 'Synthetic' in str(watch.get('name', '')) or ('recent_high' not in watch and 'day_high' not in watch and getattr(t, 'high', None) is None):
-                target = floor_tick(overhead)
-            else:
-                return reject('INTRADAY_CEILING_CONTEXT_UNAVAILABLE', entry=entry, structure=structure)
+            # Confirmed genuine breakout above the known intraday ceiling to a new high
+            intraday_cap = None
+            target = floor_tick(overhead)
+
         if target <= entry:
             reason = 'KNOWN_CEILING_NET_REWARD_RISK_LOW' if (intraday_cap and target <= floor_tick(intraday_cap)) else 'NET_REWARD_RISK_LOW'
-            return reject(reason, entry=entry, target=target, nearest_confirmed_peak=peak if intraday_cap else None, intraday_cap=intraday_cap, structure=structure)
+            return reject(reason, entry=entry, target=target, nearest_confirmed_peak=peak if intraday_cap else None, intraday_cap=intraday_cap, ceiling_source=ceiling_source, structure=structure)
         # Never move a structural line to a fixed percentage or solve a target
         # backwards from desired RR. Size from the separately derived hard line.
         pullback_depth = max(0., breakout - support)
@@ -536,11 +566,19 @@ class FastMomentumStrategy:
         noise = max(structure['observed_noise'], t.ask - t.bid, 2 * tick_size(support))
         emergency = floor_tick(stop - noise)
         if not 0 < emergency < stop < entry < target:return reject('INVALID_STRUCTURAL_PRICE_GEOMETRY', structure=structure)
-        min_stop_distance = float(getattr(self.auto, 'min_stop_distance_fraction', None) or getattr(self.cfg, 'min_stop_distance_fraction', 0.012))
-        stop_dist = (entry - stop) / entry
-        if stop_dist < min_stop_distance - 0.0005:
-            return reject('STOP_TOO_TIGHT_NOISE_RISK', entry=entry, stop=stop, stop_distance_fraction=stop_dist,
-                          min_stop_distance_fraction=min_stop_distance, structure=structure)
+        min_stop_distance_fraction = float(getattr(self.auto, 'min_stop_distance_fraction', None) or getattr(self.cfg, 'min_stop_distance_fraction', 0.012))
+        step = tick_size(entry)
+        required_stop_ticks = max(1, round((entry * min_stop_distance_fraction) / step))
+        min_stop_distance_krw = required_stop_ticks * step
+        actual_stop_distance_krw = entry - stop
+        if actual_stop_distance_krw < min_stop_distance_krw:
+            return reject('STOP_TOO_TIGHT_NOISE_RISK', entry=entry, stop=stop,
+                          stop_distance_fraction=actual_stop_distance_krw / entry,
+                          min_stop_distance_fraction=min_stop_distance_fraction,
+                          required_stop_ticks=required_stop_ticks,
+                          actual_stop_ticks=round(actual_stop_distance_krw / step),
+                          min_stop_distance_krw=min_stop_distance_krw,
+                          structure=structure)
         entry_fill = entry * (1 + self.costs['entry_slippage'])
         buy_outlay = entry_fill * (1 + self.costs['buy'])
         sell_multiplier = (1 - self.costs['exit_slippage']) * (1 - self.costs['sell'] - self.costs['tax'])
