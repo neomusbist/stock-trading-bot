@@ -530,22 +530,29 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
     for sym in list(triggers):
         if sym not in observed or sym in priority or sym in critical:triggers.pop(sym,None)
     promoted=[]
+    gap_event=None
     with (getattr(feed,'subscription_lock',None) or nullcontext()):
         if feed.observation_drops!=drops:
             drops=feed.observation_drops
-            pending.clear()
-            triggers.clear()
             gaps=getattr(feed,'observation_gaps',None)
             affected=dict(gaps) if isinstance(gaps,dict) else {sym:engine.clock() for sym in observed-priority-critical}
             if isinstance(gaps,dict):gaps.clear()
-            for sym,gap_at in affected.items():
-                if sym not in observed or sym in priority or sym in critical:continue
-                if hasattr(detector,'mark_coverage_gap'):detector.mark_coverage_gap(sym,gap_at,'OBSERVATION_QUEUE_GAP')
-                fast=getattr(engine,'fast_strategy',None)
-                if fast is not None:fast.forget(sym,'OBSERVATION_QUEUE_GAP')
-            engine.event('OBSERVATION_DATA_GAP',SHADOW_ONLY=True,dropped=drops,symbols=sorted(affected),
-                data_action='INVALIDATE_ENTRY_CONTINUITY_RETAIN_COMPLETED_BARS',actual_order_permission=False)
+            gap_event=(drops,affected)
         feed.configure_observation(priority,observed,sink)
+    if gap_event is not None:
+        # Snapshot/clear drops and change routing atomically, but never hold the
+        # receiver lock while detector locks or diagnostic disk I/O can wait.
+        # New receiver gaps remain in feed.observation_gaps for the next pass.
+        pending.clear()
+        triggers.clear()
+        gap_drops,affected=gap_event
+        for sym,gap_at in affected.items():
+            if sym not in observed or sym in priority or sym in critical:continue
+            if hasattr(detector,'mark_coverage_gap'):detector.mark_coverage_gap(sym,gap_at,'OBSERVATION_QUEUE_GAP')
+            fast=getattr(engine,'fast_strategy',None)
+            if fast is not None:fast.forget(sym,'OBSERVATION_QUEUE_GAP')
+        engine.event('OBSERVATION_DATA_GAP',SHADOW_ONLY=True,dropped=gap_drops,symbols=sorted(affected),
+            data_action='INVALIDATE_ENTRY_CONTINUITY_RETAIN_COMPLETED_BARS',actual_order_permission=False)
     if promotions and hasattr(feed, 'observation_q'):
         # Partition under the queue lock. Pop-and-requeue can put new receiver
         # frames before retained history, or drop history when the queue fills.
@@ -1493,10 +1500,22 @@ def heartbeat_order_readiness(heartbeat,cfg,stamp):
     if not isinstance(original,dict) or not original:
         return {'order_ready':False,'state':'UNKNOWN','missing':['READINESS_UNKNOWN'],'off_reasons':['READINESS_UNKNOWN']}
     ready=copy.deepcopy(original)
+    engine_off=ready.get('order_ready') is False
+    missing=list(ready.get('missing',[]))
+    gates=ready.get('gates')
+    if not isinstance(gates,dict):gates={};ready['gates']=gates
+    def revoke_gate(key):
+        # Aging can revoke saved evidence, never grant a previously failed gate.
+        gates[key]=False
+        reason=key.upper()+'_NOT_READY'
+        if reason not in missing:missing.append(reason)
+        ready.update(state='WAITING',missing=missing)
     try:
         issued=datetime.fromisoformat(heartbeat['time']);elapsed=(stamp-issued).total_seconds()
         if issued.tzinfo is None or issued.date()!=stamp.date() or not 0<=elapsed<=10:raise ValueError('heartbeat expired')
     except (KeyError,ValueError,TypeError):
+        for key in ('fresh_regular_tick','account_fresh','websocket_reg_ack'):
+            if key in gates:revoke_gate(key)
         ready.update(order_ready=False,off_reasons=['HEARTBEAT_NOT_CURRENT']);return ready
     age=ready.get('regular_tick_age')
     if type(age) in (int,float) and math.isfinite(age):age+=elapsed
@@ -1512,13 +1531,10 @@ def heartbeat_order_readiness(heartbeat,cfg,stamp):
     except KeyError:pass  # Older snapshots can carry an age relative to heartbeat time.
     except (TypeError,ValueError):age=None
     ready['regular_tick_age']=age
-    if ready.get('order_ready') is False:
-        ready['off_reasons']=list(ready.get('off_reasons') or ready.get('missing') or ['ENGINE_DATA_NOT_READY'])
-        return ready
-    missing=list(ready.get('missing',[]))
-    if age is None or not 0<=age<=cfg.stale_seconds:
-        if 'FRESH_REGULAR_TICK_NOT_READY' not in missing:missing.append('FRESH_REGULAR_TICK_NOT_READY')
-        ready['state']='WAITING';ready['missing']=missing
+    tick_required=('fresh_regular_tick' in gates or 'FRESH_REGULAR_TICK_NOT_READY' in missing
+                   or ready.get('state')=='OPEN_READY')
+    if tick_required and (age is None or not 0<=age<=cfg.stale_seconds):
+        revoke_gate('fresh_regular_tick')
         loop_lag=ready.get('event_loop_lag_seconds',heartbeat.get('event_loop_lag_seconds'))
         queue_size=ready.get('feed_queue_depth',heartbeat.get('feed_queue_depth'))
         if type(loop_lag) in (int,float) and loop_lag>1:ready['tick_lag_source']='EVENT_LOOP_LAG'
@@ -1527,8 +1543,14 @@ def heartbeat_order_readiness(heartbeat,cfg,stamp):
         elif ready.get('tick_lag_source')!='WS_SOURCE_SILENT':ready['tick_lag_source']='READINESS_LAG_UNKNOWN'
     account_age=ready.get('account_age_seconds')
     if type(account_age) in (int,float) and account_age+elapsed>cfg.reconcile_seconds*3:
-        if 'ACCOUNT_FRESH_NOT_READY' not in missing:missing.append('ACCOUNT_FRESH_NOT_READY')
-        ready.update(state='WAITING',missing=missing)
+        revoke_gate('account_fresh')
+    if heartbeat.get('connected') is not True:
+        revoke_gate('websocket_reg_ack')
+    if engine_off:
+        ready['order_ready']=False
+        prior=ready.get('off_reasons') or ['ENGINE_DATA_NOT_READY']
+        ready['off_reasons']=list(dict.fromkeys(list(prior)+missing))
+        return ready
     ready['order_ready']=order_ready_from_evidence(ready,cfg.stale_seconds,heartbeat.get('connected') is True)
     ready['off_reasons']=[] if ready['order_ready'] else list(ready.get('missing') or ['ENGINE_DATA_NOT_READY'])
     if not ready['order_ready'] and ready.get('tick_lag_source'):ready['off_reasons'].append(ready['tick_lag_source'])
