@@ -23,6 +23,21 @@ def stamp(value):
         return None
 
 
+def active_confirmed_peak(watch, now):
+    """Only an available, same-session, uncleared peak can veto an entry."""
+    peak=watch.get('nearest_confirmed_peak')
+    if not isinstance(peak,dict) or not number(peak.get('price')) or peak['price']<=0:return None
+    at=stamp(peak.get('time'));confirmed=stamp(peak.get('confirmed_at'))
+    available=stamp(peak.get('available_at',peak.get('confirmed_at')))
+    cleared=stamp(peak.get('cleared_at')) if peak.get('cleared_at') else None
+    if (at is None or confirmed is None or available is None or now is None
+            or not at<confirmed<=now or available>now
+            or not at.date()==confirmed.date()==available.date()==now.date()
+            or (peak.get('cleared_at') and cleared is None)
+            or (cleared is not None and cleared<=now)):return None
+    return peak
+
+
 def saved_evidence(value):
     """Detach point-in-time evidence and keep the INTENT ledger JSON-safe."""
     if isinstance(value,datetime):return value.isoformat()
@@ -308,6 +323,7 @@ class FastMomentumStrategy:
         self.tapes = {}; self.active_signals = {}; self.last_exit_by_symbol = {}; self.last_evaluation = {}
         self.day_high = {}
         self.prior_high = {}
+        self.high_day = {}
         self.rejection_counts = Counter(); self.signal_history = deque(maxlen=256)
         self.cooldown_seconds = getattr(auto, 'cooldown_seconds', 900.)
 
@@ -321,6 +337,9 @@ class FastMomentumStrategy:
             tape = self.get_tape(t.symbol)
             accepted = tape.ingest(t, received, coverage_gap)
             if accepted and number(getattr(t, 'price', None)):
+                if self.high_day.get(t.symbol)!=t.time.date():
+                    self.day_high.pop(t.symbol,None);self.prior_high.pop(t.symbol,None)
+                    self.high_day[t.symbol]=t.time.date()
                 if t.symbol in self.day_high and t.price > self.day_high[t.symbol]:
                     self.prior_high[t.symbol] = self.day_high[t.symbol]
                     self.day_high[t.symbol] = t.price
@@ -341,6 +360,8 @@ class FastMomentumStrategy:
                 day=tape.day,
                 symbol=tape.symbol,
                 reset_reason=tape.reset_reason,
+                day_high=self.day_high.get(symbol),prior_high=self.prior_high.get(symbol),
+                high_day=self.high_day.get(symbol),
             )
 
     def snapshot_decision_tape(self, symbol, asof, max_rows=256):
@@ -382,10 +403,12 @@ class FastMomentumStrategy:
             return False
         with self._lock:
             src_ticks = snapshot['ticks']
+            if snapshot.get('symbol',symbol)!=symbol:return False
             tgt = self.tapes.get(symbol)
             if tgt is not None and tgt.ticks:
                 src_last = src_ticks[-1][0]
                 tgt_last = tgt.ticks[-1][0]
+                if src_last.date()<tgt_last.date():return False
                 if src_last.date() == tgt_last.date():
                     if (src_last, snapshot.get('last_cumulative') or 0) < (tgt_last, tgt.last_cumulative or 0):
                         return False
@@ -398,28 +421,31 @@ class FastMomentumStrategy:
             tape.day = snapshot.get('day')
             tape.symbol = snapshot.get('symbol', symbol)
             tape.reset_reason = snapshot.get('reset_reason')
-            if src_ticks:
-                prices = [tk[1] for tk in src_ticks if len(tk) > 1 and number(tk[1])]
-                if prices:
-                    self.day_high[symbol] = max(prices)
-                    if len(prices) > 1:
-                        self.prior_high[symbol] = max(prices[:-1])
+            self.day_high.pop(symbol,None);self.prior_high.pop(symbol,None)
+            self.high_day[symbol]=src_ticks[-1][0].date()
+            # A flat repeat at the high is not a new distinct record high.
+            for row in src_ticks:
+                if row[0].date()!=self.high_day[symbol] or not number(row[1]):continue
+                if symbol not in self.day_high:self.day_high[symbol]=row[1]
+                elif row[1]>self.day_high[symbol]:
+                    self.prior_high[symbol]=self.day_high[symbol];self.day_high[symbol]=row[1]
+            high=snapshot.get('day_high');prior=snapshot.get('prior_high')
+            if (snapshot.get('high_day')==self.high_day[symbol] and number(high)
+                    and high>=self.day_high.get(symbol,0)):
+                self.day_high[symbol]=high
+                self.prior_high.pop(symbol,None)
+                if number(prior) and 0<prior<high:self.prior_high[symbol]=prior
             return True
 
     def handoff_from(self, source, symbol):
         if source is None or source is self or not hasattr(source, 'snapshot_tape'):
             return False
-        restored = self.restore_tape(symbol, source.snapshot_tape(symbol))
-        if restored:
-            if hasattr(source, 'day_high') and symbol in source.day_high:
-                self.day_high[symbol] = source.day_high[symbol]
-            if hasattr(source, 'prior_high') and symbol in source.prior_high:
-                self.prior_high[symbol] = source.prior_high[symbol]
-        return restored
+        return self.restore_tape(symbol, source.snapshot_tape(symbol))
 
     def forget(self, symbol, reason='OBSERVATION_COVERAGE_LOST'):
         with self._lock:
             self.tapes.pop(symbol, None); self.active_signals.pop(symbol, None); self.last_evaluation.pop(symbol, None)
+            self.day_high.pop(symbol,None);self.prior_high.pop(symbol,None);self.high_day.pop(symbol,None)
 
     def reset(self, reason='OBSERVATION_COVERAGE_LOST'):
         with self._lock:
@@ -443,6 +469,8 @@ class FastMomentumStrategy:
                 'bid':t.bid,'ask':t.ask,'bid_qty':getattr(t,'bid_qty',None),
                 'ask_qty':getattr(t,'ask_qty',None),'depth_available':getattr(t,'depth_available',None),
                 'depth_source':getattr(t,'depth_source','UNKNOWN'),
+                'accepted_trade_bid':(details.get('metrics') or {}).get('last_bid'),
+                'accepted_trade_ask':(details.get('metrics') or {}).get('last_ask'),
                 'book_freshness':book_freshness(t,decision_at,getattr(self.cfg,'stale_seconds',5))}
         self.last_evaluation[t.symbol] = record
         if status in {'REJECT', 'UNKNOWN'} and reason:
@@ -457,7 +485,7 @@ class FastMomentumStrategy:
         if '15:40:00' <= s < '20:00:00':return 'AFTER'
         return 'OFF_SESSION'
 
-    def classify_regime(self, t, m, phase, watch):
+    def classify_regime(self, t, m, phase, watch, asof=None):
         spread = m.get('spread'); maximum = .004 if phase == 'OPENING_EARLY' else .0035
         if spread is None:return 'C', 'EXECUTABLE_QUOTE_UNKNOWN', {}
         if spread > maximum:return 'C', 'FALSE_BREAKOUT_WIDE_SPREAD', {'spread': spread, 'max_spread': maximum}
@@ -469,8 +497,8 @@ class FastMomentumStrategy:
         if number(reference) and reference > 0 and t.price < reference * .985 and m['p_max_60'] < reference * .990:
             return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'reference': reference}
         ref_high = None
-        peak = watch.get('nearest_confirmed_peak')
-        if peak and isinstance(peak, dict) and number(peak.get('price')):
+        peak = active_confirmed_peak(watch,stamp(asof) if asof is not None else stamp(t.time))
+        if peak:
             ref_high = peak['price']
         elif number(watch.get('day_high')):
             ref_high = watch['day_high']
@@ -511,7 +539,8 @@ class FastMomentumStrategy:
         structure = self.get_tape(t.symbol).structure(now)
         if not structure['pass']:return reject(structure['reason'], structure=structure)
         entry = t.ask; breakout = structure['breakout']; support = structure['support']
-        if t.price <= breakout or entry <= breakout:return reject('PREDECISION_REACTION_HIGH_NOT_BROKEN', structure=structure)
+        if t.price <= breakout:return reject('PREDECISION_REACTION_HIGH_NOT_BROKEN', structure=structure)
+        if entry <= breakout:return reject('EXECUTABLE_ASK_NOT_ABOVE_BREAKOUT', structure=structure)
         if entry / breakout - 1 > .003:return reject('MAX_CHASE_EXCEEDED', breakout=breakout, entry=entry)
         overhead = watch.get('resistance'); known_at = stamp(watch.get('resistance_asof') or watch.get('observed_at'))
         if not number(overhead) or overhead <= entry or known_at is None or known_at > now or known_at.date() != now.date():
@@ -520,22 +549,16 @@ class FastMomentumStrategy:
         ceiling_source = None
         intraday_cap = None
 
-        peak = watch.get('nearest_confirmed_peak')
-        if peak and isinstance(peak, dict):
-            peak_price = peak.get('price')
-            peak_conf = stamp(peak.get('confirmed_at'))
-            peak_cleared = stamp(peak.get('cleared_at')) if peak.get('cleared_at') else None
-            if (number(peak_price) and peak_price > 0
-                    and peak_conf and peak_conf <= now and peak_conf.date() == now.date()
-                    and (peak_cleared is None or peak_cleared > now)):
-                intraday_ceiling = peak_price
-                ceiling_source = 'CONFIRMED_SWING_PEAK'
+        peak = active_confirmed_peak(watch,now)
+        if peak:
+            intraday_ceiling = peak['price']
+            ceiling_source = 'CONFIRMED_SWING_PEAK'
 
         if intraday_ceiling is None:
             dh = watch.get('day_high') or self.day_high.get(t.symbol)
             prior_dh = watch.get('prior_day_high') or self.prior_high.get(t.symbol)
             if number(dh) and dh > 0:
-                if prior_dh and entry > prior_dh and dh == t.price:
+                if prior_dh and t.price > prior_dh and dh == t.price:
                     intraday_ceiling = prior_dh
                 else:
                     intraday_ceiling = dh
@@ -546,7 +569,7 @@ class FastMomentumStrategy:
             # Do NOT fall back to distant daily resistance!
             return reject('INTRADAY_CEILING_CONTEXT_UNAVAILABLE', entry=entry, structure=structure)
 
-        if entry <= intraday_ceiling:
+        if t.price <= intraday_ceiling:
             intraday_cap = intraday_ceiling
             target = floor_tick(min(overhead, intraday_ceiling))
         else:
@@ -566,7 +589,9 @@ class FastMomentumStrategy:
         noise = max(structure['observed_noise'], t.ask - t.bid, 2 * tick_size(support))
         emergency = floor_tick(stop - noise)
         if not 0 < emergency < stop < entry < target:return reject('INVALID_STRUCTURAL_PRICE_GEOMETRY', structure=structure)
-        min_stop_distance_fraction = float(getattr(self.auto, 'min_stop_distance_fraction', None) or getattr(self.cfg, 'min_stop_distance_fraction', 0.012))
+        min_fraction=getattr(self.auto,'min_stop_distance_fraction',None)
+        if min_fraction is None:min_fraction=getattr(self.cfg,'min_stop_distance_fraction',.012)
+        min_stop_distance_fraction=float(min_fraction)
         step = tick_size(entry)
         required_stop_ticks = max(1, round((entry * min_stop_distance_fraction) / step))
         min_stop_distance_krw = required_stop_ticks * step
@@ -611,6 +636,11 @@ class FastMomentumStrategy:
         if now is None:return None
         if ingest and not self.ingest_tick(t, received):return None
         tape = self.get_tape(t.symbol); m = tape.metrics(now)
+        # Flow/history remain based on accepted 0B prints. Execution spread is
+        # the current paired quote, including a later 0D price change.
+        if m:
+            spread=(t.ask-t.bid)/t.bid if number(t.bid) and number(t.ask) and 0<t.bid<=t.ask else None
+            m={**m,'spread':spread}
         note_metrics=saved_evidence(m)
         if not m or not m['data_fresh']:
             self._note(t, 'UNKNOWN', 'CURRENT_MICRO_TAPE_UNAVAILABLE',metrics=note_metrics,decision_at=now); return None
@@ -624,7 +654,7 @@ class FastMomentumStrategy:
         phase = self.determine_phase(t.time)
         if phase == 'OFF_SESSION' or not (supported(t.time) or after_supported(t.time)):
             self._note(t, 'REJECT', 'OFF_SESSION',metrics=note_metrics,decision_at=now); return None
-        regime, reason, details = self.classify_regime(t, m, phase, watch)
+        regime, reason, details = self.classify_regime(t, m, phase, watch, asof=now)
         if regime != 'A':self._note(t, 'REJECT', reason, regime=regime, details=details,metrics=note_metrics,decision_at=now); return None
         geometry = self.calculate_invalidation_and_target(t, m, watch, capital_limit, risk_budget, asof=now)
         if not geometry.get('pass'):

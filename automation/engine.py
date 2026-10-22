@@ -433,6 +433,9 @@ class AutonomousEngine(ExistingExits,Engine):
         if provider and not signal.get('symbol'):return 'ENTRY_MARKET_DATA_UNAVAILABLE'
         tick,book=provider(signal['symbol']) if provider else (fallback,{})
         checked_at=self.clock()
+        if tick is not None and provider:
+            from core.realtime import current_book_tick
+            tick=current_book_tick(tick,book,checked_at,self.c.stale_seconds)
         evidence={'checked_at':checked_at.isoformat(),'phase':phase,
             'receiver_provider':bool(provider),'tick_available':tick is not None,'quantity':quantity,
             'limit':signal.get('limit'),'book_time':book.get('time'),

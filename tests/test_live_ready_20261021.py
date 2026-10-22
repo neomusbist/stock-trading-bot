@@ -124,7 +124,10 @@ class LiveReadyLifecycle(unittest.TestCase):
             for i in range(10):
                 base=960+i*3
                 self.detector.price_context.record(SYM,{'time':AT-timedelta(minutes=10-i),
-                    'open':base,'high':1200 if i==2 else base+10,'low':base-2,'close':base+2,
+                    # Normal rising context. The former 1,200 spike is a
+                    # confirmed 16% drawdown counter-bounce, not a positive
+                    # FAST fixture under the Oct22 production policy.
+                    'open':base,'high':base+10,'low':base-2,'close':base+2,
                     'volume':100,'first_second':0,'gap_reason':None,'venue':'KRX','observation_source':'SYNTHETIC_REFERENCE'},AT)
             for i,price in enumerate(CAUSAL[:-1]):self.feed(AT+timedelta(seconds=i),price,1000)
             stamp=AT+timedelta(seconds=len(CAUSAL)-1);last_price=CAUSAL[-1];last_volume=1000

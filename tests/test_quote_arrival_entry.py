@@ -57,7 +57,8 @@ class QuoteArrivalEntryTests(unittest.TestCase):
         tick = self.trade(CAUSAL[-1], depth=False)
         self.assertEqual(self.h.orders('BUY'), [])
         self.assertIn(self.h.e.fast_strategy.last_evaluation[SYM]['reason'],
-                      {'EXECUTABLE_DEPTH_UNKNOWN', 'BOOK_TIMESTAMP_UNKNOWN_OR_STALE'})
+                      {'EXECUTABLE_DEPTH_UNKNOWN', 'BOOK_TIMESTAMP_UNKNOWN_OR_STALE',
+                       'EXECUTABLE_ASK_NOT_ABOVE_BREAKOUT'})
         return tick
 
     def send_book(self, tick, **kwargs):
@@ -157,10 +158,10 @@ class QuoteArrivalEntryTests(unittest.TestCase):
         self.send_book(tick, at=self.h.clock[0]-timedelta(seconds=6))
         self.assertEqual(self.h.orders('BUY'), [])
 
-    def test_future_or_mismatched_book_remains_blocked(self):
+    def test_future_or_nonexecutable_changed_book_remains_blocked(self):
         tick = self.seed()
         self.send_book(tick, at=self.h.clock[0]+timedelta(seconds=10))
-        self.send_book(tick, ask=tick.ask+1)
+        self.send_book(tick, ask=tick.ask+20)
         self.assertEqual(self.h.orders('BUY'), [])
 
     def test_zero_or_insufficient_depth_does_not_bypass_quantity_checks(self):

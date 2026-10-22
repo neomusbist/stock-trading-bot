@@ -1,14 +1,43 @@
 """수신 전용 스레드: PING 즉시 응답, 재연결마다 로그인/재구독. 주문은 주 스레드만 처리."""
 import json
+import math
 import queue
 import threading
 import time
 from collections import Counter,deque
 from datetime import datetime
+from dataclasses import replace
 from core.settings import ROOT, KST, now
 from core.strategy import Tick
 from core.util import number, code
-from core.market_time import market_freshness
+from core.market_time import market_freshness,tick_freshness
+
+
+def current_book_tick(tick, book, checked_at, stale_seconds):
+    """Use a fresh 0D execution quote without altering its accepted trade.
+
+    0B and 0D are independent streams: a newer BBO need not equal the BBO
+    attached to the last print. Trade time, receipt, price and volume remain
+    immutable. Callers must also verify the receiver still holds this trade.
+    """
+    if not isinstance(book,dict) or book.get('depth_available') is not True:return tick
+    bid,ask=book.get('best_bid'),book.get('best_ask')
+    if (any(type(v) not in (int,float) or not math.isfinite(v) for v in (bid,ask))
+            or not 0<bid<=ask):return tick
+    if any(type(book.get(k)) is not int or book[k]<=0 for k in ('bid_qty','ask_qty')):return tick
+    try:
+        received=datetime.fromisoformat(book['received_at']);book_at=datetime.fromisoformat(book['time'])
+        if received.tzinfo is None or received>checked_at:return tick
+        if not tick_freshness(tick,checked_at,stale_seconds)['fresh']:return tick
+        if not market_freshness(book_at,checked_at,stale_seconds,received_at=received,
+                received_monotonic=book.get('received_monotonic'))['fresh']:return tick
+        old_received=datetime.fromisoformat(tick.book_received_at) if tick.book_received_at else None
+        if old_received is not None and received<old_received:return tick
+        if tick.book_time is not None and book_at<tick.book_time:return tick
+    except (KeyError,TypeError,ValueError):return tick
+    return replace(tick,bid=bid,ask=ask,bid_qty=book['bid_qty'],ask_qty=book['ask_qty'],
+        depth_available=True,book_time=book_at,depth_source='0D',
+        book_received_at=received.isoformat(),book_received_monotonic=book.get('received_monotonic'))
 
 def stream_symbol(value):
     """Exchange suffixes are accepted only at the read-only stream boundary."""

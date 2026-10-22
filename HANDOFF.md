@@ -30,3 +30,19 @@
 - **전략 개선 에이전트 브랜치**: `fix/trade-quality-night-20261013`
 - **본 정리 브랜치**: `test/audit-and-storage-cleanup`
 - 본 브랜치는 운영 로직(`automation/engine.py`, `core/broker.py`, `settings.py` 등)을 일절 수정하지 않고 `tests/` 내부 인코딩/임포트/테스트 격리만 수정하였으므로, 전략 개선 작업 완료 후 rebase 또는 merge 시 코드 충돌 없이 100% 안전하게 병합 가능합니다.
+
+
+## 2026-10-22: Oct23 opening delivery repair (research/backtest)
+
+Base acb12ad8a007bdd67175c6c1545f9fbae9715263. Windows LIVE is unchanged; deployment needs separate approval.
+
+- Four source changes: runner.py, engine.py, fast_momentum.py, core/realtime.py. All history and fresh-tick protection remain FIFO; skip only redundant entry calculations while a valid newer receiver print is pending. Join actual current fresh 0D quotes at both entry and final order checks without renewing the 0B print. Preserve freshness, chase, RR, quantity, durable INTENT and approvals.
+- Fix stale-day/flat-high handoff and unavailable/cleared peak vetoes. Ask-only crossing cannot clear a ceiling. Default minimum-stop policy remains 1.2%; no settings/limits/new strategy activation. Explicit zero configuration now works if separately approved later.
+- Controlled 311-print test: entry calculations 311 to 1; all 311 ingestions/protection calls retained. Catch-up 2.146s to 0.306s; fake buys 1 to 1. Blocked diagnostic disk worker: 0.447s, order ledger still synchronous. Separate eligible changed-BBO case: fake order/fill/protective sell succeeds; inadequate net RR still rejects. This is not real-market profitability evidence.
+- Opening retained logs 09:00-09:10: queue p95 62/max 135, loop lag p95 2.529s/max 5.258s. Critical reconciliation max 2.241s remains a storage risk. Account HTTP and radar timings belong to workers, not directly the main loop.
+- Frozen 12:00-14:26:53 target records: depth unknown 2470, downtrend 57, minimum stop 6, ceiling RR 3. All depth-unknown rows have fresh timestamps and BOOK_PRICE_MISMATCH. Current raw book prices/quantities are missing from these historical rows, so lost executable opportunities remain UNKNOWN. Latest 13:57:43 epoch target rows: 536/38/1/0. These are repeated evaluations, not independent opportunities or the earlier unbounded 503/162 snapshot.
+- HJ actual entry was FAST, not A. First RAW 10:50:19, observation 10:50:46, WATCH 10:51:41, signal 10:51:46. It used 60-second range 13280-13380 and zero independent complete reference bars. The preceding long rise was not represented by that micro-context. A higher acceleration threshold is not established as its cause.
+- The 47 saved HJ prints reproduce predecision support 13350/breakout 13360. Do not inject the later 13390 high. Existing 1.2% policy rejects saved 13380/13310 stop geometry; saved AN peak 1740 also rejects the contemporaneous 1686 print. Complete paired execution replay remains UNKNOWN.
+- Relevant runtime, actual-ledger next-day compatibility and exact-capsule integrity checks pass; full repository regression is not claimed. One attempted redesign test import needs unmerged research code absent from LIVE and is excluded, not counted as PASS. Two duplicate synthetic tests falsely labelled archive replay were removed; they never read archive events.
+- Final overlay includes only the four reviewed sources plus RELEASE_IDENTITY.json. Preserve all other installed sources, especially observation_worker.py. Dummy-root backup/apply/rollback checks pass. Normal flat STOP and process absence are required for deployment; never restore older ledger/settings/authorization. No LIVE install/start/order was performed for this repair.
+- Initial-capture quality and the optimal stop/acceleration thresholds remain unverified. Do not describe feed repair as proof of early-entry profitability. Next opening must measure discovery, subscription, observation, signal, intent, fill and protection separately.

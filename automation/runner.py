@@ -15,7 +15,7 @@ from core.settings import now
 from core.util import atomic_json,ProcessLock,exception_details
 from automation.observation_retention import ObservationRetention
 from core.broker import Rest,Rejected
-from core.realtime import Feed,FeedMessageQueue,parse_tick
+from core.realtime import Feed,FeedMessageQueue,parse_tick,current_book_tick
 _orig_feed_run = Feed.run
 
 def _patched_feed_run(self):
@@ -1024,43 +1024,49 @@ def focus_readiness(detector,shadow_readiness,stamp):
     return result
 
 def current_entry_quote(engine,t,book=None):
-    """Pair a received 0D with the exact accepted trade, without renewing it.
-
-    The receiver can parse the matching book after it queued a trade. That
-    immutable trade's old attached book is not the receiver's current evidence.
-    A later trade, different prices, stale/future book or zero depth never
-    refreshes this frame. No detector/tape ingestion occurs here.
-    """
+    """Pair the latest received 0D with the exact accepted trade; never renew it."""
     provider=getattr(engine,'entry_quote_provider',None)
     if not callable(provider):return t
     snapshot=provider(t.symbol)
     if not isinstance(snapshot,(tuple,list)) or len(snapshot)!=2:return t
     latest,current=snapshot
-    if not isinstance(latest,Tick) or (latest.time,latest.cumulative,latest.price,latest.bid,latest.ask)!=(t.time,t.cumulative,t.price,t.bid,t.ask):return t
+    if not isinstance(latest,Tick) or (latest.time,latest.cumulative,latest.price,
+            latest.received_at,latest.received_monotonic,latest.venue)!=(t.time,t.cumulative,t.price,
+            t.received_at,t.received_monotonic,t.venue):return t
     book=current if book is None else book
-    if not isinstance(book,dict) or not book.get('depth_available'):return t
-    if (book.get('best_bid'),book.get('best_ask'))!=(t.bid,t.ask):return t
-    if any(type(book.get(k)) is not int or book[k]<=0 for k in ('ask_qty','bid_qty')):return t
-    try:
-        clock=engine.clock();received=datetime.fromisoformat(book['received_at'])
-        book_at=datetime.fromisoformat(book['time'])
-        if received.tzinfo is None or received>clock:return t
-        if not tick_freshness(t,clock,engine.c.stale_seconds)['fresh']:return t
-        if not market_freshness(book_at,clock,engine.c.stale_seconds,
-            received_at=received,received_monotonic=book.get('received_monotonic'))['fresh']:return t
-        old_received=datetime.fromisoformat(t.book_received_at) if t.book_received_at else None
-        if old_received is not None and received<old_received:return t
-        if t.book_time is not None and book_at<t.book_time:return t
-    except (KeyError,TypeError,ValueError):return t
-    return replace(t,ask_qty=book['ask_qty'],bid_qty=book['bid_qty'],depth_available=True,
-        book_time=book_at,depth_source='0D',book_received_at=received.isoformat(),
-        book_received_monotonic=book.get('received_monotonic'))
+    return current_book_tick(t,book,engine.clock(),engine.c.stale_seconds)
+
+
+def entry_history_pending(engine,t):
+    """Defer entry calculation, never ingestion/protection, for a queued prefix.
+
+    A strictly newer, same-session accepted receiver print must exist. An
+    invalid/future/nonregular/reset counter cannot starve the current frame.
+    No deferred frame is marked evaluated; the latest print follows normally.
+    """
+    provider=getattr(engine,'entry_quote_provider',None)
+    if not callable(provider):return False
+    snapshot=provider(t.symbol)
+    if not isinstance(snapshot,(tuple,list)) or len(snapshot)!=2:return False
+    latest=snapshot[0]
+    if (not isinstance(latest,Tick) or latest.symbol!=t.symbol or not latest.regular
+            or type(latest.cumulative) is not int or type(t.cumulative) is not int
+            or latest.price<=0 or latest.volume<=0
+            or latest.venue!=t.venue or latest.time.date()!=t.time.date()
+            or latest.time<t.time or latest.cumulative<=t.cumulative
+            or latest.cumulative-t.cumulative<latest.volume
+            or not tick_freshness(latest,engine.clock(),engine.c.stale_seconds)['fresh']):return False
+    counts=getattr(engine,'entry_delivery_counts',None)
+    if counts is None:counts={};engine.entry_delivery_counts=counts
+    counts['HISTORY_PREFIX_DEFERRED']=counts.get('HISTORY_PREFIX_DEFERRED',0)+1
+    return True
 
 
 def _quote_blocked(engine,detector,symbol):
     fast=getattr(getattr(engine,'fast_strategy',None),'last_evaluation',{}).get(symbol,{})
     if fast.get('reason') in {'BOOK_TIMESTAMP_UNKNOWN_OR_STALE','EXECUTABLE_DEPTH_UNKNOWN',
-                            'EXECUTABLE_QUOTE_UNKNOWN','FULL_QUANTITY_DEPTH_INSUFFICIENT'}:return True
+                            'EXECUTABLE_QUOTE_UNKNOWN','FULL_QUANTITY_DEPTH_INSUFFICIENT',
+                            'EXECUTABLE_ASK_NOT_ABOVE_BREAKOUT'}:return True
     # AFTER ABC can be fully formed except for its existing depth gate.
     trials=getattr(detector,'last_eval',{}).get(symbol,{}).get('trials',[])
     return any(t.get('candidate_generated') and t.get('gates',{}).get('liquidity',{}).get('result')!='PASS'
@@ -1146,6 +1152,7 @@ def evaluate_shadow_opportunity(engine,detector,t,watch,radar,prices,account,las
     3. Redesign A/B strategies remain strictly SHADOW only; zero live orders without explicit approval.
     """
     if not watch or not engine.connected: return False
+    if entry_history_pending(engine,t):return False
     if last_evaluated_frame is not None:
         key=(t.time,t.cumulative)
         if not quote_retry and last_evaluated_frame.get(t.symbol)==key:return False
@@ -1277,6 +1284,7 @@ def evaluate_observed_entry(engine,detector,t,received,lookup,radar,prices,accou
 
 def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_evaluated_frame=None,*,quote_retry=False):
     if not watch or not engine.connected: return None
+    if entry_history_pending(engine,t):return None
     if watch.get('status') and watch.get('status') != 'WATCH':
         from automation.decisions import gate
         engine.decisions.emit('ENTRY_EVAL', t.symbol, 'NO_BUY', 'CANDIDATE_STATUS_NOT_WATCH',
@@ -1365,7 +1373,7 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
         engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','PATTERN_OR_GATE_NOT_READY',
             gates,price=t.price,extra={'failed_gates':failed,'signal_detected':False,
                 'setup_trials':detector.last_eval.get(t.symbol,{}).get('trials',[]),
-                'fast_evaluation':{k:fast_evaluation.get(k) for k in ('time','status','reason','regime','quote_evidence')} if isinstance(fast_evaluation,dict) else None})
+                'fast_evaluation':{k:fast_evaluation.get(k) for k in ('time','status','reason','regime','quote_evidence','geometry','details')} if isinstance(fast_evaluation,dict) else None})
         return None
     sig['name']=watch.get('name')
     sig['fallback_source1']=bool(watch.get('fallback_source1'))
@@ -2184,6 +2192,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         'available_capital':min(engine.available_cash,auto.capital_limit),'approved_cap':auto.capital_limit,
                         'bot_cash':engine.s['cash'],'positions':len(engine.s['positions']),'pending':len(engine.active_orders()),
                         'strategy':'MANAGE' if engine.s['positions'] else 'SCAN' if lookup else 'QUIET','counts':counts,
+                        'entry_delivery':dict(getattr(engine,'entry_delivery_counts',{})),
                         'entry_quote_retry':{'pending':len(getattr(engine,'_quote_entry_pending',{})),
                             'counts':dict(getattr(engine,'_quote_entry_counts',{}))},
                         'entry_funnel':engine.candidate_audit.funnel_snapshot(now()),

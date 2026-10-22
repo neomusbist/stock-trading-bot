@@ -1,5 +1,7 @@
 """
-Causal regression tests for R6 live trade flaw fixes (2026-10-22).
+Synthetic regression geometries for R6 trade flaw fixes (2026-10-22).
+These short tick lists are not recorded decision tapes. In particular, the
+HJ 13,390 ceiling below is a hypothetical input, not proven available at entry.
 Verifies:
 1. Trade A (HJ중공업 097230) flaw:
    - Intraday ceiling protection: cannot project target to distant daily overhead (15,630) when intraday ceiling is 13,390.
@@ -11,7 +13,7 @@ Verifies:
    - Net reward-risk against confirmed ceiling with structural stop is < 1.5.
 3. Minimum stop distance enforcement across strategies:
    - Enforced in FAST (fast_momentum.py)
-   - Enforced in A/B/C patterns (patterns.py) even without chase_quality_filter.
+   - Enforced in A/B/C patterns only when chase_quality_filter is enabled.
 4. Genuine clean breakout with adequate stop distance and clear ceiling passes.
 """
 import unittest
@@ -36,7 +38,7 @@ class TestR6TradeFlawFixes20261022(unittest.TestCase):
 
     def test_trade_a_hj_heavy_industries_rejected(self):
         """
-        HJ중공업 (097230) 10:51 actual trade conditions:
+        Synthetic HJ-like near-ceiling counterexample, not actual tick replay:
         - Price at 13,380 KRW, day high at 13,390 KRW, overhead daily resistance at 15,630 KRW.
         - Nearest confirmed peak was None (stock just arrived in WATCH).
         - Micro-structure had support at 13,350 KRW, stop at 13,310 KRW (0.52% distance).
@@ -64,7 +66,7 @@ class TestR6TradeFlawFixes20261022(unittest.TestCase):
             'name': 'HJ중공업',
             'status': 'WATCH',
             'reference_price': 13300.0,
-            'day_high': 13390.0,        # True intraday day high from detector
+            'day_high': 13390.0,        # Hypothetical ceiling, not a proven entry-time fact
             'daily_high_20d': 15630.0,  # 20-day high from daily candidate builder
             'recent_high': 15630.0,     # Disambiguated 20-day high
             'resistance': 15630.0,      # Distant daily swing resistance
@@ -84,7 +86,7 @@ class TestR6TradeFlawFixes20261022(unittest.TestCase):
 
     def test_trade_b_an_robotics_rejected(self):
         """
-        앤로보틱스 (138360) 12:04 actual trade conditions:
+        Synthetic AN-like counterexample; the 1,740 peak exists in saved context:
         - Confirmed peak earlier at 1,740 KRW (11:54), then collapsed to 1,660 KRW.
         - Evaluated on a micro-rebound at 1,687 KRW (-3.05% below 1,740 peak).
         - Micro-structure had support at 1,680 KRW, stop at 1,678 KRW (9 KRW = 0.53% stop distance).
@@ -317,122 +319,9 @@ class TestR6TradeFlawFixes20261022(unittest.TestCase):
             self.assertEqual(req_krw, exp_krw, f"Failed KRW distance for entry {entry}")
             self.assertGreaterEqual(req_krw / entry, fraction - 0.0002, f"Quantized distance must be within 1 tick of {fraction}")
 
-    def test_real_live_archive_replay_hj_heavy_industries_097230(self):
-        """
-        Historical replay using real preserved production event logs:
-        archive/events.jsonl.20261022-110612-425177.22464.cfcc7416
-        HJ중공업 (097230) trade at 10:51:46 must be REJECTED under corrected causal logic.
-        """
-        import os
-        archive_dir = r'C:\Users\MJS\Desktop\주식자동매매\runtime\automation-production\archive'
-        if not os.path.exists(archive_dir):
-            self.skipTest("Live production archive directory not available in test environment")
 
-        target_file = None
-        for f in os.listdir(archive_dir):
-            if '110612' in f and f.endswith('.cfcc7416'):
-                target_file = os.path.join(archive_dir, f)
-                break
-        if not target_file:
-            self.skipTest("Target archive file for HJ중공업 not found")
-
-        strat = FastMomentumStrategy(self.cfg, self.auto)
-        replay_time = datetime(2026, 10, 22, 10, 51, 46, tzinfo=KST)
-
-        prices = [13280, 13300, 13320, 13350, 13360, 13350, 13360, 13370, 13380]
-        for i, p in enumerate(prices):
-            t_stamp = replay_time - timedelta(seconds=len(prices) - i)
-            t = Tick('097230', t_stamp, float(p), 500, (i + 1) * 500,
-                     float(p), float(p - 10), ask_qty=5000, bid_qty=5000, depth_available=True,
-                     book_time=t_stamp, depth_source='SIMULATED_QUOTE')
-            strat.ingest_tick(t, t.time)
-
-        eval_tick = Tick('097230', replay_time, 13380.0, 500, 5500,
-                         13380.0, 13350.0, ask_qty=5000, bid_qty=5000, depth_available=True,
-                         book_time=replay_time, depth_source='SIMULATED_QUOTE')
-        strat.ingest_tick(eval_tick, eval_tick.time)
-
-        watch_real = {
-            'code': '097230',
-            'name': 'HJ중공업',
-            'status': 'WATCH',
-            'reference_price': 13300.0,
-            'day_high': 13390.0,
-            'daily_high_20d': 15630.0,
-            'recent_high': 15630.0,
-            'resistance': 15630.0,
-            'resistance_asof': replay_time.isoformat(),
-            'nearest_confirmed_peak': None,
-            'source_count': 1,
-        }
-
-        sig = strat.evaluate(eval_tick, watch_real, capital_limit=81300.0, risk_budget=1426.0,
-                             ingest=False, received=replay_time, live_authorized=True)
-
-        self.assertIsNone(sig, "Real replay: HJ중공업 trade must be REJECTED")
-        last_eval = strat.last_evaluation.get('097230', {})
-        self.assertIn(last_eval.get('reason'), ['KNOWN_CEILING_NET_REWARD_RISK_LOW', 'STOP_TOO_TIGHT_NOISE_RISK'])
-
-    def test_real_live_archive_replay_nrobotics_138360(self):
-        """
-        Historical replay using real preserved production event logs:
-        archive/events.jsonl.20261022-122646-051751.22464.792b1f19
-        앤로보틱스 (138360) trade at 12:04:27 must be REJECTED under corrected causal logic.
-        """
-        import os
-        archive_dir = r'C:\Users\MJS\Desktop\주식자동매매\runtime\automation-production\archive'
-        if not os.path.exists(archive_dir):
-            self.skipTest("Live production archive directory not available in test environment")
-
-        target_file = None
-        for f in os.listdir(archive_dir):
-            if '122646' in f:
-                target_file = os.path.join(archive_dir, f)
-                break
-        if not target_file:
-            self.skipTest("Target archive file for 앤로보틱스 not found")
-
-        strat = FastMomentumStrategy(self.cfg, self.auto)
-        trade_time = datetime(2026, 10, 22, 12, 4, 27, tzinfo=KST)
-
-        prices = [1670, 1675, 1680, 1684, 1682, 1680, 1684, 1685, 1686]
-        for i, p in enumerate(prices):
-            t_stamp = trade_time - timedelta(seconds=len(prices) - i)
-            t = Tick('138360', t_stamp, float(p), 1000, (i + 1) * 1000,
-                     float(p), float(p - 2), ask_qty=2000, bid_qty=2000, depth_available=True,
-                     book_time=t_stamp, depth_source='SIMULATED_QUOTE')
-            strat.ingest_tick(t, t.time)
-
-        eval_tick = Tick('138360', trade_time, 1687.0, 1000, 11000,
-                         1687.0, 1685.0, ask_qty=2000, bid_qty=2000, depth_available=True,
-                         book_time=trade_time, depth_source='SIMULATED_QUOTE')
-        strat.ingest_tick(eval_tick, eval_tick.time)
-
-        watch_real = {
-            'code': '138360',
-            'name': '앤로보틱스',
-            'status': 'WATCH',
-            'reference_price': 1680.0,
-            'day_high': 1740.0,
-            'daily_high_20d': 1800.0,
-            'recent_high': 1800.0,
-            'resistance': 1800.0,
-            'resistance_asof': trade_time.isoformat(),
-            'nearest_confirmed_peak': {
-                'price': 1740.0,
-                'time': '2026-10-22T11:54:00+09:00',
-                'confirmed_at': '2026-10-22T11:56:00+09:00',
-            },
-            'source_count': 2,
-        }
-
-        sig = strat.evaluate(eval_tick, watch_real, capital_limit=81300.0, risk_budget=1414.0,
-                             ingest=False, received=trade_time, live_authorized=True)
-
-        self.assertIsNone(sig, "Real replay: 앤로보틱스 trade must be REJECTED")
-        last_eval = strat.last_evaluation.get('138360', {})
-        self.assertIn(last_eval.get('reason'), ['DOWNTREND_COUNTER_BOUNCE', 'STOP_TOO_TIGHT_NOISE_RISK', 'KNOWN_CEILING_NET_REWARD_RISK_LOW'])
-
+# Duplicate synthetic lists previously labelled real archive replay were removed.
+# Recorded point-in-time evidence is verified separately from these fixtures.
 
 if __name__ == '__main__':
     unittest.main()
