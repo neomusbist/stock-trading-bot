@@ -32,6 +32,7 @@ NORMAL=candles([(9970,9980,9960,9970)]*10+[
     (9920,10000,9920,10000),(10000,10020,10000,10020),(10010,10020,10000,10010)])
 SETUP={'pattern':'A','breakout':10030,'support':9880,'projection':10330}
 CONTINUING=copy.deepcopy(NORMAL)
+CONTINUING[11]['low']=9550  # known range supports net RR, including existing costs
 CONTINUING[-1].update(open=10020,high=10025,low=10010,close=10025)
 for b,v in zip(CONTINUING[-3:],(100,200,300)):b['volume']=v
 
@@ -114,11 +115,11 @@ class EntryStructureTests(unittest.TestCase):
         self.assertTrue(a['entry_ready']);self.assertEqual(a['gates']['acceleration']['values']['mode'],'CONFIRMED_CONTINUATION')
         gates['liquidity']['values']['window_turnover']=10000000
         self.assertFalse(d.setup_trials(t,{'status':'WATCH','resistance':20000},gates,_bars=CONTINUING)[0]['entry_ready'])
-    def test_flat_floor_fading_volume_and_future_bar_cannot_confirm_continuation(self):
+    def test_flat_floor_missing_volume_and_future_bar_cannot_confirm_continuation(self):
         raw=copy.deepcopy(CONTINUING);raw[-1]['low']=raw[-2]['low']
         self.assertFalse(confirmed_continuation(raw,AT,CFG.min_price_gain)[0])
-        raw=copy.deepcopy(CONTINUING);raw[-1]['volume']=50
-        self.assertFalse(confirmed_continuation(raw,AT,CFG.min_price_gain)[0])
+        raw=copy.deepcopy(CONTINUING);raw[-1]['volume']=0
+        self.assertIsNone(confirmed_continuation(raw,AT,CFG.min_price_gain)[0])
         raw=copy.deepcopy(CONTINUING);raw[-1]['time']=AT
         self.assertIsNone(confirmed_continuation(raw,AT,CFG.min_price_gain)[0])
 

@@ -414,7 +414,20 @@ class PatternDetector(Detector):
                     venue=watch.get('venue') or (getattr(self.cfg,'after_default_venue','SOR') if is_after else 'KRX')
                     sustained,proof=confirmed_continuation(bars if local_continuation else self.price_context.reference_bars(t.symbol,t.time,venue),t.time,self.cfg.min_price_gain)
                     if sustained is True:
-                        trial_gates['acceleration']=gate(True,**gates['acceleration']['values'],mode='CONFIRMED_CONTINUATION',continuation=proof)
+                        # A price-defined continuation need not wait for three
+                        # consecutively rising volume bars or a late 3x burst.
+                        # Its existing absolute liquidity gate remains required.
+                        # Use the existing fee/tax/slippage model once, rather
+                        # than approving a gross-RR-only alternative entry.
+                        score=price_gates.get('economic',{}).get('values',{}).get('score',{})
+                        reward=score.get('reward_after_cost');risk=score.get('risk_per_share')
+                        net_rr=reward/risk if isinstance(reward,(int,float)) and isinstance(risk,(int,float)) and risk>0 else None
+                        cost_pass=net_rr is not None and net_rr>=self.cfg.min_reward_risk
+                        trial_gates['continuation_cost_reward_risk']=gate(cost_pass,
+                            calculated_net_rr=net_rr,required_rr=self.cfg.min_reward_risk,
+                            basis='SAME_EXISTING_ECONOMIC_COST_MODEL_ONCE')
+                        if cost_pass:
+                            trial_gates['acceleration']=gate(True,**gates['acceleration']['values'],mode='CONFIRMED_CONTINUATION',continuation=proof,cost_reward_risk=net_rr)
                 if bars and len(bars)>=2:
                     swing_low=min(b['low'] for b in bars)
                     extension=(t.price-swing_low)/swing_low if swing_low>0 else 0
@@ -436,8 +449,10 @@ class PatternDetector(Detector):
                        'NO_REBREAKOUT' if k=='breakout' and name=='B' else
                        'BREAKOUT_NOT_REACHED' if k=='breakout' else k.upper()+'_FAIL' for k in failed)
             virtual=price_gates.get('invalidation',{}).get('values',{})
+            continuation_entry=(name=='A' and trial_gates.get('acceleration',{}).get('values',{}).get('mode')=='CONFIRMED_CONTINUATION')
             trials.append({'setup':name,'evaluated':True,'candidate_generated':bool(setup),
-                'acceleration_required':name=='A','acceleration_observation':gates['acceleration'],
+                'acceleration_required':name=='A' and not continuation_entry,'acceleration_observation':gates['acceleration'],
+                'entry_confirmation_basis':'CONFIRMED_CONTINUATION' if continuation_entry else 'ACCELERATED_BREAKOUT' if name=='A' else name,
                 'failed_reasons':why,'primary_reason_code':why[0] if why else 'SETUP_PRICE_GATES_PASS',
                 'gates':trial_gates,'setup_geometry':setup,
                 'impulse_evidence':b_evidence if name=='B' else None,
@@ -487,14 +502,16 @@ class PatternDetector(Detector):
             if 'breakout_structure' in price_gates:gates['breakout_structure']=price_gates['breakout_structure']
             if 'box_structure' in price_gates:gates['box_structure']=price_gates['box_structure']
             gates['liquidity']=trial['gates']['liquidity']
-            gates['acceleration']={**(trial['gates']['acceleration'] if name=='A' else gates['acceleration']),'required':name=='A','scope':'ENTRY_GATE' if name=='A' else 'OBSERVATION_ONLY'}
-            gates['pattern']=gate(True,setup=name,acceleration_required=name=='A')
+            required_acceleration=trial['acceleration_required']
+            gates['acceleration']={**(trial['gates']['acceleration'] if name=='A' else gates['acceleration']),'required':required_acceleration,'scope':'ENTRY_GATE' if name=='A' else 'OBSERVATION_ONLY'}
+            gates['pattern']=gate(True,setup=name,acceleration_required=required_acceleration)
             venue=watch.get('venue') or (getattr(c,'after_default_venue','SOR') if is_after else 'KRX')
             # Observation can establish only a one-share depth prerequisite.
             # Engine sizing and the final order boundary validate the actual quantity.
             planned_qty=1
             return {'symbol':t.symbol,'time':t.time.isoformat(),'limit':limit,'stop':stop,**setup,
-                'evaluation_gates':gates,'setup_trials':trials,'acceleration_required':name=='A',
+                'evaluation_gates':gates,'setup_trials':trials,'acceleration_required':required_acceleration,
+                'entry_confirmation_basis':trial['entry_confirmation_basis'],
                 'market_context':context,'discovery_context':watch.get('discovery_context'),
                 'price_context':price_gates.get('entry_context',{}).get('values'),
                 **({'reference_bar_snapshot':[{**{k:b[k] for k in ('open','high','low','close')},**({'volume':b['volume']} if 'volume' in b else {}),'time':b['time'].isoformat()}

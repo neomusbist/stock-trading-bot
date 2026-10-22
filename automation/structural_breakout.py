@@ -75,7 +75,8 @@ def structural_breakout(raw,asof,setup,cfg,entry,bid,ask):
 
 def confirmed_continuation(raw,asof,minimum_gain):
     bars=complete_sequence(raw,asof,3,require_recent=True)
-    evidence={'asof':asof.isoformat(),'basis':'THREE_COMPLETE_RISING_BARS_AND_VOLUME'}
+    evidence={'asof':asof.isoformat(),'basis':'THREE_COMPLETE_HIGHER_LOWS_AND_CLOSES',
+              'volume_trend_required':False,'absolute_liquidity_owner':'UNCHANGED_ENTRY_LIQUIDITY_GATE'}
     if not bars:return None,{**evidence,'reason':'CONTINUATION_DATA_UNAVAILABLE'}
     volumes=[b.get('volume') for b in bars]
     if any(type(v) not in (int,float) or not math.isfinite(v) or v<=0 for v in volumes):
@@ -83,8 +84,7 @@ def confirmed_continuation(raw,asof,minimum_gain):
     first,middle,last=bars
     gain=last['close']/first['open']-1
     valid=(first['low']<middle['low']<last['low'] and first['close']<middle['close']<last['close']
-           and last['close']>first['high'] and gain>=minimum_gain
-           and volumes[0]<=volumes[1]<=volumes[2])
+           and last['close']>first['high'] and gain>=minimum_gain)
     return valid,{**evidence,'reason':'CONFIRMED_CONTINUATION' if valid else 'CONTINUATION_NOT_CONFIRMED',
         'times':[b['time'].isoformat() for b in bars],'lows':[b['low'] for b in bars],
         'closes':[b['close'] for b in bars],'volumes':volumes,'completed_gain':gain,'required_gain':minimum_gain}
