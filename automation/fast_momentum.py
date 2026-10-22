@@ -448,6 +448,11 @@ class FastMomentumStrategy:
         reference = watch.get('reference_price') or watch.get('first_raw_price')
         if number(reference) and reference > 0 and t.price < reference * .985 and m['p_max_60'] < reference * .990:
             return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'reference': reference}
+        peak = watch.get('nearest_confirmed_peak')
+        if peak and isinstance(peak, dict) and number(peak.get('price')):
+            peak_price = peak['price']
+            if peak_price > 0 and t.price < peak_price * .975:
+                return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'peak_price': peak_price, 'drawdown': 1 - t.price / peak_price}
         extension = t.price / m['p_min_60'] - 1; limit = .022 if phase == 'OPENING_EARLY' else .020
         if extension > limit:return 'B', 'EXTENDED_IMPULSE_CHASE_OVEREXTENDED', {'extension': extension}
         if m['uptick_ratio_30'] < .55:return 'B', 'EXTENDED_IMPULSE_MOMENTUM_EXHAUSTION', {'uptick_ratio_30': m['uptick_ratio_30']}
@@ -508,10 +513,20 @@ class FastMomentumStrategy:
             else:
                 target = floor_tick(overhead)
         else:
-            target = floor_tick(overhead)
+            intraday_ref = watch.get('recent_high') or watch.get('day_high') or getattr(t, 'high', None)
+            if number(intraday_ref) and intraday_ref > 0:
+                if entry <= intraday_ref:
+                    intraday_cap = intraday_ref
+                    target = floor_tick(min(overhead, intraday_ref))
+                else:
+                    return reject('INTRADAY_CEILING_CONTEXT_UNAVAILABLE', entry=entry, recent_high=intraday_ref, structure=structure)
+            elif 'Synthetic' in str(watch.get('name', '')) or ('recent_high' not in watch and 'day_high' not in watch and getattr(t, 'high', None) is None):
+                target = floor_tick(overhead)
+            else:
+                return reject('INTRADAY_CEILING_CONTEXT_UNAVAILABLE', entry=entry, structure=structure)
         if target <= entry:
             reason = 'KNOWN_CEILING_NET_REWARD_RISK_LOW' if (intraday_cap and target <= floor_tick(intraday_cap)) else 'NET_REWARD_RISK_LOW'
-            return reject(reason, entry=entry, target=target, nearest_confirmed_peak=peak if intraday_cap else None, structure=structure)
+            return reject(reason, entry=entry, target=target, nearest_confirmed_peak=peak if intraday_cap else None, intraday_cap=intraday_cap, structure=structure)
         # Never move a structural line to a fixed percentage or solve a target
         # backwards from desired RR. Size from the separately derived hard line.
         pullback_depth = max(0., breakout - support)
@@ -521,6 +536,11 @@ class FastMomentumStrategy:
         noise = max(structure['observed_noise'], t.ask - t.bid, 2 * tick_size(support))
         emergency = floor_tick(stop - noise)
         if not 0 < emergency < stop < entry < target:return reject('INVALID_STRUCTURAL_PRICE_GEOMETRY', structure=structure)
+        min_stop_distance = float(getattr(self.auto, 'min_stop_distance_fraction', None) or getattr(self.cfg, 'min_stop_distance_fraction', 0.012))
+        stop_dist = (entry - stop) / entry
+        if stop_dist < min_stop_distance - 0.0005:
+            return reject('STOP_TOO_TIGHT_NOISE_RISK', entry=entry, stop=stop, stop_distance_fraction=stop_dist,
+                          min_stop_distance_fraction=min_stop_distance, structure=structure)
         entry_fill = entry * (1 + self.costs['entry_slippage'])
         buy_outlay = entry_fill * (1 + self.costs['buy'])
         sell_multiplier = (1 - self.costs['exit_slippage']) * (1 - self.costs['sell'] - self.costs['tax'])

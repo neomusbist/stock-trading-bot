@@ -597,7 +597,7 @@ class PatternDetector(Detector):
             # Price distance is not account risk. The unchanged final risk gate
             # sizes from the emergency stop or refuses even a single share.
             invalidation_pass=bool(distance is not None and 0<stop<limit and distance>=c.min_stop_fraction)
-        if getattr(self.a, 'chase_quality_filter', False) and distance is not None:
+        if distance is not None:
             min_dist = getattr(self.a, 'min_stop_distance_fraction', 0.012)
             if distance < min_dist:
                 invalidation_pass = False
