@@ -29,8 +29,13 @@ R6_REPAIR_FILES={
         'SHADOW_RUNBOOK.md','TEST_RESULTS.md','REPRODUCE.md','SHADOW_REPAIR.md',
         'REPLAY_RESULTS.json','DATA_IDENTITY_RESULTS.json','BASE_COMMIT_MAP.json',
         'TEST_RESULTS.json','replay.py','symbol_audit.py'))}
+REVIEWED_DEPENDENCY_FILES={
+    'vendor/websocket/_utils.py',
+    'licenses/websocket-client-1.9.0-LICENSE.txt',
+}
 
 def allowed(name):
+    if name.replace('\\','/') in REVIEWED_DEPENDENCY_FILES:return True
     if name.replace('\\','/') in CAUSAL_RESEARCH_FILES:return True
     if name.replace('\\','/') in R6_REPAIR_FILES:return True
     p=Path(name); parts=p.parts
