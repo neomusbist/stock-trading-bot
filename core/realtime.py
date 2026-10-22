@@ -3,6 +3,7 @@ import json
 import queue
 import threading
 import time
+from collections import Counter,deque
 from datetime import datetime
 from core.settings import ROOT, KST, now
 from core.strategy import Tick
@@ -67,9 +68,38 @@ def parse_tick(item,received,book=None,book_stale_seconds=5,received_monotonic=N
         book_received_at=book_received.isoformat() if book_received is not None else None,
         book_received_monotonic=book_monotonic)
 
+class FeedMessageQueue(queue.Queue):
+    """FIFO with receiver-built priority counts; queries never scan tick history."""
+    def _init(self,maxsize):
+        super()._init(maxsize)
+        self._routing=deque();self._barriers=0;self._symbols=Counter()
+
+    def _put(self,item):
+        message=item[1]
+        data=message.get('data',[])
+        barrier=(message.get('trnm') in {'REG','ERROR','DISCONNECTED'} or
+                 any(row.get('type') in {'00','0s'} for row in data))
+        symbols=frozenset(row.get('item') for row in data if row.get('item'))
+        super()._put(item)
+        self._routing.append((barrier,symbols));self._barriers+=int(barrier)
+        self._symbols.update(symbols)
+
+    def _get(self):
+        item=super()._get()
+        barrier,symbols=self._routing.popleft();self._barriers-=int(barrier)
+        for symbol in symbols:
+            self._symbols[symbol]-=1
+            if not self._symbols[symbol]:del self._symbols[symbol]
+        return item
+
+    def protected_pending(self,critical):
+        with self.mutex:
+            return self._barriers>0 or any(self._symbols.get(symbol,0)>0 for symbol in critical)
+
+
 class Feed:
     def __init__(self,rest,symbols,index_subscription_enabled=False):
-        self.rest=rest; self.symbols=list(dict.fromkeys(symbols)); self.q=queue.Queue(maxsize=100000)
+        self.rest=rest; self.symbols=list(dict.fromkeys(symbols)); self.q=FeedMessageQueue(maxsize=100000)
         self.stop=threading.Event(); self.overflow=threading.Event(); self.socket=None
         self.logged_in=False; self.transport_failed=False; self.subscription_lock=threading.RLock()
         self.observation_symbols=frozenset(); self.priority_symbols=None; self.observation_sink=None

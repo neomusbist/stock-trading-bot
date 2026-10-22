@@ -130,9 +130,28 @@ class Policy:
         self.refresh()
 
     def refresh(self):
+        # Direct refresh remains an unconditional read for every order guard.
+        self._control_stamp=None
         self.state=read_json_retry(self.path)
         if self.state['mode'] not in MODES: raise ValueError('운영상태 오류')
         return self.state
+
+    def _file_stamp(self):
+        info=self.path.stat()
+        return (info.st_ino,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+
+    def refresh_if_changed(self):
+        """Control polling only; atomic replacement invalidates the snapshot.
+
+        Do not bind data to an after-read version if the file changed while it
+        was read. Order checks continue calling unconditional refresh().
+        """
+        before=self._file_stamp()
+        if before==getattr(self,'_control_stamp',None):return self.state
+        state=self.refresh()
+        after=self._file_stamp()
+        if before==after:self._control_stamp=before
+        return state
 
     @property
     def mode(self): return self.state['mode']

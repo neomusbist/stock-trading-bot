@@ -15,7 +15,7 @@ from core.settings import now
 from core.util import atomic_json,ProcessLock,exception_details
 from automation.observation_retention import ObservationRetention
 from core.broker import Rest,Rejected
-from core.realtime import Feed,parse_tick
+from core.realtime import Feed,FeedMessageQueue,parse_tick
 _orig_feed_run = Feed.run
 
 def _patched_feed_run(self):
@@ -567,6 +567,7 @@ def drain_intraday_context(engine,detector,shadow,worker,targets,venue,asof,chec
 
 def _protected_feed_work_pending(feed,critical):
     main_q=getattr(feed,'q',None)
+    if isinstance(main_q,FeedMessageQueue):return main_q.protected_pending(critical)
     if not isinstance(main_q,queue.Queue):return False
     with main_q.mutex:messages=tuple(item[1] for item in main_q.queue)
     return any(message.get('trnm') in {'REG','ERROR','DISCONNECTED'} or
@@ -1875,7 +1876,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 if engine.roll_day():
                     detector.reset(); engine.reset_detector=True; radar.request.set(); account.request.set(); feed.logged_in=False
                     if feed.socket: feed.socket.close()
-                policy.refresh()
+                getattr(policy,'refresh_if_changed',policy.refresh)()
                 engine.recover_io_halt()
                 if policy.mode=='KILL' and policy.state['revision']!=engine.control_revision:
                     kill_requested_at=time.monotonic(); account.request.set()

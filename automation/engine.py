@@ -1097,7 +1097,7 @@ class AutonomousEngine(ExistingExits,Engine):
         return super().cumulative_fill(o,total,amount)
 
     def controls(self,prices=None):
-        self.policy.refresh(); mode=self.policy.mode
+        getattr(self.policy,'refresh_if_changed',self.policy.refresh)(); mode=self.policy.mode
         revision=self.policy.state['revision']
         if revision!=self.control_revision:
             self.control_revision=revision
