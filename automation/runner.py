@@ -60,6 +60,14 @@ def error_record(error):
 def user_command(policy,command):
     with ProcessLock(policy.path.parent/'control.lock'): policy.command(command)
 
+def check_diagnostic_event_writer(engine,writer):
+    """Fail entry closed once, then keep fills/protection on the synchronous path."""
+    if getattr(engine,'diagnostic_event_writer',None) is not writer:return
+    try:writer.check_error()
+    except OSError:
+        engine.diagnostic_event_writer=None
+        raise
+
 class AccountWorker:
     def __init__(self,rest,interval):
         self.rest=rest; self.interval=interval; self.need_fills=False; self.q=queue.Queue(maxsize=2)
@@ -1829,10 +1837,14 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                  daily_risk_budget_krw=context['daily_risk_budget_krw'],daily_risk_override_day=context['daily_risk_override_day'],daily_risk_override_active=context['daily_risk_override_active'],
                  message='기존 보유 평가금액 제외; 기본 실제 신규 주문 불가')
     diagnostics=DiagnosticSnapshotWriter((root/'runtime/candidate_summary.json',folder/'heartbeat.json'))
+    from core.event_log import AsyncDiagnosticEventWriter
+    diagnostic_events=AsyncDiagnosticEventWriter(folder/'events.jsonl')
+    engine.diagnostic_event_writer=diagnostic_events
     try:
         while True:
             try:
                 diagnostics.check_error()
+                check_diagnostic_event_writer(engine,diagnostic_events)
                 in_session=control_supported(now()) or (getattr(cfg,'after_enabled',False) and after_control_supported(now()))
                 t_str=now().strftime('%H:%M:%S')
                 if not session_transition_done and t_str>=getattr(auto,'after_prep_start','15:40:00') and engine.current_session()=='AFTER':
@@ -2143,6 +2155,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         'subscription_refresh_pending':subscriptions.refresh_pending,'subscription_tick_waiting':sorted(subscriptions.waiting),
                         'watch_observation':{s:dict(engine.observation_timeline.rows.get(s,{})) for s in lookup},
                         'feed_queue_depth':getattr(engine,'feed_queue_size',None),'event_loop_lag_seconds':getattr(engine,'event_loop_lag',None),
+                        'diagnostic_event_writer':diagnostic_events.stats(),
                         'available_capital':min(engine.available_cash,auto.capital_limit),'approved_cap':auto.capital_limit,
                         'bot_cash':engine.s['cash'],'positions':len(engine.s['positions']),'pending':len(engine.active_orders()),
                         'strategy':'MANAGE' if engine.s['positions'] else 'SCAN' if lookup else 'QUIET','counts':counts,
@@ -2156,6 +2169,10 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
             except KeyboardInterrupt:
                 user_command(policy,'STOP'); engine.event('STOP_REQUESTED',reason='키보드 중단; 봇 포지션 보호 유지')
             except (ValueError,KeyError,TypeError,OSError) as e:
+                # An error may surface during a diagnostic event after the
+                # loop's check. Detach before HALT and subsequent protection.
+                try:check_diagnostic_event_writer(engine,diagnostic_events)
+                except OSError:pass
                 engine.account_ok=False; engine.halt('데이터/상태 오류: '+type(e).__name__)
                 if engine.s.get('halt_info',{}).get('classification')=='RECOVERABLE_IO':
                     engine.s['halt_info']['exception']=error_record(e); engine.save()
@@ -2165,6 +2182,15 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     except Exception as e:
         fatal=type(e).__name__; engine.event('WORKER_FATAL',**error_record(e)); raise
     finally:
+        # Critical shutdown records always retain their direct synchronous path.
+        engine.diagnostic_event_writer=None
+        try:diagnostic_events.close(timeout=5.)
+        except OSError as error:
+            fatal=fatal or 'DIAGNOSTIC_EVENT_CLOSE_ERROR';engine.account_ok=False
+            engine.event('DIAGNOSTIC_EVENT_WRITER_ERROR',**error_record(error),
+                writer=diagnostic_events.stats(),order_ledger_affected=False)
+        engine.event('DIAGNOSTIC_EVENT_WRITER_CLOSED',writer=diagnostic_events.stats(),
+            order_ledger_affected=False)
         diagnostic_complete=diagnostics.close(timeout=5.)
         if not diagnostic_complete:fatal=fatal or 'DIAGNOSTIC_SNAPSHOT_CLOSE_TIMEOUT'
         try:diagnostics.check_error()

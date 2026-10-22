@@ -1,5 +1,5 @@
 """Lossless size rotation and compact human console. No compression on hot path."""
-import json,os,threading,time,uuid
+import json,os,queue,threading,time,uuid
 from datetime import datetime
 from pathlib import Path
 _LOCKS={};_GUARD=threading.Lock()
@@ -103,6 +103,11 @@ def rotate_if_large(path,max_bytes=MAX_LOG_BYTES):
 def append_jsonl(path,row,default=None,max_bytes=MAX_LOG_BYTES):
     path=Path(path)
     line=json.dumps(row,ensure_ascii=False,allow_nan=False,**({'default':default} if default else {}))+'\n'
+    _append_line(path,line,max_bytes)
+
+def _append_line(path,line,max_bytes):
+    """Same synchronous, lossless append for an already-frozen JSON line."""
+    path=Path(path)
     with log_lock(path):
         rotate_if_large(path,max_bytes)
         try:stream=path.open('a',encoding='utf-8')
@@ -112,6 +117,99 @@ def append_jsonl(path,row,default=None,max_bytes=MAX_LOG_BYTES):
             path.parent.mkdir(parents=True,exist_ok=True)
             stream=path.open('a',encoding='utf-8')
         with stream:stream.write(line)
+
+
+class AsyncDiagnosticEventWriter:
+    """Explicit runner-only diagnostic offload; never an order/ledger writer.
+
+    Only a small allowlist without any signal/BUY/SELL evidence is eligible.
+    Critical events and full/oversized diagnostic queues synchronously append.
+    Physical diagnostic order may follow a later critical event; original event
+    times and session-scoped ingress sequence preserve that provenance.
+    """
+    DIAGNOSTIC_KINDS=frozenset({'ENTRY_EVAL','NO_TRADE','ORDER_READINESS_CHANGED','READINESS_CHANGED'})
+
+    def __init__(self,path,capacity=64,max_line_bytes=256*1024,max_bytes=MAX_LOG_BYTES):
+        if type(capacity) is not int or not 1<=capacity<=64:raise ValueError('diagnostic capacity must be 1..64')
+        if type(max_line_bytes) is not int or max_line_bytes<=0:raise ValueError('positive diagnostic line byte bound required')
+        self.path=Path(path);self.max_line_bytes=max_line_bytes;self.max_bytes=max_bytes
+        self.pending=queue.Queue(maxsize=capacity);self._lock=threading.Lock();self._stop=threading.Event()
+        self._closed=False;self._error=None;self.failed_line=None;self._sequence=0
+        self._session=uuid.uuid4().hex;self._queued=0;self._written=0;self._fallback=0;self._synchronous=0
+        self.thread=threading.Thread(target=self._run,name='diagnostic-event-writer',daemon=True)
+        self.thread.start()
+
+    @classmethod
+    def diagnostic(cls,row):
+        if row.get('event') not in cls.DIAGNOSTIC_KINDS:return False
+        if row.get('decision') not in (None,'NO_BUY'):return False
+        if row.get('side') in {'BUY','SELL'}:return False
+        if any(row.get(key) for key in ('signal_detected','signal_at','signal','setup','pattern')):return False
+        if row.get('event')=='ENTRY_EVAL' and row.get('decision')!='NO_BUY':return False
+        return True
+
+    def check_error(self):
+        with self._lock:error=self._error
+        if error is not None:raise error
+
+    def append(self,row):
+        # Serialize once on the caller before return: later mutable engine state
+        # cannot alter the recorded diagnostic, and invalid JSON fails here.
+        eligible=self.diagnostic(row)
+        with self._lock:
+            # A latched diagnostic error must still let the main handler record
+            # its synchronous halt/error/position protection events. The runner
+            # checks check_error() before new order processing on every cycle.
+            if eligible and self._error is not None:raise self._error
+            if eligible and self._closed:raise OSError('diagnostic event writer is closed')
+            self._sequence+=1
+            tagged={**row,'event_ingress_sequence':self._sequence,
+                    'diagnostic_writer_session':self._session}
+            if eligible:
+                tagged.update(diagnostic_async=True,diagnostic_delivery='ASYNC')
+                line=json.dumps(tagged,ensure_ascii=False,allow_nan=False)+'\n'
+                if len(line.encode('utf-8'))<=self.max_line_bytes:
+                    try:
+                        self.pending.put_nowait(line);self._queued+=1;return 'ASYNC'
+                    except queue.Full:pass
+                tagged.update(diagnostic_async=False,diagnostic_delivery='SYNC_FALLBACK')
+                self._fallback+=1;delivery='SYNC_FALLBACK'
+            else:
+                tagged.update(diagnostic_async=False,diagnostic_delivery='SYNC_CRITICAL')
+                self._synchronous+=1;delivery='SYNC_CRITICAL'
+        # No queue.join/flush here. A critical event only shares the existing
+        # per-file append lock with at most the currently-writing diagnostic.
+        append_jsonl(self.path,tagged,max_bytes=self.max_bytes)
+        return delivery
+
+    def _run(self):
+        while not self._stop.is_set() or not self.pending.empty():
+            try:line=self.pending.get(timeout=.05)
+            except queue.Empty:continue
+            try:
+                _append_line(self.path,line,self.max_bytes)
+                with self._lock:self._written+=1
+            except Exception as error:
+                with self._lock:
+                    self.failed_line=line
+                    self._error=error if isinstance(error,OSError) else OSError('diagnostic event write failed: '+str(error))
+                return
+            finally:self.pending.task_done()
+
+    def stats(self):
+        with self._lock:
+            return {'queue_depth':self.pending.qsize(),'capacity':self.pending.maxsize,
+                    'max_line_bytes':self.max_line_bytes,'queued':self._queued,'written':self._written,
+                    'synchronous':self._synchronous,'fallback':self._fallback,
+                    'error':str(self._error) if self._error is not None else None,
+                    'failed_line_retained':self.failed_line is not None,'closed':self._closed}
+
+    def close(self,timeout=5):
+        with self._lock:self._closed=True;self._stop.set()
+        self.thread.join(timeout)
+        if self.thread.is_alive():raise TimeoutError('diagnostic event drain did not complete')
+        self.check_error()
+
 
 class HumanConsole:
     diagnostic={'ENTRY_EVAL','SHADOW_EVAL','POSITION_EVAL','EXIT_EVAL','RAW_CANDIDATES','BOOK_DEPTH_OBSERVED','CANDIDATE_CYCLE_SUMMARY','RADAR_UPDATED','CANDIDATE_LATENCY','ACCOUNT_LATENCY','OBSERVATION_RELEASED','OBSERVATION_REJOINED','SHADOW_CAPACITY','NO_TRADE'}

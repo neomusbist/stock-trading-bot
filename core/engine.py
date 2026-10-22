@@ -138,7 +138,9 @@ class Engine:
 
     def event(self,kind,**data):
         row={'time':self.clock().isoformat(),'event':kind,**data}
-        append_jsonl(self.folder/'events.jsonl',row)
+        diagnostic_writer=getattr(self,'diagnostic_event_writer',None)
+        if diagnostic_writer is None:append_jsonl(self.folder/'events.jsonl',row)
+        else:diagnostic_writer.append(row)
         self.console.emit(row,self.clock().timestamp())
 
     def halt(self,reason):
