@@ -38,7 +38,9 @@ class ReconciliationRaceTests(unittest.TestCase):
 
     def create_position(self, sym='069540', qty=2, price=4960.0, limit=4965, stop=4905):
         sig = {'symbol': sym, 'stop': stop, 'limit': limit, 'ownership': 'BOT', 'pattern': 'A',
-               'time': self.clock[0].isoformat()}
+               # Transport/reconciliation fixture, not a detector signal. A/B
+               # order guards require an explicit cost-feasible target now.
+               'target':limit+4*(limit-stop),'time': self.clock[0].isoformat()}
         self.engine.entry_intent = sig
         # The final BUY guard now needs a current quote even in this offline fixture.
         self.engine.entry_tick=Tick(sym,self.clock[0],price,100,1000,limit,price)

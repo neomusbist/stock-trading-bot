@@ -56,6 +56,16 @@ def safe_values(value):
 def gate(passed,**values):
     return {'result':'UNKNOWN' if passed is None else 'PASS' if passed else 'FAIL','values':safe_values(values)}
 
+
+def tick_source_identity(t):
+    """Link existing receipt evidence without new clocks, I/O or tick storage."""
+    receipt=getattr(t,'received_at',None);mono=getattr(t,'received_monotonic',None)
+    book_receipt=getattr(t,'book_received_at',None);book_mono=getattr(t,'book_received_monotonic',None)
+    return {'trade_receipt_id':f'0B:{t.symbol}:{t.cumulative}:{receipt}:{mono}' if receipt is not None else None,
+            'book_receipt_id':f'0D:{t.symbol}:{book_receipt}:{book_mono}' if book_receipt is not None else None,
+            'trade_exchange_at':t.time.isoformat(),'trade_received_at':receipt,
+            'book_received_at':book_receipt,'identity_status':'KNOWN_RECEIPT' if receipt is not None else 'UNKNOWN_RECEIPT_ID'}
+
 class DecisionLog:
     def __init__(self,engine):
         from collections import Counter
@@ -111,6 +121,7 @@ class DecisionLog:
             name=sig.get('name') or e.names.get(symbol),setup=sig.get('pattern'),
             signal_detected=bool(sig.get('pattern') and sig.get('time')),signal_at=sig.get('time'),
             price_structure=sig.get('structure'),setup_trials=sig.get('setup_trials',extra.get('setup_trials')),state=state,decision=decision,primary_reason_code=reason,
+            receipt_evidence=sig.get('receipt_evidence',extra.get('receipt_evidence')),
             market_context=sig.get('market_context') or next((t.get('context') for t in extra.get('setup_trials',[]) or [] if t.get('context')),None),
             discovery_context=sig.get('discovery_context'),
             entry_context_enabled=e.a.entry_context_enabled,price_context=sig.get('price_context'),

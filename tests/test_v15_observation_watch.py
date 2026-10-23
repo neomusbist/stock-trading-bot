@@ -155,8 +155,8 @@ class V15ObservationWatchTests(unittest.TestCase):
         self.assertNotIn('000030', observer.rows)
         self.assertEqual(set(observer.rows), {'000010', '000020'})
 
-    def test_superior_candidate_displaces_incumbent(self):
-        """Significantly superior candidate (+5.0 points or ready tier) displaces incumbent in SHADOW."""
+    def test_rank_only_superior_candidate_waits_for_observation_residence(self):
+        """A score jump alone cannot erase bars before the existing warmup budget."""
         observer = ShadowObserver(self.cfg, self.auto, self.e.costs, Mock(), limit=2)
         r1 = {'code': '000010', 'name': '종목1', 'source_count': 1, 'discovery_score': 10.0,
               'affordability': {'entry_eligible': True}, 'shadow_view': {'market_status': {'pass': True}}}
@@ -170,7 +170,10 @@ class V15ObservationWatchTests(unittest.TestCase):
               'affordability': {'entry_eligible': True}, 'shadow_view': {'market_status': {'pass': True}}}
         observer.update([r1, r2, r4], self.clock + timedelta(seconds=30))
 
-        # r4 displaces the weakest incumbent
+        self.assertNotIn('000040',observer.rows)
+        from automation.observation_retention import observation_residence_seconds
+        observer.update([r1,r2,r4],self.clock+timedelta(seconds=observation_residence_seconds(self.auto)+1))
+        # Expired rank-only residence does not retain weak candidates forever.
         self.assertIn('000040', observer.rows)
         self.assertEqual(len(observer.rows), 2)
 

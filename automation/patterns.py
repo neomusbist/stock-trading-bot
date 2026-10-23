@@ -10,7 +10,7 @@ from core.strategy import Detector
 from core.util import floor_tick,tick_size
 from automation.allocation import efficiency
 from automation.session import supported, after_supported
-from automation.decisions import gate
+from automation.decisions import gate,tick_source_identity
 from automation.price_context import PriceContext
 
 def observation_locked(method):
@@ -31,6 +31,7 @@ class PatternDetector(Detector):
         self.last_gap_reason={}
         self.coverage_gaps={}
         self.observation_start={}; self.observation_session={}
+        self._entry_geometry_cache={}
         self._state_lock=RLock()
         self.price_context=PriceContext(bar_limit=120 if auto.intraday_context_enabled or auto.structural_breakout_enabled else 30)
 
@@ -42,6 +43,7 @@ class PatternDetector(Detector):
         self.coverage_gaps.clear()
         self._eval_keys.clear()
         self.observation_start.clear(); self.observation_session.clear()
+        self._entry_geometry_cache.clear()
 
     @observation_locked
     def ingest(self,t,received):
@@ -303,6 +305,7 @@ class PatternDetector(Detector):
         for mapping in (self.buffers,self.minutes,self.completed,self.last,self.history,self.current,self.day_high,self.prior_high,self.after_day_high,self.after_prior_high,self.last_eval,self.observation_start,self.observation_session):mapping.pop(symbol,None)
         self._eval_keys.pop(symbol,None)
         self.coverage_gaps.pop(symbol,None)
+        self._entry_geometry_cache.pop(symbol,None)
 
     def handoff_from(self,source,symbol):
         if source is None or source is self or not hasattr(getattr(source, '_state_lock', None), '__enter__'):return False
@@ -394,16 +397,17 @@ class PatternDetector(Detector):
         if not 0<(top-low)/low<=self.a.box_max_range: return None
         return {'pattern':'C','breakout':top,'support':low,'projection':top+2*(top-low),'box_width':top-low}
 
-    def setup_trials(self,t,watch,gates=None,*,_bars=None):
+    def setup_trials(self,t,watch,gates=None,*,_bars=None,_setups=None,_only=None,_revision=True):
         """A/B/C geometry is evaluated independently; only A requires acceleration."""
         is_after=after_supported(t.time)
         gates=self.base_gates(t,watch) if gates is None else gates
         bars=self.usable_bars(t.symbol,after_only=is_after) if _bars is None else _bars
         venue=watch.get('venue') or (getattr(self.cfg,'after_default_venue','SOR') if is_after else 'KRX')
-        setups={s['pattern']:s for s in self.candidates(t,bars,is_after=is_after,venue=venue)}
+        setups={s['pattern']:s for s in self.candidates(t,bars,is_after=is_after,venue=venue)} if _setups is None else _setups
         _,b_reason,b_evidence=self.pullback_analysis(bars)
         trials=[]
         for name in ('A','B','C'):
+            if _only is not None and name!=_only:continue
             setup=setups.get(name)
             required=2 if name=='A' else 4 if name=='B' else self.a.box_min_bars
             why=[]
@@ -422,11 +426,27 @@ class PatternDetector(Detector):
                 amount=gates['liquidity']['values']['window_turnover']
                 common['liquidity']=gate(amount>=threshold,window_turnover=amount,min_turnover=threshold,setup=name)
             trial_gates={**common,**price_gates}
+            if setup and setup.get('entry_basis') in {'CONFIRMED_BREAKOUT_RETEST','CONFIRMED_SUPPORT_RECLAIM'}:
+                prior=next((x for x in reversed(self.buffers.get(t.symbol,())) if x.cumulative<t.cumulative and x.time<=t.time),None)
+                age=(t.time-prior.time).total_seconds() if prior else None
+                trial_gates['reclaim_tick']=gate(None if prior is None else bool(0<=age<=self.cfg.stale_seconds and t.price>prior.price),
+                    prior_time=prior.time.isoformat() if prior else None,prior_price=prior.price if prior else None,
+                    prior_cumulative=prior.cumulative if prior else None,current_time=t.time.isoformat(),
+                    current_price=t.price,current_cumulative=t.cumulative,maximum_age=self.cfg.stale_seconds,
+                    reason='FRESH_ADVANCING_RECEIVED_PRINT_REQUIRED')
             continuation_candidate=False
             if name=='A':
                 trial_gates['acceleration']=gates['acceleration']
+                retest=bool(setup and setup.get('entry_basis')=='CONFIRMED_BREAKOUT_RETEST')
+                if retest:
+                    # Momentum was established by the completed breakout bar;
+                    # after a held retest its decay is not a second burst veto.
+                    # Current absolute liquidity, net RR and order checks stay.
+                    trial_gates['acceleration']=gate(True,**gates['acceleration']['values'],
+                        mode='CONFIRMED_BREAKOUT_RETEST',breakout_volume=setup['breakout_volume'],
+                        base_volume_mean=setup['base_volume_mean'],breakout_bar_at=setup['breakout_bar_at'])
                 local_continuation=bool(setup and setup.get('entry_basis')=='LOCAL_CONFIRMED_CONTINUATION')
-                if self.a.structural_breakout_enabled and price_gates.get('breakout_structure',{}).get('result')=='PASS' and (gates['acceleration']['result']!='PASS' or local_continuation):
+                if not retest and self.a.structural_breakout_enabled and price_gates.get('breakout_structure',{}).get('result')=='PASS' and (gates['acceleration']['result']!='PASS' or local_continuation):
                     from automation.structural_breakout import confirmed_continuation
                     venue=watch.get('venue') or (getattr(self.cfg,'after_default_venue','SOR') if is_after else 'KRX')
                     sustained,proof=confirmed_continuation(bars if local_continuation else self.price_context.reference_bars(t.symbol,t.time,venue),t.time,self.cfg.min_price_gain)
@@ -452,7 +472,7 @@ class PatternDetector(Detector):
                 if bars and len(bars)>=2:
                     swing_low=min(b['low'] for b in bars)
                     extension=(t.price-swing_low)/swing_low if swing_low>0 else 0
-                    if extension>0.07 and trial_gates['acceleration'].get('values',{}).get('mode')!='CONFIRMED_CONTINUATION':
+                    if extension>0.07 and trial_gates['acceleration'].get('values',{}).get('mode') not in {'CONFIRMED_CONTINUATION','CONFIRMED_BREAKOUT_RETEST'}:
                         ratio=gates['acceleration']['values'].get('ratio')
                         min_ratio=gates['acceleration']['values'].get('min_ratio',self.cfg.min_turnover_ratio)
                         if ratio is not None and ratio<min_ratio*1.2:
@@ -474,10 +494,11 @@ class PatternDetector(Detector):
                        'BREAKOUT_NOT_REACHED' if k=='breakout' else k.upper()+'_FAIL' for k in failed)
             virtual=price_gates.get('invalidation',{}).get('values',{})
             continuation_entry=(name=='A' and trial_gates.get('acceleration',{}).get('values',{}).get('mode')=='CONFIRMED_CONTINUATION')
+            retest_entry=(name=='A' and setup and setup.get('entry_basis')=='CONFIRMED_BREAKOUT_RETEST')
             trials.append({'setup':name,'evaluated':True,'candidate_generated':bool(setup),
-                'acceleration_required':name=='A' and not continuation_entry,'acceleration_observation':gates['acceleration'],
-                'entry_confirmation_basis':'CONFIRMED_CONTINUATION' if continuation_entry else 'ACCELERATED_BREAKOUT' if name=='A' else name,
-                'candidate_confirmation_basis':'CONFIRMED_CONTINUATION' if continuation_candidate else 'ACCELERATED_BREAKOUT' if name=='A' else name,
+                'acceleration_required':name=='A' and not (continuation_entry or retest_entry),'acceleration_observation':gates['acceleration'],
+                'entry_confirmation_basis':'CONFIRMED_BREAKOUT_RETEST' if retest_entry else 'CONFIRMED_CONTINUATION' if continuation_entry else setup.get('entry_basis',name) if setup and name=='B' else 'ACCELERATED_BREAKOUT' if name=='A' else name,
+                'candidate_confirmation_basis':'CONFIRMED_BREAKOUT_RETEST' if retest_entry else 'CONFIRMED_CONTINUATION' if continuation_candidate else 'ACCELERATED_BREAKOUT' if name=='A' else name,
                 'failed_reasons':why,'primary_reason_code':why[0] if why else 'SETUP_PRICE_GATES_PASS',
                 'gates':trial_gates,'setup_geometry':setup,
                 'impulse_evidence':b_evidence if name=='B' else None,
@@ -485,6 +506,30 @@ class PatternDetector(Detector):
                 'price_action':{'condition':'CONTROLLED_PULLBACK' if name=='B' else 'INTRADAY_BOX' if name=='C' else 'PRIOR_HIGH_BREAKOUT',
                     'formed':bool(setup),'breakout':price_gates.get('breakout',gate(False,reason='GEOMETRY_ABSENT'))},
                 'virtual_entry':virtual.get('entry'),'virtual_invalidation':virtual.get('stop')})
+        if _revision and (self.a.a_breakout_retest_entry_enabled or self.a.b_support_reclaim_entry_enabled):
+            # Geometry is immutable within one closed-bar prefix; quote/cost
+            # gates are always recomputed. One cache per observed symbol.
+            key=(t.time.replace(second=0,microsecond=0),self.a.a_breakout_retest_entry_enabled,self.a.b_support_reclaim_entry_enabled,
+                 tuple((b['time'],*(b.get(k) for k in ('open','high','low','close','volume','gap_reason'))) for b in bars))
+            cached=self._entry_geometry_cache.get(t.symbol)
+            if cached is None or cached[0]!=key:
+                from automation.structural_breakout import breakout_retest_setup
+                from automation.structural_pullback import support_reclaim_setup
+                revised={}
+                if self.a.a_breakout_retest_entry_enabled and self.a.structural_breakout_enabled:
+                    revised['A']=breakout_retest_setup(bars,t.time,self.cfg)
+                if self.a.b_support_reclaim_entry_enabled and self.a.structural_pullback_enabled:
+                    revised['B']=support_reclaim_setup(bars,t.time,setups.get('B'))
+                self._entry_geometry_cache[t.symbol]=(key,revised)
+            else:revised=cached[1]
+            for index,trial in enumerate(trials):
+                name=trial['setup'];new=revised.get(name)
+                if not new:continue
+                if name=='A':new={**new,'prior_session_high':(self.after_prior_high if is_after else self.prior_high).get(t.symbol)}
+                alternative=self.setup_trials(t,watch,gates,_bars=bars,_setups={name:new},_only=name,_revision=False)[0]
+                if not trial['entry_ready'] and alternative['entry_ready']:
+                    alternative['entry_alternatives']=[trial];trials[index]=alternative
+                else:trial['entry_alternatives']=[alternative]
         return trials
 
     @observation_locked
@@ -526,6 +571,7 @@ class PatternDetector(Detector):
             if 'pullback_structure' in price_gates:gates['pullback_structure']=price_gates['pullback_structure']
             if 'breakout_structure' in price_gates:gates['breakout_structure']=price_gates['breakout_structure']
             if 'box_structure' in price_gates:gates['box_structure']=price_gates['box_structure']
+            if 'reclaim_tick' in price_gates:gates['reclaim_tick']=price_gates['reclaim_tick']
             gates['liquidity']=trial['gates']['liquidity']
             required_acceleration=trial['acceleration_required']
             gates['acceleration']={**(trial['gates']['acceleration'] if name=='A' else gates['acceleration']),'required':required_acceleration,'scope':'ENTRY_GATE' if name=='A' else 'OBSERVATION_ONLY'}
@@ -535,6 +581,7 @@ class PatternDetector(Detector):
             # Engine sizing and the final order boundary validate the actual quantity.
             planned_qty=1
             return {'symbol':t.symbol,'time':t.time.isoformat(),'limit':limit,'stop':stop,**setup,
+                'receipt_evidence':tick_source_identity(t),
                 'evaluation_gates':gates,'setup_trials':trials,'acceleration_required':required_acceleration,
                 'entry_confirmation_basis':trial['entry_confirmation_basis'],
                 'market_context':context,'discovery_context':watch.get('discovery_context'),
@@ -610,7 +657,7 @@ class PatternDetector(Detector):
         if self.a.structural_breakout_enabled and setup['pattern']=='A':
             from automation.structural_breakout import structural_breakout
             venue=watch.get('venue') or (getattr(c,'after_default_venue','SOR') if after_supported(t.time) else 'KRX')
-            breakout_pass,breakout_evidence=structural_breakout(self.price_context.reference_bars(t.symbol,t.time,venue),t.time,setup,c,limit,t.bid,t.ask,auto=self.a)
+            breakout_pass,breakout_evidence=structural_breakout(self.price_context.reference_bars(t.symbol,t.time,venue),t.time,setup,c,limit,t.bid,t.ask,auto=self.a,decision_bars=bars)
             if breakout_evidence.get('emergency_stop') is not None:stop=breakout_evidence['emergency_stop']
             if breakout_evidence.get('target_ceiling') is not None:
                 # A wider invalidation basis can reduce position size, but must

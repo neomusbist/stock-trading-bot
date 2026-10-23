@@ -15,6 +15,7 @@ from pathlib import Path
 import threading
 import time
 import uuid
+from automation.decisions import tick_source_identity
 
 
 def iso(value):
@@ -119,7 +120,19 @@ class TradeReviewCapture:
 
     def set_scope(self,watch,positions,at):
         try:
+            metadata={}
+            if isinstance(watch,dict):
+                for symbol in sorted(watch)[:12]:
+                    row=watch[symbol]
+                    if not isinstance(row,dict):continue
+                    status=row.get('market_status') or {}
+                    metadata[symbol]={k:row.get(k) for k in ('status','source_count','fallback_source1','resistance',
+                        'resistance_room_pass','first_raw_at','first_watch_at','observed_at','venue')}
+                    metadata[symbol]['market_status']={k:status.get(k) for k in ('pass','reason_code','checked_at','vi_active','single_price_auction')}
             with self.lock:
+                previous=getattr(self,'watch_metadata',{})
+                changes=[(s,metadata.get(s)) for s in previous.keys()|metadata.keys() if previous.get(s)!=metadata.get(s)]
+                self.watch_metadata=metadata
                 self.watch=frozenset(sorted(set(watch))[:12])
                 for symbol in self.held-set(positions):
                     # B/C alternatives may still be holding after the real A
@@ -135,6 +148,11 @@ class TradeReviewCapture:
                 for mapping in (self.last_lines,self.last_bar,self.last_evaluation_at):
                     for s in set(mapping)-self.watch-self.held-set(self.promoted):mapping.pop(s,None)
             for symbol,p in positions.items():self.position(symbol,p,at)
+            # Reuse the bounded asynchronous recorder. Only committed role or
+            # qualification changes produce rows; no per-tick metadata log.
+            for symbol,value in changes:
+                self._record({'event':'WATCH_METADATA','symbol':symbol,'known_at':iso(at),'active':value is not None,
+                    'watch':value,'actual_order_permission':False},symbol,force=True)
         except Exception as error:
             self.errors+=1;self.last_error=type(error).__name__
 
@@ -179,6 +197,7 @@ class TradeReviewCapture:
 
     def tick(self,t,received,processed=None):
         row={'event':'TRADE','symbol':t.symbol,'exchange_at':iso(t.time),'received_at':iso(received),
+             'receipt_evidence':tick_source_identity(t),
              'processed_at':iso(processed),'capture_point':'STRATEGY_INGESTION' if processed is not None else 'RECEIVER',
              'received_monotonic':getattr(t,'received_monotonic',None),
              **{k:getattr(t,k,None) for k in ('price','volume','cumulative','bid','ask','bid_qty','ask_qty',
@@ -188,6 +207,7 @@ class TradeReviewCapture:
 
     def book(self,symbol,book,received):
         self._record({'event':'BOOK','symbol':symbol,'exchange_at':book.get('time'),
+            'book_receipt_id':f"0D:{symbol}:{iso(book.get('received_at') or received)}:{book.get('received_monotonic')}",
             'received_at':iso(received),'received_monotonic':book.get('received_monotonic'),
             **{k:book.get(k) for k in ('best_bid','best_ask','bid_qty','ask_qty','depth_available','source')}},symbol)
 
@@ -248,6 +268,21 @@ class TradeReviewCapture:
             self.last_evaluation_at[symbol]=asof
         gates=evaluation.get('gates',{}) if isinstance(evaluation,dict) else {}
         trials=[]
+        def price_stage(trial):
+            gates=trial.get('gates',{});values=gates.get('risk_reward',{}).get('values',{})
+            proof=gates.get('breakout_structure' if trial.get('setup')=='A' else 'pullback_structure',{})
+            structure=proof.get('values',{});geometry=trial.get('setup_geometry') or {}
+            return {'setup':trial.get('setup'),'entry_basis':geometry.get('entry_basis'),
+                'structure_result':proof.get('result'),'confirmation_closed_at':geometry.get('confirmation_closed_at'),
+                'structure_observed_by':iso(asof),'observation_basis':'SAMPLED_PROCESSING_TIME_NOT_EXACT_FIRST_ONSET',
+                'structural_stop':structure.get('structural_stop',structure.get('buffered_stop')),
+                'emergency_stop':structure.get('emergency_stop'),
+                'reference_sha256':structure.get('reference_sha256',structure.get('basis_sha256')),
+                'maximum_entry':values.get('economics',{}).get('max_entry_price'),
+                'entry_zone':values.get('entry_zone'),'target_inputs':values.get('target_inputs'),
+                'trigger':gates.get('breakout'),'reclaim_tick':gates.get('reclaim_tick'),'price_ready':trial.get('entry_ready'),
+                'failed_reasons':trial.get('failed_reasons'),
+                'quantity_status':'NOT_REACHED_AT_DIAGNOSTIC_SAMPLE','actual_order_permission':False}
         for trial in (evaluation or {}).get('trials',[]):
             price=trial.get('gates',{}).get('invalidation',{}).get('values',{})
             reward=trial.get('gates',{}).get('risk_reward',{}).get('values',{})
@@ -255,16 +290,18 @@ class TradeReviewCapture:
             trials.append({'setup':trial.get('setup'),'formed':trial.get('candidate_generated'),
                 'ready':trial.get('entry_ready'),'failures':trial.get('failed_reasons'),
                 'entry':price.get('entry'),'stop':price.get('stop'),'target':reward.get('target'),
-                'rr':rr,'rr_basis':rr_basis})
+                'rr':rr,'rr_basis':rr_basis,'entry_stage':price_stage(trial),
+                'entry_alternatives':[price_stage(x) for x in trial.get('entry_alternatives',[])[:1]]})
         fast=fast if isinstance(fast,dict) else {}
         self._record({'event':'OPPORTUNITY_SAMPLE','symbol':symbol,'asof':iso(asof),
+            'receipt_evidence':tick_source_identity(t),
             'exchange_at':iso(t.time),'received_at':getattr(t,'received_at',None),
             'received_monotonic':getattr(t,'received_monotonic',None),
             **{k:getattr(t,k,None) for k in ('price','volume','cumulative','bid','ask','bid_qty','ask_qty','depth_available','depth_source','regular','book_received_at','book_received_monotonic')},
             'processed_at':iso(asof),
             'book_time':iso(getattr(t,'book_time',None)),
             'watch':{k:watch.get(k) for k in ('status','source_count','fallback_source1','resistance',
-                'resistance_asof','observed_at','first_raw_at','first_watch_at')},
+                'resistance_asof','observed_at','first_raw_at','first_watch_at','venue','resistance_room_pass')},
             'market_status':watch.get('market_status',{}),
             'gates':{k:gates[k] for k in ('warmup','spread','liquidity','acceleration','structure') if k in gates},
             'trials':trials,'fast':{k:fast.get(k) for k in ('time','status','reason','regime','quote_evidence')},

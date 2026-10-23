@@ -56,6 +56,8 @@ class AutomationConfig:
     a_short_reference_enabled: bool = False  # research: four complete references, original target unchanged
     a_sustained_turnover_enabled: bool = False  # research: actual 60-second accepted turnover
     b_sustained_turnover_enabled: bool = False  # research: actual 60-second accepted turnover
+    a_breakout_retest_entry_enabled: bool = False  # research A: completed breakout, held retest and reclaim
+    b_support_reclaim_entry_enabled: bool = False  # research B: confirm the floor without chasing the recovery wick
     early_surge_priority_enabled: bool = False  # research ranking, never extra subscription capacity
     single_source_eligibility_fix_enabled: bool = True
     abc_quote_retry_enabled: bool = True
@@ -109,8 +111,12 @@ class AutomationConfig:
             raise ValueError('불리언 설정 오류')
         if any(type(getattr(self,k)) is not bool for k in ('confirmed_box_direction','confirmed_structure_protection','fresh_box_basis_enabled','setup_aware_watch_priority','structural_pullback_enabled','structural_breakout_enabled','intraday_context_enabled','confirmed_invalidation_enabled','after_momentum_failure_enabled','exit_plan_reward_guard_enabled','fast_momentum_enabled','pullback_expansion_target_enabled')):
             raise ValueError('불리언 설정 오류')
-        if any(type(getattr(self,k)) is not bool for k in ('a_short_reference_enabled','a_sustained_turnover_enabled','b_sustained_turnover_enabled','early_surge_priority_enabled','single_source_eligibility_fix_enabled','abc_quote_retry_enabled','timeline_async_save_enabled')):
+        if any(type(getattr(self,k)) is not bool for k in ('a_short_reference_enabled','a_sustained_turnover_enabled','b_sustained_turnover_enabled','a_breakout_retest_entry_enabled','b_support_reclaim_entry_enabled','early_surge_priority_enabled','single_source_eligibility_fix_enabled','abc_quote_retry_enabled','timeline_async_save_enabled')):
             raise ValueError('불리언 설정 오류')
+        if self.a_breakout_retest_entry_enabled and not (self.structural_breakout_enabled and self.confirmed_invalidation_enabled):
+            raise ValueError('A 재확인 진입은 구조 검증과 확정 무효화 정책이 필요합니다')
+        if self.b_support_reclaim_entry_enabled and not (self.structural_pullback_enabled and self.confirmed_invalidation_enabled):
+            raise ValueError('B 지지 회복 진입은 구조 검증과 확정 무효화 정책이 필요합니다')
         for k in ('new_entry_cutoff','force_flatten_start','after_prep_start','after_market_start','after_entry_cutoff','after_force_flatten_start','after_market_close'):
             datetime.strptime(getattr(self,k),'%H:%M:%S')
         if not '09:00:00'<self.new_entry_cutoff<self.force_flatten_start<'15:20:00':

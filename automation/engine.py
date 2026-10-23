@@ -364,6 +364,16 @@ class AutonomousEngine(ExistingExits,Engine):
             'efficiency':gate(signal.get('efficiency',{}).get('decision')=='TRADE',efficiency=signal.get('efficiency'))}
 
     def entry_market_reason(self,signal,quantity,fallback=None,phase='PRE_INTENT'):
+        if signal.get('entry_basis') in {'CONFIRMED_BREAKOUT_RETEST','CONFIRMED_SUPPORT_RECLAIM'}:
+            pair=signal.get('evaluation_gates',{}).get('reclaim_tick',{});v=pair.get('values',{})
+            try:
+                previous=datetime.fromisoformat(v['prior_time']);current=datetime.fromisoformat(v['current_time'])
+                tick=fallback or getattr(self,'entry_tick',None)
+                if (pair.get('result')!='PASS' or tick is None or not 0<=(current-previous).total_seconds()<=self.c.stale_seconds
+                        or current!=tick.time or v['current_cumulative']!=tick.cumulative or v['current_price']!=tick.price
+                        or not v['prior_cumulative']<tick.cumulative or not v['prior_price']<tick.price):
+                    return 'RECLAIM_ADVANCING_TICK_PROOF_INVALID'
+            except (KeyError,TypeError,ValueError):return 'RECLAIM_ADVANCING_TICK_PROOF_INVALID'
         try:
             from automation.storage_governor import check_disk_safety_gate
             gate = check_disk_safety_gate(getattr(self, 'folder', Path('.')))
@@ -382,7 +392,7 @@ class AutonomousEngine(ExistingExits,Engine):
                 received=signal.get('reference_received_at')
                 if received and datetime.fromisoformat(received)>stamp:return 'BREAKOUT_REFERENCE_NOT_KNOWN_AT_SIGNAL'
                 quote=signal['evaluation_gates']['spread']['values']
-                passed,evidence=structural_breakout(signal.get('reference_bar_snapshot'),stamp,signal,self.c,signal['limit'],quote['bid'],quote['ask'],auto=self.a)
+                passed,evidence=structural_breakout(signal.get('reference_bar_snapshot'),stamp,signal,self.c,signal['limit'],quote['bid'],quote['ask'],auto=self.a,decision_bars=signal.get('decision_bar_snapshot'))
                 proof=signal['evaluation_gates'].get('breakout_structure')
                 if (passed is not True or proof!={'result':'PASS','values':{'enabled':True,**evidence}}
                         or signal.get('invalidation_policy')!={'enabled':True,**evidence}
@@ -391,6 +401,9 @@ class AutonomousEngine(ExistingExits,Engine):
                         or (signal['target']-signal['limit'])/(signal['limit']-signal['stop'])<self.c.min_reward_risk):
                     return 'BREAKOUT_STRUCTURE_PROOF_MISSING_OR_INVALID'
                 acceleration=signal['evaluation_gates'].get('acceleration',{})
+                if signal.get('entry_basis')=='CONFIRMED_BREAKOUT_RETEST' and (acceleration.get('result')!='PASS'
+                        or acceleration.get('values',{}).get('mode')!='CONFIRMED_BREAKOUT_RETEST'):
+                    return 'BREAKOUT_RETEST_MOMENTUM_PROOF_INVALID'
                 if acceleration.get('values',{}).get('mode')=='CONFIRMED_CONTINUATION':
                     from automation.structural_breakout import confirmed_continuation
                     # Revalidate the exact source used by the detector. Local A
@@ -409,7 +422,7 @@ class AutonomousEngine(ExistingExits,Engine):
                 proof=signal.get('evaluation_gates',{}).get('pullback_structure',{})
                 values=proof.get('values',{})
                 passed,evidence=structural_pullback(signal.get('decision_bar_snapshot'),datetime.fromisoformat(signal['time']),
-                    signal,self.c,signal['limit'],values.get('bid'),values.get('ask'),close_policy=self.a.confirmed_invalidation_enabled)
+                    signal,self.c,signal['limit'],values.get('bid'),values.get('ask'),close_policy=self.a.confirmed_invalidation_enabled,auto=self.a)
                 if (passed is not True or proof!={'result':'PASS','values':{'enabled':True,**evidence}}
                         or signal['stop']!=evidence.get('emergency_stop',evidence['buffered_stop'])
                         or self.a.confirmed_invalidation_enabled and signal.get('invalidation_policy')!={'enabled':True,**evidence}

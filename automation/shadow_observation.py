@@ -5,7 +5,7 @@ from core.util import tick_size
 from core.market_time import tick_freshness
 from automation.patterns import PatternDetector
 from automation.policy import HARD_LOCKS,BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL
-from automation.decisions import STRATEGY_VERSION
+from automation.decisions import STRATEGY_VERSION,tick_source_identity
 from automation.focus_selection import calculate_tier, TIER_NAMES
 from automation.observation_retention import observation_residence_seconds
 from automation.fast_momentum import FastMomentumStrategy
@@ -80,11 +80,15 @@ class ShadowObserver:
    strong=fresh and all(gates.get(k,{}).get('result')=='PASS' for k in ('acceleration','liquidity'))
    if self.auto.setup_aware_watch_priority:
     observation=self.latest.get(sym,{})
-    strong=fresh and (bool(observation.get('fast_signal_ready')) or calculate_tier(gates,observation.get('setup_trials',[]),row)<=1)
+    strong=fresh and (self.auto.fast_momentum_enabled and bool(observation.get('fast_signal_ready')) or calculate_tier(gates,observation.get('setup_trials',[]),row)<=1)
    tier_rank=0 if watch_priority(row) else 1 if strong else 2
    effective_score=score+(2.0 if held else 0.0)
    tie_rank=1 if (sym in self.rows and not held) else 0
-   return (tier_rank,-effective_score,tie_rank,sym)
+   # Rank-only candidates must be observed long enough to build the existing
+   # pattern bars. A two-point score bonus alone let every RAW refresh evict
+   # them before warmup. WATCH and fresh viable geometry still preempt this
+   # bounded residence; hard eligibility loss still removes the candidate.
+   return (tier_rank,0 if held else 1,-effective_score,tie_rank,sym)
   eligible.sort(key=priority)
   selected={r['code']:r for r in eligible[:self.limit]}
   for sym in list(self.detached-set(selected)):
@@ -105,7 +109,7 @@ class ShadowObserver:
    prior=self.previous.get(sym);first_start=self.first[sym].setdefault('first_shadow_at',stamp.isoformat())
    if sym not in self.rows or not prior or (prior.get('source_count'),prior.get('status'))!=(row.get('source_count'),row.get('status')):
     last=self.detector.last.get(sym);fresh=bool(last and (stamp-last.time).total_seconds()<=self.cfg.stale_seconds)
-    self.event('SHADOW_TRANSITION',stamp,symbol=sym,name=row.get('name'),**self.first[sym],from_status=(prior or {}).get('status'),to_status=row.get('status'),source_before=(prior or {}).get('source_count'),source_count=row.get('source_count'),reason=row.get('reason'),data_action='RETAIN_CONTINUOUS' if last and self.detector.continuous_observation else 'RETAIN_FRESH' if fresh else 'NO_DATA' if last is None else 'STALE_PENDING_RESET',live_detector_unchanged=True)
+    self.event('SHADOW_TRANSITION',stamp,symbol=sym,name=row.get('name'),**self.first[sym],from_status=(prior or {}).get('status'),to_status=row.get('status'),source_before=(prior or {}).get('source_count'),source_count=row.get('source_count'),reason=row.get('reason'),data_action='RETAIN_CONTINUOUS' if last and self.detector.continuous_observation else 'RETAIN_FRESH' if fresh else 'NO_DATA' if last is None else 'STALE_PENDING_RESET',live_detector_unchanged=True,ranking_priority=priority(row),selected_at=self.selected_at[sym].isoformat(),residence_seconds=residence_seconds,scope_limit=self.limit)
   for sym in self.rows.keys()-selected.keys():
    self.event('SHADOW_ENDED',stamp,symbol=sym,reason='INELIGIBLE_OR_CAPACITY',data_action='RETAIN_UNTIL_STALE_GAP')
    self.detached.add(sym);self.detached_at[sym]=stamp;self.selected_at.pop(sym,None);self.last_log.pop(sym,None);self.latest.pop(sym,None);self.last_evaluated.pop(sym,None)
@@ -191,7 +195,7 @@ class ShadowObserver:
    trial.update(invalidation_ticks=(virtual['limit']-virtual['stop'])/tick_size(t.price) if virtual else None,
                 virtual_risk_quantity=sizing,risk_basis='DIAGNOSTIC_SIZING_ONLY_NOT_ORDER_AUTHORIZATION')
   self.last_log[t.symbol]=(received,signature)
-  self.event('SHADOW_EVAL',received,symbol=t.symbol,name=row.get('name'),**self.first[t.symbol],source_count=row.get('source_count'),discovery_status=row.get('status'),current_price=t.price,usable_completed_bars=len(usable),stored_completed_bars=len(history),gates=gates,setup_trials=trials,virtual_signal=sig,fast_signal_ready=fast_ready,actual_order_permission=False,
+  self.event('SHADOW_EVAL',received,symbol=t.symbol,name=row.get('name'),**self.first[t.symbol],source_count=row.get('source_count'),discovery_status=row.get('status'),current_price=t.price,usable_completed_bars=len(usable),stored_completed_bars=len(history),gates=gates,setup_trials=trials,virtual_signal=sig,fast_signal_ready=fast_ready,actual_order_permission=False,receipt_evidence=tick_source_identity(t),
     microstructure={'tick_size':tick_size(t.price),'tick_fraction':tick_size(t.price)/t.price,'spread_fraction':(t.ask-t.bid)/t.price,'last_trade_gap_seconds':(t.time-old.time).total_seconds() if old else None,
       'book_depth':None,'book_gap':None,'vi_state':None,'slippage_basis':'CONFIG_ESTIMATE_NOT_MEASURED','entry_slippage_fraction':self.cfg.entry_slippage_fraction,'exit_slippage_fraction':self.cfg.exit_slippage_fraction})
  def virtual_size(self,virtual):

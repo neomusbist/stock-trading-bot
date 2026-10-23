@@ -2,6 +2,7 @@
 import hashlib
 import json
 import math
+from datetime import timedelta
 from statistics import median
 from types import SimpleNamespace
 from core.util import floor_tick, tick_size
@@ -13,6 +14,28 @@ def pullback_peak_index(seq):
     """One peak definition for B detection and its independent floor proof."""
     first=0 if seq[0].get('open',0)>0 else 1
     return max(range(first,len(seq)-1),key=lambda i:seq[i]['high'])
+
+
+def support_reclaim_setup(raw,asof,setup):
+    """Earlier B trigger, same independently confirmed floor/peak/target.
+
+    The completed recovery CLOSE already reclaimed the floor candle's high.
+    Requiring its potentially much higher upper wick again duplicates that
+    confirmation. A fresh executable print must still hold above the original
+    reaction high; it does not confirm a still-forming support candle.
+    """
+    size=min(len(raw or ()),30)
+    bars=complete_sequence(raw,asof,size,require_recent=True) if size>=4 else []
+    if not bars or not setup:return None
+    seq=bars[-12:];peak_i=pullback_peak_index(seq);pull=seq[peak_i+1:]
+    if not pull:return None
+    support=min(b['low'] for b in pull);touch=max(i for i,b in enumerate(pull) if b['low']==support)
+    recovered=next((b for b in pull[touch+1:] if b['low']>support and b['close']>pull[touch]['high']),None)
+    if recovered is None or pull[touch]['high']>=setup['peak']:return None
+    return {**setup,'breakout':pull[touch]['high'],'entry_basis':'CONFIRMED_SUPPORT_RECLAIM',
+        'support_touch_at':pull[touch]['time'].isoformat(),'recovery_bar_at':recovered['time'].isoformat(),
+        'recovery_close':recovered['close'],'recovery_wick_high':recovered['high'],
+        'confirmation_closed_at':(recovered['time']+timedelta(minutes=1)).isoformat()}
 
 
 def structural_pullback(raw, asof, setup, cfg, entry, bid, ask,close_policy=False,auto=None):
@@ -37,6 +60,12 @@ def structural_pullback(raw, asof, setup, cfg, entry, bid, ask,close_policy=Fals
     # A live uptick cannot confirm its own still-forming support candle.
     # A completed recovery must retain the floor and close through its reaction high.
     recovered=next((b for b in pull[last_touch+1:] if b['low']>support and b['close']>pull[last_touch]['high']),None)
+    if setup.get('entry_basis')=='CONFIRMED_SUPPORT_RECLAIM':
+        revised=support_reclaim_setup(bars,asof,setup)
+        keys=('breakout','support_touch_at','recovery_bar_at','recovery_close','recovery_wick_high','confirmation_closed_at')
+        if (not getattr(auto,'b_support_reclaim_entry_enabled',False) or revised is None
+                or any(setup.get(k)!=revised.get(k) for k in keys)):
+            return False,{**evidence,'reason':'PULLBACK_RECLAIM_TRIGGER_PROOF_INVALID'}
     context=PriceContext()
     for b in bars:context.record('proof',b,asof)
     reference=context.snapshot('proof',SimpleNamespace(time=asof),setup['breakout'])['nearest_confirmed_peak']
@@ -58,6 +87,10 @@ def structural_pullback(raw, asof, setup, cfg, entry, bid, ask,close_policy=Fals
         buffer_amount=buffer,buffered_stop=stop,spread=spread,median_pullback_range=median(ranges),
         noise_risk_floor=noise,stop_distance=entry-stop,nearest_confirmed_peak=reference,target_ceiling=ceiling,
         coverage='PREDECISION_COMPLETED_BARS_ONLY',missing_earlier_history='UNKNOWN')
+    if setup.get('entry_basis')=='CONFIRMED_SUPPORT_RECLAIM':
+        evidence.update(entry_basis=setup['entry_basis'],reaction_trigger=pull[last_touch]['high'],
+            recovery_close=recovered['close'],recovery_wick_high=recovered['high'],
+            confirmation_closed_at=setup['confirmation_closed_at'],target_expansion_used=False)
     if close_policy:
         band=max(median(ranges),spread,tick_size(entry))
         evidence.update(structural_stop=stop,noise_band=band,emergency_stop=floor_tick(stop-band))
@@ -72,5 +105,9 @@ def structural_pullback(raw, asof, setup, cfg, entry, bid, ask,close_policy=Fals
                     trend_reclaim_reference=peaks[-1]['price'] if declining else None)
     if declining and recovered['close']<=peaks[-1]['price']:
         return False,{**evidence,'reason':'PULLBACK_LOWER_SWINGS_NOT_RECLAIMED'}
-    if entry-stop<=noise:return False,{**evidence,'reason':'PULLBACK_RISK_WITHIN_OBSERVED_NOISE'}
+    reclaim_close_policy=close_policy and setup.get('entry_basis')=='CONFIRMED_SUPPORT_RECLAIM'
+    risk_stop=evidence['emergency_stop'] if reclaim_close_policy else stop
+    evidence.update(noise_guard_basis='CONFIRMED_CLOSE_WITH_SEPARATE_EMERGENCY' if reclaim_close_policy else 'STRUCTURAL_PRICE_DISTANCE',
+                    noise_guard_risk_distance=entry-risk_stop)
+    if entry-risk_stop<=noise:return False,{**evidence,'reason':'PULLBACK_RISK_WITHIN_OBSERVED_NOISE'}
     return True,{**evidence,'reason':'CONFIRMED_PULLBACK_SUPPORT'}

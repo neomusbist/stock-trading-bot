@@ -48,6 +48,7 @@ from automation.candidate_audit import CandidateAudit
 from automation.entry_funnel import observe_evaluation
 from automation.observation_settings import ObservationSettings,load_observation
 from automation.focus_selection import select_focus
+from automation.decisions import tick_source_identity
 
 def error_record(error):
     record=exception_details(error)
@@ -856,6 +857,10 @@ def apply_focus_selection(engine,lookup,by_symbol,selection):
                 'economic_reason':row.get('affordability',{}).get('reason_code'),
                 'fallback_source1':source1,
             }
+    capture=getattr(engine,'trade_review',None)
+    if selection.applied and capture is not None:
+        try:capture.set_scope(lookup,engine.s['positions'],engine.clock())
+        except Exception:engine.trade_review_errors=getattr(engine,'trade_review_errors',0)+1
 
 def resolve_radar_focus(engine,lookup,rows,rank_watch,readiness,cfg,auto,stamp):
     """Commit the final focus against actual incumbents, before subscription changes."""
@@ -1103,7 +1108,7 @@ def _quote_blocked(engine,detector,symbol):
         return (trial.get('candidate_generated')
             and any(v.get('result')!='PASS' and quote_gate(k,v) for k,v in gates.items())
             and all(v.get('result')=='PASS' for k,v in gates.items() if k!='chase' and k not in derived and not quote_gate(k,v)))
-    return any(retryable(t) for t in trials)
+    return any(retryable(t) for trial in trials for t in [trial]+trial.get('entry_alternatives',[])[:1])
 
 
 def queue_current_quote_books(engine,detector,feed,symbols):
@@ -1415,6 +1420,7 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
         failed=[k for k,v in gates.items() if v['result']=='FAIL']
         engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','PATTERN_OR_GATE_NOT_READY',
             gates,price=t.price,extra={'failed_gates':failed,'signal_detected':False,
+                'receipt_evidence':tick_source_identity(t),
                 'setup_trials':detector.last_eval.get(t.symbol,{}).get('trials',[]),
                 'fast_evaluation':{k:fast_evaluation.get(k) for k in ('time','status','reason','regime','quote_evidence','geometry','details')} if isinstance(fast_evaluation,dict) else None})
         return None
