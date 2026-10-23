@@ -21,6 +21,13 @@ def trial(name='B', ready=False, unknown=False):
 
 
 class EntryFunnelTests(unittest.TestCase):
+    def test_rejected_continuation_is_not_misclassified_as_acceleration_burst(self):
+        f=EntryFunnel();item=trial('A')
+        item.update(entry_confirmation_basis='ACCELERATED_BREAKOUT',candidate_confirmation_basis='CONFIRMED_CONTINUATION')
+        f.evaluation('000001',AT,'WATCH',[item],None,fast_enabled=False)
+        counts=f.snapshot(AT)['strategies']
+        self.assertEqual(counts['REGULAR:WATCH:A_continuation']['evaluated'],1)
+        self.assertNotIn('REGULAR:WATCH:A_burst',counts)
     def test_daily_totals_survive_radar_cycles_and_missing_evaluation_is_visible(self):
         audit = CandidateAudit()
         audit.funnel.rows([{'code':'000001'},{'code':'000002'}], AT, 'RAW')

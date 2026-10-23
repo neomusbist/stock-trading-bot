@@ -32,6 +32,7 @@ class CaptureTests(unittest.TestCase):
         self.root=Path(self.temp.name)
 
     def capture(self,**kw):
+        kw.setdefault('continuous_watch',False);kw.setdefault('min_free_bytes',0)
         c=TradeReviewCapture(self.root,start=False,clock=lambda:AT,**kw)
         self.addCleanup(c.close);return c
 
@@ -48,6 +49,72 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(trade['exchange_at'],AT.isoformat())
         self.assertEqual(trade['received_at'],AT.isoformat())
         self.assertIn('BOUNDED_PARTIAL',next(r for r in self.rows() if r['event']=='PREENTRY_BUFFER')['coverage'])
+
+    def test_near_candidate_rejection_retains_bounded_actual_tape_without_order(self):
+        c=self.capture();c.set_scope(['033160'],{},AT)
+        c.tick(tick(),AT);c.book('033160',{'time':AT.isoformat(),'best_bid':16900},AT)
+        evaluation={'gates':{},'trials':[{'setup':'A','candidate_generated':True,'entry_ready':False,
+            'failed_reasons':['RISK_REWARD_FAIL'],
+            'gates':{'warmup':{'result':'PASS'},'risk_reward':{'result':'FAIL','values':{'calculated_rr':1.1}}}}]}
+        c.evaluation(tick(),{'status':'WATCH'},evaluation,None,AT);c.flush()
+        rows=self.rows()
+        self.assertTrue(any(r['event']=='TRADE' for r in rows))
+        self.assertTrue(any(r['event']=='BOOK' for r in rows))
+        marker=next(r for r in rows if r['event']=='REJECTED_CANDIDATE_BUFFER')
+        self.assertFalse(marker['actual_order_permission'])
+        self.assertIn('BOUNDED_PARTIAL',marker['coverage'])
+        self.assertEqual(c.promoted,{})
+
+    def test_rejected_buffer_sampling_is_bounded_and_never_grants_order_permission(self):
+        c=self.capture();c.set_scope(['033160'],{},AT)
+        evaluation={'gates':{},'trials':[{'setup':'B','candidate_generated':True,'entry_ready':False,
+            'gates':{'risk_reward':{'result':'FAIL'}}}]}
+        for _ in range(100):
+            c.tick(tick(),AT);c.evaluation(tick(),{'status':'WATCH'},evaluation,None,AT)
+        c.flush()
+        markers=[r for r in self.rows() if r['event']=='REJECTED_CANDIDATE_BUFFER']
+        self.assertEqual(len(markers),1)
+        self.assertLessEqual(c.stats()['rejected_buffer_bytes'],512*1024)
+        self.assertFalse(c.stats()['orders_enabled'])
+
+    def test_continuous_watch_retains_trade_and_book_without_signal(self):
+        c=self.capture(continuous_watch=True);c.set_scope(['033160'],{},AT)
+        c.tick(tick(),AT,AT+timedelta(milliseconds=20))
+        c.book('033160',{'time':AT.isoformat(),'best_bid':16900},AT)
+        c.flush();rows=self.rows()
+        trade=next(r for r in rows if r['event']=='TRADE')
+        self.assertEqual(trade['processed_at'],(AT+timedelta(milliseconds=20)).isoformat())
+        self.assertEqual(trade['capture_point'],'STRATEGY_INGESTION')
+        self.assertTrue(any(r['event']=='BOOK' for r in rows))
+        self.assertEqual(c.promoted,{})
+
+    def test_continuous_watch_reserves_queue_capacity_for_holdings(self):
+        c=self.capture(continuous_watch=True,queue_rows=12,queue_bytes=100000)
+        c.set_scope(['033160'],{'999990':{}},AT)
+        for _ in range(30):c.tick(tick(),AT)
+        c.tick(tick('999990'),AT);c.flush()
+        self.assertTrue(any(r.get('symbol')=='999990' and r['event']=='TRADE' for r in self.rows()))
+        self.assertGreater(c.stats()['capture_losses'],0)
+
+    def test_disk_reserve_blocks_recording_only_and_preserves_existing_data(self):
+        c=self.capture(continuous_watch=True,min_free_bytes=1000)
+        c.flush();before={p.name:p.read_bytes() for p in self.root.glob('trade-review-*.jsonl')}
+        c.set_scope(['033160'],{},AT);c.tick(tick(),AT)
+        with patch('automation.trade_review_capture.shutil.disk_usage',return_value=SimpleNamespace(free=1000)):
+            self.assertFalse(c.flush())
+        self.assertEqual(c.stats()['storage_block_reason'],'CAPTURE_FREE_SPACE_RESERVE')
+        self.assertEqual(before,{p.name:p.read_bytes() for p in self.root.glob('trade-review-*.jsonl')})
+
+    def test_reference_capture_retains_available_prefix_without_future_or_warmup_claims(self):
+        c=self.capture()
+        bar={'time':AT.replace(second=0)-timedelta(minutes=1),'open':100,'high':102,'low':99,'close':101,'volume':50}
+        future={**bar,'time':AT.replace(second=0)}
+        c.reference_snapshot('033160',[bar,future],AT-timedelta(seconds=1),AT,'KRX');c.flush()
+        record=next(r for r in self.rows() if r['event']=='REFERENCE_BARS_PART')
+        self.assertEqual(len(record['rows']),1)
+        self.assertEqual(record['known_at'],AT.isoformat())
+        self.assertEqual(record['restored_signal_bars'],0)
+        self.assertEqual(record['bar_label'],'MINUTE_START')
 
     def test_holding_keeps_receiver_capture_after_watch_and_shadow_removal(self):
         c=self.capture();p={'opened':AT.isoformat(),'avg':16910,'qty':4,'initial_stop':16840,
@@ -152,7 +219,7 @@ class FastBoundaryTests(unittest.TestCase):
 
     def test_regular_fast_rejects_mismatched_or_stale_books(self):
         self.book['best_ask']=16920
-        self.assertEqual(self.reason(),'ENTRY_DEPTH_PRICE_MISMATCH')
+        self.assertEqual(self.reason(),'ENTRY_QUOTE_ABOVE_LIMIT')
         self.book['best_ask']=16910;self.book['time']=(AT-timedelta(seconds=6)).isoformat()
         self.book['received_at']=self.book['time']
         self.assertEqual(self.reason(),'ENTRY_DEPTH_UNAVAILABLE')

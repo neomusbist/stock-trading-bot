@@ -137,7 +137,7 @@ class EntryFunnel:
                  'failed_reasons': list(trial.get('failed_reasons', []))[:16],
                  'gate_results': {k: v.get('result') for k, v in gates.items()}})
             if name=='A':
-                route=self.strategy_name({'pattern':'A','entry_confirmation_basis':trial.get('entry_confirmation_basis')})
+                route=self.strategy_name({'pattern':'A','entry_confirmation_basis':trial.get('candidate_confirmation_basis',trial.get('entry_confirmation_basis'))})
                 self.strategies[phase+':'+scope+':'+route][status]+=1
                 self.strategies[phase+':'+scope+':'+route]['evaluated']+=1
         if signal and signal.get('pattern') in SETUPS:

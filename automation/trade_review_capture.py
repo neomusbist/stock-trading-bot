@@ -1,14 +1,16 @@
 """Bounded receiver evidence for actual trades. No broker or strategy decisions.
 
-WATCH ticks stay in a short memory ring. Real completed bars and bounded
-evaluation samples survive without an entry; only an actual entry candidate
-promotes its tick ring to disk. Holdings receive priority independent of SHADOW.
+WATCH trade/book frames are retained continuously within explicit disk budgets.
+The legacy ring-only mode remains available for bounded offline fixtures.
+Holdings receive reserved queue capacity independent of WATCH/SHADOW traffic.
 Existing order/fill/fee logs are linked, not copied into a second ledger.
 """
 from collections import deque
 from datetime import datetime, timedelta
 import json
 import os
+import shutil
+import hashlib
 from pathlib import Path
 import threading
 import time
@@ -50,19 +52,22 @@ def sampled_reward_ratio(values):
 class TradeReviewCapture:
     def __init__(self, folder, *, ring_seconds=45., ring_rows=256,
                  ring_bytes=1024*1024, queue_rows=4096, queue_bytes=4*1024*1024,
-                 file_bytes=4*1024*1024, day_bytes=16*1024*1024,
-                 total_bytes=64*1024*1024, clock=None, start=True):
+                 file_bytes=32*1024*1024, day_bytes=4*1024**3,
+                 total_bytes=12*1024**3, min_free_bytes=32*1024**3,
+                 continuous_watch=True, clock=None, start=True):
         self.folder=Path(folder);self.folder.mkdir(parents=True,exist_ok=True)
         self.clock=clock or (lambda:datetime.now().astimezone())
         self.ring_seconds=ring_seconds;self.ring_rows=ring_rows;self.ring_limit=ring_bytes
         self.queue_rows=queue_rows;self.queue_limit=queue_bytes
         self.file_limit=file_bytes;self.day_limit=day_bytes;self.total_limit=total_bytes
+        self.min_free_bytes=min_free_bytes;self.continuous_watch=continuous_watch;self.storage_block_reason=None
         self.lock=threading.RLock();self.io_lock=threading.Lock();self.stop=threading.Event()
         self.session=uuid.uuid4().hex;self.sequence=0
         self.watch=frozenset();self.held=frozenset();self.promoted={}
         self.rings={};self.ring_size=0;self.pending=deque();self.pending_size=0
         self.losses=0;self.errors=0;self.ring_evictions=0;self.written=0
         self.storage_blocked=False;self.last_error='';self.last_lines={};self.last_bar={};self.last_evaluation_at={}
+        self.rejected_buffer_at={};self.rejected_buffers=0;self.rejected_buffer_bytes=0;self.rejected_buffer_skips=0
         self.last_status_write=0.
         self.day='';self.day_written=0;self.total_written=0;self.path=None;self.path_size=0
         own=sorted(self.folder.glob('trade-review-????????-????.jsonl'))
@@ -92,6 +97,15 @@ class TradeReviewCapture:
                 if not force and not active and symbol not in self.watch:return
                 data=self._encode(row)
                 if active or force:
+                    self._queue(data);return
+                if self.continuous_watch and symbol in self.watch:
+                    # Research traffic cannot fill the queue space reserved
+                    # for held positions and order-related diagnostic records.
+                    reserve_rows=min(256,max(1,self.queue_rows//4))
+                    reserve_bytes=min(512*1024,max(1,self.queue_limit//4))
+                    if (len(self.pending)>=self.queue_rows-reserve_rows
+                            or self.pending_size+len(data)>self.queue_limit-reserve_bytes):
+                        self.losses+=1;return
                     self._queue(data);return
                 ring=self.rings.setdefault(symbol,deque())
                 ring.append((now,data));self.ring_size+=len(data)
@@ -163,8 +177,9 @@ class TradeReviewCapture:
                     'part':index,'parts':len(parts),'rows':part,
                     'orders_enabled':False,'actual_order_permission':False},symbol,force=True)
 
-    def tick(self,t,received):
+    def tick(self,t,received,processed=None):
         row={'event':'TRADE','symbol':t.symbol,'exchange_at':iso(t.time),'received_at':iso(received),
+             'processed_at':iso(processed),'capture_point':'STRATEGY_INGESTION' if processed is not None else 'RECEIVER',
              'received_monotonic':getattr(t,'received_monotonic',None),
              **{k:getattr(t,k,None) for k in ('price','volume','cumulative','bid','ask','bid_qty','ask_qty',
                    'regular','depth_available','depth_source','venue','book_received_at',
@@ -175,6 +190,28 @@ class TradeReviewCapture:
         self._record({'event':'BOOK','symbol':symbol,'exchange_at':book.get('time'),
             'received_at':iso(received),'received_monotonic':book.get('received_monotonic'),
             **{k:book.get(k) for k in ('best_bid','best_ask','bid_qty','ask_qty','depth_available','source')}},symbol)
+
+    def reference_snapshot(self,symbol,bars,received,processed,venue):
+        """Retain the actual accepted REST reference prefix and knowledge time.
+
+        Reference bars never become received trade/warmup bars. Future or
+        incomplete bars cannot enter this prefix. Parts remain under the
+        existing per-row, queue and disk limits.
+        """
+        rows=[]
+        for raw in list(bars)[-120:]:
+            stamp=raw.get('time')
+            stamp=datetime.fromisoformat(stamp) if isinstance(stamp,str) else stamp
+            if not isinstance(stamp,datetime) or stamp.tzinfo is None or stamp+timedelta(minutes=1)>processed:continue
+            rows.append({**raw,'time':stamp})
+        digest=hashlib.sha256(json.dumps([[iso(b['time'])]+[b[k] for k in ('open','high','low','close')]+[b.get('volume')] for b in rows],separators=(',',':')).encode()).hexdigest()
+        parts=[rows[i:i+8] for i in range(0,len(rows),8)]
+        for index,part in enumerate(parts):
+            self._record({'event':'REFERENCE_BARS_PART','symbol':symbol,'received_at':iso(received),
+                'processed_at':iso(processed),'known_at':iso(max(received,processed)),
+                'source':'REST_REFERENCE_MERGED_ACCEPTED','venue':venue,'bar_label':'MINUTE_START',
+                'reference_sha256':digest,'part':index,'parts':len(parts),'rows':part,
+                'restored_signal_bars':0,'orders_enabled':False},symbol,force=True)
 
     def stream(self,kind,at):
         self._record({'event':'STREAM_STATE','kind':kind,'received_at':iso(at),
@@ -203,6 +240,7 @@ class TradeReviewCapture:
         """
         symbol=t.symbol
         if symbol not in self.watch and symbol not in self.held:return
+        self.rejected_candidate_buffer(symbol,evaluation,asof)
         interval=15. if '09:00:00'<=asof.strftime('%H:%M:%S')<'09:30:00' else 60.
         with self.lock:
             previous=self.last_evaluation_at.get(symbol)
@@ -222,7 +260,8 @@ class TradeReviewCapture:
         self._record({'event':'OPPORTUNITY_SAMPLE','symbol':symbol,'asof':iso(asof),
             'exchange_at':iso(t.time),'received_at':getattr(t,'received_at',None),
             'received_monotonic':getattr(t,'received_monotonic',None),
-            **{k:getattr(t,k,None) for k in ('price','bid','ask','bid_qty','ask_qty','depth_available','regular')},
+            **{k:getattr(t,k,None) for k in ('price','volume','cumulative','bid','ask','bid_qty','ask_qty','depth_available','depth_source','regular','book_received_at','book_received_monotonic')},
+            'processed_at':iso(asof),
             'book_time':iso(getattr(t,'book_time',None)),
             'watch':{k:watch.get(k) for k in ('status','source_count','fallback_source1','resistance',
                 'resistance_asof','observed_at','first_raw_at','first_watch_at')},
@@ -231,6 +270,40 @@ class TradeReviewCapture:
             'trials':trials,'fast':{k:fast.get(k) for k in ('time','status','reason','regime','quote_evidence')},
             'sampling_interval_seconds':interval,'coverage':'SAMPLED_NOT_ALL_OPPORTUNITIES',
             'orders_enabled':False,'actual_order_permission':False},symbol,force=True)
+
+    def rejected_candidate_buffer(self,symbol,evaluation,asof):
+        """Retain a bounded real prefix when only economic gates rejected it.
+
+        This does not promote a symbol or authorize an order. It deliberately
+        keeps the existing partial ring, rather than inventing missing ticks.
+        Reserve queue capacity for holdings; at most 16 prefixes/512KiB per
+        process and one per symbol/minute, under the unchanged disk budgets.
+        """
+        trials=(evaluation or {}).get('trials',[])
+        eligible=[]
+        for trial in trials:
+            failures={k for k,v in trial.get('gates',{}).items() if v.get('result')!='PASS'}
+            if (trial.get('candidate_generated') and not trial.get('entry_ready') and failures
+                    and failures<={'risk_reward','economic','continuation_cost_reward_risk'}):
+                eligible.append({'setup':trial.get('setup'),'failed_gates':sorted(failures)})
+        if not eligible:return
+        with self.lock:
+            if symbol in self.held or self.promoted.get(symbol,0)>time.monotonic():return
+            previous=self.rejected_buffer_at.get(symbol)
+            if previous is not None and (asof-previous).total_seconds()<60:return
+            rows=[data for _,data in self.rings.get(symbol,())]
+            if not rows:return
+            marker=self._encode({'event':'REJECTED_CANDIDATE_BUFFER','symbol':symbol,'at':iso(asof),
+                'trials':eligible,'rows':len(rows),'coverage':'BOUNDED_PARTIAL_RECEIVED_PREFIX_NOT_COMPLETE_TAPE',
+                'orders_enabled':False,'actual_order_permission':False})
+            size=sum(map(len,rows))+len(marker)
+            if (self.rejected_buffers>=16 or self.rejected_buffer_bytes+size>512*1024
+                    or len(self.pending)+len(rows)+1>max(0,self.queue_rows-32)
+                    or self.pending_size+size>max(0,self.queue_limit-128*1024)):
+                self.rejected_buffer_skips+=1;return
+            for data in [marker,*rows]:self._queue(data)
+            self.rejected_buffer_at[symbol]=asof
+            self.rejected_buffers+=1;self.rejected_buffer_bytes+=size
 
     def position(self,symbol,p,at):
         sig=p.get('signal') or {}
@@ -273,6 +346,10 @@ class TradeReviewCapture:
                 'queue_bytes':self.pending_size,'ring_bytes':self.ring_size,
                 'ring_rows':sum(len(r) for r in self.rings.values()),'capture_losses':self.losses,
                 'write_errors':self.errors,'last_error':self.last_error,'storage_blocked':self.storage_blocked,
+                'rejected_buffers':self.rejected_buffers,'rejected_buffer_bytes':self.rejected_buffer_bytes,
+                'rejected_buffer_skips':self.rejected_buffer_skips,
+                'continuous_watch':self.continuous_watch,'storage_block_reason':self.storage_block_reason,
+                'limits':{'file_bytes':self.file_limit,'day_bytes':self.day_limit,'total_bytes':self.total_limit,'min_free_bytes':self.min_free_bytes},
                 'coverage':'UNKNOWN_IF_LOSS_OR_GAP_OR_PARTIAL_BUFFER','orders_enabled':False,
                 'total_bytes':self.total_written,'day_bytes':self.day_written}
 
@@ -288,7 +365,9 @@ class TradeReviewCapture:
                     data=self.pending.popleft();batch.append(data);size+=len(data);self.pending_size-=len(data)
             if not batch:return True
             if self.total_written+size>self.total_limit or self.day_written+size>self.day_limit:
-                self.storage_blocked=True;self.losses+=len(batch);return False
+                self.storage_blocked=True;self.storage_block_reason='CAPTURE_BYTE_BUDGET';self.losses+=len(batch);return False
+            if self.min_free_bytes and shutil.disk_usage(self.folder).free-size<self.min_free_bytes:
+                self.storage_blocked=True;self.storage_block_reason='CAPTURE_FREE_SPACE_RESERVE';self.losses+=len(batch);return False
             try:
                 if self.path is None or self.path_size+size>self.file_limit:
                     existing=list(self.folder.glob('trade-review-'+day+'-????.jsonl'))

@@ -569,6 +569,13 @@ def drain_intraday_context(engine,detector,shadow,worker,targets,venue,asof,chec
                         for bar in row['bars']:
                             if bar['time'] in rest_times:bar['available_at']=received.isoformat()
             changed=True
+            capture=getattr(engine,'trade_review',None)
+            if capture is not None:
+                try:
+                    with detector._state_lock:
+                        reference_rows=[dict(b) for b in detector.price_context.reference_bars(sym,asof,venue)]
+                    capture.reference_snapshot(sym,reference_rows,received,asof,venue)
+                except Exception:pass  # Reference diagnostics cannot change order/protection behavior.
         engine.event('INTRADAY_REFERENCE_READY' if not packet.get('error') else 'INTRADAY_REFERENCE_PENDING',
             symbol=sym,venue=venue,received_at=packet['received_at'],known_bars=len(packet.get('bars',[])),
             source='REST_REFERENCE',restored_signal_bars=0,restored_warmup=False,error=packet.get('error'))
@@ -1804,6 +1811,9 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     detector=PatternDetector(effective,auto,engine.costs)
     detector.fast_strategy=engine.fast_strategy
     detector.continuous_observation=True
+    capture=getattr(engine,'trade_review',None)
+    if capture is not None:
+        detector.accepted_tick_capture=lambda tick,received:capture.tick(tick,received,engine.clock())
     if auto.entry_context_enabled or auto.structural_breakout_enabled or auto.intraday_context_enabled or auto.fast_momentum_enabled:
         saved=[p.get('signal',{}) for p in engine.s['trades']]
         saved.extend(o.get('signal') or {} for o in engine.s['orders'].values() if o.get('side')=='BUY')

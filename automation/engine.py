@@ -1040,8 +1040,17 @@ class AutonomousEngine(ExistingExits,Engine):
         # fee, order, position, risk or HALT change still checkpoints eagerly;
         # holdings/active orders never use this flat-account fast path.
         from copy import deepcopy
-        projection=deepcopy(self.s)
-        projection.get('automation',{}).get('capital_snapshot',{}).pop('timestamp',None)
+        compare_started=time.perf_counter()
+        # Compare the full financial state, but do not clone large immutable
+        # closed-trade archives on every healthy flat refresh. Only the two
+        # dictionaries whose timestamp is normalized need a shallow view.
+        projection=dict(self.s)
+        if 'automation' in self.s:
+            projection['automation']=dict(self.s['automation'])
+            if 'capital_snapshot' in self.s['automation']:
+                capital=dict(self.s['automation']['capital_snapshot'])
+                capital.pop('timestamp',None)
+                projection['automation']['capital_snapshot']=capital
         unchanged=(self.account_ok and not self.s['positions'] and not self.active_orders()
                    and not self.s.get('halt')
                    and projection==getattr(self,'_durable_reconcile_projection',None))
@@ -1049,13 +1058,16 @@ class AutonomousEngine(ExistingExits,Engine):
         try:
             if not unchanged:
                 self.save(fsync=True)
-                self._durable_reconcile_projection=projection
+                # Never retain aliases to mutable ledger objects. A later
+                # nested fee/order/risk change must force another checkpoint.
+                self._durable_reconcile_projection=deepcopy(projection)
         except Exception:
             self.account_ok=False
             raise
         stats=getattr(self,'reconcile_checkpoint_stats',{'written':0,'unchanged_flat':0})
         stats['unchanged_flat' if unchanged else 'written']+=1
         stats['last_commit_seconds']=time.perf_counter()-commit_started
+        stats['last_compare_seconds']=commit_started-compare_started
         stats['last_action']='UNCHANGED_FLAT' if unchanged else 'DURABLE_CHECKPOINT'
         self.reconcile_checkpoint_stats=stats
         self.kill_checked=True

@@ -75,6 +75,30 @@ class ReconcileCheckpointTests(unittest.TestCase):
         self.assertTrue(self.e.account_ok)
         self.assertEqual(self.e.s['automation']['capital_snapshot']['timestamp'], self.clock[0].isoformat())
 
+    def test_identical_flat_refresh_does_not_copy_closed_history(self):
+        copies=[]
+        class ArchivedRows(list):
+            def __deepcopy__(rows,memo):
+                copies.append(len(rows))
+                return list(rows)
+        self.e.s['closed_history_evidence']=ArchivedRows([{'value':i} for i in range(1000)])
+        self.e.reconcile(self.snapshot)
+        copies.clear()
+        self.clock[0]+=timedelta(seconds=5)
+        self.e.reconcile(self.snapshot)
+        self.assertEqual(copies,[])
+        self.assertTrue(self.e.account_ok)
+
+    def test_nested_closed_history_change_is_durable_without_aliasing(self):
+        self.e.s['closed_history_evidence']=[{'cost':{'confirmed_fee':10}}]
+        self.e.reconcile(self.snapshot)
+        self.e.s['closed_history_evidence'][0]['cost']['confirmed_fee']=11
+        self.clock[0]+=timedelta(seconds=5)
+        self.e.reconcile(self.snapshot)
+        actual=json.loads(self.e.path.read_bytes())
+        self.assertEqual(actual['closed_history_evidence'][0]['cost']['confirmed_fee'],11)
+        self.assertEqual(self.e.reconcile_checkpoint_stats['last_action'],'DURABLE_CHECKPOINT')
+
     def test_cash_change_is_durable_before_account_is_usable(self):
         self.clock[0] += timedelta(seconds=5)
         changed = {**self.snapshot, 'cash': 71000.}

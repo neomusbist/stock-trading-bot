@@ -55,6 +55,9 @@ class TrendContinuationEntryTests(unittest.TestCase):
         a=d.setup_trials(tick,{'status':'WATCH','resistance':20000},gates,_bars=rows)[0]
         self.assertFalse(a['entry_ready'])
         self.assertEqual(a['gates']['continuation_cost_reward_risk']['result'],'FAIL')
+        self.assertEqual(a['candidate_confirmation_basis'],'CONFIRMED_CONTINUATION')
+        self.assertEqual(a['gates']['risk_reward']['values']['rr_basis'],'GROSS_PRICE_DISTANCE')
+        self.assertIn('net_rr',a['gates']['risk_reward']['values'])
 
     def test_causal_received_gradual_A_reaches_durable_intent_and_fake_acceptance(self):
         h=lifecycle.LiveReadyLifecycle('runTest');h.setUp();self.addCleanup(h.doCleanups)

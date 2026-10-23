@@ -107,6 +107,10 @@ class PatternDetector(Detector):
             b['coverage_resumed_at']=received.isoformat()
         b['high']=max(b['high'],t.price); b['low']=min(b['low'],t.price); b['close']=t.price; b['volume']+=t.volume
         b['last_second']=t.time.second; b['last_trade_time']=t.time.isoformat(); b['tick_count']+=1
+        capture=getattr(self,'accepted_tick_capture',None)
+        if callable(capture):
+            try:capture(t,received)
+            except Exception:pass  # Diagnostic recording never interrupts protection/ingestion.
         return True
 
     @observation_locked
@@ -406,6 +410,7 @@ class PatternDetector(Detector):
                 amount=gates['liquidity']['values']['window_turnover']
                 common['liquidity']=gate(amount>=threshold,window_turnover=amount,min_turnover=threshold,setup=name)
             trial_gates={**common,**price_gates}
+            continuation_candidate=False
             if name=='A':
                 trial_gates['acceleration']=gates['acceleration']
                 local_continuation=bool(setup and setup.get('entry_basis')=='LOCAL_CONFIRMED_CONTINUATION')
@@ -414,6 +419,7 @@ class PatternDetector(Detector):
                     venue=watch.get('venue') or (getattr(self.cfg,'after_default_venue','SOR') if is_after else 'KRX')
                     sustained,proof=confirmed_continuation(bars if local_continuation else self.price_context.reference_bars(t.symbol,t.time,venue),t.time,self.cfg.min_price_gain)
                     if sustained is True:
+                        continuation_candidate=True
                         # A price-defined continuation need not wait for three
                         # consecutively rising volume bars or a late 3x burst.
                         # Its existing absolute liquidity gate remains required.
@@ -453,6 +459,7 @@ class PatternDetector(Detector):
             trials.append({'setup':name,'evaluated':True,'candidate_generated':bool(setup),
                 'acceleration_required':name=='A' and not continuation_entry,'acceleration_observation':gates['acceleration'],
                 'entry_confirmation_basis':'CONFIRMED_CONTINUATION' if continuation_entry else 'ACCELERATED_BREAKOUT' if name=='A' else name,
+                'candidate_confirmation_basis':'CONFIRMED_CONTINUATION' if continuation_candidate else 'ACCELERATED_BREAKOUT' if name=='A' else name,
                 'failed_reasons':why,'primary_reason_code':why[0] if why else 'SETUP_PRICE_GATES_PASS',
                 'gates':trial_gates,'setup_geometry':setup,
                 'impulse_evidence':b_evidence if name=='B' else None,
@@ -600,6 +607,7 @@ class PatternDetector(Detector):
             if box_evidence.get('target_ceiling') is not None:target=min(target,box_evidence['target_ceiling'])
         distance=(limit-stop)/limit if limit>0 else None
         rr=(target-limit)/(limit-stop) if limit>stop else None
+        gross_rr=rr;rr_basis='GROSS_PRICE_DISTANCE'
         if setup['pattern']=='B':
             from automation.exit_plan import build_plan
             b_sig={'limit':limit,'stop':stop,'target':target,'pattern':'B',
@@ -608,8 +616,12 @@ class PatternDetector(Detector):
             b_plan=build_plan(c,self.a,b_sig)
             if not b_plan.get('reward_guard_pass'):
                 rr=b_plan.get('net_reward_risk') if b_plan.get('net_reward_risk') is not None else 0.0
+                rr_basis='EXIT_PLAN_NET_REWARD_GUARD'
         horizon=getattr(self.a,'horizon_'+setup['pattern'].lower()+'_minutes')
         score=efficiency(limit,stop,target,min(1.,0.4+0.1*len(watch.get('source_details',{}))),horizon,self.costs,self.a.min_efficiency_score)
+        cost_risk=score.get('risk_per_share');cost_reward=score.get('reward_after_cost')
+        net_rr=(cost_reward/cost_risk if isinstance(cost_risk,(int,float)) and cost_risk>0
+                and isinstance(cost_reward,(int,float)) else None)
         invalidation_pass=bool(distance is not None and 0<stop<limit and c.min_stop_fraction<=distance<=c.max_stop_fraction)
         structure_sized=(breakout_pass is True or structural_pass is True and self.a.confirmed_invalidation_enabled or box_pass is True)
         if structure_sized:
@@ -642,7 +654,8 @@ class PatternDetector(Detector):
                 entry=limit,stop=stop,distance_pct=distance,min_pct=c.min_stop_fraction,
                 max_pct=None if structure_sized else c.max_stop_fraction,
                 **({'upper_bound_basis':'ACCOUNT_RISK_AND_INTEGER_QUANTITY'} if structure_sized else {})),
-            'risk_reward':gate(None if rr is None else rr>=c.min_reward_risk,calculated_rr=rr,required_rr=c.min_reward_risk,target=target),
+            'risk_reward':gate(None if rr is None else rr>=c.min_reward_risk,calculated_rr=rr,required_rr=c.min_reward_risk,target=target,
+                rr_basis=rr_basis,gross_rr=gross_rr,net_rr=net_rr),
             'resistance':gate(watch.get('status') in {'ELIGIBLE','WATCH','RESERVE'} and (setup['pattern']!='B' or watch.get('resistance_room_pass') is not False),resistance_room_pass=watch.get('resistance_room_pass'),resistance=resistance,
                 distance_pct=resistance/limit-1 if resistance is not None and limit>0 else None,min_room=c.min_resistance_room),
             'order_price':gate(limit>=t.ask,limit=limit,ask=t.ask),
