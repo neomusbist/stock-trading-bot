@@ -2,10 +2,14 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from datetime import timedelta
+from datetime import datetime,timedelta
 
-from research.evidence_collector import JsonTail,ResearchEvidenceCollector
-from tests.test_causal_replay import AT,SYM
+from research.evidence_collector import JsonTail,ResearchEvidenceCollector,session_check,freeze_session
+from core.settings import KST
+
+# Collector tests must not import unrelated, uninstalled strategy adapters.
+AT=datetime(2026,10,20,10,13,tzinfo=KST)
+SYM='999990'
 
 
 class CollectorTests(unittest.TestCase):
@@ -67,5 +71,25 @@ class CollectorTests(unittest.TestCase):
         c=self.collector();c.candidate(SYM,'A',AT,{'entry':1000});self.rows(c)
         after={str(p):p.read_bytes() for p in self.source.rglob('*') if p.is_file()}
         self.assertEqual(before,after)
+    def test_persistent_approval_and_old_capture_do_not_prove_next_day_readiness(self):
+        (self.source/'runtime').mkdir()
+        (self.source/'runtime/automation_policy.json').write_text(json.dumps({'mode':'STOP','live_authorized':True}))
+        before={str(p):p.read_bytes() for p in self.source.rglob('*') if p.is_file()}
+        result=session_check(self.source,AT,'2026-10-26')
+        self.assertFalse(result['ready_for_target_day_capture'])
+        self.assertTrue(result['persistent_live_authorization'])
+        self.assertFalse(result['actual_order_permission'])
+        self.assertIn('NO_FRESH_TARGET_DAY_WORKER_HEARTBEAT',result['problems'])
+        self.assertEqual(before,{str(p):p.read_bytes() for p in self.source.rglob('*') if p.is_file()})
+    def test_preopen_snapshot_is_not_an_after_market_balance_backfill(self):
+        monday=datetime(2026,10,26,8,50,tzinfo=KST)
+        for name in ('config.json','automation.json','runtime/RELEASE_IDENTITY.json','runtime/automation-production/state.json'):
+            f=self.source/name;f.parent.mkdir(parents=True,exist_ok=True);f.write_text('{}')
+        result=freeze_session(self.source,self.output,'2026-10-26',preopen_at=monday)
+        self.assertEqual(result['snapshot_kind'],'PREOPEN_STATE_NOT_AN_ACCOUNT_OR_ORDER_APPROVAL')
+        self.assertEqual(len(result['files']),4)
+        with self.assertRaisesRegex(ValueError,'PREOPEN_CLOCK_REQUIRED'):
+            freeze_session(self.source,self.root/'late','2026-10-26',preopen_at=monday.replace(hour=16))
+        self.assertFalse((self.root/'late').exists())
 
 if __name__=='__main__':unittest.main()

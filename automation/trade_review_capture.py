@@ -75,6 +75,9 @@ class TradeReviewCapture:
         self.total_written=sum(p.stat().st_size for p in own)
         self._record({'event':'CAPTURE_STARTED','at':iso(self.clock()),
                       'coverage':'STARTS_NOW_NO_RESTORED_TICKS_OR_BARS',
+                      'detail_sampling_seconds':{'opening_before_0930':15,'otherwise':60},
+                      'samples_establish_exact_first_onset':False,
+                      'continuous_scope':'WATCH_AND_HELD_ONLY_WITHIN_EXISTING_BUDGETS',
                       'orders_enabled':False}, force=True)
         self.thread=threading.Thread(target=self._run,name='trade-review-writer',daemon=True) if start else None
         if self.thread:self.thread.start()
@@ -131,6 +134,10 @@ class TradeReviewCapture:
                     metadata[symbol]['market_status']={k:status.get(k) for k in ('pass','reason_code','checked_at','vi_active','single_price_auction')}
             with self.lock:
                 previous=getattr(self,'watch_metadata',{})
+                if not isinstance(watch,dict):
+                    # Order-event position refreshes pass the existing symbol
+                    # set. They do not revoke already known WATCH qualification.
+                    metadata={s:row for s,row in previous.items() if s in watch}
                 changes=[(s,metadata.get(s)) for s in previous.keys()|metadata.keys() if previous.get(s)!=metadata.get(s)]
                 self.watch_metadata=metadata
                 self.watch=frozenset(sorted(set(watch))[:12])
@@ -294,6 +301,7 @@ class TradeReviewCapture:
                 'entry_alternatives':[price_stage(x) for x in trial.get('entry_alternatives',[])[:1]]})
         fast=fast if isinstance(fast,dict) else {}
         self._record({'event':'OPPORTUNITY_SAMPLE','symbol':symbol,'asof':iso(asof),
+            'detail_sampling_seconds':interval,'exact_first_onset':False,
             'receipt_evidence':tick_source_identity(t),
             'exchange_at':iso(t.time),'received_at':getattr(t,'received_at',None),
             'received_monotonic':getattr(t,'received_monotonic',None),
