@@ -52,18 +52,18 @@ class JsonTail:
         return rows
 
 
-def session_check(source_root,at,day):
+def session_check(source_root,at,day,expected_release=None):
     """Read-only local readiness evidence; never starts/authenticates a worker.
 
     Persistent authorization, a GUI window and a fresh receiving worker are
     separate facts. This check cannot certify the full session from a tail.
     """
     from core.util import shared_binary_reader
-    root=Path(source_root);problems=[]
+    root=Path(source_root).resolve();problems=[];read_errors=[]
     def read(name):
         try:
             with shared_binary_reader(root/name) as stream:return json.load(stream)
-        except (OSError,ValueError):return {}
+        except (OSError,ValueError):read_errors.append(name);return {}
     def fresh(value,seconds=20):
         stamp=aware(value)
         return bool(stamp and stamp.date().isoformat()==day and 0<=(at-stamp).total_seconds()<=seconds)
@@ -71,11 +71,47 @@ def session_check(source_root,at,day):
     receipt=read('runtime/operator_user_authorization.json')
     status=read('runtime/automation-production/trade-review/capture-status.json')
     identity=read('runtime/RELEASE_IDENTITY.json');cfg=read('config.json');auto=read('automation.json')
+    mismatch=[];verified=0;declared=identity.get('files')
+    if not isinstance(declared,dict) or not declared:
+        problems.append('RELEASE_MANIFEST_MISSING_OR_INVALID')
+    else:
+        for relative,expected in declared.items():
+            path=(root/relative).resolve()
+            if root not in path.parents:
+                mismatch.append(relative);continue
+            try:
+                from research.causal_data import file_sha
+                if file_sha(path)!=expected:mismatch.append(relative)
+                else:verified+=1
+            except OSError:mismatch.append(relative)
+        if mismatch:problems.append('RELEASE_HASH_MISMATCH')
+    if expected_release and identity.get('release_id')!=expected_release:
+        problems.append('UNEXPECTED_INSTALLED_RELEASE')
     if not fresh(h.get('time')):problems.append('NO_FRESH_TARGET_DAY_WORKER_HEARTBEAT')
     if h.get('connected') is not True:problems.append('RECEIVER_NOT_CONNECTED')
     if not fresh(status.get('at')):problems.append('NO_FRESH_TARGET_DAY_CAPTURE_STATUS')
     if status.get('storage_blocked') or status.get('capture_losses',0) or status.get('write_errors',0):
         problems.append('CAPTURE_LOSS_ERROR_OR_STORAGE_BLOCK')
+    if read_errors:problems.append('REQUIRED_LOCAL_STATE_UNREADABLE')
+    prerequisites=[]
+    if p.get('mode')!='LIVE':prerequisites.append('POLICY_NOT_LIVE')
+    if p.get('live_authorized') is not True or receipt.get('trading_day')!=day:
+        prerequisites.append('TARGET_DAY_APPROVAL_NOT_CONFIRMED')
+    if auto.get('fast_momentum_enabled') is not False or auto.get('pullback_expansion_target_enabled',False) is not False:
+        prerequisites.append('EXPECTED_RESEARCH_SAFETY_OPTIONS_CHANGED')
+    readiness=h.get('readiness') or {}
+    if readiness.get('state')=='STOPPED':problems.append('WORKER_STOPPED')
+    pid=h.get('pid');pid_status='UNKNOWN'
+    if type(pid) is int and pid>0 and os.name=='nt':
+        import ctypes
+        kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+        kernel.OpenProcess.argtypes=(ctypes.c_ulong,ctypes.c_int,ctypes.c_ulong)
+        kernel.OpenProcess.restype=ctypes.c_void_p
+        kernel.CloseHandle.argtypes=(ctypes.c_void_p,)
+        handle=kernel.OpenProcess(0x1000,False,pid)  # QUERY_LIMITED_INFORMATION only.
+        if handle:pid_status='EXISTS_NOT_EXECUTABLE_IDENTITY_PROOF';kernel.CloseHandle(handle)
+        elif ctypes.get_last_error()==87:pid_status='ABSENT'
+    if pid_status in {'UNKNOWN','ABSENT'}:problems.append('WORKER_PID_ABSENT_OR_UNKNOWN')
     limits=status.get('limits',{});free=shutil.disk_usage(root).free
     daily_left=max(0,limits.get('day_bytes',0)-(status.get('day_bytes',0) if str(status.get('at',''))[:10]==day else 0))
     total_left=max(0,limits.get('total_bytes',0)-status.get('total_bytes',0))
@@ -106,8 +142,12 @@ def session_check(source_root,at,day):
         'approval_receipt_day':receipt.get('trading_day'),
         'receipt_targets_requested_day':receipt.get('trading_day')==day,
         'approval_validation':'USE_INSTALLED_READINESS_GATES_NOT_THIS_RESEARCH_SCHEMA',
+        'live_start_prerequisites_missing':prerequisites,
+        'installed_readiness_missing':readiness.get('missing','UNKNOWN'),
+        'release_integrity':{'verified_files':verified,'mismatches':mismatch,'read_errors':read_errors},
         'authorization_is_current_receiving_proof':False,'gui_presence':'NOT_INSPECTED_NOT_RECEIPT_PROOF',
         'worker_heartbeat_at':h.get('time'),'worker_pid':h.get('pid'),'connected':h.get('connected'),
+        'worker_pid_status':pid_status,'account_ready_evidence':readiness.get('gates',{}).get('account','UNKNOWN'),
         'readiness_snapshot':h.get('readiness'),'capture_started_at':first_capture,
         'last_bounded_trade_receipt':last_trade,'last_bounded_book_receipt':last_book,
         'regular_receipt_status':'SAMPLED_RECENT_RECEIPTS' if regular and fresh(last_trade,10) and fresh(last_book,10) else 'UNKNOWN_OR_PREOPEN',
@@ -260,6 +300,61 @@ class ResearchEvidenceCollector:
         return self.capture.close()
 
 
+def audit_freeze(folder,output,max_records=3000000):
+    """Audit every selected capture line, not just replay-supported event types.
+
+    Gaps identify unproven sequence ranges. They do not certify the market or
+    turn missing subscriptions into received data. Only an external new output
+    is permitted; temporary sorting stays outside the operating tree.
+    """
+    from contextlib import closing
+    import sqlite3,tempfile
+    from research.session_validation import verify_freeze,known_at
+    from research.causal_data import frozen_lines
+    root=Path(folder).resolve();out=Path(output).resolve();m=verify_freeze(root)
+    if out==root or root in out.parents or out.exists():raise ValueError('NEW_EXTERNAL_AUDIT_OUTPUT_REQUIRED')
+    out.parent.mkdir(parents=True,exist_ok=True)
+    counts=Counter();details=[];losses={};rows=0
+    with tempfile.TemporaryDirectory(prefix='R6-evidence-sort-',dir=out.parent) as scratch:
+        with closing(sqlite3.connect(Path(scratch)/'sequence.sqlite')) as db:
+            db.execute('CREATE TABLE rows (session TEXT,seq INTEGER,stamp TEXT,source TEXT,loss INTEGER)')
+            for f in m['files']:
+                end=f.get('complete_jsonl_byte_end')
+                if end is None:continue
+                offset=0
+                if end<f['byte_end']:counts['PARTIAL_TAIL_FILES']+=1
+                for line in frozen_lines(root/f['relative'],end):
+                    start=offset;offset+=len(line)
+                    try:r=json.loads(line)
+                    except ValueError:counts['MALFORMED_ROWS']+=1;continue
+                    session=r.get('capture_session');seq=r.get('capture_sequence')
+                    if not session or type(seq) is not int:counts['NONSEQUENCED_ROWS']+=1;continue
+                    rows+=1
+                    if rows>max_records:raise ValueError('AUDIT_RECORD_BUDGET_EXCEEDED_NO_RESULT')
+                    if rows%10000==0 and shutil.disk_usage(out.parent).free<32*1024**3:
+                        raise ValueError('AUDIT_32GiB_RESERVE_REQUIRED')
+                    at=known_at(r)
+                    db.execute('INSERT INTO rows VALUES (?,?,?,?,?)',(session,seq,at.isoformat() if at else None,
+                        f['relative']+':'+str(start),r.get('capture_losses',0)))
+            db.commit();last={}
+            for session,seq,at,source,loss in db.execute('SELECT * FROM rows ORDER BY session,seq'):
+                prev=last.get(session)
+                if prev and seq==prev[0]:counts['DUPLICATE_CAPTURE_SEQUENCE']+=1;continue
+                expected=prev[0]+1 if prev else 1
+                if seq>expected:
+                    counts['UNPROVEN_SEQUENCE_RANGES']+=1
+                    if len(details)<10000:details.append({'session':session,'first_missing':expected,'last_missing':seq-1,
+                        'previous_at':prev[1] if prev else None,'next_at':at,'next_source':source,
+                        'meaning':'UNPROVEN_SELECTED_STREAM_RANGE_NOT_INDEPENDENT_TRADES'})
+                losses[session]=max(losses.get(session,0),loss)
+                last[session]=(seq,at)
+    record={'day':m['day'],'sequenced_rows':rows,'counts':dict(counts),'sequence_ranges':details,
+        'details_truncated':counts['UNPROVEN_SEQUENCE_RANGES']>len(details),'max_loss_counters_by_session':losses,
+        'coverage':'SELECTED_FROZEN_RECORDER_STREAM_ONLY_NOT_ALL_RAW_OR_SHADOW_BOOKS',
+        'unsequenced_rows_require_their_own_source_schema':True,'LIVE_modified':False,'actual_order_permission':False}
+    out.write_text(json.dumps(record,ensure_ascii=False,indent=2),encoding='utf-8');return record
+
+
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--source-root',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
@@ -267,10 +362,15 @@ def main(argv=None):
     p.add_argument('--include-existing',action='store_true',help='offline evidence copy; default starts at current EOF')
     modes=p.add_mutually_exclusive_group()
     modes.add_argument('--check-only',action='store_true',help='read local readiness/capture status only; no worker or API startup')
+    modes.add_argument('--audit-freeze',action='store_true',help='offline whole selected recorder-sequence audit; source-root is a freeze')
     p.add_argument('--day',default=None,help='target session YYYY-MM-DD for --check-only')
+    p.add_argument('--expected-release',default=None,help='read-only check fails closed on a different installed release')
     modes.add_argument('--freeze-session',action='store_true',help='after-session exact-prefix freeze outside LIVE; no startup')
     modes.add_argument('--freeze-preopen',action='store_true',help='weekday 08:00-09:00 state snapshot outside LIVE; no approval/startup')
     a=p.parse_args(argv)
+    if a.audit_freeze:
+        result=audit_freeze(a.source_root,a.output)
+        print(json.dumps({'sequenced_rows':result['sequenced_rows'],'counts':result['counts'],'LIVE_modified':False}));return
     if a.freeze_session or a.freeze_preopen:
         result=freeze_session(a.source_root,a.output,a.day or datetime.now(KST).date().isoformat(),
             preopen_at=datetime.now(KST) if a.freeze_preopen else None)
@@ -278,7 +378,7 @@ def main(argv=None):
     if a.check_only:
         root=a.source_root.resolve();out=a.output.resolve()
         if out==root or root in out.parents:p.error('check output must be outside LIVE')
-        result=session_check(root,datetime.now(KST),a.day or datetime.now(KST).date().isoformat())
+        result=session_check(root,datetime.now(KST),a.day or datetime.now(KST).date().isoformat(),a.expected_release)
         out.parent.mkdir(parents=True,exist_ok=True);out.write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
         print(json.dumps({'ready_for_target_day_capture':result['ready_for_target_day_capture'],'problems':result['problems'],'LIVE_modified':False}))
         return
