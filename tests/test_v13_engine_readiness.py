@@ -109,7 +109,7 @@ class V13RunnerReadinessLoopTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)
         atomic_json(self.root/'automation.json',asdict(AutomationConfig()));self.policy=Policy(self.root/'runtime/automation_policy.json')
         self.out=contextlib.redirect_stdout(io.StringIO());self.out.__enter__();self.addCleanup(self.out.__exit__,None,None,None);FakeRest.calls=[]
-    def run_ready(self,stamp,with_tick):
+    def run_ready(self,stamp,with_tick,close_transport=False,transport_before_close=False):
         account=Mock();account.q=queue.Queue();account.request=threading.Event();radar=Mock();radar.q=queue.Queue();radar.cache={};radar.request=threading.Event()
         row={'code':SYM,'name':'합성','status':'WATCH','source_count':2,'resistance':11000}
         radar.q.put({'time':stamp.isoformat(),'rows':[row],'watch':[row],'changes':{'added':[SYM],'removed':[]},'error':None})
@@ -127,7 +127,15 @@ class V13RunnerReadinessLoopTests(unittest.TestCase):
                 return result
             raise queue.Empty
         feed=Mock();feed.q.get.side_effect=receive;feed.overflow.is_set.return_value=False
-        with patch.object(runner,'Rest',FakeRest),patch.object(runner,'RadarWorker',return_value=radar),patch.object(runner,'AccountWorker',return_value=account),patch.object(runner,'Feed',return_value=feed),patch.object(runner,'Reporter',return_value=Mock()),patch.object(runner,'now',return_value=stamp):
+        feed.transport_failed=False
+        if close_transport:
+            feed.close.side_effect=lambda:setattr(feed,'transport_failed',True)
+        original_close=runner.DiagnosticSnapshotWriter.close
+        def close_diagnostics(writer,*args,**kwargs):
+            complete=original_close(writer,*args,**kwargs)
+            if transport_before_close:setattr(feed,'transport_failed',True)
+            return complete
+        with patch.object(runner,'Rest',FakeRest),patch.object(runner,'RadarWorker',return_value=radar),patch.object(runner,'AccountWorker',return_value=account),patch.object(runner,'Feed',return_value=feed),patch.object(runner,'Reporter',return_value=Mock()),patch.object(runner,'now',return_value=stamp),patch.object(runner.DiagnosticSnapshotWriter,'close',close_diagnostics):
             result=runner.run(Config(),self.root,readiness_check=True)
         self.assertLessEqual(len(calls),3);self.assertEqual(FakeRest.calls,[]);self.assertEqual(result['real_orders_sent'],0)
         return result,feed,account,radar
@@ -137,5 +145,35 @@ class V13RunnerReadinessLoopTests(unittest.TestCase):
         feed.start.assert_called_once();account.start.assert_called_once();feed.close.assert_called_once()
         result2,*_=self.run_ready(DAY,True)
         self.assertTrue(result2['passed']);self.assertEqual(result2['readiness']['state'],'OPEN_READY');self.assertEqual(result2['counts']['ticks'],1)
+
+    def test_normal_socket_close_cannot_erase_successful_regular_check(self):
+        result,feed,*_=self.run_ready(DAY,True,close_transport=True)
+        self.assertTrue(feed.transport_failed)
+        self.assertTrue(result['passed'])
+        self.assertEqual(result['readiness']['state'],'OPEN_READY')
+        self.assertFalse(result['readiness']['transport_failure_seen'])
+        terminal=__import__('json').loads((self.root/'runtime/automation-smoke/heartbeat.json').read_text(encoding='utf-8'))
+        self.assertFalse(terminal['connected'])
+        self.assertEqual(terminal['readiness']['state'],'STOPPED')
+
+    def test_normal_socket_close_cannot_erase_successful_preopen_check(self):
+        result,*_=self.run_ready(DAY.replace(hour=8),False,close_transport=True)
+        self.assertTrue(result['passed'])
+        self.assertEqual(result['readiness']['state'],'PREOPEN_READY')
+
+    def test_transport_failure_before_teardown_still_fails(self):
+        result,*_=self.run_ready(DAY,True,close_transport=True,transport_before_close=True)
+        self.assertFalse(result['passed'])
+        self.assertIn('WEBSOCKET_REG_ACK_NOT_READY',result['readiness']['missing'])
+
+    def test_close_failure_still_fails_even_after_ready_evidence(self):
+        original_close=runner.DiagnosticSnapshotWriter.close
+        def incomplete_close(writer,*args,**kwargs):
+            original_close(writer,*args,**kwargs)
+            return False
+        with patch.object(runner.DiagnosticSnapshotWriter,'close',incomplete_close):
+            result,*_=self.run_ready(DAY,True,close_transport=True)
+        self.assertFalse(result['passed'])
+        self.assertEqual(result['fatal'],'DIAGNOSTIC_SNAPSHOT_CLOSE_TIMEOUT')
 
 if __name__=='__main__':unittest.main()

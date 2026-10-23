@@ -2252,6 +2252,13 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
             complete=context_checkpoint.close(timeout=1.)
             engine.event('REFERENCE_CACHE_CHECKPOINT_CLOSED',complete=complete,
                 **context_checkpoint.snapshot(),scope='REFERENCE_CACHE_ONLY',order_ledger_affected=False)
+        # A successful read-only probe intentionally closes its transport.
+        # Observe while it is still open: on_close marks transport_failed even
+        # for our own shutdown. Earlier real disconnects/stale evidence still
+        # fail here, and cleanup failures still veto passed below. This is a
+        # completed probe result, never a live heartbeat or order permission.
+        check_readiness=(readiness_snapshot(engine,counts,radar_ok,now(),detector)
+                         if readiness_check else None)
         if data_active: feed.close(); radar.close(); account.close()
         capture=getattr(engine,'trade_review',None)
         if capture is not None:
@@ -2281,10 +2288,11 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
         except Exception: pass
         result={'started':started.isoformat(),'finished':now().isoformat(),'mode':policy.mode,'approved_cap':auto.capital_limit,
                 'counts':counts,'remaining_positions':len(engine.s['positions']),'remaining_orders':len(engine.active_orders()),
-                'readiness':readiness_snapshot(engine,counts,radar_ok,now(),detector),'build_id':BUILD_ID,'strategy_experiment':STRATEGY_EXPERIMENT,
+                'readiness':check_readiness if check_readiness is not None else readiness_snapshot(engine,counts,radar_ok,now(),detector),'build_id':BUILD_ID,'strategy_experiment':STRATEGY_EXPERIMENT,
                 'fatal':fatal,'real_orders_sent':sum(1 for o in engine.s['orders'].values() if not o['id'].startswith('PAPER-') and o['id']),
                 'passed':not fatal and counts['account_checks']>0 and counts['radar_cycles']>0 and counts['subscription_acks']>0 and not engine.s['positions'] and not engine.active_orders()}
         if readiness_check:
+            result['readiness_evidence_scope']='BEFORE_INTENTIONAL_TRANSPORT_SHUTDOWN'
             result['passed']=not fatal and result['readiness']['state'] in {'PREOPEN_READY','OPEN_READY'} and not engine.s['positions'] and not engine.active_orders()
             result['classification']=result['readiness']['state'] if result['passed'] else 'INCONCLUSIVE_READINESS'
         if not (control_supported(started) or (getattr(cfg,'after_enabled',False) and after_control_supported(started))):

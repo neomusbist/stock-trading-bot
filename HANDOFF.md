@@ -61,6 +61,13 @@ This adds an intentional A entry-policy change to the delivery-only checkpoint; 
 - Any combined LIVE overlay requires explicit new approval for six source files, automation.json (one exact boolean change only), and RELEASE_IDENTITY.json. Settings-change guard rejects any accompanying capital/risk/other setting change. Flat STOP, no running target process, exact external backup and rollback checks remain mandatory.
 - Real early discovery and expectancy are unverified: HJ was not first discovered until 10:50:19, so these changes cannot prove that an earlier 10:30 entry was available. Never infer that the later 13390 high was already known at 10:51 entry.
 
+### 2026-10-23 09:12: readiness check normal-close regression
+
+- Actual read-only pilot logged OPEN_READY at 09:12:27 with fresh tick/account/radar, queue zero and no fatal error; its own WebSocket close marked transport_failed, then final result recomputed WAITING and prevented the GUI startup sequence.
+- Capture the readiness-check result immediately before intentional transport shutdown, after preceding cleanup and any real transport failure. Keep the terminal heartbeat STOPPED/disconnected. Historical probe success grants no live order permission; continuous readiness and all order/auth/risk gates remain unchanged. Cleanup failure still vetoes passed.
+- Reproduce regular and preopen clean-close failure: 2 FAIL / 3 PASS on installed baseline, then 73 related tests PASS, network attempts zero. The fixture now models the real on_close side effect; actual disconnect before teardown and incomplete diagnostic shutdown still fail. Actual broker requalification after selective deployment remains required.
+- Proposed scope is only automation/runner.py and runtime/RELEASE_IDENTITY.json, requiring explicit deployment approval and normal GUI close/STOP/flat/process checks. Preserve FAST OFF, all settings, ledger, policy and approvals.
+
 ### 2026-10-22: Strategy Mathematical Impossibility and Day High Causal Fixes
 
 - **Setup B hypothesis (corrected Oct23)**: A particular peak-capped fixture failed cost-inclusive RR. This does not establish a mathematical impossibility for every B entry, nor a 100% rejection rate across independent market opportunities. Reward/risk depends on entry, invalidation, target and costs. A separate counterexample now passes the existing peak target without expansion.
