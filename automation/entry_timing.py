@@ -16,6 +16,7 @@ def timeline_locked(method):
 class ObservationTimeline:
     """Small day-specific evidence file, never a restored trading/approval state."""
     def __init__(self,path=None):
+        self.writer=None;self.diagnostic_fsync=False
         self.path=path;self.day=None;self.rows=OrderedDict();self.saved_at=None;self.validated_through=None
         self.lock=RLock();self.events=deque(maxlen=4096)
         if path:
@@ -138,9 +139,11 @@ class ObservationTimeline:
     def save(self,stamp):
         if self.path and self.day==stamp.date() and (self.saved_at is None or (stamp-self.saved_at).total_seconds()>=5):
             from core.util import atomic_json
-            atomic_json(self.path,{'day':self.day.isoformat(),'symbols':self.rows,'diagnostic_only':True,
+            snapshot={'day':self.day.isoformat(),'symbols':{s:dict(r) for s,r in self.rows.items()},'diagnostic_only':True,
                                    'actual_order_permission':False,'restores_ticks_or_bars':False,
-                                   'opening':self.opening_snapshot(stamp) if '09:00:00'<=stamp.strftime('%H:%M:%S')<'09:10:00' else None})
+                                   'opening':self.opening_snapshot(stamp) if '09:00:00'<=stamp.strftime('%H:%M:%S')<'09:10:00' else None}
+            if self.writer:self.writer(self.path,snapshot)
+            else:atomic_json(self.path,snapshot,fsync=self.diagnostic_fsync)
             self.saved_at=stamp
 
 

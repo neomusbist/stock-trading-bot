@@ -85,6 +85,17 @@ class QuoteArrivalEntryTests(unittest.TestCase):
         self.assertEqual(order['signal']['pattern'], 'FAST')
         self.assertEqual(order['qty'], order['signal']['planned_qty'])
 
+    def test_unchanged_quote_values_do_not_repeat_same_trade_evaluation(self):
+        tick=self.seed()
+        with patch.object(runner,'evaluate_actual_entry',return_value=None) as evaluate:
+            self.send_book(tick)
+            self.assertEqual(evaluate.call_count,1)
+            self.send_book(tick)
+            self.assertEqual(evaluate.call_count,1)
+            self.send_book(tick,qty=20000)
+            self.assertEqual(evaluate.call_count,2)
+        self.assertEqual(self.h.orders('BUY'),[])
+
     def test_after_session_later_book_reaches_same_sor_order_boundary(self):
         tick = self.seed(after=True)
         self.send_book(tick)
@@ -201,11 +212,13 @@ class QuoteArrivalEntryTests(unittest.TestCase):
 
 
 class ABCQuoteArrivalTests(unittest.TestCase):
-    def lifecycle(self, setup):
+    def lifecycle(self, setup, hour=16):
         from tests import test_live_ready_20261021 as original
         from core.util import tick_size
         cfg, auto = original.settings()
-        clock = original.AT.replace(hour=16, minute=30)
+        clock = original.AT.replace(hour=hour, minute=30)
+        if hour!=16:
+            auto=replace(auto,fast_momentum_enabled=False)
         with patch.object(original, 'AT', clock), patch.object(original, 'settings',
                 return_value=(replace(cfg, after_enabled=True), auto)):
             h = original.LiveReadyLifecycle('runTest')
@@ -221,7 +234,7 @@ class ABCQuoteArrivalTests(unittest.TestCase):
                 item = {'type': '0B', 'item': original.SYM, 'values': {
                     '20': at.strftime('%H%M%S'), '10': str(price), '15': str(volume),
                     '13': str(h.cumulative), '27': str(price),
-                    '28': str(price-tick_size(price)), '290': '2'}}
+                    '28': str(price-tick_size(price)) if hour==16 else '0', '290': '2'}}
                 h.latest = parse_tick(item, at); h.book = {}
                 h.e.last_account = time.monotonic()
                 return runner.process_message(h.e, h.detector, {'trnm': 'REAL', 'data': [item]},
@@ -232,7 +245,7 @@ class ABCQuoteArrivalTests(unittest.TestCase):
             self.assertEqual(h.broker.orders, [])
             h.clock += timedelta(milliseconds=100)
             h.book = parse_book({'values': {'21': h.clock.strftime('%H%M%S'),
-                '41': str(h.latest.ask), '51': str(h.latest.bid), '61': '1000000', '71': '1000000'}}, h.clock)
+                '41': str(h.latest.ask), '51': str(h.latest.price-tick_size(h.latest.price)), '61': '1000000', '71': '1000000'}}, h.clock)
             feed = SimpleNamespace(q=Queue(), latest_ticks={original.SYM: h.latest},
                 transport_failed=False, overflow=SimpleNamespace(is_set=lambda: False))
             runner.process_message(h.e, h.detector, {'trnm': 'REAL', 'data': [
@@ -260,6 +273,10 @@ class ABCQuoteArrivalTests(unittest.TestCase):
     def test_A_after_late_book_order_fill_exit(self): self.lifecycle('A')
     def test_B_after_late_book_order_fill_exit(self): self.lifecycle('B')
     def test_C_after_late_book_order_fill_exit(self): self.lifecycle('C')
+
+    def test_A_regular_late_book_order_fill_exit(self): self.lifecycle('A', hour=10)
+    def test_B_regular_late_book_order_fill_exit(self): self.lifecycle('B', hour=10)
+    def test_C_regular_late_book_order_fill_exit(self): self.lifecycle('C', hour=10)
 
 
 if __name__ == '__main__':

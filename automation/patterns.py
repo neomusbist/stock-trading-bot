@@ -133,6 +133,17 @@ class PatternDetector(Detector):
     def pullback(self,bars):
         return self.pullback_analysis(bars)[0]
 
+    def sustained_turnover(self,t,minimum,current_amount):
+        """Research alternative from accepted trades, never close*bar-volume."""
+        rows=[x for x in self.buffers.get(t.symbol,()) if 0<=(t.time-x.time).total_seconds()<60]
+        start=self.observation_start.get(t.symbol)
+        known=bool(start and (t.time-start).total_seconds()>=60 and not self.coverage_gaps.get(t.symbol,{}).get('pending'))
+        amount=sum(x.price*x.volume for x in rows)
+        return bool(known and current_amount>=5000000 and amount>=minimum),dict(
+            basis='ACTUAL_ACCEPTED_60_SECOND_TURNOVER',window_seconds=60,tick_count=len(rows),
+            window_turnover=current_amount,minimum_current_turnover=5000000,
+            sustained_turnover=amount,required_sustained_turnover=minimum,coverage_known=known)
+
     def pullback_analysis(self,bars):
         if len(bars)<4:return None,'INSUFFICIENT_USABLE_BARS',{}
         seq=bars[-12:]
@@ -434,6 +445,9 @@ class PatternDetector(Detector):
                             basis='SAME_EXISTING_ECONOMIC_COST_MODEL_ONCE')
                         if cost_pass:
                             trial_gates['acceleration']=gate(True,**gates['acceleration']['values'],mode='CONFIRMED_CONTINUATION',continuation=proof,cost_reward_risk=net_rr)
+                            if self.a.a_sustained_turnover_enabled and not is_after and trial_gates['liquidity']['result']!='PASS':
+                                passed,liquidity=self.sustained_turnover(t,self.cfg.min_window_turnover,amount)
+                                trial_gates['liquidity']=gate(passed,**liquidity,mode='CONFIRMED_CONTINUATION_SUSTAINED_TURNOVER',setup=name)
                 if bars and len(bars)>=2:
                     swing_low=min(b['low'] for b in bars)
                     extension=(t.price-swing_low)/swing_low if swing_low>0 else 0
@@ -442,7 +456,10 @@ class PatternDetector(Detector):
                         min_ratio=gates['acceleration']['values'].get('min_ratio',self.cfg.min_turnover_ratio)
                         if ratio is not None and ratio<min_ratio*1.2:
                             trial_gates['acceleration']=gate(False,reason='LATE_STAGE_ACCELERATION_INSUFFICIENT',ratio=ratio,required_ratio=min_ratio*1.2)
-            elif getattr(self.a, 'chase_quality_filter', False) and bars and len(bars)>=2:
+            elif name=='B' and self.a.b_sustained_turnover_enabled and not is_after and trial_gates['liquidity']['result']!='PASS' and price_gates.get('pullback_structure',{}).get('result')=='PASS' and price_gates.get('risk_reward',{}).get('result')=='PASS':
+                passed,liquidity=self.sustained_turnover(t,self.cfg.min_bc_window_turnover,amount)
+                trial_gates['liquidity']=gate(passed,**liquidity,mode='CONFIRMED_PULLBACK_SUSTAINED_TURNOVER',setup=name)
+            if name!='A' and getattr(self.a, 'chase_quality_filter', False) and bars and len(bars)>=2:
                 swing_low=min(b['low'] for b in bars)
                 extension=(t.price-swing_low)/swing_low if swing_low>0 else 0
                 if extension>0.07:
@@ -590,7 +607,7 @@ class PatternDetector(Detector):
         if self.a.structural_breakout_enabled and setup['pattern']=='A':
             from automation.structural_breakout import structural_breakout
             venue=watch.get('venue') or (getattr(c,'after_default_venue','SOR') if after_supported(t.time) else 'KRX')
-            breakout_pass,breakout_evidence=structural_breakout(self.price_context.reference_bars(t.symbol,t.time,venue),t.time,setup,c,limit,t.bid,t.ask)
+            breakout_pass,breakout_evidence=structural_breakout(self.price_context.reference_bars(t.symbol,t.time,venue),t.time,setup,c,limit,t.bid,t.ask,auto=self.a)
             if breakout_evidence.get('emergency_stop') is not None:stop=breakout_evidence['emergency_stop']
             if breakout_evidence.get('target_ceiling') is not None:
                 # A wider invalidation basis can reduce position size, but must

@@ -15,7 +15,13 @@ from core.broker import Rejected
 from automation.policy import BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL,legacy_test_release_enabled
 from automation.observation_settings import ObservationSettings,load_observation
 
-FIELDS=('flu_rt','cntr_str','now_trde_qty','pred_trde_qty','exp_cntr_qty','trde_prica','bigd_rank','now_rank','base_comp_chgr')
+FIELDS=('flu_rt','cntr_str','now_trde_qty','pred_trde_qty','exp_cntr_qty','trde_prica','bigd_rank','now_rank','base_comp_chgr','trde_qty','sdnin_rt')
+
+def early_surge_bonus(sources):
+    row=sources.get('ka10023',{});values=row.get('values',{})
+    gain=values.get('flu_rt');surge=values.get('sdnin_rt');rank=row.get('observed_rank')
+    return 10.5 if (type(gain) in (int,float) and .5<=gain<=6.5 and
+        ((type(surge) in (int,float) and surge>=50) or (type(rank) is int and 1<=rank<=15))) else 0.
 
 def observation_structure(bars,price,cfg,day):
     strict=structure(bars,price,replace(cfg,max_recent_range=.99),day)
@@ -162,6 +168,9 @@ class DynamicRadar:
             x['delta_period_seconds']=(stamp-old['stamp']).total_seconds() if old else None
             rank_improvement=sum(d['rank_improvement'] or 0 for d in deltas.values())
             x['discovery_score']=len(sources)*10+sum(1/d['observed_rank'] for d in sources.values())+max(0,min(10,rank_improvement))
+            if self.a.early_surge_priority_enabled:
+                x['early_surge_bonus']=early_surge_bonus(sources)
+                x['discovery_score']+=x['early_surge_bonus']
             afford_started=time.perf_counter();affordable=self.affordable(x);self.affordability_ms+=(time.perf_counter()-afford_started)*1000
             if self.policy.locked(sym): x.update(status='REJECT',reason='HARD_LOCK')
             elif sym in BREAKEVEN_EXITS or (sym==TEST_RELEASE_SYMBOL and legacy_test_release_enabled()): x.update(status='REJECT',reason='EXISTING_POLICY_NO_BUY')
@@ -172,6 +181,8 @@ class DynamicRadar:
             else:
                 try: x.update(evaluate(x))
                 except (OSError,ValueError,KeyError,RuntimeError) as e: x.update(status='UNKNOWN',reason=type(e).__name__)
+            if (self.a.single_source_eligibility_fix_enabled and x.get('status')=='ELIGIBLE'
+                    and x.get('source_count')==1 and self.fallback_source1):x['fallback_source1']=True
             self.previous[sym]={'source_details':sources,'stamp':stamp}; self.missing[sym]=0; rows.append(x)
             # Publish only after the very same compression checks have finished.
             # This never makes RAW/unknown status or missing daily history eligible.
@@ -197,6 +208,8 @@ class DynamicRadar:
         eligible=sorted((x for x in rows if x['status']=='ELIGIBLE'),key=priority)
         selected=eligible[:self.cfg.max_watchlist]
         for x in eligible:
+            if self.a.single_source_eligibility_fix_enabled and x.get('source_count')==1 and self.fallback_source1:
+                x['fallback_source1']=True
             if x in selected:
                 x['status']='WATCH'
                 if x.get('source_count')==1:
@@ -276,6 +289,8 @@ class RadarWorker:
             mom=getattr(self.radar,'momentum',{}).get(sym,{})
             shadow_ready=bool(mom.get('fast_signal_ready') or mom.get('tier') in (0,1,2))
             tier_bonus=1.0 if mom.get('fast_signal_ready') else 0.5 if mom.get('tier') in (0,1) else 0.2 if mom.get('tier')==2 else 0.0
+            if self.a.early_surge_priority_enabled and early_surge_bonus(row.get('source_details',{})):
+                tier_bonus+=.5
             if sym not in active and sym not in self.radar.watch and (gain>0 or (recent and rising_rank) or multi_source or shadow_ready):
                 moving.append((gain+tier_bonus,len(row.get('source_details',{})),-self.status_waiting[sym],sym))
         clock=now()

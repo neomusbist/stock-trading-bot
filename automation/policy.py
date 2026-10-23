@@ -53,6 +53,13 @@ class AutomationConfig:
     after_momentum_failure_enabled: bool = False  # failed AFTER burst rebound, independent of one-R activation
     exit_plan_reward_guard_enabled: bool = False  # cost-inclusive RR experiment; insufficient evidence to enable
     fast_momentum_enabled: bool = False
+    a_short_reference_enabled: bool = False  # research: four complete references, original target unchanged
+    a_sustained_turnover_enabled: bool = False  # research: actual 60-second accepted turnover
+    b_sustained_turnover_enabled: bool = False  # research: actual 60-second accepted turnover
+    early_surge_priority_enabled: bool = False  # research ranking, never extra subscription capacity
+    single_source_eligibility_fix_enabled: bool = True
+    abc_quote_retry_enabled: bool = True
+    timeline_async_save_enabled: bool = True
     pullback_expansion_target_enabled: bool = False  # opt-in 50% expansion target beyond peak for Setup B  # R6 FAST live momentum entry integration
     pullback_min_rise: float = 0.008
     pullback_min_retrace: float = 0.20  # minimum retrace fraction for confirmed controlled pullback
@@ -101,6 +108,8 @@ class AutomationConfig:
         if type(self.ALLOW_OVERNIGHT) is not bool or type(self.costs_confirmed) is not bool or type(self.replacement_enabled) is not bool or type(self.entry_context_enabled) is not bool or type(self.stable_position_book_confirmation) is not bool:
             raise ValueError('불리언 설정 오류')
         if any(type(getattr(self,k)) is not bool for k in ('confirmed_box_direction','confirmed_structure_protection','fresh_box_basis_enabled','setup_aware_watch_priority','structural_pullback_enabled','structural_breakout_enabled','intraday_context_enabled','confirmed_invalidation_enabled','after_momentum_failure_enabled','exit_plan_reward_guard_enabled','fast_momentum_enabled','pullback_expansion_target_enabled')):
+            raise ValueError('불리언 설정 오류')
+        if any(type(getattr(self,k)) is not bool for k in ('a_short_reference_enabled','a_sustained_turnover_enabled','b_sustained_turnover_enabled','early_surge_priority_enabled','single_source_eligibility_fix_enabled','abc_quote_retry_enabled','timeline_async_save_enabled')):
             raise ValueError('불리언 설정 오류')
         for k in ('new_entry_cutoff','force_flatten_start','after_prep_start','after_market_start','after_entry_cutoff','after_force_flatten_start','after_market_close'):
             datetime.strptime(getattr(self,k),'%H:%M:%S')

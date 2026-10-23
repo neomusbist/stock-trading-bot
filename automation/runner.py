@@ -342,10 +342,16 @@ class DiagnosticSnapshotWriter:
     stale readiness fresh. The main loop must check errors and must join this
     writer before publishing its terminal STOP snapshot directly.
     """
-    def __init__(self,paths,*,write=None,retry_seconds=.25):
+    def __init__(self,paths,*,write=None,retry_seconds=.25,timeline_path=None):
         self.paths=frozenset(Path(p).absolute() for p in paths)
         if len(self.paths)!=2 or {p.name for p in self.paths}!={'heartbeat.json','candidate_summary.json'}:
             raise ValueError('EXACT_DIAGNOSTIC_PATHS_REQUIRED')
+        if timeline_path is not None:
+            timeline_path=Path(timeline_path).absolute()
+            candidate=next(p for p in self.paths if p.name=='candidate_summary.json')
+            if timeline_path.name!='observation_timeline.json' or timeline_path.parent!=candidate.parent:
+                raise ValueError('EXACT_DIAGNOSTIC_TIMELINE_PATH_REQUIRED')
+            self.paths=self.paths|{timeline_path}
         self.write=atomic_json if write is None else write
         self.retry_seconds=max(.001,float(retry_seconds))
         self.condition=threading.Condition();self.pending={};self.retry_at={};self.failures={}
@@ -1076,9 +1082,19 @@ def _quote_blocked(engine,detector,symbol):
                             'EXECUTABLE_ASK_NOT_ABOVE_BREAKOUT'}:return True
     # AFTER ABC can be fully formed except for its existing depth gate.
     trials=getattr(detector,'last_eval',{}).get(symbol,{}).get('trials',[])
-    return any(t.get('candidate_generated') and t.get('gates',{}).get('liquidity',{}).get('result')!='PASS'
+    if any(t.get('candidate_generated') and t.get('gates',{}).get('liquidity',{}).get('result')!='PASS'
         and t.get('gates',{}).get('liquidity',{}).get('values',{}).get('mode')=='depth'
         and all(v.get('result')=='PASS' for k,v in t.get('gates',{}).items() if k!='liquidity')
+        for t in trials):return True
+    if not getattr(getattr(engine,'a',None),'abc_quote_retry_enabled',True):return False
+    quote_reasons={'breakout_structure':'INVALID_EXECUTABLE_QUOTE',
+        'pullback_structure':'PULLBACK_QUOTE_UNAVAILABLE','box_structure':'BOX_QUOTE_UNAVAILABLE'}
+    def quote_gate(key,value):
+        return (key in {'spread','order_price'} or
+            value.get('values',{}).get('reason')==quote_reasons.get(key) and key in quote_reasons)
+    return any(t.get('candidate_generated')
+        and any(v.get('result')!='PASS' and quote_gate(k,v) for k,v in t.get('gates',{}).items())
+        and all(v.get('result')=='PASS' for k,v in t.get('gates',{}).items() if k!='chase' and not quote_gate(k,v))
         for t in trials)
 
 
@@ -1131,7 +1147,9 @@ def drain_quote_opportunities(engine,detector,feed,lookup,radar,prices,account,r
         pending.pop(sym,None)
         updated=current_entry_quote(engine,t)
         if updated==t:counted('BOOK_NOT_IMPROVED');continue
-        key=(t.time,t.cumulative,updated.book_time,updated.book_received_at,updated.ask_qty,updated.bid_qty)
+        # Freshness was verified above. A new receipt timestamp alone does not
+        # change this immutable trade's executable price/depth or strategy.
+        key=(t.time,t.cumulative,updated.bid,updated.ask,updated.ask_qty,updated.bid_qty)
         prior=getattr(engine,'_last_quote_entry_frame',None)
         if prior is None:prior={};engine._last_quote_entry_frame=prior
         if prior.get(sym)==key:counted('DUPLICATE');continue
@@ -1521,7 +1539,7 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
             if health is not None and book:
                 health.accept_book(item['item'],book,engine.clock())
             sym=item['item']
-            if book and radar_ok and engine.connected and sym in lookup and _quote_blocked(engine,detector,sym):
+            if book and radar_ok and engine.connected and (sym in lookup or (by_symbol and sym in by_symbol)) and _quote_blocked(engine,detector,sym):
                 if not hasattr(engine,'_quote_entry_pending'):engine._quote_entry_pending={}
                 engine._quote_entry_pending[sym]=True
             if not after_supported(received):continue
@@ -1889,7 +1907,10 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     engine.event('AUTOMATION_STARTED',mode=policy.mode,approved_cap=auto.capital_limit,live_mode=cfg.live_mode,build_id=BUILD_ID,strategy_experiment=STRATEGY_EXPERIMENT,risk_fraction=cfg.risk_fraction,max_daily_loss_fraction=cfg.max_daily_loss_fraction,allowed_risk_krw=context['risk_equity']*cfg.risk_fraction,remaining_daily_risk_krw=context['risk_remaining'],
                  daily_risk_budget_krw=context['daily_risk_budget_krw'],daily_risk_override_day=context['daily_risk_override_day'],daily_risk_override_active=context['daily_risk_override_active'],
                  message='기존 보유 평가금액 제외; 기본 실제 신규 주문 불가')
-    diagnostics=DiagnosticSnapshotWriter((root/'runtime/candidate_summary.json',folder/'heartbeat.json'))
+    diagnostics=DiagnosticSnapshotWriter((root/'runtime/candidate_summary.json',folder/'heartbeat.json'),
+        timeline_path=root/'runtime/observation_timeline.json' if auto.timeline_async_save_enabled else None)
+    engine.observation_timeline.writer=diagnostics.submit if auto.timeline_async_save_enabled else None
+    engine.observation_timeline.diagnostic_fsync=not auto.timeline_async_save_enabled
     from core.event_log import AsyncDiagnosticEventWriter
     diagnostic_events=AsyncDiagnosticEventWriter(folder/'events.jsonl')
     engine.diagnostic_event_writer=diagnostic_events

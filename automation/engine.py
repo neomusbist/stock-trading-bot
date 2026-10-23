@@ -349,7 +349,7 @@ class AutonomousEngine(ExistingExits,Engine):
                 received=signal.get('reference_received_at')
                 if received and datetime.fromisoformat(received)>stamp:return 'BREAKOUT_REFERENCE_NOT_KNOWN_AT_SIGNAL'
                 quote=signal['evaluation_gates']['spread']['values']
-                passed,evidence=structural_breakout(signal.get('reference_bar_snapshot'),stamp,signal,self.c,signal['limit'],quote['bid'],quote['ask'])
+                passed,evidence=structural_breakout(signal.get('reference_bar_snapshot'),stamp,signal,self.c,signal['limit'],quote['bid'],quote['ask'],auto=self.a)
                 proof=signal['evaluation_gates'].get('breakout_structure')
                 if (passed is not True or proof!={'result':'PASS','values':{'enabled':True,**evidence}}
                         or signal.get('invalidation_policy')!={'enabled':True,**evidence}

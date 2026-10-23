@@ -6,7 +6,7 @@ from automation.trade_quality import complete_sequence
 from automation.entry_context_audit import confirmed_overhead
 
 
-def structural_breakout(raw,asof,setup,cfg,entry,bid,ask):
+def structural_breakout(raw,asof,setup,cfg,entry,bid,ask,auto=None):
     evidence={'asof':asof.isoformat(),'policy':'CONFIRMED_RANGE_BASE_A',
               'scope':'KNOWN_PRE_DECISION_REFERENCE_BARS','earlier_history':'UNKNOWN'}
     rows=[]
@@ -18,7 +18,8 @@ def structural_breakout(raw,asof,setup,cfg,entry,bid,ask):
     span=(rows[-1]['time']-rows[0]['time']).total_seconds() if rows else 0
     opening=bool(rows and rows[0]['time'].strftime('%H:%M:%S')=='09:00:00')
     recent=complete_sequence(rows,asof,2 if opening else 3,require_recent=True)
-    if not recent or (not opening and (len(rows)<10 or span<9*60)):
+    required=4 if getattr(auto,'a_short_reference_enabled',False) else 10
+    if not recent or (not opening and (len(rows)<required or span<(required-1)*60)):
         return None,{**evidence,'reason':'PRIOR_STRUCTURE_UNAVAILABLE','known_bars':len(rows),'span_seconds':span}
     if any(type(x) not in (float,int) or not math.isfinite(x) or x<=0 for x in (entry,bid,ask)) or bid>ask:
         return None,{**evidence,'reason':'INVALID_EXECUTABLE_QUOTE'}
