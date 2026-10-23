@@ -50,6 +50,18 @@ class SelectiveIntegrationTests(unittest.TestCase):
         trial['gates']['box_structure']['values']['reason']='BOX_STRUCTURE_DATA_UNAVAILABLE'
         self.assertFalse(_quote_blocked(e,d,'X'))
 
+    def test_missing_quote_can_recompute_provisional_valuation_but_not_bypass_other_gates(self):
+        trial={'candidate_generated':True,'gates':{'spread':{'result':'FAIL'},
+            'breakout_structure':{'result':'UNKNOWN','values':{'reason':'INVALID_EXECUTABLE_QUOTE'}},
+            'risk_reward':{'result':'FAIL'},'invalidation':{'result':'FAIL'},'economic':{'result':'FAIL'},
+            'liquidity':{'result':'PASS'}}}
+        d=SimpleNamespace(last_eval={'X':{'trials':[trial]}});e=SimpleNamespace(a=AutomationConfig())
+        self.assertTrue(_quote_blocked(e,d,'X'))
+        trial['gates']['liquidity']['result']='FAIL';self.assertFalse(_quote_blocked(e,d,'X'))
+        trial['gates']['liquidity']['result']='PASS'
+        trial['gates']['breakout_structure']['values']['reason']='INDEPENDENT_STRUCTURE_UNCONFIRMED'
+        self.assertFalse(_quote_blocked(e,d,'X'))
+
     def test_single_source_permission_survives_reserve_and_progress(self):
         with tempfile.TemporaryDirectory() as folder:
             policy=Policy(Path(folder)/'policy.json');a=AutomationConfig()

@@ -39,14 +39,14 @@ def structural_pullback(raw, asof, setup, cfg, entry, bid, ask,close_policy=Fals
     recovered=next((b for b in pull[last_touch+1:] if b['low']>support and b['close']>pull[last_touch]['high']),None)
     context=PriceContext()
     for b in bars:context.record('proof',b,asof)
-    reference=context.snapshot('proof',SimpleNamespace(time=asof),entry)['nearest_confirmed_peak']
+    reference=context.snapshot('proof',SimpleNamespace(time=asof),setup['breakout'])['nearest_confirmed_peak']
     if auto and getattr(auto, 'pullback_expansion_target_enabled', False):
         impulse_rise = peak - base
         expansion_target = floor_tick(peak + 0.5 * impulse_rise)
         overhead_ceiling = reference['price'] if (reference and reference['price'] > peak) else None
         ceiling = min([p for p in (expansion_target, overhead_ceiling) if p is not None and p > entry], default=expansion_target)
     else:
-        ceiling=min([p for p in (peak,reference['price'] if reference else None) if p is not None and p>entry],default=None)
+        ceiling=min([p for p in (peak,reference['price'] if reference else None) if p is not None],default=None)
     spread=ask-bid;buffer=max(support*cfg.structural_buffer,tick_size(support),spread)
     stop=floor_tick(support-buffer)
     ranges=[b['high']-b['low'] for b in pull]

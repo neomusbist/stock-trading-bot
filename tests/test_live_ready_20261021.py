@@ -21,8 +21,8 @@ from automation.radar import DynamicRadar
 from automation.runner import process_message
 from candidate_builder import structure
 from tests.test_automation import FakeBroker
-from tests.test_structural_a_exit import NORMAL as A_BARS
-from tests.test_structural_pullback import NORMAL as B_BARS
+from tests.test_structural_a_exit import VIABLE_A as A_BARS
+from tests.test_structural_pullback import VIABLE_B as B_BARS
 from tests.test_opening_live_repair import NORMAL as C_BARS
 from tests.test_r6_fast_repair import CAUSAL
 
@@ -53,6 +53,17 @@ class IntentCheckingBroker(FakeBroker):
         intents=[o for o in persisted['orders'].values() if o['symbol']==sym and o['side']==side
                  and o['status']=='INTENT' and o['qty']==qty and o['limit']==limit]
         if len(intents)!=1:raise AssertionError('durable exact INTENT must precede fake transport')
+        if side=='BUY' and intents[0]['signal'].get('pattern') in {'A','B'}:
+            from automation.capital import signal_economics
+            signal=intents[0]['signal']
+            common=signal_economics(self.engine.c,self.engine.a,signal)
+            planned=signal['exit_plan']['entry_economics']
+            generated=signal['entry_economics']
+            for evidence in (planned,generated):
+                for key in ('entry_price','emergency_stop','target','risk_per_share','net_rr','max_entry_price'):
+                    if common[key]!=evidence[key]:
+                        raise AssertionError(('signal_plan_pre_http_economics_changed',key,common[key],evidence[key]))
+            if not common['rr_pass']:raise AssertionError('net RR must pass at fake transport')
         self.intent_checks.append({'side':side,'durable_intent':True,'quantity':qty})
         return super().submit(side,sym,qty,limit)
 
@@ -92,7 +103,7 @@ class LiveReadyLifecycle(unittest.TestCase):
             'open':close,'high':close*1.05,'low':close*.98,'close':close,'volume':2000000} for i in range(800)]
         history[250]['high']=high
         status={'pass':True,'checked_at':AT.isoformat(),'reason_code':'SYNTHETIC_NORMAL_STATUS'}
-        raw={'code':SYM,'name':'SYNTHETIC_ONLY','reference_price':{'A':10040,'B':1041,'C':10160,'FAST':1001}[name],
+        raw={'code':SYM,'name':'SYNTHETIC_ONLY','reference_price':{'A':10040,'B':1051,'C':10160,'FAST':1001}[name],
              'source_details':{'one':{'observed_rank':1,'values':{}},'two':{'observed_rank':1,'values':{}}},
              'market_status':status}
         rows,selected,changes=self.dynamic.update([raw],lambda r:structure(history,r['reference_price'],self.cfg,AT.date()),AT)
@@ -140,17 +151,13 @@ class LiveReadyLifecycle(unittest.TestCase):
             stamp=AT+timedelta(seconds=len(CAUSAL)-1);last_price=CAUSAL[-1];last_volume=1000
         else:
             raw=deepcopy({'A':A_BARS,'B':B_BARS,'C':C_BARS}[name])
-            if name=='B':
-                shapes=[(980,985,980,984),(984,1030,984,1028),(1028,1040,1020,1038),
-                        (1036,1036,1028,1030),(1030,1038,1029,1038)]
-                for b,(o,h,l,c) in zip(raw,shapes):b.update(open=o,high=h,low=l,close=c)
             for i,b in enumerate(raw):
                 start=AT-timedelta(minutes=len(raw)-i)
                 for sec,price in ((0,b['open']),(15,b['high']),(30,b['low']),(59,b['close'])):
                     self.feed(start+timedelta(seconds=sec),price,int(b.get('volume',100)))
             self.feed(AT,9970 if name=='A' else raw[-1]['close'])
             stamp=AT+timedelta(seconds=9 if name=='A' else 5)
-            last_price={'A':10040,'B':1041,'C':10160}[name];last_volume=100000
+            last_price={'A':10040,'B':1051,'C':10160}[name];last_volume=100000
         self.assertEqual(self.broker.orders,[],'no invented early fills or premature positive signal')
         if block=='daily_loss':self.e.s['daily_loss']=self.e.daily_risk_budget()
         if block=='vi':self.lookup[SYM]['market_status']['vi_active']=True

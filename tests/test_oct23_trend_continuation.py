@@ -16,7 +16,7 @@ class TrendContinuationEntryTests(unittest.TestCase):
         rows=copy.deepcopy(shape.CONTINUING)
         # Pre-existing range low gives enough real price room after costs;
         # it is supplied before entry, never solved backwards by the strategy.
-        rows[11]['low']=9550
+        rows[11]['low']=9500
         for row,volume in zip(rows[-3:],(300,180,240)):row['volume']=volume
         return rows
 
@@ -56,7 +56,7 @@ class TrendContinuationEntryTests(unittest.TestCase):
         self.assertFalse(a['entry_ready'])
         self.assertEqual(a['gates']['continuation_cost_reward_risk']['result'],'FAIL')
         self.assertEqual(a['candidate_confirmation_basis'],'CONFIRMED_CONTINUATION')
-        self.assertEqual(a['gates']['risk_reward']['values']['rr_basis'],'GROSS_PRICE_DISTANCE')
+        self.assertEqual(a['gates']['risk_reward']['values']['rr_basis'],'AB_COMMON_NET_REWARD_RISK')
         self.assertIn('net_rr',a['gates']['risk_reward']['values'])
 
     def test_causal_received_gradual_A_reaches_durable_intent_and_fake_acceptance(self):

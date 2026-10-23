@@ -1092,10 +1092,18 @@ def _quote_blocked(engine,detector,symbol):
     def quote_gate(key,value):
         return (key in {'spread','order_price'} or
             value.get('values',{}).get('reason')==quote_reasons.get(key) and key in quote_reasons)
-    return any(t.get('candidate_generated')
-        and any(v.get('result')!='PASS' and quote_gate(k,v) for k,v in t.get('gates',{}).items())
-        and all(v.get('result')=='PASS' for k,v in t.get('gates',{}).items() if k!='chase' and not quote_gate(k,v))
-        for t in trials)
+    def retryable(trial):
+        gates=trial.get('gates',{})
+        quote_proof_missing=any(k in quote_reasons and quote_gate(k,v) and v.get('result')=='UNKNOWN' for k,v in gates.items())
+        # Without a quote the independent structural proof cannot supply its
+        # emergency line. RR/size-distance from that provisional line are not
+        # permanent vetoes. Recompute them after a fresh quote; never waive
+        # them at the entry or order boundary.
+        derived={'invalidation','risk_reward','economic','continuation_cost_reward_risk'} if quote_proof_missing else set()
+        return (trial.get('candidate_generated')
+            and any(v.get('result')!='PASS' and quote_gate(k,v) for k,v in gates.items())
+            and all(v.get('result')=='PASS' for k,v in gates.items() if k!='chase' and k not in derived and not quote_gate(k,v)))
+    return any(retryable(t) for t in trials)
 
 
 def queue_current_quote_books(engine,detector,feed,symbols):

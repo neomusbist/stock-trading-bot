@@ -2,14 +2,18 @@
 import math
 from automation.performance import completed_trades
 
-def efficiency(entry,stop,target,confidence,horizon_minutes,costs,minimum=0.1):
+def efficiency(entry,stop,target,confidence,horizon_minutes,costs,minimum=0.1,*,economics=None):
     inputs={'entry':entry,'stop':stop,'target':target,'confidence':confidence,'planned_minutes':horizon_minutes}
     if any(v is None or not isinstance(v,(int,float)) or not math.isfinite(v) for v in inputs.values()):
         return {'decision':'NO_TRADE','basis':'UNKNOWN','inputs':inputs,'score':None}
     if not 0<stop<entry<target or not 0<confidence<=1 or horizon_minutes<=0:
         return {'decision':'NO_TRADE','basis':'INVALID_STRUCTURE','inputs':inputs,'score':None}
-    fee=costs.estimate(entry,target); reward=target-entry-fee
-    risk=entry-stop+costs.roundtrip(entry,stop)+stop*costs.exit_slippage
+    if economics is not None:
+        if economics.get('status')!='KNOWN':return {'decision':'NO_TRADE','basis':'UNKNOWN','inputs':inputs,'score':None}
+        fee=economics['cost_per_share'];reward=economics['reward_after_cost'];risk=economics['risk_per_share']
+    else:
+        fee=costs.estimate(entry,target); reward=target-entry-fee
+        risk=entry-stop+costs.roundtrip(entry,stop)+stop*costs.exit_slippage
     score=(reward/risk)*confidence/math.sqrt(horizon_minutes/10)
     return {'decision':'TRADE' if reward>0 and score>=minimum else 'NO_TRADE',
             'basis':'HEURISTIC_NOT_EXPECTED_VALUE','inputs':inputs,'cost_per_share':fee,

@@ -200,6 +200,14 @@ class AutonomousEngine(ExistingExits,Engine):
         cash_qty=int(amount//(entry*(1+self.a.commission_buy))) if entry>0 else 0
         risk_qty=int(risk_budget//unit) if unit>0 else 0
         fresh=self.capital_account_valid()
+        economics=None
+        if signal.get('pattern') in {'A','B'}:
+            from automation.capital import signal_economics,entry_quantity
+            economics=signal_economics(self.c,self.a,signal)
+            sized=entry_quantity(economics,amount,risk_budget)
+            cash_qty=sized['capital_quantity'];risk_qty=sized['risk_quantity']
+            valid=economics.get('status')=='KNOWN'
+            unit=economics.get('risk_per_share') or 0
         qty=max(0,min(cash_qty,risk_qty)) if fresh and valid else 0
         planned=signal.get('planned_qty')
         planned_valid=planned is None or (type(planned) is int and planned>=0)
@@ -213,8 +221,35 @@ class AutonomousEngine(ExistingExits,Engine):
                 'RISK_BUDGET_ZERO_QTY' if risk_qty==0 else 'QUANTITY_AVAILABLE')
         return {'quantity':qty,'reason_code':reason,'capital_quantity':cash_qty,'risk_quantity':risk_qty,
                 'effective_auto_cap':self.auto_available_capital(),'entry_budget':amount,
-                'risk_budget':risk_budget,'risk_per_share':unit,'one_share_cost':entry*(1+self.a.commission_buy),
+                'risk_budget':risk_budget,'risk_per_share':unit,'one_share_cost':economics.get('one_share_cash') if economics else entry*(1+self.a.commission_buy),
+                **({'entry_economics':economics} if economics else {}),
                 'account_fresh':fresh,'strategy_quantity':planned if planned_valid else None}
+
+    def risk_used(self,buys=None,*,execution=False):
+        """Same cash-flow reserve at preview and immediately before transport."""
+        from automation.capital import loss_reserve
+        used=0.
+        for p in self.s['positions'].values():
+            if p.get('ownership','BOT')!='BOT':continue
+            if (p.get('signal') or {}).get('pattern',p.get('pattern')) in {'A','B'}:
+                from automation.exit_plan import invalidation_lines
+                emergency=invalidation_lines(self.c,self.a,p)['emergency']
+                unit=loss_reserve(p['avg'],emergency,self.costs,filled=True)
+            else:
+                stop=p.get('stop',p['avg'])
+                unit=max(0,p['avg']-stop+(self.costs.roundtrip(p['avg'],stop)+stop*self.c.exit_slippage_fraction if execution else p['avg']*(self.c.roundtrip_cost_fraction+self.c.exit_slippage_fraction)))
+            if not math.isfinite(unit):return self.daily_risk_budget()
+            used+=unit*p['qty']
+        for o in self.active_orders(side='BUY') if buys is None else buys:
+            sig=o.get('signal') or {};stop=sig.get('stop',o['limit'])
+            if sig.get('pattern') in {'A','B'}:
+                from automation.capital import signal_economics
+                econ=signal_economics(self.c,self.a,{**sig,'limit':o['limit']})
+                if econ.get('status')!='KNOWN':return self.daily_risk_budget()
+                unit=econ['risk_per_share']
+            else:unit=o['limit']-stop+(self.costs.roundtrip(o['limit'],stop)+stop*self.c.exit_slippage_fraction if execution else o['limit']*(self.c.roundtrip_cost_fraction+self.c.exit_slippage_fraction))
+            used+=unit*(o['qty']-o['filled'])
+        return used
 
     def new_entry_reason(self,symbol):
         try:
@@ -290,8 +325,7 @@ class AutonomousEngine(ExistingExits,Engine):
 
     def capital_context(self):
         equity=self.risk_equity()
-        used=sum(max(0,p['avg']-p.get('stop',p['avg'])+p['avg']*(self.c.roundtrip_cost_fraction+self.c.exit_slippage_fraction))*p['qty'] for p in self.s['positions'].values() if p.get('ownership','BOT')=='BOT')
-        used+=sum((o['limit']-(o.get('signal') or {}).get('stop',o['limit'])+o['limit']*(self.c.roundtrip_cost_fraction+self.c.exit_slippage_fraction))*(o['qty']-o['filled']) for o in self.active_orders(side='BUY'))
+        used=self.risk_used()
         return {'actual_orderable_cash':self.available_cash,'approved_cap':self.a.capital_limit,
                 'risk_equity':equity,'risk_remaining':max(0,self.daily_risk_budget(equity)-self.s['daily_loss']-used),
                 'daily_risk_budget_krw':self.daily_risk_budget(equity),
@@ -311,8 +345,7 @@ class AutonomousEngine(ExistingExits,Engine):
     def entry_gates(self,signal,tick):
         sym=tick.symbol; buys=self.active_orders(side='BUY'); equity=self.risk_equity()
         reserved=self.pending_buy_reservation(buys)
-        used=sum(max(0,p['avg']-p.get('stop',p['avg'])+p['avg']*(self.c.roundtrip_cost_fraction+self.c.exit_slippage_fraction))*p['qty'] for p in self.s['positions'].values() if p.get('ownership','BOT')=='BOT')
-        used+=sum((o['limit']-(o.get('signal') or {}).get('stop',o['limit'])+o['limit']*(self.c.roundtrip_cost_fraction+self.c.exit_slippage_fraction))*(o['qty']-o['filled']) for o in buys)
+        used=self.risk_used(buys)
         remaining=self.daily_risk_budget(equity)-self.s['daily_loss']-used
         sizing=self.quantity_details(signal,equity,self.s['cash']-reserved,remaining); qty=sizing['quantity']
         reason=self.new_entry_reason(sym)
@@ -338,7 +371,7 @@ class AutonomousEngine(ExistingExits,Engine):
                 return 'CRITICAL_LOW_DISK_SPACE'
         except Exception:
             return 'CRITICAL_LOW_DISK_SPACE'
-        if self.a.exit_plan_reward_guard_enabled or signal.get('pattern') == 'B':
+        if self.a.exit_plan_reward_guard_enabled or signal.get('pattern') in {'A','B'}:
             from automation.exit_plan import build_plan
             signal['exit_plan']=build_plan(self.c,self.a,signal,quantity=quantity)
             if not signal['exit_plan']['reward_guard_pass']:return 'EXIT_PLAN_REWARD_UNKNOWN_OR_LOW'
@@ -788,8 +821,7 @@ class AutonomousEngine(ExistingExits,Engine):
             available=min(self.available_cash,self.s['cash'],max(0,self.a.capital_limit-exposure))-other
             if qty*limit*(1+self.a.commission_buy)>available: raise Rejected('승인 자본/현금 초과')
             signal=intents[0]['signal']
-            used=sum(max(0,p['avg']-p.get('stop',p['avg'])+self.costs.roundtrip(p['avg'],p.get('stop',p['avg']))+p.get('stop',p['avg'])*self.c.exit_slippage_fraction)*p['qty'] for p in self.s['positions'].values() if p.get('ownership','BOT')=='BOT')
-            used+=sum((o['limit']-(o.get('signal') or {}).get('stop',o['limit'])+self.costs.roundtrip(o['limit'],(o.get('signal') or {}).get('stop',o['limit']))+(o.get('signal') or {}).get('stop',o['limit'])*self.c.exit_slippage_fraction)*(o['qty']-o['filled']) for o in self.active_orders(side='BUY') if o is not intents[0])
+            used=self.risk_used([o for o in self.active_orders(side='BUY') if o is not intents[0]],execution=True)
             remaining=self.daily_risk_budget()-self.s['daily_loss']-used
             if qty>self.quantity(signal,self.risk_equity(),available,remaining): raise Rejected('주문 경계에서 위험 수량 재검증 실패')
             bot_positions={s for s,p in self.s['positions'].items() if p.get('ownership','BOT')=='BOT'}

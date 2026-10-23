@@ -384,7 +384,8 @@ class PatternDetector(Detector):
     def target(self,t,watch,setup,limit):
         resistance=watch.get('resistance')
         # A/C가 신선한 실제 체결로 넘은 저항만 목표의 상한에서 제외한다.
-        if setup['pattern'] in {'A','C'} and resistance is not None and t.price>resistance:resistance=None
+        if setup['pattern']=='A' and resistance is not None and setup['breakout']>=resistance:resistance=None
+        if setup['pattern']=='C' and resistance is not None and t.price>resistance:resistance=None
         return min(resistance,setup['projection']) if resistance is not None else setup['projection']
 
     def box(self,bars):
@@ -551,6 +552,8 @@ class PatternDetector(Detector):
                     **({k:b[k] for k in ('first_second','gap_reason') if k in b} if self.a.structural_pullback_enabled else {}),
                     'time':b['time'].isoformat()} for b in bars[-(30 if self.a.structural_pullback_enabled else max(12,2*self.a.box_min_bars+2) if self.a.fresh_box_basis_enabled else 12):]],
                 'target':target,'target_basis':'과거 저항으로 제한한 관측 패턴 폭 연장 가설; 고정 익절선 아님',
+                **({'entry_economics':price_gates['risk_reward']['values']['economics'],
+                    'entry_zone':price_gates['risk_reward']['values']['entry_zone']} if name in {'A','B'} else {}),
                 'turnover':turnover,'turnover_ratio':ratio,'gain':gain,
                 'efficiency':score,'source_count':watch.get('source_count',len(watch.get('source_details',{}))),'source_details':watch.get('source_details',{}),'source_deltas':watch.get('source_deltas',{}),
                 'fallback_source1':bool(watch.get('fallback_source1')),
@@ -590,7 +593,7 @@ class PatternDetector(Detector):
         if setup['pattern']=='B' and t.price>=setup.get('peak',breakout):
             breakout=setup['peak']
         stop=floor_tick(setup['support']*(1-c.structural_buffer))
-        limit=floor_tick(min(t.ask,breakout*(1+c.max_chase))); resistance=watch.get('resistance')
+        limit=floor_tick(t.ask if setup['pattern'] in {'A','B'} else min(t.ask,breakout*(1+c.max_chase))); resistance=watch.get('resistance')
         target=self.target(t,watch,setup,limit)
         references=self.price_context.snapshot(t.symbol,t,limit) if self.a.entry_context_enabled else {}
         peak=references.get('nearest_confirmed_peak')
@@ -625,17 +628,19 @@ class PatternDetector(Detector):
         distance=(limit-stop)/limit if limit>0 else None
         rr=(target-limit)/(limit-stop) if limit>stop else None
         gross_rr=rr;rr_basis='GROSS_PRICE_DISTANCE'
-        if setup['pattern']=='B':
-            from automation.exit_plan import build_plan
-            b_sig={'limit':limit,'stop':stop,'target':target,'pattern':'B',
-                   'emergency':structural.get('emergency_stop') if structural else None,
-                   'invalidation_policy':{'enabled':True,'structural_stop':stop,'emergency_stop':structural.get('emergency_stop',stop)} if structural else None}
-            b_plan=build_plan(c,self.a,b_sig)
-            if not b_plan.get('reward_guard_pass'):
-                rr=b_plan.get('net_reward_risk') if b_plan.get('net_reward_risk') is not None else 0.0
-                rr_basis='EXIT_PLAN_NET_REWARD_GUARD'
+        economics=None;entry_zone=None
+        if setup['pattern'] in {'A','B'}:
+            from automation.capital import signal_economics,viable_entry_zone
+            proof=breakout_evidence if setup['pattern']=='A' else structural
+            valuation_signal=dict(pattern=setup['pattern'],limit=limit,stop=stop,target=target)
+            if proof:valuation_signal['invalidation_policy']={'enabled':True,**proof}
+            economics=signal_economics(c,self.a,valuation_signal)
+            rr=economics.get('net_rr');rr_basis='AB_COMMON_NET_REWARD_RISK'
+            entry_zone=viable_entry_zone(economics,breakout,c.max_chase)
+            entry_zone['structure_confirmed']=(breakout_pass is True if setup['pattern']=='A' and self.a.structural_breakout_enabled
+                else structural_pass is True if setup['pattern']=='B' and self.a.structural_pullback_enabled else True)
         horizon=getattr(self.a,'horizon_'+setup['pattern'].lower()+'_minutes')
-        score=efficiency(limit,stop,target,min(1.,0.4+0.1*len(watch.get('source_details',{}))),horizon,self.costs,self.a.min_efficiency_score)
+        score=efficiency(limit,stop,target,min(1.,0.4+0.1*len(watch.get('source_details',{}))),horizon,self.costs,self.a.min_efficiency_score,economics=economics)
         cost_risk=score.get('risk_per_share');cost_reward=score.get('reward_after_cost')
         net_rr=(cost_reward/cost_risk if isinstance(cost_risk,(int,float)) and cost_risk>0
                 and isinstance(cost_reward,(int,float)) else None)
@@ -671,8 +676,12 @@ class PatternDetector(Detector):
                 entry=limit,stop=stop,distance_pct=distance,min_pct=c.min_stop_fraction,
                 max_pct=None if structure_sized else c.max_stop_fraction,
                 **({'upper_bound_basis':'ACCOUNT_RISK_AND_INTEGER_QUANTITY'} if structure_sized else {})),
-            'risk_reward':gate(None if rr is None else rr>=c.min_reward_risk,calculated_rr=rr,required_rr=c.min_reward_risk,target=target,
-                rr_basis=rr_basis,gross_rr=gross_rr,net_rr=net_rr),
+            'risk_reward':gate(economics['rr_pass'] if economics is not None else None if rr is None else rr>=c.min_reward_risk,calculated_rr=rr,required_rr=c.min_reward_risk,target=target,
+                rr_basis=rr_basis,gross_rr=gross_rr,net_rr=net_rr,
+                **({'economics':economics,'entry_zone':entry_zone,'target_inputs':dict(pattern_projection=setup['projection'],
+                    original_target=original_target,radar_resistance=resistance,structural_ceiling=(proof or {}).get('target_ceiling'),
+                    confirmed_overhead=(proof or {}).get('nearest_confirmed_peak'),b_peak=setup.get('peak'),
+                    b_peak_cap_enabled=setup['pattern']=='B' and not self.a.pullback_expansion_target_enabled)} if economics is not None else {})),
             'resistance':gate(watch.get('status') in {'ELIGIBLE','WATCH','RESERVE'} and (setup['pattern']!='B' or watch.get('resistance_room_pass') is not False),resistance_room_pass=watch.get('resistance_room_pass'),resistance=resistance,
                 distance_pct=resistance/limit-1 if resistance is not None and limit>0 else None,min_room=c.min_resistance_room),
             'order_price':gate(limit>=t.ask,limit=limit,ask=t.ask),

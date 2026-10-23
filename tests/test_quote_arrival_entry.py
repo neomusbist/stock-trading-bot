@@ -225,7 +225,7 @@ class ABCQuoteArrivalTests(unittest.TestCase):
             h.setUp(); self.addCleanup(h.doCleanups)
             h.e.after_live_authorized = True  # isolated test policy only
             normal_feed = h.feed
-            final_price = {'A': 10040, 'B': 1041, 'C': 10160}[setup]
+            final_price = {'A': 10040, 'B': 1051, 'C': 10160}[setup]
 
             def quote_missing(at, price, volume=100, **kwargs):
                 if at < clock or price != final_price:

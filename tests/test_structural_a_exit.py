@@ -31,8 +31,10 @@ NORMAL=candles([(9970,9980,9960,9970)]*10+[
     (9980,10030,9970,10010),(10000,10010,9880,9920),
     (9920,10000,9920,10000),(10000,10020,10000,10020),(10010,10020,10000,10010)])
 SETUP={'pattern':'A','breakout':10030,'support':9880,'projection':10330}
-CONTINUING=copy.deepcopy(NORMAL)
-CONTINUING[11]['low']=9550  # known range supports net RR, including existing costs
+# Keep NORMAL as the old gross-only counterexample. A separate wider observed
+# base tests a paid-cost path; production never solves a target/stop backwards.
+VIABLE_A=copy.deepcopy(NORMAL);VIABLE_A[11]['low']=9500
+CONTINUING=copy.deepcopy(VIABLE_A)
 CONTINUING[-1].update(open=10020,high=10025,low=10010,close=10025)
 for b,v in zip(CONTINUING[-3:],(100,200,300)):b['volume']=v
 
@@ -56,8 +58,9 @@ class EntryStructureTests(unittest.TestCase):
         self.assertEqual(proof['support'],9880)
         self.assertEqual(proof['structural_stop'],9870)
         self.assertEqual(proof['emergency_stop'],9850)
-        self.assertGreater(gates['risk_reward']['values']['calculated_rr'],1.5)
-        self.assertTrue(all(g['result']=='PASS' for g in gates.values()))
+        self.assertGreater(gates['risk_reward']['values']['gross_rr'],1.5)
+        self.assertEqual(gates['risk_reward']['result'],'FAIL')
+        self.assertLess(gates['risk_reward']['values']['net_rr'],1.5)
     def test_three_micro_bars_do_not_assert_prior_structure(self):
         result,e=structural_breakout(NORMAL[-3:],AT,SETUP,CFG,10040,10030,10040)
         self.assertIsNone(result);self.assertEqual(e['reason'],'PRIOR_STRUCTURE_UNAVAILABLE')
@@ -92,7 +95,7 @@ class EntryStructureTests(unittest.TestCase):
         gates,_,_=price_gates(raw)
         self.assertGreater(gates['invalidation']['values']['distance_pct'],.03)
         self.assertEqual(gates['invalidation']['result'],'PASS')
-        self.assertEqual(gates['risk_reward']['result'],'PASS')
+        self.assertEqual(gates['risk_reward']['result'],'FAIL')  # valid floor is not sufficient net reward
         self.assertEqual(gates['invalidation']['values']['upper_bound_basis'],'ACCOUNT_RISK_AND_INTEGER_QUANTITY')
     def test_b_close_policy_keeps_proof_and_reserves_noise_separately(self):
         d=PatternDetector(CFG,AUTO,COSTS);setup=d.pullback(B_NORMAL)
@@ -212,11 +215,11 @@ class ExitAndOrderTests(unittest.TestCase):
     def enable(self):
         self.auto=replace(self.auto,structural_breakout_enabled=True,intraday_context_enabled=True,confirmed_invalidation_enabled=True)
         self.engine=self.make_engine();self.engine.reconcile(self.snapshot);self.engine.connected=True;self.engine.market='3'
-        gates,d,tick=price_gates()
+        gates,d,tick=price_gates(VIABLE_A)
         policy=gates['breakout_structure']['values']
-        self.sig={**SETUP,'symbol':'999990','time':AT.isoformat(),'limit':10040,'stop':policy['emergency_stop'],
+        self.sig={**SETUP,'support':9500,'projection':11090,'symbol':'999990','time':AT.isoformat(),'limit':10040,'stop':policy['emergency_stop'],
             'target':gates['risk_reward']['values']['target'],'evaluation_gates':{**gates,'spread':{'result':'PASS','values':{'bid':10030,'ask':10040}}},
-            'reference_bar_snapshot':[{**b,'time':b['time'].isoformat()} for b in NORMAL],
+            'reference_bar_snapshot':[{**b,'time':b['time'].isoformat()} for b in VIABLE_A],
             'reference_received_at':(AT-timedelta(seconds=1)).isoformat(),'invalidation_policy':copy.deepcopy(policy),
             'efficiency':gates['economic']['values']['score']}
         self.tick=tick
@@ -226,36 +229,36 @@ class ExitAndOrderTests(unittest.TestCase):
         self.engine.actual={'999990':{'qty':o['qty'],'available':o['qty'],'avg':o['limit']}}
         return self.engine.s['positions']['999990']
     def test_new_order_sizes_from_emergency_line_and_keeps_soft_structure(self):
-        p=self.buy_new();self.assertEqual(p['initial_stop'],9850)
-        self.assertEqual(p['signal']['invalidation_policy']['structural_stop'],9870)
+        p=self.buy_new();self.assertEqual(p['initial_stop'],9470)
+        self.assertEqual(p['signal']['invalidation_policy']['structural_stop'],9490)
         self.assertLessEqual(p['qty']*self.sig['efficiency']['risk_per_share'],self.engine.risk_equity()*self.cfg.risk_fraction)
     def test_gui_distinguishes_structural_close_line_and_emergency_risk_line(self):
         from operator_ui_service import position_invalidation_lines
         p=self.buy_new()
-        self.assertEqual(position_invalidation_lines(p,True),(9870,9850,True))
-        self.assertEqual(position_invalidation_lines(p,False),(9850,9850,False))
+        self.assertEqual(position_invalidation_lines(p,True),(9490,9470,True))
+        self.assertEqual(position_invalidation_lines(p,False),(9470,9470,False))
     def test_single_touch_between_structural_and_hard_line_holds(self):
-        p=self.buy_new();t=replace(self.tick,price=9860,ask=9870,bid=9850)
+        p=self.buy_new();t=replace(self.tick,price=9480,ask=9490,bid=9470)
         self.engine.on_tick(t);self.assertFalse(p['exit_requested']);self.assertEqual(len(self.broker.orders),1)
     def test_completed_close_below_structure_requests_exit(self):
         p=self.buy_new();self.clock[0]=AT+timedelta(minutes=1)
-        self.engine.observe_protection_bar('999990',dict(time=AT,open=10040,high=10050,low=9860,close=9860))
+        self.engine.observe_protection_bar('999990',dict(time=AT,open=10040,high=10050,low=9480,close=9480))
         self.assertTrue(p['exit_requested']);self.assertEqual(p['exit_reason'],'확정봉 종가의 구조적 무효화')
     def test_intra_minute_wick_with_recovery_does_not_exit(self):
         p=self.buy_new();self.clock[0]=AT+timedelta(minutes=1)
-        self.engine.observe_protection_bar('999990',dict(time=AT,open=10040,high=10050,low=9860,close=9900))
+        self.engine.observe_protection_bar('999990',dict(time=AT,open=10040,high=10050,low=9480,close=9520))
         self.assertFalse(p['exit_requested'])
     def test_fresh_emergency_price_exits_without_waiting_for_close(self):
-        p=self.buy_new();self.engine.on_tick(replace(self.tick,price=9840,ask=9850,bid=9830))
+        p=self.buy_new();self.engine.on_tick(replace(self.tick,price=9460,ask=9470,bid=9450))
         self.assertTrue(p['exit_requested']);self.assertEqual(len(self.broker.orders),2)
     def test_stale_trade_and_stale_quote_do_not_fake_emergency(self):
         p=self.buy_new();self.clock[0]+=timedelta(seconds=6)
-        p['last_quote']={'time':AT.isoformat(),'bid':9830,'ask':9840}
-        self.engine.on_tick(replace(self.tick,price=9840,ask=9850,bid=9830))
+        p['last_quote']={'time':AT.isoformat(),'bid':9450,'ask':9460}
+        self.engine.on_tick(replace(self.tick,price=9460,ask=9470,bid=9450))
         self.assertFalse(p['exit_requested'])
     def test_stale_completed_bar_does_not_undo_current_recovery(self):
         p=self.buy_new();self.clock[0]=AT+timedelta(minutes=2)
-        self.engine.observe_protection_bar('999990',dict(time=AT,open=10040,high=10050,low=9860,close=9860))
+        self.engine.observe_protection_bar('999990',dict(time=AT,open=10040,high=10050,low=9480,close=9480))
         self.assertFalse(p['exit_requested'])
     def test_proof_stop_and_reference_tampering_never_orders(self):
         for change in ('stop','soft','future','bar'):
