@@ -152,6 +152,7 @@ operator_*approval*.json
 
 # Reviewed offline-only night profiling tool (outputs stay private).
 !/tools/night_profile.py
+!/tools/measure_runtime_budget.py
 
 # Reviewed trading-quality handoff and frozen-input replay (outputs stay private).
 !/HANDOFF_TRADE_QUALITY_20261013.md
