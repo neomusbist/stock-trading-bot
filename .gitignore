@@ -174,5 +174,8 @@ operator_*approval*.json
 !/research/evidence_collector.py
 !/research/ab_feasibility.py
 !/research/session_validation.py
+!/research/initial_structure.py
+!/research/support_recovery.py
+!/research/initial_structure_replay.py
 !/audit/r6_oct26_night/READINESS_AND_REPLAY.md
 !/audit/r6_causal_validation_20261020/HANDOFF_TO_AG.md
