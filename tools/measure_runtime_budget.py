@@ -29,8 +29,12 @@ def counter_rate(previous,current,elapsed):
 
 
 def heartbeat_summary(root):
+    from core.util import shared_binary_reader
     def read(rel):
-        try:return json.loads((root/rel).read_bytes())
+        try:
+            # Sampling must not pin a Windows status file against atomic
+            # replacement or log rotation in the operating process.
+            with shared_binary_reader(root/rel) as stream:return json.load(stream)
         except (OSError,ValueError):return {}
     hb=read('runtime/automation-production/heartbeat.json')
     runner=read('runtime/operator_runner.json')
