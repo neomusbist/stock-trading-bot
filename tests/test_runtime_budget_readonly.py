@@ -2,6 +2,10 @@
 from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
+import os
+import subprocess
+import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -26,6 +30,17 @@ class SharedStatusReader(unittest.TestCase):
         self.assertIsNone(summary['connected'])
         self.assertIsNone(summary['pid'])
         self.assertEqual(summary['counts'],{})
+
+    @unittest.skipUnless(os.name=='nt','Windows OS sampler')
+    def test_standalone_cli_outside_repo_can_import_shared_reader(self):
+        script=Path(__file__).resolve().parents[1]/'tools/measure_runtime_budget.py'
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)/'synthetic-state';root.mkdir()
+            out=Path(folder)/'measurement'
+            result=subprocess.run([sys.executable,'-B',str(script),'--root',str(root),'--out',str(out),
+                '--seconds','1','--interval','1'],cwd=folder,capture_output=True,text=True,timeout=30)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertTrue((out/'resource_summary.json').is_file())
 
 
 if __name__=='__main__':unittest.main()

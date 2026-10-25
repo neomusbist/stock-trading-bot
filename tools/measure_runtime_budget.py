@@ -205,4 +205,9 @@ def main():
     if not math.isfinite(a.seconds) or not 1<=a.seconds<=900 or not math.isfinite(a.interval) or not .5<=a.interval<=30:p.error('seconds1..900 interval0.5..30')
     print(json.dumps(collect(a.root,a.out,a.seconds,a.interval),ensure_ascii=False,indent=2))
 
-if __name__=='__main__':main()
+if __name__=='__main__':
+    # Direct execution puts tools/, not the project root, on sys.path.
+    # Keep the shared reader available for the documented standalone CLI.
+    import sys
+    sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+    main()
