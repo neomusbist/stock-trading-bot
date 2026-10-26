@@ -153,7 +153,7 @@ class PatternDetector(Detector):
 
     def pullback_analysis(self,bars):
         if len(bars)<4:return None,'INSUFFICIENT_USABLE_BARS',{}
-        seq=bars[-12:]
+        seq=bars[-min(len(bars),24):]
         # A complete opening candle can contain the impulse itself. Excluding
         # it relabelled a lower pullback high as the peak, changing both the
         # close-progress test and the volume denominator. Its actual open is
@@ -204,9 +204,12 @@ class PatternDetector(Detector):
         pull_volume=sum(b['volume'] for b in pull)/len(pull)
         if impulse_volume<=0 or pull_volume>impulse_volume*self.a.pullback_volume_ratio:return None,'PULLBACK_VOLUME_FAIL',evidence
         if low<=base:return None,'PULLBACK_INVALIDATION_FAIL',evidence
-        rebreakout = min(peak, max(b['high'] for b in pull[-2:])) if len(pull) >= 2 else peak
-        return {'pattern':'B','breakout':rebreakout,'peak':peak,'support':low,'projection':peak+rise,
+        touch = max(i for i, b in enumerate(pull) if b['low'] == low)
+        recovery_pivot = max(low, pull[-1]['open'])
+        breakout = recovery_pivot
+        return {'pattern':'B','breakout':breakout,'peak':peak,'support':low,'projection':peak+rise,
                 'pullback_volume_ratio':pull_volume/impulse_volume,'retrace':retrace,
+                'recovery_trigger':recovery_pivot,'entry_basis':'SUPPORT_RECOVERY',
                 **evidence},None,evidence
 
     @observation_locked
@@ -368,6 +371,16 @@ class PatternDetector(Detector):
             lookback=min(len(bars),4 if len(bars)>=4 else 3 if len(bars)>=3 else 2)
             support=min(b['low'] for b in bars[-lookback:])
             setups.append({'pattern':'A','breakout':prior,'support':support,'projection':prior+2*(prior-support)})
+        elif len(bars)>=3:
+            base=bars[-3:]; level=max(b['high'] for b in base); base_low=min(b['low'] for b in base)
+            rising_lows=base[0]['low']<base[1]['low']<base[2]['low']
+            tight_base=base_low>0 and (level-base_low)/base_low<=0.025 and base[1]['low']>=base[0]['low']
+            if (rising_lows or tight_base) and base[-1]['close']>=base[0]['open'] and t.price>level:
+                support=min(b['low'] for b in base[-2:])
+                if support>0 and level>support:
+                    setups.append({'pattern':'A','breakout':level,'support':support,
+                                   'projection':floor_tick(level+2.5*(level-base_low)),
+                                   'entry_basis':'TREND_BREAKOUT_BASE'})
         elif self.a.structural_breakout_enabled:
             # The existing continuation path used to be unreachable below an
             # old session high. Require real received rising bars; references
@@ -444,6 +457,16 @@ class PatternDetector(Detector):
                     lookback=min(len(bars),4 if len(bars)>=4 else 3 if len(bars)>=3 else 2)
                     support=min(b['low'] for b in bars[-lookback:])
                     setups['A']={'pattern':'A','breakout':prior,'support':support,'projection':prior+2*(prior-support)}
+                elif len(bars)>=3:
+                    base=bars[-3:]; level=max(b['high'] for b in base); base_low=min(b['low'] for b in base)
+                    rising_lows=base[0]['low']<base[1]['low']<base[2]['low']
+                    tight_base=base_low>0 and (level-base_low)/base_low<=0.025 and base[1]['low']>=base[0]['low']
+                    if (rising_lows or tight_base) and base[-1]['close']>=base[0]['open'] and t.price>level:
+                        support=min(b['low'] for b in base[-2:])
+                        if support>0 and level>support:
+                            setups['A']={'pattern':'A','breakout':level,'support':support,
+                                         'projection':floor_tick(level+2.5*(level-base_low)),
+                                         'entry_basis':'TREND_BREAKOUT_BASE'}
                 elif self.a.structural_breakout_enabled and cont_ok is True:
                     from automation.trade_quality import complete_sequence
                     references=self.price_context.reference_bars(t.symbol,t.time,venue)
@@ -711,15 +734,15 @@ class PatternDetector(Detector):
                 if sk in res_copy and isinstance(res_copy[sk].get('values'),dict):
                     res_copy[sk]={**res_copy[sk],'values':{**res_copy[sk]['values'],'asof':asof_iso}}
             return res_copy
-        if setup['pattern']=='B' and t.price>=setup.get('peak',breakout):
-            breakout=setup['peak']
+        if setup['pattern']=='B':
+            breakout=setup.get('breakout',setup['support'])
         stop=floor_tick(setup['support']*(1-c.structural_buffer))
         limit=floor_tick(t.ask if setup['pattern'] in {'A','B'} else min(t.ask,breakout*(1+c.max_chase))); resistance=watch.get('resistance')
         target=self.target(t,watch,setup,limit)
         references=self.price_context.snapshot(t.symbol,t,limit) if self.a.entry_context_enabled else {}
         peak=references.get('nearest_confirmed_peak')
         original_target=target
-        if self.a.entry_context_enabled and peak:
+        if self.a.entry_context_enabled and peak and peak['price'] > limit:
             target = min(target, peak['price'])
         structural=None;structural_pass=None
         if self.a.structural_pullback_enabled and setup['pattern']=='B':
@@ -790,8 +813,10 @@ class PatternDetector(Detector):
                     invalidation_pass=False
                 elif setup['pattern']=='C':
                     invalidation_pass=False
-        result={'breakout':gate(t.price>breakout and limit>breakout,price=t.price,breakout=breakout,setup=setup['pattern'],
-                ask=t.ask,entry=limit,reason='BREAKOUT_QUOTE_NOT_CONFIRMED' if t.price>breakout and limit<=breakout else None),
+        peak_val = setup.get('peak', float('inf'))
+        b_over_peak = (setup['pattern'] == 'B' and limit >= peak_val)
+        result={'breakout':gate(t.price>breakout and limit>breakout and not b_over_peak,price=t.price,breakout=breakout,setup=setup['pattern'],
+                ask=t.ask,entry=limit,reason='PEAK_ALREADY_REACHED' if b_over_peak else ('BREAKOUT_QUOTE_NOT_CONFIRMED' if t.price>breakout and limit<=breakout else None)),
             'chase':gate(t.ask/breakout-1<=c.max_chase,chase=t.ask/breakout-1,max_chase=c.max_chase,ask=t.ask),
             'invalidation':gate(invalidation_pass if distance is not None else None,
                 entry=limit,stop=stop,distance_pct=distance,min_pct=c.min_stop_fraction,

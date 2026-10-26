@@ -204,8 +204,9 @@ class ReceiverPromotionTests(AccountFixture):
         self.assertEqual(self.feed.observation_q.qsize(), len(CAUSAL))
         self.row = {'code':symbol,'name':'Synthetic causal support','status':'SHADOW',
                     'reference_price':984,'resistance':1045,'resistance_asof':start.isoformat(),
-                    'source_count':2,'discovery_score':1.,
+                    'source_count':2,'discovery_score':1.,'day_high':1045,
                     'market_status':{'pass':True,'reason_code':'SYNTHETIC_NORMAL_STATUS'}}
+        self.detector.day_high[symbol] = 1045
         # Historical daily evidence known before the decision, not future maxima.
         runner.qualify_raw(self.e,[self.row],self.at.isoformat())
         self.radar.cache[(self.at.date(),symbol)] = [

@@ -51,7 +51,7 @@ def structural_pullback(raw, asof, setup, cfg, entry, bid, ask,close_policy=Fals
     seq=bars[-12:];peak_i=pullback_peak_index(seq)
     impulse=seq[:peak_i+1];pull=seq[peak_i+1:]
     peak=seq[peak_i]['high'];base=min(b['low'] for b in impulse);support=min(b['low'] for b in pull)
-    if setup.get('support')!=support or setup.get('peak')!=peak or setup.get('projection')!=peak+peak-base:
+    if setup.get('support')!=support or setup.get('peak')!=peak or (setup.get('projection')!=peak+peak-base and setup.get('projection')!=peak):
         return False,{**evidence,'reason':'PULLBACK_GEOMETRY_MISMATCH'}
     if support<=base or impulse[-1]['close']<=impulse[0].get('open',impulse[0]['close']):
         return False,{**evidence,'reason':'PULLBACK_UPWARD_STRUCTURE_INVALID'}
@@ -75,7 +75,7 @@ def structural_pullback(raw, asof, setup, cfg, entry, bid, ask,close_policy=Fals
         overhead_ceiling = reference['price'] if (reference and reference['price'] > peak) else None
         ceiling = min([p for p in (expansion_target, overhead_ceiling) if p is not None and p > entry], default=expansion_target)
     else:
-        ceiling=min([p for p in (peak,reference['price'] if reference else None) if p is not None],default=None)
+        ceiling=min([p for p in (peak,reference['price'] if reference and reference['price']>entry else None) if p is not None],default=peak)
     spread=ask-bid;buffer=max(support*cfg.structural_buffer,tick_size(support),spread)
     stop=floor_tick(support-buffer)
     ranges=[b['high']-b['low'] for b in pull]
@@ -105,7 +105,7 @@ def structural_pullback(raw, asof, setup, cfg, entry, bid, ask,close_policy=Fals
                     trend_reclaim_reference=peaks[-1]['price'] if declining else None)
     if declining and recovered['close']<=peaks[-1]['price']:
         return False,{**evidence,'reason':'PULLBACK_LOWER_SWINGS_NOT_RECLAIMED'}
-    reclaim_close_policy=close_policy and setup.get('entry_basis')=='CONFIRMED_SUPPORT_RECLAIM'
+    reclaim_close_policy=close_policy and (setup.get('entry_basis') in {'CONFIRMED_SUPPORT_RECLAIM','SUPPORT_RECOVERY'} or getattr(auto,'confirmed_invalidation_enabled',False))
     risk_stop=evidence['emergency_stop'] if reclaim_close_policy else stop
     evidence.update(noise_guard_basis='CONFIRMED_CLOSE_WITH_SEPARATE_EMERGENCY' if reclaim_close_policy else 'STRUCTURAL_PRICE_DISTANCE',
                     noise_guard_risk_distance=entry-risk_stop)

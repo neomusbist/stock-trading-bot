@@ -376,5 +376,88 @@ class TestABReplacementStrategies(unittest.TestCase):
             self.assertEqual(mocked_sha.call_count, first_calls)
 
 
+    def test_support_recovery_fires_in_engine_detector(self):
+        """Verify new SupportRecovery in PatternDetector fires on held support with net_RR >= 1.5."""
+        det = PatternDetector(self.cfg, self.auto, self.costs)
+        det.continuous_observation = True
+        sym = '393210'
+        base_time = datetime(2026, 10, 26, 9, 0, 0, tzinfo=KST)
+        bars = [
+            {'time': base_time, 'open': 3660, 'high': 3800, 'low': 3660, 'close': 3780, 'volume': 50000, 'first_second': 0},
+            {'time': base_time + timedelta(minutes=1), 'open': 3780, 'high': 4000, 'low': 3770, 'close': 3990, 'volume': 60000, 'first_second': 0},
+            {'time': base_time + timedelta(minutes=2), 'open': 3990, 'high': 4305, 'low': 3980, 'close': 4280, 'volume': 80000, 'first_second': 0},
+            {'time': base_time + timedelta(minutes=3), 'open': 4280, 'high': 4290, 'low': 4100, 'close': 4120, 'volume': 30000, 'first_second': 0},
+            {'time': base_time + timedelta(minutes=4), 'open': 4120, 'high': 4150, 'low': 4005, 'close': 4015, 'volume': 25000, 'first_second': 0},
+            {'time': base_time + timedelta(minutes=5), 'open': 4015, 'high': 4050, 'low': 4010, 'close': 4035, 'volume': 20000, 'first_second': 0},
+        ]
+        for b in bars:
+            det.history.setdefault(sym, []).append(b)
+
+        eval_time = base_time + timedelta(minutes=6, seconds=5)
+        det.observation_start[sym] = base_time
+        for s in range(10, 70):
+            det.buffers.setdefault(sym, []).append(Tick(sym, eval_time - timedelta(seconds=s), 4020, 200, 2000000, 4025, 4020))
+        for s in range(1, 9):
+            det.buffers.setdefault(sym, []).append(Tick(sym, eval_time - timedelta(seconds=s), 4030, 800, 2000000, 4030, 4025))
+
+        t = Tick(sym, eval_time, 4035, 1000, 2010000, 4035, 4030)
+        watch = {
+            'status': 'WATCH',
+            'source_details': {'s1': {}, 's2': {}},
+            'resistance': 4305,
+            'resistance_room_pass': True,
+            'market_status': {'pass': True},
+        }
+
+        sig = det.signal(t, watch)
+        self.assertIsNotNone(sig, "SupportRecovery must fire on support defense")
+        self.assertEqual(sig['pattern'], 'B')
+        self.assertEqual(sig['limit'], 4035)
+        self.assertEqual(sig['target'], 4305)
+        self.assertGreaterEqual(sig['evaluation_gates']['risk_reward']['values']['net_rr'], 1.5)
+
+    def test_trend_breakout_fires_without_nearby_peak_cap(self):
+        """Verify new TrendBreakout in PatternDetector fires above tight base without false cap."""
+        det = PatternDetector(self.cfg, self.auto, self.costs)
+        det.continuous_observation = True
+        sym = '047770'
+        base_time = datetime(2026, 10, 26, 9, 0, 0, tzinfo=KST)
+        bars = [
+            {'time': base_time, 'open': 10000, 'high': 10150, 'low': 9980, 'close': 10120, 'volume': 50000, 'first_second': 0},
+            {'time': base_time + timedelta(minutes=1), 'open': 10120, 'high': 10300, 'low': 10100, 'close': 10250, 'volume': 60000, 'first_second': 0},
+            {'time': base_time + timedelta(minutes=2), 'open': 10250, 'high': 10260, 'low': 10020, 'close': 10050, 'volume': 80000, 'first_second': 0},
+            {'time': base_time + timedelta(minutes=3), 'open': 10050, 'high': 10120, 'low': 10000, 'close': 10100, 'volume': 30000, 'first_second': 0},
+            {'time': base_time + timedelta(minutes=4), 'open': 10135, 'high': 10160, 'low': 10130, 'close': 10150, 'volume': 25000, 'first_second': 0},
+            {'time': base_time + timedelta(minutes=5), 'open': 10155, 'high': 10200, 'low': 10150, 'close': 10190, 'volume': 20000, 'first_second': 0},
+        ]
+        for b in bars:
+            det.history.setdefault(sym, []).append(b)
+
+        eval_time = base_time + timedelta(minutes=6, seconds=5)
+        det.observation_start[sym] = base_time
+        for s in range(10, 70):
+            det.buffers.setdefault(sym, []).append(Tick(sym, eval_time - timedelta(seconds=s), 10150, 100, 2000000, 10160, 10150))
+        det.buffers.setdefault(sym, []).append(Tick(sym, eval_time - timedelta(seconds=9), 10160, 500, 2000000, 10170, 10160))
+        for s in range(1, 9):
+            det.buffers.setdefault(sym, []).append(Tick(sym, eval_time - timedelta(seconds=s), 10200, 500, 2000000, 10210, 10200))
+
+        t = Tick(sym, eval_time, 10210, 500, 2010000, 10210, 10200)
+        watch = {
+            'status': 'WATCH',
+            'source_details': {'s1': {}, 's2': {}},
+            'resistance': 11500,
+            'resistance_room_pass': True,
+            'market_status': {'pass': True},
+        }
+
+        sig = det.signal(t, watch)
+        self.assertIsNotNone(sig, "TrendBreakout must fire on breakout above 10200")
+        self.assertEqual(sig['pattern'], 'A')
+        self.assertEqual(sig['limit'], 10210)
+        self.assertEqual(sig['target'], 10700)
+        self.assertGreaterEqual(sig['evaluation_gates']['risk_reward']['values']['net_rr'], 1.5)
+
+
 if __name__ == '__main__':
     unittest.main()
+
