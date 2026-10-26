@@ -30,8 +30,8 @@ class CandidateAudit:
         try:self.funnel.rows(rows,stamp,stage)
         except Exception:self.funnel_errors+=1
 
-    def funnel_snapshot(self,stamp):
-        try:return self.funnel.snapshot(stamp)
+    def funnel_snapshot(self,stamp,compact=False):
+        try:return self.funnel.snapshot(stamp,compact=compact)
         except Exception:
             self.funnel_errors+=1
             return {'schema':'ENTRY_FUNNEL_V1','status':'UNKNOWN_DIAGNOSTIC_ERROR','errors':self.funnel_errors}

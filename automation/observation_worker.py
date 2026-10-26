@@ -345,13 +345,13 @@ class ObservationWorker:
         report_progress()
         attempts=0;chart_attempted=False
         for row in eligible:
-            sym=row['code']; saved=self.metadata.get(sym)
+            sym=row['code']; saved=self.metadata.get(sym); queried=False
             if row.get('market_status'):
                 saved=cache_status(sym,saved,row['market_status'])
             if not fresh(saved):
                 if not self.rest or not allow_metadata or attempts>=self.settings.metadata_budget:continue
                 # 같은 API 키의 호출 대기를 제한한다. 봇 포지션/미체결 중에는 새 진단 조회를 시작하지 않는다.
-                attempts+=1; self.apis+=1
+                attempts+=1; self.apis+=1; queried=True
                 pending_active.discard(sym)
                 try:
                     status=self.rest.stock_status(sym)
@@ -360,7 +360,7 @@ class ObservationWorker:
                     self.event('SHADOW_METADATA_ERROR',timestamp=clock.isoformat(),symbol=sym,SHADOW_ONLY=True,**exception_details(error));continue
             if not fresh(saved) or saved['status'].get('pass') is not True:continue
             admit(row,saved)
-            report_progress()
+            if queried:report_progress()
             path=self.root/'data/raw'/f'{sym}_daily.csv'
             try:
                 bars=self.daily_bars(sym,path,clock.date())

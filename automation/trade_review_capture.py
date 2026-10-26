@@ -421,7 +421,15 @@ class TradeReviewCapture:
                     self.path=self.folder/f'trade-review-{day}-{part:04d}.jsonl';self.path_size=0
                 offset=self.path.stat().st_size if self.path.exists() else 0
                 try:
-                    with self.path.open('ab') as out:out.write(b''.join(batch))
+                    payload=b''.join(batch)
+                    for attempt in range(4):
+                        try:
+                            with self.path.open('ab') as out:out.write(payload)
+                            break
+                        except PermissionError as perm_err:
+                            if attempt<3 and getattr(perm_err,'winerror',None) in (5,32):
+                                time.sleep(0.005*(attempt+1));continue
+                            raise
                 except OSError:
                     # Never append a retry after an incomplete JSON line.
                     try:
@@ -454,10 +462,11 @@ class TradeReviewCapture:
         try:
             # This tiny overwrite remains possible when the tape budget is
             # exhausted; an absent/incomplete tape must never imply coverage.
-            path=self.folder/'capture-status.json';temp=self.folder/'capture-status.tmp'
-            temp.write_text(json.dumps({'event':'CAPTURE_STATUS','at':iso(self.clock()),
-                **self.stats()},ensure_ascii=False,allow_nan=False),encoding='utf-8')
-            os.replace(temp,path);self.last_status_write=time.monotonic()
+            path=self.folder/'capture-status.json'
+            from core.util import atomic_json
+            atomic_json(path,{'event':'CAPTURE_STATUS','at':iso(self.clock()),
+                **self.stats()},fsync=False)
+            self.last_status_write=time.monotonic()
         except OSError as error:
             self.errors+=1;self.last_error=type(error).__name__
 

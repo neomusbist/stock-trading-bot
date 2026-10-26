@@ -539,10 +539,23 @@ class TrendBreakoutHoldResearch:
         min_rr_target = required_viable_target(min_trig_entry, emergency, self.costs, self.cfg.min_reward_risk)
         if min_rr_target is None:
             return {'status': 'REJECT', 'reason': 'UNSOLVABLE_VIABLE_TARGET'}
-        measured_target = floor_tick(level + max(self.trend_multiple * (level - support), 2.0 * (level - emergency)))
-        viable_target = max(measured_target, min_rr_target)
+        # Grounded structure projection only: never reverse-engineer viable_target from required_1_5R_target.
+        measured_target = floor_tick(level + self.trend_multiple * (level - base_low))
+        viable_target = measured_target
 
-        # Only veto if an unbreached major daily resistance blocks the minimum 1.5R_net room.
+        # Veto if major resistance sits at/below breakout without room, or blocks the minimum 1.5R_net room.
+        if positive(major_resistance) and major_resistance <= min_trig_entry:
+            return {
+                'status': 'REJECT',
+                'reason': 'MAJOR_RESISTANCE_AT_OR_BELOW_BREAKOUT',
+                'level': level,
+                'support': support,
+                'structural_stop': structural,
+                'emergency_stop': emergency,
+                'major_resistance': floor_tick(major_resistance),
+                'measured_target': measured_target,
+                'required_1_5R_target': min_rr_target,
+            }
         if positive(major_resistance) and level < major_resistance < min_rr_target:
             return {
                 'status': 'REJECT',
@@ -565,8 +578,10 @@ class TrendBreakoutHoldResearch:
             'noise': noise,
             'noise_model': noise_model,
             'emergency_stop': emergency,
+            'measured_target': measured_target,
             'required_1_5R_target': min_rr_target,
             'viable_target': viable_target,
+            'target_reverse_engineered': False,
             'exit_policy': 'EMERGENCY_OR_BAR_CLOSE_BELOW_STRUCTURAL_THEN_BREAKEVEN_1R_AND_3BAR_TRAILING_1_5R',
             'base_bars': [b['start'].isoformat() for b in base],
             'structure_known_at': b2['available_at'].isoformat(),
@@ -591,6 +606,7 @@ class TrendBreakoutHoldResearch:
         noise_verified: bool = False,
         pretrigger_jump: float | None = None,
         continuous_tape: bool = False,
+        allow_unbounded_trend_hold: bool = False,
     ) -> dict:
         major_res = (watch or {}).get('resistance')
         st = self.structure(bars, asof, major_resistance=major_res, causal_noise=causal_noise)
@@ -659,9 +675,18 @@ class TrendBreakoutHoldResearch:
             noise_verified=noise_verified,
             continuous_tape=continuous_tape,
         )
+        trend_hold_only_pass = bool(
+            allow_unbounded_trend_hold
+            and econ.get('status') == 'KNOWN'
+            and not econ.get('rr_pass')
+            and entry_ask <= floor_tick(st['level'] * (1.0 + self.cfg.max_chase))
+        )
         return {
             **st,
-            'status': 'PASS' if orderability['raw_signal_pass'] else 'REJECT',
+            'status': 'PASS' if (orderability['raw_signal_pass'] or trend_hold_only_pass) else 'REJECT',
+            'reason': 'PASS' if orderability['raw_signal_pass'] else ('TREND_HOLD_ONLY_MEASURED_TARGET_BELOW_1_5R' if trend_hold_only_pass else orderability['reason']),
+            'measured_target_rr_pass': bool(econ.get('rr_pass')),
+            'trend_hold_only_candidate': trend_hold_only_pass,
             'trigger_at': aware(asof).isoformat() if aware(asof) else str(asof),
             'entry_ask': entry_ask,
             'economics': econ,
@@ -1206,4 +1231,89 @@ def evaluate_oct23_sealed_cohorts(
             'raw_signal_pass_count': sum(1 for r in recovery_evaluated if r['rr_pass']),
             'confirmed_orderable_count': 0,
         },
+    }
+
+
+def observe_replacement_ab_on_completed_bar(
+    *,
+    symbol: str,
+    bars,
+    latest_tick,
+    watch: dict | None,
+    cfg,
+    auto,
+    cash_budget: float | None = None,
+    risk_budget: float | None = None,
+) -> dict:
+    """Order-disabled (actual_order_permission=False) parallel evaluation hook.
+
+    Designed to be called at most once per completed 1-minute bar per WATCH symbol
+    (never inside the per-tick hot loop), ensuring near-zero CPU overhead while
+    observing TrendBreakoutHoldResearch and SupportRecoveryHoldResearch alongside
+    legacy strategies. Never emits or authorizes a live order.
+    """
+    if latest_tick is None or not bars or len(bars) < 3:
+        return {'evaluated': False, 'actual_order_permission': False, 'live_enabled': False}
+    costs = Costs(
+        auto.commission_buy,
+        auto.commission_sell,
+        auto.sell_tax,
+        cfg.entry_slippage_fraction,
+        cfg.exit_slippage_fraction,
+    )
+    asof = getattr(latest_tick, 'time', None)
+    price = getattr(latest_tick, 'price', 0.0)
+    bid = getattr(latest_tick, 'bid', 0.0)
+    ask = getattr(latest_tick, 'ask', 0.0)
+    bid_qty = getattr(latest_tick, 'bid_qty', None)
+    ask_qty = getattr(latest_tick, 'ask_qty', None)
+    depth_avail = getattr(latest_tick, 'depth_available', None)
+
+    annotated_bars = [
+        {
+            **b,
+            'available_at': (b['time'] + timedelta(minutes=1)).isoformat() if isinstance(b.get('time'), datetime) else b.get('available_at'),
+            'observation_source': b.get('observation_source', 'ACTUAL_RECEIVED'),
+        }
+        for b in list(bars)[-6:]
+    ]
+    trend = TrendBreakoutHoldResearch(cfg, auto, costs)
+    recovery = SupportRecoveryHoldResearch(cfg, auto, costs)
+    t_res = trend.evaluate_entry(
+        bars=annotated_bars,
+        asof=asof,
+        price=price,
+        bid=bid,
+        ask=ask,
+        bid_qty=bid_qty,
+        ask_qty=ask_qty,
+        depth_available=depth_avail,
+        quote_fresh=True,
+        watch=watch,
+        cash_budget=cash_budget,
+        risk_budget=risk_budget,
+    )
+    r_res = recovery.evaluate_entry(
+        bars=annotated_bars,
+        asof=asof,
+        price=price,
+        bid=bid,
+        ask=ask,
+        bid_qty=bid_qty,
+        ask_qty=ask_qty,
+        depth_available=depth_avail,
+        quote_fresh=True,
+        micro_reclaimed=True,
+        watch=watch,
+        cash_budget=cash_budget,
+        risk_budget=risk_budget,
+    )
+    return {
+        'evaluated': True,
+        'symbol': symbol,
+        'asof': aware(asof).isoformat() if aware(asof) else str(asof),
+        'trend_breakout_hold': t_res,
+        'support_recovery': r_res,
+        'actual_order_permission': False,
+        'live_enabled': False,
     }

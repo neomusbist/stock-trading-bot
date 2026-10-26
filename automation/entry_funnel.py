@@ -199,11 +199,11 @@ class EntryFunnel:
             group=phase+':BROKER:'+setup+':'+str(side or order.get('side'))+':'+kind
             self._identity(self.execution_ids,group,str(order['local']))
 
-    def snapshot(self, stamp):
+    def snapshot(self, stamp, compact=False):
         at, _ = self._stamp(stamp)
         raw = self.ids.get('RAW', set())
         evaluated = set().union(*(v for k, v in self.ids.items() if k.endswith('_EVALUATED')))
-        return dict(schema='ENTRY_FUNNEL_V1', at=at, day=self.day,
+        out = dict(schema='ENTRY_FUNNEL_V1', at=at, day=self.day,
             count_basis='PROCESS_INVOCATIONS_BEFORE_LOG_THROTTLE; SCOPES_SEPARATE; NOT_UNIQUE_OPPORTUNITIES',
             coverage='PROCESS_LIFETIME_ONLY; NO_RECONSTRUCTION_OF_MISSING_INPUTS',
             stages=dict(self.stages), unique_symbols={k: len(v) for k, v in self.ids.items()},
@@ -217,9 +217,18 @@ class EntryFunnel:
             independent_market_opportunities='UNKNOWN_REQUIRES_COMPLETE_TIME_AVAILABLE_TAPE',
             execution_provenance='BROKER_INTERFACE_EVENTS; REAL_EXECUTION_REQUIRES_PRODUCTION_LEDGER_AND_BROKER_RECEIPTS',
             reasons={k: dict(v) for k, v in self.reasons.items()},
-            boundaries=dict(self.boundaries), examples=list(self.examples.values()),
-            discovery_examples=list(self.discovery_examples.values()),
-            first_stage_times={k: dict(v) for k, v in list(self.timeline.items())[:32]})
+            boundaries=dict(self.boundaries),
+            example_count=len(self.examples),
+            discovery_example_count=len(self.discovery_examples),
+            tracked_symbol_count=len(self.timeline))
+        if compact:
+            out['compact'] = True
+            out['examples_in'] = 'candidate_summary.json'
+        else:
+            out['examples'] = list(self.examples.values())
+            out['discovery_examples'] = list(self.discovery_examples.values())
+            out['first_stage_times'] = {k: dict(v) for k, v in list(self.timeline.items())[:32]}
+        return out
 
 
 def observe_evaluation(engine, t, watch, detector, fast, signal, scope):

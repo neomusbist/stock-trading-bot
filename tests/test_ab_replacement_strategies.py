@@ -1,10 +1,18 @@
-"""Targeted regression tests for inactive A/B replacement strategies (P0-P2)."""
+"""Targeted regression tests for P0 performance fixes and P1-P3 replacement strategies."""
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
 from automation.capital import Costs
+from automation.patterns import PatternDetector
 from automation.policy import load_automation
+from automation.release_integrity import _INTEGRITY_CACHE, check_runtime_integrity
+from automation.trade_review_capture import TradeReviewCapture
 from core.settings import load_config
+from core.strategy import Tick
 from research.ab_replacement_strategies import (
     ACTUAL_ORDER_PERMISSION,
     LIVE_ENABLED,
@@ -12,6 +20,7 @@ from research.ab_replacement_strategies import (
     TrendBreakoutHoldResearch,
     classify_legacy_ab_baseline,
     evaluate_post_entry_path,
+    observe_replacement_ab_on_completed_bar,
 )
 
 
@@ -73,16 +82,17 @@ class TestABReplacementStrategies(unittest.TestCase):
         self.assertEqual(res['oct26_opening_0930']['A_rr_pass'], 0)
         self.assertEqual(res['oct26_opening_0930']['B_rr_pass'], 0)
 
-    def test_trend_breakout_hold_does_not_cap_at_nearby_minor_peak(self):
+    def test_trend_breakout_hold_never_inflates_target_from_required_1_5R(self):
         trend = TrendBreakoutHoldResearch(self.cfg, self.auto, self.costs)
-        # Early minor peak at 10,300 (bars 0-2), then rising 3-bar base at 10,000 -> 10,200 (bars 3-5)
+        # 1) Tight pivot with 2.0% base height (base_low=10,000, b1.low=10,130, b2.low=10,150, level=10,200):
+        #    measured_target = 10,200 + 2.5 * 200 = 10,700 > required_1_5R_target, passes WITHOUT target inflation!
         bars = [
             make_bar(0, 10000, 10150, 9980, 10120),
             make_bar(1, 10120, 10300, 10100, 10250),
             make_bar(2, 10250, 10260, 10020, 10050),
-            make_bar(3, 10050, 10120, 10040, 10100),
-            make_bar(4, 10100, 10160, 10090, 10150),
-            make_bar(5, 10150, 10200, 10140, 10190),
+            make_bar(3, 10050, 10120, 10000, 10100),
+            make_bar(4, 10135, 10160, 10130, 10150),
+            make_bar(5, 10155, 10200, 10150, 10190),
         ]
         asof = datetime(2026, 10, 26, 9, 6, 5, tzinfo=KST)
         watch = {
@@ -111,31 +121,66 @@ class TestABReplacementStrategies(unittest.TestCase):
             continuous_tape=True,
         )
         self.assertEqual(res['status'], 'PASS')
-        self.assertGreater(res['viable_target'], 10300)
+        self.assertFalse(res['target_reverse_engineered'])
+        self.assertEqual(res['viable_target'], res['measured_target'])
+        self.assertGreater(res['measured_target'], res['required_1_5R_target'])
         self.assertTrue(res['economics']['rr_pass'])
-        self.assertTrue(res['entry_zone']['current_order_price_in_zone'])
         self.assertEqual(res['orderability']['orderability_status'], 'ORDERABLE_SCENARIO')
         self.assertFalse(res['actual_order_permission'])
 
-        # If a major daily resistance sits right above breakout (e.g. 10,250), reject!
+        # 2) Wide 3-bar range noise where measured_target < required_1_5R_target:
+        #    MUST reject under standard evaluation (no reverse-engineered target inflation!)
+        wide_bars = [
+            make_bar(3, 9690, 9760, 9690, 9750),
+            make_bar(4, 9750, 9800, 9710, 9780),
+            make_bar(5, 9780, 9810, 9730, 9800),
+        ]
+        wide_res = trend.evaluate_entry(
+            bars=wide_bars,
+            asof=asof,
+            price=9830,
+            bid=9820,
+            ask=9830,
+            bid_qty=500,
+            ask_qty=500,
+            depth_available=True,
+            quote_fresh=True,
+            watch=watch,
+            cash_budget=50000.0,
+            risk_budget=1600.0,
+        )
+        self.assertEqual(wide_res['status'], 'REJECT')
+        self.assertFalse(wide_res['measured_target_rr_pass'])
+        self.assertLess(wide_res['measured_target'], wide_res['required_1_5R_target'])
+
+        # 3) If allow_unbounded_trend_hold=True is explicitly requested for pure trend-exit research,
+        #    it marks trend_hold_only_candidate=True while keeping orderability_status='REJECT'.
+        hold_only = trend.evaluate_entry(
+            bars=wide_bars,
+            asof=asof,
+            price=9830,
+            bid=9820,
+            ask=9830,
+            watch=watch,
+            allow_unbounded_trend_hold=True,
+        )
+        self.assertEqual(hold_only['status'], 'PASS')
+        self.assertTrue(hold_only['trend_hold_only_candidate'])
+        self.assertFalse(hold_only['measured_target_rr_pass'])
+        self.assertEqual(hold_only['orderability']['orderability_status'], 'REJECT')
+
+        # 4) Major resistance at or below breakout is rejected immediately
         blocked = trend.evaluate_entry(
             bars=bars,
             asof=asof,
             price=10210,
             bid=10200,
             ask=10210,
-            bid_qty=500,
-            ask_qty=500,
-            depth_available=True,
-            quote_fresh=True,
-            watch={**watch, 'resistance': 10250},
-            cash_budget=50000.0,
-            risk_budget=1600.0,
+            watch={**watch, 'resistance': 10200},
             causal_noise=20.0,
-            noise_verified=True,
         )
         self.assertEqual(blocked['status'], 'REJECT')
-        self.assertEqual(blocked['reason'], 'MAJOR_RESISTANCE_BLOCKS_MIN_VIABLE_TREND_ROOM')
+        self.assertEqual(blocked['reason'], 'MAJOR_RESISTANCE_AT_OR_BELOW_BREAKOUT')
 
     def test_trend_breakout_trailing_and_breakeven_exits(self):
         entry_at = datetime(2026, 10, 26, 9, 6, 5, tzinfo=KST)
@@ -164,7 +209,6 @@ class TestABReplacementStrategies(unittest.TestCase):
 
     def test_support_recovery_separates_structural_close_from_emergency_stop(self):
         rec = SupportRecoveryHoldResearch(self.cfg, self.auto, self.costs)
-        # Confirmed peak at bar 1 (2140), higher-low support at 2030 (bars 3-4)
         bars = [
             make_bar(0, 2000, 2060, 1995, 2050),
             make_bar(1, 2050, 2140, 2045, 2120),
@@ -173,7 +217,6 @@ class TestABReplacementStrategies(unittest.TestCase):
             make_bar(4, 2035, 2050, 2030, 2040),
         ]
         asof = datetime(2026, 10, 26, 9, 5, 2, tzinfo=KST)
-        # Under wide 3-bar range noise (2110-2040 = 70), net RR at 2045 is < 1.5 -> REJECT
         wide = rec.evaluate_entry(
             bars=bars,
             asof=asof,
@@ -192,7 +235,6 @@ class TestABReplacementStrategies(unittest.TestCase):
         )
         self.assertEqual(wide['status'], 'REJECT')
 
-        # Under causal 60s prefix noise (15 KRW), emergency=2010, net RR >= 1.5 -> PASS
         tight = rec.evaluate_entry(
             bars=bars,
             asof=asof,
@@ -207,7 +249,7 @@ class TestABReplacementStrategies(unittest.TestCase):
             cash_budget=35000.0,
             risk_budget=1400.0,
             causal_noise=15.0,
-            noise_verified=False,  # Missing continuous quote envelope -> UNKNOWN orderability
+            noise_verified=False,
             pretrigger_jump=15.0,
             continuous_tape=True,
         )
@@ -220,8 +262,6 @@ class TestABReplacementStrategies(unittest.TestCase):
         self.assertEqual(tight['orderability']['orderability_status'], 'UNKNOWN')
         self.assertEqual(tight['orderability']['reason'], 'UNKNOWN_PREFIX_NOISE_COVERAGE')
 
-        # Intra-bar wick to 2015 (> emergency 2010, < structural 2025) that closes at 2035 does NOT stop out;
-        # next bar reaches 2140 -> TARGET_PEAK_EXIT
         path = evaluate_post_entry_path(
             strategy_type='SUPPORT_RECOVERY',
             entry_at=asof,
@@ -239,6 +279,101 @@ class TestABReplacementStrategies(unittest.TestCase):
         )
         self.assertEqual(path['exit_rule'], 'TARGET_PEAK_EXIT')
         self.assertEqual(path['exit_price'], 2140.0)
+
+    def test_p3_completed_bar_non_ordering_hook(self):
+        bars = [
+            {**make_bar(i, 10000 + i * 20, 10100 + i * 20, 9990 + i * 20, 10050 + i * 20),
+             'time': datetime(2026, 10, 26, 9, i, 0, tzinfo=KST)}
+            for i in range(4)
+        ]
+        t = Tick('047770', datetime(2026, 10, 26, 9, 4, 2, tzinfo=KST), 10200, 100, 5000, 10200, 10190)
+        hook_res = observe_replacement_ab_on_completed_bar(
+            symbol='047770',
+            bars=bars,
+            latest_tick=t,
+            watch={'status': 'WATCH', 'resistance': 12000, 'source_count': 2, 'market_status': {'pass': True}},
+            cfg=self.cfg,
+            auto=self.auto,
+            cash_budget=35423.5,
+            risk_budget=1416.94,
+        )
+        self.assertTrue(hook_res['evaluated'])
+        self.assertFalse(hook_res['actual_order_permission'])
+        self.assertFalse(hook_res['live_enabled'])
+
+    def test_p0_counterexample_intrabar_breakout_and_quote_arrival_never_missed_by_cache(self):
+        """Counterexample test for P0 Item 2:
+        When completed-bar structure cache (_bar_structure_cache) and _setup_gates_cache
+        are warm from non-breakout or wide-spread ticks inside the same minute,
+        (a) an intra-bar price breakout tick immediately triggers signal emission, and
+        (b) a new quote tightening ask/spread into the viable zone immediately triggers signal emission.
+        """
+        det = PatternDetector(self.cfg, self.auto, self.costs)
+        det.continuous_observation = True
+        sym = '999990'
+        base_time = datetime(2026, 10, 26, 9, 0, 0, tzinfo=KST)
+        watch = {'status': 'WATCH', 'resistance': 12000, 'source_details': {'a': {}, 'b': {}}, 'market_status': {'pass': True}}
+
+        # Build 5 completed bars forming a tight C box [9860, 10000]
+        cum = 0
+        for m in range(5):
+            for s in range(60):
+                px = 9860 if s < 10 else 10000 if s < 25 else 9970
+                cum += 200
+                t = Tick(sym, base_time + timedelta(minutes=m, seconds=s), px, 200, cum, px + 10, px - 10)
+                det.ingest(t, t.time)
+
+        # In minute 5, send non-breakout ticks at 9970 (warming _bar_structure_cache and _setup_gates_cache)
+        for s in range(4):
+            cum += 200
+            t = Tick(sym, base_time + timedelta(minutes=5, seconds=s), 9970, 200, cum, 9980, 9970)
+            det.ingest(t, t.time)
+            self.assertIsNone(det.signal(t, watch))
+
+        self.assertIn(sym, det._bar_structure_cache)
+        self.assertIn(sym, det._setup_gates_cache)
+
+        # Counterexample (a): Intra-bar breakout tick at second=4 with wide spread (ask=10060, bid=10000 -> spread=0.599% > 0.4%)
+        cum += 4000
+        t_wide_quote = Tick(sym, base_time + timedelta(minutes=5, seconds=4), 10010, 4000, cum, 10060, 10000)
+        det.ingest(t_wide_quote, t_wide_quote.time)
+        self.assertIsNone(det.signal(t_wide_quote, watch))
+
+        # Counterexample (b): Same minute, quote improves to ask=10010, bid=10000 -> signal MUST fire immediately!
+        t_good_quote = replace(t_wide_quote, ask=10010, bid=10000)
+        sig = det.signal(t_good_quote, watch)
+        self.assertIsNotNone(sig, "Signal must not be missed when quote improves intra-bar")
+        self.assertEqual(sig['pattern'], 'C')
+
+    def test_p0_trade_review_capture_survives_transient_permission_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cap = TradeReviewCapture(Path(tmp), start=False)
+            import os
+            real_replace = os.replace
+            calls = {'count': 0}
+
+            def flaky_replace(self_path, target):
+                calls['count'] += 1
+                if calls['count'] <= 2:
+                    err = PermissionError(5, "Access is denied")
+                    err.winerror = 5
+                    raise err
+                return real_replace(self_path, target)
+
+            with patch('os.replace', side_effect=flaky_replace):
+                cap.write_status(force=True)
+            self.assertTrue((cap.folder / 'capture-status.json').exists())
+            self.assertGreaterEqual(calls['count'], 3)
+
+    def test_p0_release_integrity_stat_fingerprint_cache(self):
+        _INTEGRITY_CACHE.clear()
+        with patch('automation.release_integrity.sha256_file', wraps=lambda p: '0' * 64) as mocked_sha:
+            check_runtime_integrity()
+            first_calls = mocked_sha.call_count
+            self.assertGreater(first_calls, 0)
+            # Second call with unchanged file stats must hit cache without re-reading/hashing files
+            check_runtime_integrity()
+            self.assertEqual(mocked_sha.call_count, first_calls)
 
 
 if __name__ == '__main__':

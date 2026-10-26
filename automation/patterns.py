@@ -32,6 +32,8 @@ class PatternDetector(Detector):
         self.coverage_gaps={}
         self.observation_start={}; self.observation_session={}
         self._entry_geometry_cache={}
+        self._bar_structure_cache={}
+        self._setup_gates_cache={}
         self._state_lock=RLock()
         self.price_context=PriceContext(bar_limit=120 if auto.intraday_context_enabled or auto.structural_breakout_enabled else 30)
 
@@ -44,6 +46,8 @@ class PatternDetector(Detector):
         self._eval_keys.clear()
         self.observation_start.clear(); self.observation_session.clear()
         self._entry_geometry_cache.clear()
+        self._bar_structure_cache.clear()
+        self._setup_gates_cache.clear()
 
     @observation_locked
     def ingest(self,t,received):
@@ -130,6 +134,7 @@ class PatternDetector(Detector):
         current=self.current.get(symbol)
         if current is not None:current['gap_reason']=reason
         self.last_eval.pop(symbol,None);self._eval_keys.pop(symbol,None)
+        self._bar_structure_cache.pop(symbol,None);self._setup_gates_cache.pop(symbol,None)
         return True
 
     def pullback(self,bars):
@@ -306,6 +311,7 @@ class PatternDetector(Detector):
         self._eval_keys.pop(symbol,None)
         self.coverage_gaps.pop(symbol,None)
         self._entry_geometry_cache.pop(symbol,None)
+        self._bar_structure_cache.pop(symbol,None);self._setup_gates_cache.pop(symbol,None)
 
     def handoff_from(self,source,symbol):
         if source is None or source is self or not hasattr(getattr(source, '_state_lock', None), '__enter__'):return False
@@ -352,6 +358,7 @@ class PatternDetector(Detector):
                 if key in snapshot:mapping[symbol]=snapshot[key]
                 else:mapping.pop(symbol,None)
             self.last_eval.pop(symbol,None);self._eval_keys.pop(symbol,None)
+            self._bar_structure_cache.pop(symbol,None);self._setup_gates_cache.pop(symbol,None)
             return True
 
     def candidates(self,t,bars,is_after=False,venue=None):
@@ -397,14 +404,62 @@ class PatternDetector(Detector):
         if not 0<(top-low)/low<=self.a.box_max_range: return None
         return {'pattern':'C','breakout':top,'support':low,'projection':top+2*(top-low),'box_width':top-low}
 
+    def _completed_bar_geometry(self,symbol,bars,tick_time=None):
+        if len(bars)<2:
+            return None,'INSUFFICIENT_USABLE_BARS',{},None,False,{}
+        minute=tick_time.replace(second=0,microsecond=0) if isinstance(tick_time,datetime) else None
+        key=(len(bars),bars[0]['time'],bars[-1]['time'],bars[-1]['close'],bars[-1]['high'],bars[-1]['low'],bars[-1]['volume'],
+             minute,self.a.box_min_bars,self.a.box_max_range,self.a.pullback_min_rise,self.a.pullback_max_retrace,
+             self.a.pullback_volume_ratio,getattr(self.a,'chase_quality_filter',False),
+             getattr(self.a,'pullback_min_retrace',0.20),getattr(self.a,'pullback_max_drawdown_from_high',0.05),
+             self.a.structural_breakout_enabled,self.cfg.min_price_gain)
+        cached=self._bar_structure_cache.get(symbol)
+        if cached is not None and cached[0]==key:
+            _,b_setup,b_reason,b_evidence,c_setup,cont_ok,cont_proof=cached
+        else:
+            b_setup,b_reason,b_evidence=self.pullback_analysis(bars)
+            c_setup=self.box(bars)
+            cont_ok,cont_proof=False,{}
+            if self.a.structural_breakout_enabled and minute is not None and len(bars)>=3:
+                from automation.structural_breakout import confirmed_continuation
+                cont_ok,cont_proof=confirmed_continuation(bars,tick_time,self.cfg.min_price_gain)
+            self._bar_structure_cache[symbol]=(key,b_setup,b_reason,b_evidence,c_setup,cont_ok,cont_proof)
+        return (dict(b_setup) if b_setup else None,b_reason,dict(b_evidence) if b_evidence else {},
+                dict(c_setup) if c_setup else None,cont_ok,dict(cont_proof) if isinstance(cont_proof,dict) else cont_proof)
+
     def setup_trials(self,t,watch,gates=None,*,_bars=None,_setups=None,_only=None,_revision=True):
         """A/B/C geometry is evaluated independently; only A requires acceleration."""
         is_after=after_supported(t.time)
         gates=self.base_gates(t,watch) if gates is None else gates
         bars=self.usable_bars(t.symbol,after_only=is_after) if _bars is None else _bars
         venue=watch.get('venue') or (getattr(self.cfg,'after_default_venue','SOR') if is_after else 'KRX')
-        setups={s['pattern']:s for s in self.candidates(t,bars,is_after=is_after,venue=venue)} if _setups is None else _setups
-        _,b_reason,b_evidence=self.pullback_analysis(bars)
+        b_setup,b_reason,b_evidence,c_setup,cont_ok,cont_proof=self._completed_bar_geometry(t.symbol,bars,t.time)
+        if _setups is None:
+            setups={}
+            if b_setup:setups['B']=b_setup
+            if c_setup:setups['C']=c_setup
+            if len(bars)>=2:
+                prior=(self.after_prior_high if is_after else self.prior_high).get(t.symbol)
+                if prior and t.price>prior:
+                    lookback=min(len(bars),4 if len(bars)>=4 else 3 if len(bars)>=3 else 2)
+                    support=min(b['low'] for b in bars[-lookback:])
+                    setups['A']={'pattern':'A','breakout':prior,'support':support,'projection':prior+2*(prior-support)}
+                elif self.a.structural_breakout_enabled and cont_ok is True:
+                    from automation.trade_quality import complete_sequence
+                    references=self.price_context.reference_bars(t.symbol,t.time,venue)
+                    count=min(len(references),12)
+                    base=complete_sequence(references,t.time,count,require_recent=True) if count>=3 else []
+                    if base:
+                        local_high=max(b['high'] for b in base)
+                        support=min(b['low'] for b in bars[-min(len(bars),4):])
+                        if t.price>local_high and support<local_high:
+                            setups['A']={'pattern':'A','breakout':local_high,'support':support,
+                                'projection':local_high+2*(local_high-support),
+                                'entry_basis':'LOCAL_CONFIRMED_CONTINUATION',
+                                'prior_session_high':prior,'continuation_evidence':cont_proof,
+                                'local_range_start':base[0]['time'].isoformat()}
+        else:
+            setups=_setups
         trials=[]
         for name in ('A','B','C'):
             if _only is not None and name!=_only:continue
@@ -506,11 +561,11 @@ class PatternDetector(Detector):
                 'price_action':{'condition':'CONTROLLED_PULLBACK' if name=='B' else 'INTRADAY_BOX' if name=='C' else 'PRIOR_HIGH_BREAKOUT',
                     'formed':bool(setup),'breakout':price_gates.get('breakout',gate(False,reason='GEOMETRY_ABSENT'))},
                 'virtual_entry':virtual.get('entry'),'virtual_invalidation':virtual.get('stop')})
-        if _revision and (self.a.a_breakout_retest_entry_enabled or self.a.b_support_reclaim_entry_enabled):
+        if _revision and len(bars)>=2 and (self.a.a_breakout_retest_entry_enabled or self.a.b_support_reclaim_entry_enabled):
             # Geometry is immutable within one closed-bar prefix; quote/cost
             # gates are always recomputed. One cache per observed symbol.
             key=(t.time.replace(second=0,microsecond=0),self.a.a_breakout_retest_entry_enabled,self.a.b_support_reclaim_entry_enabled,
-                 tuple((b['time'],*(b.get(k) for k in ('open','high','low','close','volume','gap_reason'))) for b in bars))
+                 len(bars),bars[0]['time'],bars[-1]['time'],bars[-1]['close'],bars[-1]['high'],bars[-1]['low'],bars[-1]['volume'],bars[-1].get('gap_reason'))
             cached=self._entry_geometry_cache.get(t.symbol)
             if cached is None or cached[0]!=key:
                 from automation.structural_breakout import breakout_retest_setup
@@ -626,7 +681,10 @@ class PatternDetector(Detector):
         """
         signal=self.signal(t,watch)
         result=self.last_eval[t.symbol]
-        return signal,deepcopy(result['gates']),deepcopy(result['trials']),deepcopy(list(self.history.get(t.symbol,())))
+        gates_copy={k:dict(v) for k,v in result['gates'].items()}
+        trials_copy=[{**tr,'failed_reasons':list(tr.get('failed_reasons',()))} for tr in result['trials']]
+        history_copy=[dict(b) for b in self.history.get(t.symbol,())]
+        return signal,gates_copy,trials_copy,history_copy
 
     @staticmethod
     def _evaluation_key(t,watch):
@@ -637,6 +695,22 @@ class PatternDetector(Detector):
 
     def setup_gates(self,t,watch,setup,bars=None):
         c=self.cfg; breakout=setup['breakout']
+        minute=t.time.replace(second=0,microsecond=0) if isinstance(getattr(t,'time',None),datetime) else None
+        bars_key=(len(bars),bars[0]['time'],bars[-1]['time'],bars[-1]['close'],bars[-1]['high'],bars[-1]['low'],bars[-1].get('volume'),bars[-1].get('gap_reason')) if bars else ()
+        pc_row=self.price_context.rows.get(t.symbol) if getattr(self,'price_context',None) is not None and self.price_context.day==t.time.date() else None
+        pc_key=(len(pc_row['bars']),pc_row.get('last_complete_at'),pc_row.get('history_received_at'),len(pc_row['peaks']),pc_row['peaks'][-1].get('cleared_at') if pc_row['peaks'] else None) if pc_row else ()
+        watch_key=(watch.get('status'),watch.get('resistance'),watch.get('resistance_room_pass'),watch.get('venue'),len(watch.get('source_details',{})))
+        prior_key=(self.prior_high.get(t.symbol),self.after_prior_high.get(t.symbol))
+        sg_key=(id(self.cfg),id(self.a),minute,after_supported(t.time),t.price,t.bid,t.ask,watch_key,prior_key,bars_key,pc_key,repr(setup))
+        sym_sg=self._setup_gates_cache.setdefault(t.symbol,{})
+        cached_sg=sym_sg.get(setup['pattern'])
+        if cached_sg is not None and cached_sg[0]==sg_key:
+            res_copy={k:dict(v) for k,v in cached_sg[1].items()}
+            asof_iso=t.time.isoformat()
+            for sk in ('pullback_structure','breakout_structure','box_structure'):
+                if sk in res_copy and isinstance(res_copy[sk].get('values'),dict):
+                    res_copy[sk]={**res_copy[sk],'values':{**res_copy[sk]['values'],'asof':asof_iso}}
+            return res_copy
         if setup['pattern']=='B' and t.price>=setup.get('peak',breakout):
             breakout=setup['peak']
         stop=floor_tick(setup['support']*(1-c.structural_buffer))
@@ -748,6 +822,7 @@ class PatternDetector(Detector):
             from automation.trade_quality import box_direction
             passed,evidence=box_direction(bars,t.time,self.a.box_min_bars)
             result['box_direction']=gate(passed,enabled=True,**evidence)
+        sym_sg[setup['pattern']]=(sg_key,result)
         return result
 
     @observation_locked

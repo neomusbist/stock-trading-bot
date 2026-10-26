@@ -80,12 +80,51 @@ def get_current_commit(root=None):
     return CURRENT_RELEASE_COMMIT
 
 CURRENT_RELEASE_COMMIT = get_current_commit()
+_INTEGRITY_CACHE = {}
+
+def _integrity_stat_fingerprint(root_path):
+    import time
+    now_ns = time.time_ns()
+    manifest_file = root_path / 'runtime/RELEASE_IDENTITY.json'
+    tracked = set(CRITICAL_RUNTIME_FILES) | {s['file'] for s in MANDATORY_PATCH_SIGNATURES.values()} | {'automation/decisions.py'}
+    if manifest_file.exists():
+        try:
+            st_m = manifest_file.stat()
+            if abs(now_ns - st_m.st_mtime_ns) <= 50_000_000:
+                return None
+            cached = _INTEGRITY_CACHE.get(str(root_path.resolve()))
+            if cached and cached[0] == (st_m.st_mtime_ns, st_m.st_size):
+                tracked |= cached[1]
+            else:
+                return None
+        except OSError:
+            return None
+    else:
+        return None
+    items = [('runtime/RELEASE_IDENTITY.json', st_m.st_mtime_ns, st_m.st_size)]
+    for rel in sorted(tracked):
+        fp = root_path / rel
+        try:
+            st = fp.stat()
+            if abs(now_ns - st.st_mtime_ns) <= 50_000_000:
+                return None
+            items.append((rel, st.st_mtime_ns, st.st_size))
+        except OSError:
+            items.append((rel, None, None))
+    return tuple(items)
 
 def check_runtime_integrity(root=None):
     """운영본 디렉터리의 실제 실행 파일 내용과 필수 패치를 물리적으로 검사한다.
     단순 문자열 비교가 아닌, 파일 존재, SHA-256 해시, 필수 패치 코드 시그니처를 전수 대조한다.
     """
+    import copy
     root_path = Path(root) if root else Path(__file__).resolve().parent.parent
+    root_key = str(root_path.resolve())
+    fp = _integrity_stat_fingerprint(root_path)
+    if fp is not None:
+        cached = _INTEGRITY_CACHE.get(root_key)
+        if cached and cached[2] == fp:
+            return copy.deepcopy(cached[3])
     reasons = []
     file_hashes = {}
     verified_patches = []
@@ -169,7 +208,7 @@ def check_runtime_integrity(root=None):
     short_hash = fast_hash[:8] if fast_hash else 'UNKNOWN'
     commit_id = get_current_commit(root_path)
 
-    return {
+    result = {
         'valid': valid,
         'commit': commit_id,
         'build_id': declared_build or CURRENT_RELEASE_BUILD_ID,
@@ -182,6 +221,16 @@ def check_runtime_integrity(root=None):
         'reasons': reasons,
         'summary': f"Commit {commit_id} | FAST:{short_hash} | {'VERIFIED' if valid else 'UNVERIFIED_MISMATCH'}"
     }
+    if manifest_file.exists():
+        try:
+            st_m = manifest_file.stat()
+            _INTEGRITY_CACHE[root_key] = ((st_m.st_mtime_ns, st_m.st_size), set(file_hashes.keys()), None, None)
+            fp2 = _integrity_stat_fingerprint(root_path)
+            if fp2 is not None:
+                _INTEGRITY_CACHE[root_key] = ((st_m.st_mtime_ns, st_m.st_size), set(file_hashes.keys()), fp2, copy.deepcopy(result))
+        except OSError:
+            pass
+    return result
 
 def record_mode_transition(root, from_mode, to_mode, approval_basis, symbol=None, user=None, pid=None):
     """STOP <-> LIVE 상태 전환 이력을 실행 파일 해시 및 승인 근거와 함께 기록한다."""

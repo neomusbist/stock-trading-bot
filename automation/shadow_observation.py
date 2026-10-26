@@ -75,7 +75,7 @@ class ShadowObserver:
    sym=row['code'];score=row.get('discovery_score',row.get('source_count',0)*10)
    held=sym in self.rows and (stamp-self.selected_at.get(sym,stamp)).total_seconds()<residence_seconds
    gates=self.latest.get(sym,{}).get('gates',{})
-   try:fresh=0<=(stamp-datetime.fromisoformat(self.latest[sym]['timestamp'])).total_seconds()<=15
+   try:fresh=-1<=(stamp-datetime.fromisoformat(self.latest[sym]['timestamp'])).total_seconds()<=15
    except (KeyError,ValueError):fresh=False
    strong=fresh and all(gates.get(k,{}).get('result')=='PASS' for k in ('acceleration','liquidity'))
    if self.auto.setup_aware_watch_priority:
@@ -150,12 +150,13 @@ class ShadowObserver:
    cur_day_high=max(t.price,self.detector.day_high.get(t.symbol,t.price))
    self.detector.day_high[t.symbol]=cur_day_high
   if getattr(self.detector,'price_context',None) is not None:
-   structure_now=self.fast_strategy.get_tape(t.symbol).structure(received)
-   ctx_snapshot=self.detector.price_context.snapshot(t.symbol,t,t.ask,
-    support=structure_now.get('support') if structure_now.get('pass') else None,
-    breakout=structure_now.get('breakout') if structure_now.get('pass') else None)
-   if ctx_snapshot.get('nearest_confirmed_peak'):
-    view['nearest_confirmed_peak']=ctx_snapshot['nearest_confirmed_peak']
+   if (self.detector.price_context.rows.get(t.symbol) or {}).get('peaks'):
+    structure_now=self.fast_strategy.get_tape(t.symbol).structure(received)
+    ctx_snapshot=self.detector.price_context.snapshot(t.symbol,t,t.ask,
+     support=structure_now.get('support') if structure_now.get('pass') else None,
+     breakout=structure_now.get('breakout') if structure_now.get('pass') else None)
+    if ctx_snapshot.get('nearest_confirmed_peak'):
+     view['nearest_confirmed_peak']=ctx_snapshot['nearest_confirmed_peak']
    pc_day_high=self.detector.price_context.day_high(t.symbol)
    if pc_day_high and (cur_day_high is None or pc_day_high>cur_day_high):
     cur_day_high=pc_day_high

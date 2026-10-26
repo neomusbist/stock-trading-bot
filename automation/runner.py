@@ -234,6 +234,8 @@ def apply_qualified_progress(engine,lookup,rows,result,readiness,cfg,auto,stamp)
     pool={r['code']:dict(r) for r in rows}
     for sym,row in lookup.items():pool.setdefault(sym,dict(row))
     for row in verified:pool[row['code']]=dict(row)
+    for row in result.get('raw_rows',[]):
+        if isinstance(row,dict) and row.get('code'):pool.setdefault(row['code'],dict(row))
     merged=list(pool.values())
     selection=resolve_radar_focus(engine,lookup,merged,[],readiness,cfg,auto,stamp)
     for row in merged:
@@ -1208,7 +1210,7 @@ def evaluate_shadow_opportunity(engine,detector,t,watch,radar,prices,account,las
     if not sig and getattr(engine.a,'fast_momentum_enabled',False) and getattr(engine,'fast_strategy',None) is not None:
         watch_eval=dict(watch)
         eval_now=engine.clock()
-        if getattr(detector,'price_context',None) is not None:
+        if getattr(detector,'price_context',None) is not None and (detector.price_context.rows.get(t.symbol) or {}).get('peaks'):
             structure_now = engine.fast_strategy.get_tape(t.symbol).structure(eval_now)
             ctx_snapshot = detector.price_context.snapshot(
                 t.symbol, t, t.ask or t.price,
@@ -1376,15 +1378,16 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
             cur_day_high = max(t.price, prior_day_high if prior_day_high is not None else t.price)
             cur_day_high=max(cur_day_high,detector.day_high.get(t.symbol,t.price))
         if getattr(detector, 'price_context', None) is not None:
-            structure_now = engine.fast_strategy.get_tape(t.symbol).structure(eval_now)
-            ctx_snapshot = detector.price_context.snapshot(
-                t.symbol, t, t.ask,
-                support=structure_now.get('support') if structure_now.get('pass') else None,
-                breakout=structure_now.get('breakout') if structure_now.get('pass') else None,
-            )
-            peak = ctx_snapshot.get('nearest_confirmed_peak')
-            if peak:
-                watch_eval['nearest_confirmed_peak'] = peak
+            if (detector.price_context.rows.get(t.symbol) or {}).get('peaks'):
+                structure_now = engine.fast_strategy.get_tape(t.symbol).structure(eval_now)
+                ctx_snapshot = detector.price_context.snapshot(
+                    t.symbol, t, t.ask,
+                    support=structure_now.get('support') if structure_now.get('pass') else None,
+                    breakout=structure_now.get('breakout') if structure_now.get('pass') else None,
+                )
+                peak = ctx_snapshot.get('nearest_confirmed_peak')
+                if peak:
+                    watch_eval['nearest_confirmed_peak'] = peak
             pc_day_high = detector.price_context.day_high(t.symbol)
             if pc_day_high:
                 if cur_day_high is None or pc_day_high > cur_day_high:
@@ -2003,6 +2006,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         radar_ok=handle_radar_failure(engine,result,now(),auto.scan_seconds)
                     else:
                         if result.get('phase')=='QUALIFIED_PROGRESS':
+                            rows=merge_verified_shadow_candidates(rows,shadow,lookup,now(),auto.scan_seconds*3)
                             rows,selection=apply_qualified_progress(engine,lookup,rows,result,
                                 focus_readiness(detector,shadow.runtime_view()['evaluations'],now()),effective,auto,now())
                             if selection is not None:
@@ -2253,7 +2257,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         'entry_delivery':dict(getattr(engine,'entry_delivery_counts',{})),
                         'entry_quote_retry':{'pending':len(getattr(engine,'_quote_entry_pending',{})),
                             'counts':dict(getattr(engine,'_quote_entry_counts',{}))},
-                        'entry_funnel':engine.candidate_audit.funnel_snapshot(now()),
+                        'entry_funnel':engine.candidate_audit.funnel_snapshot(now(),compact=True),
                         'entry_funnel_errors':getattr(engine,'entry_funnel_errors',0)+engine.candidate_audit.funnel_errors,
                         'trade_review_capture':capture.stats() if capture is not None else {'available':False}})
                     last_heartbeat=time.monotonic()

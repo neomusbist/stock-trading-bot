@@ -277,6 +277,10 @@ class MicroTape:
 
     def structure(self, asof, exclude_decision=True):
         """An earlier rise and higher micro-low must already have rebounded."""
+        cache_key = (len(self.ticks), self.ticks[-1] if self.ticks else None, self.ticks[0][0] if self.ticks else None, asof, exclude_decision)
+        cached = getattr(self, '_structure_cache', None)
+        if cached is not None and cached[0] == cache_key:
+            return dict(cached[1])
         rows = [r for r,_ in self._observed_rows(asof)]
         if exclude_decision and rows:rows = rows[:-1]
         turns = []
@@ -302,10 +306,14 @@ class MicroTape:
             origin=turns[origins[peak_i]]
             if low[1]<=origin[1] or suffix[peak_i+1]<low[1]:continue
             noise = median([abs(b[1] - a[1]) for a, b in zip(turns, turns[1:])])
-            return {**evidence, 'pass': True, 'support': low[1], 'support_at': low[0].isoformat(),
+            res = {**evidence, 'pass': True, 'support': low[1], 'support_at': low[0].isoformat(),
                 'confirmation_at': right[0].isoformat(), 'breakout': peak[1], 'breakout_at': peak[0].isoformat(),
                 'origin': origin[1], 'origin_at': origin[0].isoformat(), 'observed_noise': noise}
-        return {**evidence, 'pass': False, 'reason': 'CONFIRMED_MICRO_SUPPORT_UNKNOWN'}
+            self._structure_cache = (cache_key, res)
+            return dict(res)
+        res = {**evidence, 'pass': False, 'reason': 'CONFIRMED_MICRO_SUPPORT_UNKNOWN'}
+        self._structure_cache = (cache_key, res)
+        return dict(res)
 
 
 class FastMomentumStrategy:

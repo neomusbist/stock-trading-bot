@@ -102,7 +102,7 @@ class PriceContext:
         if not row or (venue and row.get('context_venue')!=venue):return []
         received=row.get('history_received_at')
         if received and datetime.fromisoformat(received)>asof:return []
-        return [deepcopy(b) for b in row['bars'] if b['time']+timedelta(minutes=1)<=asof]
+        return [dict(b) for b in row['bars'] if b['time']+timedelta(minutes=1)<=asof]
 
     def snapshot(self,symbol,tick,entry,support=None,breakout=None):
         row=self.rows.get(symbol) if self.day==tick.time.date() else None
