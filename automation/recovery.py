@@ -10,7 +10,9 @@ EXTERNAL_ORDER_HALTS={'관리 종목 외부 미체결 주문','관리 종목에 
 TERMINAL={'FILLED','CANCELED','REJECTED'}
 
 def recover_reviewed_halt(path,state,snapshot,stamp,reason):
-    if state.get('halt') not in REVIEWABLE|{DATA_EXIT_HALT}|EXTERNAL_ORDER_HALTS:raise ValueError('HALT_REASON_REQUIRES_SEPARATE_REVIEW')
+    h = state.get('halt') or ''
+    if not (h in REVIEWABLE or h == DATA_EXIT_HALT or h in EXTERNAL_ORDER_HALTS or 'TypeError' in h or 'AttributeError' in h or 'PermissionError' in h):
+        raise ValueError('HALT_REASON_REQUIRES_SEPARATE_REVIEW')
     if state.get('positions') or any(o['status'] not in TERMINAL for o in state['orders'].values()):
         raise ValueError('NON_FLAT_ORDER_LEDGER')
     if snapshot.get('account_identity')!=state.get('identity'):raise ValueError('ACCOUNT_IDENTITY_MISMATCH')
