@@ -368,13 +368,16 @@ class TestABReplacementStrategies(unittest.TestCase):
 
     def test_p0_release_integrity_stat_fingerprint_cache(self):
         _INTEGRITY_CACHE.clear()
-        with patch('automation.release_integrity.sha256_file', wraps=lambda p: '0' * 64) as mocked_sha:
-            check_runtime_integrity()
-            first_calls = mocked_sha.call_count
-            self.assertGreater(first_calls, 0)
-            # Second call with unchanged file stats must hit cache without re-reading/hashing files
-            check_runtime_integrity()
-            self.assertEqual(mocked_sha.call_count, first_calls)
+        try:
+            with patch('automation.release_integrity.sha256_file', wraps=lambda p: '0' * 64) as mocked_sha:
+                check_runtime_integrity()
+                first_calls = mocked_sha.call_count
+                self.assertGreater(first_calls, 0)
+                # Second call with unchanged file stats must hit cache without re-reading/hashing files
+                check_runtime_integrity()
+                self.assertEqual(mocked_sha.call_count, first_calls)
+        finally:
+            _INTEGRITY_CACHE.clear()
 
 
     def test_support_recovery_fires_in_engine_detector(self):
