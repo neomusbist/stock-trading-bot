@@ -105,7 +105,7 @@ def signal_economics(cfg,auto,signal,*,entry=None,filled=False,actual_entry_fee_
                            filled=filled,actual_entry_fee_per_share=actual_entry_fee_per_share)
 
 
-def viable_entry_zone(economics,trigger_price=None,max_chase=None):
+def viable_entry_zone(economics,trigger_price=None,max_chase=None,is_recovery=False):
     """Price feasibility is neither a trigger nor order permission."""
     from core.util import floor_tick,tick_size
     result=dict(status='UNKNOWN',price_zone_exists=None,trigger_compatible_zone=None,
@@ -116,7 +116,7 @@ def viable_entry_zone(economics,trigger_price=None,max_chase=None):
     upper=economics['max_entry_price'];result.update(status='KNOWN',minimum_structure_entry=lower,price_zone_exists=lower<=upper)
     if trigger_price is None:return result
     if not _finite(trigger_price) or trigger_price<=0:return result
-    trigger=floor_tick(trigger_price);minimum=max(lower,trigger+tick_size(trigger))
+    trigger=floor_tick(trigger_price);minimum=max(lower,trigger if is_recovery else trigger+tick_size(trigger))
     chase=floor_tick(trigger_price*(1+max_chase)) if _finite(max_chase) and max_chase>=0 else upper
     result.update(minimum_trigger_entry=minimum,trigger_price=trigger_price,maximum_chase_entry=chase,
         maximum_admissible_entry=min(upper,chase),trigger_compatible_zone=minimum<=min(upper,chase),

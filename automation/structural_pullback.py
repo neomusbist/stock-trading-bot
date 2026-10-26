@@ -48,10 +48,10 @@ def structural_pullback(raw, asof, setup, cfg, entry, bid, ask,close_policy=Fals
         return None,{**evidence,'reason':'PULLBACK_STRUCTURE_VOLUME_UNAVAILABLE'}
     if any(type(x) not in (int,float) or not math.isfinite(x) or x<=0 for x in (entry,bid,ask)) or bid>ask:
         return None,{**evidence,'reason':'PULLBACK_QUOTE_UNAVAILABLE'}
-    seq=bars[-12:];peak_i=pullback_peak_index(seq)
+    seq=bars[-min(len(bars),24):];peak_i=pullback_peak_index(seq)
     impulse=seq[:peak_i+1];pull=seq[peak_i+1:]
     peak=seq[peak_i]['high'];base=min(b['low'] for b in impulse);support=min(b['low'] for b in pull)
-    if setup.get('support')!=support or setup.get('peak')!=peak or (setup.get('projection')!=peak+peak-base and setup.get('projection')!=peak):
+    if setup.get('support')!=support or setup.get('peak')!=peak:
         return False,{**evidence,'reason':'PULLBACK_GEOMETRY_MISMATCH'}
     if support<=base or impulse[-1]['close']<=impulse[0].get('open',impulse[0]['close']):
         return False,{**evidence,'reason':'PULLBACK_UPWARD_STRUCTURE_INVALID'}
@@ -69,13 +69,17 @@ def structural_pullback(raw, asof, setup, cfg, entry, bid, ask,close_policy=Fals
     context=PriceContext()
     for b in bars:context.record('proof',b,asof)
     reference=context.snapshot('proof',SimpleNamespace(time=asof),setup['breakout'])['nearest_confirmed_peak']
+    peak_time = seq[peak_i]['time']
+    peak_iso = peak_time.isoformat() if hasattr(peak_time, 'isoformat') else str(peak_time)
+    overhead_peaks = [p for p in context.rows['proof']['peaks'] if p['price'] > entry and (p['price'] > peak or str(p['time']) <= peak_iso)]
+    nearest_overhead = min(overhead_peaks, key=lambda p: p['price']) if overhead_peaks else None
+    overhead_ceiling = nearest_overhead['price'] if nearest_overhead else None
     if auto and getattr(auto, 'pullback_expansion_target_enabled', False):
         impulse_rise = peak - base
         expansion_target = floor_tick(peak + 0.5 * impulse_rise)
-        overhead_ceiling = reference['price'] if (reference and reference['price'] > peak) else None
         ceiling = min([p for p in (expansion_target, overhead_ceiling) if p is not None and p > entry], default=expansion_target)
     else:
-        ceiling=min([p for p in (peak,reference['price'] if reference and reference['price']>entry else None) if p is not None],default=peak)
+        ceiling = min([p for p in (peak, overhead_ceiling) if p is not None and p > entry], default=peak)
     spread=ask-bid;buffer=max(support*cfg.structural_buffer,tick_size(support),spread)
     stop=floor_tick(support-buffer)
     ranges=[b['high']-b['low'] for b in pull]
@@ -94,20 +98,29 @@ def structural_pullback(raw, asof, setup, cfg, entry, bid, ask,close_policy=Fals
     if close_policy:
         band=max(median(ranges),spread,tick_size(entry))
         evidence.update(structural_stop=stop,noise_band=band,emergency_stop=floor_tick(stop-band))
-    if recovered is None:return False,{**evidence,'reason':'PULLBACK_SUPPORT_NOT_CONFIRMED'}
-    # A failed earlier floor and descending pivots require a completed reclaim.
-    lows=[]
-    for left,center,right in zip(bars,bars[1:],bars[2:]):
-        if center['low']<left['low'] and center['low']<right['low']:lows.append(center['low'])
-    peaks=list(context.rows['proof']['peaks'])
-    declining=(len(lows)>=2 and lows[-1]<lows[-2] and len(peaks)>=2 and peaks[-1]['price']<peaks[-2]['price'])
-    evidence.update(declining_swing_structure=declining,
-                    trend_reclaim_reference=peaks[-1]['price'] if declining else None)
-    if declining and recovered['close']<=peaks[-1]['price']:
-        return False,{**evidence,'reason':'PULLBACK_LOWER_SWINGS_NOT_RECLAIMED'}
+    is_support_recovery = (setup.get('entry_basis') == 'SUPPORT_RECOVERY')
+    if is_support_recovery:
+        if last_touch >= len(pull) - 1 or any(b['low'] < support for b in pull[last_touch+1:]):
+            return False, {**evidence, 'reason': 'PULLBACK_SUPPORT_NOT_CONFIRMED'}
+        if entry < support:
+            return False, {**evidence, 'reason': 'PULLBACK_SUPPORT_BREACHED'}
+        if entry < setup.get('recovery_trigger', support):
+            return False, {**evidence, 'reason': 'PULLBACK_RECOVERY_TRIGGER_NOT_REACHED'}
+    else:
+        if recovered is None:return False,{**evidence,'reason':'PULLBACK_SUPPORT_NOT_CONFIRMED'}
+        # A failed earlier floor and descending pivots require a completed reclaim.
+        lows=[]
+        for left,center,right in zip(bars,bars[1:],bars[2:]):
+            if center['low']<left['low'] and center['low']<right['low']:lows.append(center['low'])
+        peaks=list(context.rows['proof']['peaks'])
+        declining=(len(lows)>=2 and lows[-1]<lows[-2] and len(peaks)>=2 and peaks[-1]['price']<peaks[-2]['price'])
+        evidence.update(declining_swing_structure=declining,
+                        trend_reclaim_reference=peaks[-1]['price'] if declining else None)
+        if declining and recovered['close']<=peaks[-1]['price']:
+            return False,{**evidence,'reason':'PULLBACK_LOWER_SWINGS_NOT_RECLAIMED'}
     reclaim_close_policy=close_policy and (setup.get('entry_basis') in {'CONFIRMED_SUPPORT_RECLAIM','SUPPORT_RECOVERY'} or getattr(auto,'confirmed_invalidation_enabled',False))
     risk_stop=evidence['emergency_stop'] if reclaim_close_policy else stop
     evidence.update(noise_guard_basis='CONFIRMED_CLOSE_WITH_SEPARATE_EMERGENCY' if reclaim_close_policy else 'STRUCTURAL_PRICE_DISTANCE',
                     noise_guard_risk_distance=entry-risk_stop)
     if entry-risk_stop<=noise:return False,{**evidence,'reason':'PULLBACK_RISK_WITHIN_OBSERVED_NOISE'}
-    return True,{**evidence,'reason':'CONFIRMED_PULLBACK_SUPPORT'}
+    return True,{**evidence,'reason':'CONFIRMED_SUPPORT_RECOVERY' if is_support_recovery else 'CONFIRMED_PULLBACK_SUPPORT'}

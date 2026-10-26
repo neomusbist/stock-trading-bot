@@ -568,6 +568,8 @@ class PatternDetector(Detector):
                         trial_gates['chase']=gate(False,reason='LATE_STAGE_EXTENSION_EXCEEDED',extension=extension,max_extension=0.07)
             failed=[k for k,v in trial_gates.items() if v['result']!='PASS']
             why.extend('ACCELERATION_FAIL' if k=='acceleration' else
+                       trial_gates[k].get('values',{}).get('reason') if trial_gates[k].get('values',{}).get('reason') else
+                       'RECOVERY_TRIGGER_NOT_REACHED' if k=='breakout' and name=='B' and setup and setup.get('entry_basis')=='SUPPORT_RECOVERY' else
                        'NO_REBREAKOUT' if k=='breakout' and name=='B' else
                        'BREAKOUT_NOT_REACHED' if k=='breakout' else k.upper()+'_FAIL' for k in failed)
             virtual=price_gates.get('invalidation',{}).get('values',{})
@@ -743,7 +745,14 @@ class PatternDetector(Detector):
         peak=references.get('nearest_confirmed_peak')
         original_target=target
         if self.a.entry_context_enabled and peak and peak['price'] > limit:
-            target = min(target, peak['price'])
+            if setup['pattern'] == 'B':
+                if peak['price'] > setup.get('peak', limit):
+                    target = min(target, peak['price'])
+            elif setup['pattern'] == 'A' and setup.get('entry_basis') == 'TREND_BREAKOUT_BASE':
+                if peak['price'] > setup.get('breakout', limit):
+                    target = min(target, peak['price'])
+            else:
+                target = min(target, peak['price'])
         structural=None;structural_pass=None
         if self.a.structural_pullback_enabled and setup['pattern']=='B':
             from automation.structural_pullback import structural_pullback
@@ -780,7 +789,8 @@ class PatternDetector(Detector):
             if proof:valuation_signal['invalidation_policy']={'enabled':True,**proof}
             economics=signal_economics(c,self.a,valuation_signal)
             rr=economics.get('net_rr');rr_basis='AB_COMMON_NET_REWARD_RISK'
-            entry_zone=viable_entry_zone(economics,breakout,c.max_chase)
+            is_recovery = (setup['pattern'] == 'B' and setup.get('entry_basis') == 'SUPPORT_RECOVERY')
+            entry_zone=viable_entry_zone(economics,breakout,c.max_chase,is_recovery=is_recovery)
             entry_zone['structure_confirmed']=(breakout_pass is True if setup['pattern']=='A' and self.a.structural_breakout_enabled
                 else structural_pass is True if setup['pattern']=='B' and self.a.structural_pullback_enabled else True)
         horizon=getattr(self.a,'horizon_'+setup['pattern'].lower()+'_minutes')
@@ -815,8 +825,16 @@ class PatternDetector(Detector):
                     invalidation_pass=False
         peak_val = setup.get('peak', float('inf'))
         b_over_peak = (setup['pattern'] == 'B' and limit >= peak_val)
-        result={'breakout':gate(t.price>breakout and limit>breakout and not b_over_peak,price=t.price,breakout=breakout,setup=setup['pattern'],
-                ask=t.ask,entry=limit,reason='PEAK_ALREADY_REACHED' if b_over_peak else ('BREAKOUT_QUOTE_NOT_CONFIRMED' if t.price>breakout and limit<=breakout else None)),
+        if setup['pattern'] == 'B' and setup.get('entry_basis') == 'SUPPORT_RECOVERY':
+            breakout_pass = (t.price >= breakout and not b_over_peak)
+            breakout_reason = ('PEAK_ALREADY_REACHED' if b_over_peak else
+                               'RECOVERY_TRIGGER_NOT_REACHED' if t.price < breakout else None)
+        else:
+            breakout_pass = (t.price > breakout and limit > breakout and not b_over_peak)
+            breakout_reason = ('PEAK_ALREADY_REACHED' if b_over_peak else
+                               'BREAKOUT_QUOTE_NOT_CONFIRMED' if t.price > breakout and limit <= breakout else None)
+        result={'breakout':gate(breakout_pass,price=t.price,breakout=breakout,setup=setup['pattern'],
+                ask=t.ask,entry=limit,reason=breakout_reason),
             'chase':gate(t.ask/breakout-1<=c.max_chase,chase=t.ask/breakout-1,max_chase=c.max_chase,ask=t.ask),
             'invalidation':gate(invalidation_pass if distance is not None else None,
                 entry=limit,stop=stop,distance_pct=distance,min_pct=c.min_stop_fraction,
@@ -863,12 +881,14 @@ class PatternDetector(Detector):
         start=self.observation_start.get(t.symbol)
         elapsed=max(0,(t.time-start).total_seconds()) if start is not None else 0
         buffer_span=(t.time-buf[0].time).total_seconds() if buf else 0
-        fast=[];base=[]
+        fast=[];base=[];window_ticks=[]
         for x in buf:
             age=(t.time-x.time).total_seconds()
             if 0<=age<c.acceleration_seconds:fast.append(x)
             elif c.acceleration_seconds<=age<c.baseline_seconds+c.acceleration_seconds:base.append(x)
+            if 0<=age<c.baseline_seconds:window_ticks.append(x)
         amount=sum(x.price*x.volume for x in fast); baseline=sum(x.price*x.volume for x in base)/c.baseline_seconds
+        window_amount=sum(x.price*x.volume for x in window_ticks)
         ratio=amount/c.acceleration_seconds/baseline if baseline else None
         gain=t.price/fast[0].price-1 if fast else None
         spread=(t.ask-t.bid)/t.price if 0<t.bid<=t.ask and t.price>0 else None
@@ -892,7 +912,7 @@ class PatternDetector(Detector):
                 depth_source=getattr(t,'depth_source','UNKNOWN'),book_time=t.book_time.isoformat() if getattr(t,'book_time',None) else None,
                 window_turnover=amount,min_turnover=0)
         else:
-            liq_gate=gate(amount>=c.min_window_turnover,window_turnover=amount,min_turnover=c.min_window_turnover)
+            liq_gate=gate(window_amount>=c.min_window_turnover,window_turnover=window_amount,min_turnover=c.min_window_turnover)
         gates={'warmup':gate(elapsed>=c.baseline_seconds+c.acceleration_seconds and len(bars)>=2,elapsed_seconds=elapsed,observation_start=start.isoformat() if start else None,buffer_span_seconds=buffer_span,required_seconds=c.baseline_seconds+c.acceleration_seconds,completed_bars=len(bars)),
                 'acceleration':accel_gate,
                 'liquidity':liq_gate,

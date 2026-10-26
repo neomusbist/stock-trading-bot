@@ -85,6 +85,8 @@ def _retest_proof(raw,decision_bars,asof,setup,cfg,entry,bid,ask,auto):
 def structural_breakout(raw,asof,setup,cfg,entry,bid,ask,auto=None,decision_bars=None):
     if setup.get('entry_basis')=='CONFIRMED_BREAKOUT_RETEST':
         return _retest_proof(raw,decision_bars,asof,setup,cfg,entry,bid,ask,auto)
+    if setup.get('entry_basis')=='TREND_BREAKOUT_BASE':
+        return _trend_breakout_proof(raw,decision_bars,asof,setup,cfg,entry,bid,ask,auto)
     evidence={'asof':asof.isoformat(),'policy':'CONFIRMED_RANGE_BASE_A',
               'scope':'KNOWN_PRE_DECISION_REFERENCE_BARS','earlier_history':'UNKNOWN'}
     rows=[]
@@ -167,3 +169,36 @@ def confirmed_continuation(raw,asof,minimum_gain):
     return valid,{**evidence,'reason':'CONFIRMED_CONTINUATION' if valid else 'CONTINUATION_NOT_CONFIRMED',
         'times':[b['time'].isoformat() for b in bars],'lows':[b['low'] for b in bars],
         'closes':[b['close'] for b in bars],'volumes':volumes,'completed_gain':gain,'required_gain':minimum_gain}
+
+
+def _trend_breakout_proof(raw,decision_bars,asof,setup,cfg,entry,bid,ask,auto):
+    evidence={'asof':asof.isoformat(),'policy':'CONFIRMED_TREND_BREAKOUT_BASE',
+        'scope':'RECEIVED_COMPLETE_BASE_WITH_KNOWN_OVERHEAD','earlier_history':'UNKNOWN'}
+    bars=complete_sequence(decision_bars,asof,min(len(decision_bars or ()),12),require_recent=True) if decision_bars else []
+    if len(bars)<3:
+        return False,{**evidence,'reason':'TREND_BREAKOUT_BARS_UNAVAILABLE'}
+    if any(type(x) not in (int,float) or not math.isfinite(x) or x<=0 for x in (entry,bid,ask)) or bid>ask:
+        return None,{**evidence,'reason':'INVALID_EXECUTABLE_QUOTE'}
+    breakout=setup['breakout'];support=setup['support']
+    if entry<breakout:
+        return False,{**evidence,'reason':'BREAKOUT_LEVEL_NOT_REACHED'}
+    if support>=breakout or support<=0:
+        return False,{**evidence,'reason':'BREAKOUT_GEOMETRY_INVALID'}
+    known={}
+    for row in list(raw or ())+list(decision_bars or ()):
+        valid=complete_sequence([row],asof,1)
+        if valid:known[valid[0]['time']]=valid[0]
+    rows=sorted(known.values(),key=lambda b:b['time'])[-120:]
+    spread=ask-bid;buffer=max(support*cfg.structural_buffer,tick_size(support),spread)
+    structural=floor_tick(support-buffer)
+    ranges=[b['high']-b['low'] for b in rows[-15:] if b.get('high') is not None and b.get('low') is not None and b['high']>=b['low']]
+    noise=max(statistics.median(ranges) if ranges else tick_size(entry),spread,tick_size(entry))
+    emergency=floor_tick(structural-noise)
+    peak=confirmed_overhead(rows,asof,breakout)
+    ceiling=min(setup['projection'],peak['price']) if (peak and peak['price']>entry) else setup['projection']
+    evidence.update(breakout=breakout,support=support,structural_stop=structural,emergency_stop=emergency,
+        buffer_amount=buffer,spread=spread,noise_band=noise,target_ceiling=ceiling,nearest_confirmed_peak=peak,
+        stop_distance=entry-emergency)
+    if entry-emergency<=noise:
+        return False,{**evidence,'reason':'BREAKOUT_RISK_WITHIN_NOISE'}
+    return True,{**evidence,'reason':'CONFIRMED_TREND_BREAKOUT_BASE'}

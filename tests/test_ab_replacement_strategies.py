@@ -308,7 +308,8 @@ class TestABReplacementStrategies(unittest.TestCase):
         (a) an intra-bar price breakout tick immediately triggers signal emission, and
         (b) a new quote tightening ask/spread into the viable zone immediately triggers signal emission.
         """
-        det = PatternDetector(self.cfg, self.auto, self.costs)
+        auto = replace(self.auto, structural_pullback_enabled=True, confirmed_invalidation_enabled=True)
+        det = PatternDetector(self.cfg, auto, self.costs)
         det.continuous_observation = True
         sym = '999990'
         base_time = datetime(2026, 10, 26, 9, 0, 0, tzinfo=KST)
@@ -456,6 +457,57 @@ class TestABReplacementStrategies(unittest.TestCase):
         self.assertEqual(sig['limit'], 10210)
         self.assertEqual(sig['target'], 10700)
         self.assertGreaterEqual(sig['evaluation_gates']['risk_reward']['values']['net_rr'], 1.5)
+
+
+    def test_support_recovery_138360_incident_resolution(self):
+        """Verify 138360 incident mechanics:
+        1. Intra-pullback peak (2130) does not cap target ceiling below peak (2135).
+        2. Support defense confirms without requiring obsolete rebreakout.
+        3. No NO_REBREAKOUT is emitted for Support Recovery.
+        4. Late entry at 2125 legitimately rejects RR without manipulating stop/target.
+        """
+        auto = replace(self.auto, structural_pullback_enabled=True, confirmed_invalidation_enabled=True)
+        det = PatternDetector(self.cfg, auto, self.costs)
+        det.continuous_observation = True
+        sym = '138360'
+        base_time = datetime(2026, 10, 26, 13, 20, 0, tzinfo=KST)
+        bars = [
+            {'time': base_time, 'open': 2095, 'high': 2100, 'low': 2085, 'close': 2100, 'volume': 50000, 'first_second': 0},
+            {'time': base_time + timedelta(minutes=1), 'open': 2100, 'high': 2135, 'low': 2100, 'close': 2120, 'volume': 80000, 'first_second': 0},
+            {'time': base_time + timedelta(minutes=2), 'open': 2120, 'high': 2125, 'low': 2110, 'close': 2115, 'volume': 20000, 'first_second': 0},
+            {'time': base_time + timedelta(minutes=3), 'open': 2115, 'high': 2120, 'low': 2105, 'close': 2110, 'volume': 15000, 'first_second': 0},
+            {'time': base_time + timedelta(minutes=4), 'open': 2110, 'high': 2120, 'low': 2105, 'close': 2115, 'volume': 12000, 'first_second': 0},
+            {'time': base_time + timedelta(minutes=5), 'open': 2115, 'high': 2130, 'low': 2105, 'close': 2120, 'volume': 25000, 'first_second': 0},
+            {'time': base_time + timedelta(minutes=6), 'open': 2120, 'high': 2125, 'low': 2115, 'close': 2120, 'volume': 10000, 'first_second': 0},
+            {'time': base_time + timedelta(minutes=7), 'open': 2120, 'high': 2125, 'low': 2120, 'close': 2125, 'volume': 11000, 'first_second': 0},
+            {'time': base_time + timedelta(minutes=8), 'open': 2125, 'high': 2125, 'low': 2120, 'close': 2125, 'volume': 8000, 'first_second': 0},
+        ]
+        for b in bars:
+            det.history.setdefault(sym, []).append(b)
+
+        eval_time = base_time + timedelta(minutes=9, seconds=4)
+        det.observation_start[sym] = base_time
+        for s in range(1, 60):
+            det.buffers.setdefault(sym, []).append(Tick(sym, eval_time - timedelta(seconds=s), 2125, 200, 2000000, 2125, 2120))
+
+        watch = {
+            'status': 'WATCH',
+            'source_details': {'s1': {}, 's2': {}},
+            'resistance': 2205,
+            'resistance_room_pass': True,
+            'market_status': {'pass': True},
+        }
+
+        t_late = Tick(sym, eval_time, 2125, 200, 2010000, 2125, 2120)
+        gates = det.base_gates(t_late, watch)
+        trials = det.setup_trials(t_late, watch, gates=gates)
+        b_trial = next(tr for tr in trials if tr['setup'] == 'B')
+
+        self.assertGreaterEqual(b_trial['gates']['risk_reward']['values']['target'], 2135)
+        self.assertEqual(b_trial['gates']['pullback_structure']['result'], 'PASS')
+        self.assertNotIn('NO_REBREAKOUT', b_trial['failed_reasons'])
+        self.assertEqual(b_trial['gates']['risk_reward']['result'], 'FAIL')
+        self.assertFalse(b_trial['entry_ready'])
 
 
 if __name__ == '__main__':
