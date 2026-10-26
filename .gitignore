@@ -179,5 +179,6 @@ operator_*approval*.json
 !/research/initial_structure_replay.py
 !/research/recovery_noise.py
 !/research/recovery_stress.py
+!/research/ab_replacement_strategies.py
 !/audit/r6_oct26_night/READINESS_AND_REPLAY.md
 !/audit/r6_causal_validation_20261020/HANDOFF_TO_AG.md

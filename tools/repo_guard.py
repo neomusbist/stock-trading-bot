@@ -15,6 +15,7 @@ TOOLS.add('measure_runtime_budget.py')  # Reviewed read-only OS sampler; generat
 TOOLS.update({'reproduce_89_signals.py','full_universe_backtest.py','account_level_replay.py',
               'eval_1019_theoretical.py','build_1019_bars.py','run_all_replays.py'})
 CAUSAL_RESEARCH_FILES={
+    'research/ab_replacement_strategies.py','audit/r6_oct26_ab_replacement/RESULTS.md','audit/r6_oct26_ab_replacement/CASES.csv',
     'research/recovery_stress.py','audit/r6_oct26_recovery_stress/RESULTS.md','audit/r6_oct26_recovery_stress/CASES.csv',
     'research/recovery_noise.py','audit/r6_oct24_recovery_noise/RESULTS.md','audit/r6_oct24_recovery_noise/CASES.csv',
     'research/initial_structure.py','research/support_recovery.py','research/initial_structure_replay.py',
