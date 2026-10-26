@@ -152,6 +152,23 @@ class SubscriptionRefreshTests(unittest.TestCase):
         shadow.update([],START+timedelta(seconds=3+self.cfg.stale_seconds+1))
         self.assertNotIn(SYM,shadow.detector.last);self.assertEqual(self.broker.orders,[])
     def test_default_A_ticks_can_use_existing_fake_order_path_after_churn(self):
+        """비용 차감 후 순손익비(Net RR >= 1.5)를 충족하는 합성 시나리오에서
+        10초 주기 구독 교체(churn) 이후에도 관찰 인계 및 주문 경로가 정상 작동함을 검증.
+        """
+        cumulative=0;self.radar.cache={(START.date(),SYM):[{}]}
+        with patch('automation.runner.structure',return_value={'status':'ELIGIBLE','resistance':11000}):
+            for sec,price,volume in replay_prices('C'):
+                self.clock=START+timedelta(seconds=sec);cumulative+=volume
+                if sec%10==0:
+                    self.refresh({SYM,OTHER} if sec%20==0 else {SYM});self.send({'trnm':'REG','return_code':0})
+                tick=Tick(SYM,self.clock,price,volume,cumulative,price+10,price-10)
+                self.send(self.frame(tick),{SYM:self.watch})
+        self.assertEqual(len(self.broker.orders),1);self.assertEqual(self.broker.orders[0][0],'BUY')
+
+    def test_default_A_ticks_properly_blocked_when_net_rr_fails_after_churn(self):
+        """비용 차감 후 순손익비가 미달(Net RR 0.8144 < 1.5)하는 합성 시나리오(replay_prices A)는
+        구독 갱신 후에도 위험관리 규칙(RISK_REWARD_FAIL)에 의해 정당하게 차단됨을 검증.
+        """
         cumulative=0;self.radar.cache={(START.date(),SYM):[{}]}
         with patch('automation.runner.structure',return_value={'status':'ELIGIBLE','resistance':11000}):
             for sec,price,volume in replay_prices('A'):
@@ -160,7 +177,10 @@ class SubscriptionRefreshTests(unittest.TestCase):
                     self.refresh({SYM,OTHER} if sec%20==0 else {SYM});self.send({'trnm':'REG','return_code':0})
                 tick=Tick(SYM,self.clock,price,volume,cumulative,price+10,price-10)
                 self.send(self.frame(tick),{SYM:self.watch})
-        self.assertEqual(len(self.broker.orders),1);self.assertEqual(self.broker.orders[0][0],'BUY')
+        self.assertEqual(self.broker.orders,[])
+        trials=self.d.last_eval.get(SYM,{}).get('trials',[])
+        self.assertTrue(any('RISK_REWARD_FAIL' in tr.get('failed_reasons',[]) for tr in trials),
+                        "Net RR failure must be explicitly latched as RISK_REWARD_FAIL")
     def test_source_one_still_cannot_buy_despite_preserved_prewarm(self):
         self.e.a=replace(self.auto,min_source_count=2)
         self.warm();self.clock+=timedelta(seconds=1)

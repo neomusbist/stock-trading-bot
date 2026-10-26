@@ -18,6 +18,9 @@ from core import event_log
 from core.settings import Config, KST
 from core.strategy import Tick
 from operator_service import tail_events, _TAIL_CACHE
+from automation.policy import AutomationConfig
+from automation.patterns import PatternDetector
+from automation.runner import tick_freshness
 from automation.focus_selection import (
     select_focus,
     candidate_priority_tuple,
@@ -344,6 +347,106 @@ class OpeningStabilityVerificationTests(unittest.TestCase):
                 self.assertEqual(delivery, 'SYNC_CRITICAL', f"Critical event {row['event']} must be SYNC_CRITICAL, got {delivery}")
         finally:
             writer.close()
+
+    def test_counterexample_tick_drought_prevents_four_usable_bars_despite_240s_dwell(self):
+        """[반례 1: 틱 누락/결측] 240초 동안 체류했으나 중간 1분 동안 틱이 전혀 수신되지
+        않은 경우(Drought), usable_bars가 4개에 도달하지 못해 전략 진입이 올바르게 차단됨을 검증.
+        (체류시간 240초 단독으로는 완성봉 확보가 불가능함을 입증하는 반례)
+        """
+        cfg = Config()
+        auto = AutomationConfig()
+        costs = {'buy': 0.00015, 'sell': 0.00015, 'tax': 0.002, 'entry_slippage': 0.002, 'exit_slippage': 0.003}
+        det = PatternDetector(cfg, auto, costs)
+        det.continuous_observation = True
+        sym = '005930'
+        base = datetime(2026, 10, 26, 9, 0, 0, tzinfo=KST)
+        det.observation_start[sym] = base
+
+        # 09:00: 틱 수신
+        det.ingest(Tick(sym, base + timedelta(seconds=1), 70000, 10, 10, 70010, 69990), base)
+        det.ingest(Tick(sym, base + timedelta(seconds=59), 70000, 10, 20, 70010, 69990), base)
+        # 09:01: 틱 수신
+        det.ingest(Tick(sym, base + timedelta(minutes=1, seconds=1), 70050, 10, 30, 70060, 70040), base)
+        det.ingest(Tick(sym, base + timedelta(minutes=1, seconds=59), 70050, 10, 40, 70060, 70040), base)
+        # 09:02: 틱 결측 (거래 정지/호가 무체결로 1분간 0틱 발생)
+        # 09:03: 틱 재개
+        det.ingest(Tick(sym, base + timedelta(minutes=3, seconds=1), 70100, 10, 50, 70110, 70090), base)
+        det.ingest(Tick(sym, base + timedelta(minutes=3, seconds=59), 70100, 10, 60, 70110, 70090), base)
+        # 09:04:00 (체류시간 240초 도달)
+        det.ingest(Tick(sym, base + timedelta(minutes=4, seconds=0), 70150, 10, 70, 70160, 70140), base)
+
+        # 240초 체류했으나 결측으로 인해 usable_bars는 4개 미만 (0개 반환)
+        usable = det.usable_bars(sym)
+        self.assertLess(len(usable), 4, "Tick drought must prevent reaching 4 usable bars")
+        self.assertEqual(len(usable), 0, "Missing minute breaks consecutive usable bars")
+
+    def test_counterexample_subscription_gap_resets_usable_bars_despite_240s_dwell(self):
+        """[반례 2: 구독 공백] 240초 동안 체류 중 stale_seconds(5초)를 초과하는 구독 공백이
+        발생한 경우, pending gap으로 인해 usable_bars가 즉시 무효화됨을 검증.
+        """
+        cfg = Config()
+        auto = AutomationConfig()
+        costs = {'buy': 0.00015, 'sell': 0.00015, 'tax': 0.002, 'entry_slippage': 0.002, 'exit_slippage': 0.003}
+        det = PatternDetector(cfg, auto, costs)
+        det.continuous_observation = True
+        sym = '005930'
+        base = datetime(2026, 10, 26, 9, 0, 0, tzinfo=KST)
+        det.observation_start[sym] = base
+
+        for m in range(4):
+            det.ingest(Tick(sym, base + timedelta(minutes=m, seconds=1), 70000, 10, 10, 70010, 69990), base)
+            det.ingest(Tick(sym, base + timedelta(minutes=m, seconds=59), 70000, 10, 20, 70010, 69990), base)
+
+        # 09:04 시점에 6초 이상의 구독 단절 발생
+        det.mark_coverage_gap(sym, base + timedelta(minutes=4), reason='SUBSCRIPTION_GAP')
+
+        # pending gap으로 인해 usable_bars는 즉각 [] 반환
+        self.assertEqual(det.usable_bars(sym), [], "Coverage gap must immediately invalidate usable bars")
+
+    def test_counterexample_boundary_alignment_requires_additional_dwell_time(self):
+        """[반례 3: 경계 시각 불일치] 09:00:35에 중도 편입된 경우, 정확히 240초가 지난
+        09:04:35 시점에는 완성봉이 3개(09:01, 09:02, 09:03)뿐이며 4개가 되지 않음을 검증.
+        (정각 1분 단위 경계로 인해 최대 300초(5분) 체류가 필요함을 증명)
+        """
+        cfg = Config()
+        auto = AutomationConfig()
+        costs = {'buy': 0.00015, 'sell': 0.00015, 'tax': 0.002, 'entry_slippage': 0.002, 'exit_slippage': 0.003}
+        det = PatternDetector(cfg, auto, costs)
+        det.continuous_observation = True
+        sym = '005930'
+        base = datetime(2026, 10, 26, 9, 0, 0, tzinfo=KST)
+        start_mid = base + timedelta(seconds=35)
+        det.observation_start[sym] = start_mid
+
+        # 09:00:35 ~ 09:04:35 (정확히 240초 체류)
+        # 09:00 불완전 분봉
+        det.ingest(Tick(sym, base + timedelta(seconds=36), 70000, 10, 10, 70010, 69990), start_mid)
+        det.ingest(Tick(sym, base + timedelta(seconds=58), 70000, 10, 20, 70010, 69990), start_mid)
+        # 09:01, 09:02, 09:03 분봉
+        for m in (1, 2, 3):
+            det.ingest(Tick(sym, base + timedelta(minutes=m, seconds=1), 70000 + m * 10, 10, 10, 70010, 69990), start_mid)
+            det.ingest(Tick(sym, base + timedelta(minutes=m, seconds=58), 70000 + m * 10, 10, 20, 70010, 69990), start_mid)
+        # 09:04:35 시점의 틱 (체류 240초 경과)
+        det.ingest(Tick(sym, base + timedelta(minutes=4, seconds=1), 70040, 10, 90, 70050, 70030), start_mid)
+        det.ingest(Tick(sym, base + timedelta(minutes=4, seconds=35), 70040, 10, 100, 70050, 70030), start_mid)
+
+        # 240초가 지났으나 첫 35초가 불완전 봉이었으므로 usable_bars는 4개가 될 수 없음
+        usable = det.usable_bars(sym)
+        self.assertLess(len(usable), 4, "Mid-minute start must not guarantee 4 usable bars at 240s")
+
+    def test_counterexample_delayed_stale_ticks_rejected_by_execution_freshness(self):
+        """[반례 4: 데이터 지연] 4개 완성봉이 있더라도, 돌파 시점의 체결 틱이
+        네트워크/거래소 지연(stale_seconds=5s 초과)으로 지연 도착하면 매수가 차단됨을 검증.
+        """
+        cfg = Config()
+        sym = '005930'
+        base = datetime(2026, 10, 26, 9, 4, 10, tzinfo=KST)
+        # 8초 전 체결된 지연 틱
+        stale_tick = Tick(sym, base - timedelta(seconds=8), 70050, 10, 100, 70060, 70040)
+        freshness = tick_freshness(stale_tick, base, cfg.stale_seconds)
+
+        self.assertFalse(freshness['fresh'], "Tick older than stale_seconds must be marked not fresh")
+        self.assertGreater(freshness['effective_age_seconds'], cfg.stale_seconds)
 
 
 if __name__ == '__main__':
