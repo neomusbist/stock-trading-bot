@@ -131,10 +131,20 @@ class AsyncDiagnosticEventWriter:
         'OBSERVATION_REJOINED','WATCH_TRANSITION','ENTRY_QUOTE_RETRY','ACCOUNT_LATENCY',
         'FOCUS_SELECTION_BLOCKED','FOCUS_SELECTION_APPLIED','INTRADAY_REFERENCE_READY',
         'INTRADAY_REFERENCE_PENDING','SUBSCRIPTION_REFRESH','RAW_CANDIDATES',
-        'CANDIDATE_LATENCY','RADAR_UPDATED','CANDIDATE_CYCLE_SUMMARY'})
+        'CANDIDATE_LATENCY','RADAR_UPDATED','CANDIDATE_CYCLE_SUMMARY',
+        'OBSERVATION_RELEASED','OPENING_PIPELINE_STAGE','BOOK_DEPTH_OBSERVED',
+        'OBSERVATION_RETENTION','OBSERVATION_PREWARM_HANDOFF','PRICE_CONTEXT_CACHE_RESTORED',
+        'ENTRY_REFERENCE_RECOVERY','OBSERVATION_READINESS_CHANGED','WATCH_DYNAMIC_PROMOTION',
+        'WATCH_PROMOTION_BLOCKED','REFERENCE_CACHE_CHECKPOINT_CLOSED',
+        'REFERENCE_CACHE_CHECKPOINT_PENDING','OBSERVATION_OPPORTUNITY_REEVALUATED',
+        'OBSERVATION_DATA_GAP','ACCOUNT_CAPITAL_REFRESHED','ACCOUNT_CAPITAL_REFRESH_REQUIRED',
+        'POSITION_DATA_HEALTH','BROKER_PNL_RECONCILED','SHADOW_OPPORTUNITY_DETECTED',
+        'SHADOW_SUBSCRIPTION_ACK','SHADOW_STREAM_RESET','SHADOW_TRANSITION','SHADOW_TRANSPORT',
+        'SHADOW_CANDIDATE_BATCH','SHADOW_CAPACITY','SHADOW_DATA_RESET',
+        'SHADOW_EARLY_DISCOVERY_COLLECTED','SHADOW_EVAL','SHADOW_RAW_CANDIDATES','SHADOW_RAW_DISCOVERED'})
 
-    def __init__(self,path,capacity=64,max_line_bytes=256*1024,max_bytes=MAX_LOG_BYTES):
-        if type(capacity) is not int or not 1<=capacity<=64:raise ValueError('diagnostic capacity must be 1..64')
+    def __init__(self,path,capacity=512,max_line_bytes=256*1024,max_bytes=MAX_LOG_BYTES):
+        if type(capacity) is not int or not 1<=capacity<=2048:raise ValueError('diagnostic capacity must be 1..2048')
         if type(max_line_bytes) is not int or max_line_bytes<=0:raise ValueError('positive diagnostic line byte bound required')
         self.path=Path(path);self.max_line_bytes=max_line_bytes;self.max_bytes=max_bytes
         self.pending=queue.Queue(maxsize=capacity);self._lock=threading.Lock();self._stop=threading.Event()
@@ -190,15 +200,20 @@ class AsyncDiagnosticEventWriter:
         while not self._stop.is_set() or not self.pending.empty():
             try:line=self.pending.get(timeout=.05)
             except queue.Empty:continue
+            batch=[line]
+            while len(batch)<64:
+                try:batch.append(self.pending.get_nowait())
+                except queue.Empty:break
             try:
-                _append_line(self.path,line,self.max_bytes)
-                with self._lock:self._written+=1
+                _append_line(self.path,''.join(batch),self.max_bytes)
+                with self._lock:self._written+=len(batch)
             except Exception as error:
                 with self._lock:
-                    self.failed_line=line
+                    self.failed_line=batch[0]
                     self._error=error if isinstance(error,OSError) else OSError('diagnostic event write failed: '+str(error))
                 return
-            finally:self.pending.task_done()
+            finally:
+                for _ in batch:self.pending.task_done()
 
     def stats(self):
         with self._lock:

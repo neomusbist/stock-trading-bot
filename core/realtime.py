@@ -259,7 +259,10 @@ class Feed:
                 for symbol in set(mapping)-set(updated):mapping.pop(symbol,None)
             if self.socket and self.logged_in:
                 # refresh=0 그룹을 완전히 교체하며 주문/장상태 구독은 항상 다시 포함한다.
-                from websocket import WebSocketException
+                try:
+                    from websocket import WebSocketException
+                except ImportError:
+                    WebSocketException = OSError
                 try:
                     self.socket.send(json.dumps({'trnm':'REG','grp_no':'1','refresh':'0','data':[
                         {'item':self.wire_symbols,'type':['0B','0D']},{'item':[''],'type':['00','0s']}]}))

@@ -80,9 +80,19 @@ def in_window(stamp,start,end):
         return value.tzinfo is not None and start<=value<=end
     except (ValueError,TypeError): return False
 
+_TAIL_CACHE = {}
+
 def tail_events(path,limit=1000):
-    """Read a bounded tail across active and rotated logs, without a safety cache."""
-    path=Path(path);budget=512000;blocks=[]
+    path=Path(path)
+    cache_key=(str(path.resolve()),limit)
+    st=None
+    try:
+        st=path.stat()
+        cached=_TAIL_CACHE.get(cache_key)
+        if cached and cached[0]==st.st_mtime_ns and cached[1]==st.st_size:
+            return list(cached[2])
+    except OSError:pass
+    budget=512000;blocks=[]
     candidates=[path]
     archive=path.parent/'archive'
     if archive.exists():candidates+=sorted(archive.glob(path.name+'.*'),reverse=True)
@@ -98,7 +108,10 @@ def tail_events(path,limit=1000):
         for line in block.decode('utf-8',errors='replace').splitlines():
             try:rows.append(json.loads(line))
             except ValueError:continue
-    return rows[-limit:]
+    res=rows[-limit:]
+    if st is not None:
+        _TAIL_CACHE[cache_key]=(st.st_mtime_ns,st.st_size,list(res))
+    return res
 
 
 def decision_line(row):

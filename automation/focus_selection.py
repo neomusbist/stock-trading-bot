@@ -148,18 +148,19 @@ def retained_price_block(info: dict, clock_iso: str = '') -> bool:
     except (KeyError,TypeError,ValueError):return False
 
 
-def candidate_priority_tuple(row: dict, tier: int, is_existing: bool = False, price_blocked: bool = False) -> tuple:
-    """우선순위 튜플: (tier, -effective_score, incumbent_tie, overhead_share, symbol)
-    - tier: 0 (SIGNAL_READY) ~ 4 (FRESH_WEAK). 작을수록 우선.
+def candidate_priority_tuple(row: dict, tier: int, is_existing: bool = False, price_blocked: bool = False, tenure_protected: bool = False) -> tuple:
+    """우선순위 튜플: (competition_tier, 0 if tenure_protected else 1, -effective_score, incumbent_tie, overhead_share, symbol)
+    - competition_tier: 0 (SIGNAL_READY) ~ 4 (FRESH_WEAK). 작을수록 우선.
+    - tenure_protected: 최소 체류시간(dwell tenure, 기본 60초) 내의 기존 WATCH 종목을 보호(0). 동일 티어 내 점수 역전 방지.
     - effective_score: discovery_score 또는 score.
-      단일 틱 flip-flop 방지를 위해 동일 티어 내 기존 WATCH 종목에는 +2.0점 히스테리시스 부여.
-    - incumbent_tie: +2 유지여유와 정확히 동점이면 기존 WATCH를 유지.
+      단일 틱 flip-flop 방지를 위해 동일 티어 내 기존 WATCH 종목에는 +5.0점 히스테리시스 부여.
+    - incumbent_tie: +5 유지여유와 정확히 동점이면 기존 WATCH를 유지.
     - overhead_share: 매물대 부담. 작을수록 우선.
     - symbol: 동률 시 결정적(deterministic) 정렬.
     """
     raw_score = row.get('discovery_score', row.get('score', row.get('source_count', 0) * 10))
     score = float(raw_score if raw_score is not None else 0.0)
-    effective_score = score + (2.0 if is_existing else 0.0)
+    effective_score = score + (5.0 if is_existing else 0.0)
     overhead = float(row.get('overhead_share_estimate', 0.0) or 0.0)
     # UNKNOWN observation is not evidence of superiority over measured weakness.
     # Both compete on the existing discovery score/hysteresis until a candidate
@@ -169,7 +170,7 @@ def candidate_priority_tuple(row: dict, tier: int, is_existing: bool = False, pr
     # that caused promotion -> fresh rejection -> demotion on every quiet gap.
     competition_tier=(TIER_FRESH_WEAK if price_blocked and tier>=TIER_RANK_ONLY
                       else min(tier,TIER_RANK_ONLY))
-    return (competition_tier, -effective_score, 0 if is_existing else 1, overhead, row.get('code', ''))
+    return (competition_tier, 0 if tenure_protected else 1, -effective_score, 0 if is_existing else 1, overhead, row.get('code', ''))
 
 def readiness_tier(info: dict, row: dict, clock_iso: str = '') -> int:
     """Reuse the full evaluation tier in both radar and committed focus."""
@@ -188,16 +189,18 @@ def select_focus(
     readiness_map: Dict[str, dict],
     max_watchlist: int = 8,
     fallback_source1: bool = True,
-    clock_iso: str = ''
+    clock_iso: str = '',
+    min_dwell_seconds: float = 60.0
 ) -> FocusSelection:
     """Main thread에서 focus 선택을 재계산하고 FocusSelection을 반환한다.
     
     규칙:
     1. source_count >= 1 종목 전체가 단일 풀에서 순위 경쟁 참여.
     2. source_count는 scoring 보너스(+10 per source)로 반영됨.
-    3. higher tier 또는 higher score(동일 티어 내 2.0점 초과 우위)를 가진 신규 후보는 기존 WATCH를 교체 가능.
-    4. 동일 티어 내 기존 WATCH 종목에는 단일 틱 뒤집힘(flip-flop) 방지를 위한 +2.0점 히스테리시스 부여.
-    5. 상위 max_watchlist(기본 8개) 종목이 원자적으로 선택됨.
+    3. higher tier 또는 higher score(동일 티어 내 5.0점 초과 우위)를 가진 신규 후보는 기존 WATCH를 교체 가능.
+    4. 동일 티어 내 기존 WATCH 종목에는 단일 틱 뒤집힘(flip-flop) 방지를 위한 +5.0점 히스테리시스 부여.
+    5. 최소 체류시간(min_dwell_seconds=60s) 동안은 동일/하위 티어 후보에 의한 교체를 방지(dwell tenure).
+    6. 상위 max_watchlist(기본 8개) 종목이 원자적으로 선택됨.
     """
     prev_watch_symbols = list(current_watch.keys()) if isinstance(current_watch, dict) else list(current_watch)
     tier_map: Dict[str, int] = {}
@@ -242,8 +245,23 @@ def select_focus(
         tier = readiness_tier(r_info,r,clock_iso)
         tier_map[sym] = tier
         is_existing = (sym in prev_watch_symbols)
+        p_blocked = retained_price_block(r_info,clock_iso)
+        tenure_protected = False
+        if is_existing and clock_iso and not p_blocked and tier < TIER_FRESH_WEAK:
+            w_info = current_watch.get(sym, {}) if isinstance(current_watch, dict) else {}
+            first_watch = w_info.get('first_watch_at') or r.get('first_watch_at')
+            if first_watch:
+                try:
+                    c_dt = datetime.fromisoformat(clock_iso)
+                    w_dt = datetime.fromisoformat(first_watch)
+                    if c_dt.tzinfo and w_dt.tzinfo:
+                        dwell = (c_dt - w_dt).total_seconds()
+                        if 0 <= dwell < min_dwell_seconds:
+                            tenure_protected = True
+                except (ValueError, TypeError):
+                    pass
         priority_tuples[sym] = candidate_priority_tuple(r, tier, is_existing=is_existing,
-            price_blocked=retained_price_block(r_info,clock_iso))
+            price_blocked=p_blocked, tenure_protected=tenure_protected)
 
     # 정렬: (tier, -effective_score, incumbent_tie, overhead, symbol)
     eligible_candidates.sort(key=lambda r: priority_tuples[r['code']])

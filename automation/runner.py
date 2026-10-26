@@ -288,7 +288,7 @@ class SubscriptionState:
                 gap=(stamp-self.detached_at[sym]).total_seconds()
                 detector.forget(sym); self.detached.discard(sym);self.detached_at.pop(sym,None)
                 engine.event('OBSERVATION_RELEASED',symbol=sym,data_action='RESET_STALE_GAP',
-                             subscription_gap_seconds=gap)
+                             subscription_gap_seconds=gap,stored_completed_bars=len(detector.history.get(sym,[])))
         if desired==self.symbols:
             if feed.refresh_exchange() is not True:return False
             # Same observation universe, new exchange stream: preserve bars but
