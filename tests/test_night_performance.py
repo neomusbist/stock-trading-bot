@@ -84,6 +84,42 @@ class NightPerformanceTests(unittest.TestCase):
         with patch('operator_ui_service.tail_events',wraps=tail_events) as ui_tail,patch('operator_service.tail_events',side_effect=AssertionError('duplicate tail')):
             f.s.snapshot()
         self.assertEqual(ui_tail.call_count,1)
+    def test_gui_snapshot_reads_each_ledger_once(self):
+        from operator_service import read_json
+        f=gui_fixtures.UserServiceTests();f.setUp();self.addCleanup(f.doCleanups)
+        f.state()
+        path=f.root/'runtime/automation-production/state.json'
+        with patch('operator_service.read_json',wraps=read_json) as reader:
+            f.s.snapshot()
+        reads=[call for call in reader.call_args_list if call.args[0]==path]
+        self.assertEqual(len(reads),1,'One display snapshot must not parse the same growing ledger three times')
+    def test_next_gui_snapshot_observes_new_unknown_order(self):
+        from operator_service import read_json
+        f=gui_fixtures.UserServiceTests();f.setUp();self.addCleanup(f.doCleanups)
+        f.state()
+        path=f.root/'runtime/automation-production/state.json'
+        self.assertEqual(f.s.snapshot()['uncertain'],0)
+        state=read_json(path)
+        state['orders']['synthetic-unknown']={'id':'synthetic-unknown','symbol':'999990',
+            'side':'BUY','qty':1,'status':'UNKNOWN'}
+        atomic_json(path,state)
+        current=f.s.snapshot()
+        self.assertEqual(current['uncertain'],1)
+        self.assertEqual(current['pending'],1)
+        self.assertFalse(current['trading_on'])
+        self.assertEqual(f.g.calls,[])
+    def test_gui_snapshot_keeps_uncertain_orders_in_other_environment(self):
+        f=gui_fixtures.UserServiceTests();f.setUp();self.addCleanup(f.doCleanups)
+        f.state()
+        atomic_json(f.root/'runtime/automation-production/heartbeat.json',{'time':f.clock[0].isoformat()})
+        path=f.root/'runtime/automation-other/state.json'
+        atomic_json(path,{'positions':{},'orders':{'synthetic':{'status':'UNKNOWN',
+            'side':'BUY','symbol':'999990','qty':1,'id':'synthetic'}}})
+        current=f.s.snapshot()
+        self.assertEqual(current['uncertain'],1)
+        self.assertEqual(current['pending'],1)
+        self.assertFalse(current['trading_on'])
+        self.assertEqual(f.g.calls,[])
     def test_slow_radar_rest_does_not_block_already_watch_tick(self):
         f=fixtures.SetupReachabilityTests();f.setUp();self.addCleanup(f.doCleanups)
         from automation.radar import RadarWorker

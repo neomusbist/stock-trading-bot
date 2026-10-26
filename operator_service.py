@@ -166,10 +166,14 @@ class OperatorService:
             {'mode':'ARMED','live_authorized':False,'releases':{},'revision':0,'commands':[]})
     def folders(self):
         return list((self.root/'runtime').glob('automation-*'))
-    def states(self):
-        return [(folder,read_json(folder/'state.json')) for folder in self.folders() if (folder/'state.json').exists()]
-    def state_counts(self):
-        rows=self.states()
+    def states(self,source=None):
+        # Reuse only the selected ledger already read for this display snapshot.
+        # Other environments and every subsequent operation still read disk.
+        selected,state=source if source is not None else (None,None)
+        return [(folder,state if folder==selected else read_json(folder/'state.json'))
+                for folder in self.folders() if (folder/'state.json').exists()]
+    def state_counts(self,rows=None):
+        rows=self.states() if rows is None else rows
         return {'positions':sum(sum(p['qty'] for p in s['positions'].values()) for _,s in rows),
                 'pending':sum(o['status'] not in TERMINAL for _,s in rows for o in s['orders'].values()),
                 'uncertain':sum(o['status'] in {'UNKNOWN','INTENT'} for _,s in rows for o in s['orders'].values())}
@@ -247,7 +251,8 @@ class OperatorService:
         # Reuse only within this one read-only snapshot; never cache safety across refreshes.
         cfg,auto,policy=self.settings() if settings is None else settings
         folder,state,hb=self.latest() if source is None else source
-        counts=self.state_counts()
+        snapshot_states=self.states(source=(folder,state))
+        counts=self.state_counts(rows=snapshot_states)
         ledger=state.get('automation',{}); saved=ledger.get('capital_snapshot',{})
         other=read_json(self.root/'runtime/operator_account.json',{})
         if age(other.get('timestamp'),self.clock())<age(saved.get('timestamp'),self.clock()):
@@ -335,7 +340,7 @@ class OperatorService:
                 +(['UNKNOWN_ORDER'] if counts['uncertain'] else [])
                 +(['CRITICAL_LOW_DISK_SPACE'] if (disk_safety and disk_safety.get('disk_critical')) else [])),
             'candidate_count':len(watch.get('items',[])) if fresh and watch.get('asof')==self.clock().date().isoformat() else 0,
-            'position_count':sum(len(s['positions']) for _,s in self.states()),
+            'position_count':sum(len(s['positions']) for _,s in snapshot_states),
             'last_decision':(('최근 기록: ' if fresh else '과거 기록: ')+str((decisions[-1].get('timestamp') or decisions[-1].get('time') or '')[:10])+' '+decision_line(decisions[-1])) if decisions else '아직 판단 기록 없음',
             'current_error':state['halt'] if state.get('halt') else last_error if age(ui_error.get('timestamp'),self.clock())<=60 or (fresh and errors and age(errors[-1].get('timestamp') or errors[-1].get('time'),self.clock())<=60) else '현재 오류 미확인 / 과거 기록은 상세보기',
             'cap':auto.capital_limit,'cash':cash,'cash_time':saved.get('timestamp'),'available':min(cash,auto.capital_limit) if cash is not None else None,
