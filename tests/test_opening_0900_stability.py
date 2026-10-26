@@ -249,6 +249,102 @@ class OpeningStabilityVerificationTests(unittest.TestCase):
         self.assertEqual(res3[-1]['seq'], 10)
         self.assertEqual(res3[-1]['event'], 'ORDER_ACCEPTED')
 
+    def test_four_minute_dwell_tenure_guarantees_four_completed_bars(self):
+        """기본 min_dwell_seconds=240.0s (4분) 설정 시, 1~3분(60s, 120s, 180s)
+        구간에서 동일 티어 점수 진동에 의해 축출되지 않고 4개 완성봉을 온전히
+        축적할 수 있음을 검증.
+        """
+        current_watch = {
+            '000010': {
+                'code': '000010',
+                'score': 80.0,
+                'discovery_score': 80.0,
+                'source_count': 2,
+                'first_watch_at': AT.isoformat(),
+            }
+        }
+        candidates = [
+            {'code': '000010', 'discovery_score': 80.0, 'source_count': 2, 'status': 'WATCH'},
+            {'code': '000020', 'discovery_score': 88.0, 'source_count': 2, 'status': 'ELIGIBLE'},
+        ]
+        readiness_map = {
+            '000010': {'tier': TIER_RANK_ONLY, 'timestamp': AT.isoformat()},
+            '000020': {'tier': TIER_RANK_ONLY, 'timestamp': AT.isoformat()},
+        }
+
+        # 60초 경과 (1개봉 완성): 기존 60s 설정에서는 축출 위험이었으나 240s 기본값에서는 완벽 보호
+        clock_60s = (AT + timedelta(seconds=60)).isoformat()
+        sel_60 = select_focus(current_watch, candidates, readiness_map, max_watchlist=1, clock_iso=clock_60s)
+        self.assertEqual(sel_60.next_watch, ['000010'], "Bar 1 completion: should retain incumbent")
+
+        # 120초 경과 (2개봉 완성): 보호 지속
+        clock_120s = (AT + timedelta(seconds=120)).isoformat()
+        sel_120 = select_focus(current_watch, candidates, readiness_map, max_watchlist=1, clock_iso=clock_120s)
+        self.assertEqual(sel_120.next_watch, ['000010'], "Bar 2 completion: should retain incumbent")
+
+        # 180초 경과 (3개봉 완성): 보호 지속
+        clock_180s = (AT + timedelta(seconds=180)).isoformat()
+        sel_180 = select_focus(current_watch, candidates, readiness_map, max_watchlist=1, clock_iso=clock_180s)
+        self.assertEqual(sel_180.next_watch, ['000010'], "Bar 3 completion: should retain incumbent")
+
+        # 239초 경과 (4개봉 직전): 보호 지속
+        clock_239s = (AT + timedelta(seconds=239)).isoformat()
+        sel_239 = select_focus(current_watch, candidates, readiness_map, max_watchlist=1, clock_iso=clock_239s)
+        self.assertEqual(sel_239.next_watch, ['000010'], "Bar 4 building: should retain incumbent")
+
+        # 241초 경과 (4개 완성봉 확보 완료): tenure 보호 만료
+        # B(88점) > A(80점 + 5점 히스테리시스 = 85점) -> 점수 우위 종목으로 정당 교체 허용
+        clock_241s = (AT + timedelta(seconds=241)).isoformat()
+        sel_241 = select_focus(current_watch, candidates, readiness_map, max_watchlist=1, clock_iso=clock_241s)
+        self.assertEqual(sel_241.next_watch, ['000020'], "Post-4-bar expiry: allows justified promotion")
+
+    def test_async_diagnostic_writer_queue_saturation_safety(self):
+        """큐 용량 포화 시 이벤트가 유실(drop)되지 않고 SYNC_FALLBACK으로
+        안전하게 기록되며, 종료 시 잔여 이벤트가 전량 플러시되는지 검증.
+        """
+        writer = event_log.AsyncDiagnosticEventWriter(self.path, capacity=4)
+        try:
+            deliveries = []
+            for i in range(12):
+                row = {'time': AT.isoformat(), 'event': 'OBSERVATION_RELEASED', 'idx': i}
+                deliveries.append(writer.append(row))
+
+            # 큐 용량(4) 초과분은 SYNC_FALLBACK으로 안전하게 기록됨 (유실 없음)
+            self.assertIn('ASYNC', deliveries)
+            self.assertIn('SYNC_FALLBACK', deliveries)
+        finally:
+            writer.close()
+
+        # 파일에 12개 이벤트가 유실 없이 전부 기록되었는지 확인
+        lines = [json.loads(line) for line in self.path.read_text(encoding='utf-8').strip().split('\n')]
+        self.assertEqual(len(lines), 12, "Zero event loss: exactly 12 events written")
+        sequences = [row['event_ingress_sequence'] for row in lines]
+        # 모든 ingress 번호가 유실/누락 없이 온전히 보존됨
+        self.assertEqual(sorted(sequences), list(range(1, 13)), "All sequence numbers preserved without loss")
+
+    def test_critical_financial_events_never_routed_to_async(self):
+        """주문, 체결, 포지션 종료, 위험관리, 주문의향 이벤트 및 BUY/SELL 속성을
+        가진 모든 핵심 거래 이벤트는 예외 없이 SYNC_CRITICAL로 기록됨을 검증.
+        """
+        writer = event_log.AsyncDiagnosticEventWriter(self.path, capacity=512)
+        try:
+            critical_samples = [
+                {'time': AT.isoformat(), 'event': 'ORDER_ACCEPTED', 'symbol': '005930', 'side': 'BUY', 'price': 70000},
+                {'time': AT.isoformat(), 'event': 'ORDER_INTENT', 'symbol': '005930', 'side': 'BUY', 'price': 70000},
+                {'time': AT.isoformat(), 'event': 'FILL', 'symbol': '005930', 'side': 'BUY', 'qty': 10},
+                {'time': AT.isoformat(), 'event': 'POSITION_CLOSED', 'symbol': '005930'},
+                {'time': AT.isoformat(), 'event': 'RISK_HALT', 'reason': 'DAILY_LOSS_LIMIT'},
+                {'time': AT.isoformat(), 'event': 'HARD_LOCK', 'symbol': '005930'},
+                {'time': AT.isoformat(), 'event': 'ENTRY_EVAL', 'decision': 'BUY', 'symbol': '005930'},
+                {'time': AT.isoformat(), 'event': 'ENTRY_EVAL', 'signal_detected': True, 'symbol': '005930'},
+            ]
+
+            for row in critical_samples:
+                delivery = writer.append(row)
+                self.assertEqual(delivery, 'SYNC_CRITICAL', f"Critical event {row['event']} must be SYNC_CRITICAL, got {delivery}")
+        finally:
+            writer.close()
+
 
 if __name__ == '__main__':
     unittest.main()

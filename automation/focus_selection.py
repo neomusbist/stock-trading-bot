@@ -190,7 +190,7 @@ def select_focus(
     max_watchlist: int = 8,
     fallback_source1: bool = True,
     clock_iso: str = '',
-    min_dwell_seconds: float = 60.0
+    min_dwell_seconds: float = 240.0
 ) -> FocusSelection:
     """Main thread에서 focus 선택을 재계산하고 FocusSelection을 반환한다.
     
@@ -199,7 +199,7 @@ def select_focus(
     2. source_count는 scoring 보너스(+10 per source)로 반영됨.
     3. higher tier 또는 higher score(동일 티어 내 5.0점 초과 우위)를 가진 신규 후보는 기존 WATCH를 교체 가능.
     4. 동일 티어 내 기존 WATCH 종목에는 단일 틱 뒤집힘(flip-flop) 방지를 위한 +5.0점 히스테리시스 부여.
-    5. 최소 체류시간(min_dwell_seconds=60s) 동안은 동일/하위 티어 후보에 의한 교체를 방지(dwell tenure).
+    5. 최소 체류시간(min_dwell_seconds=240s, 4분봉 완성 축적) 동안은 동일/하위 티어 후보에 의한 교체를 방지(dwell tenure).
     6. 상위 max_watchlist(기본 8개) 종목이 원자적으로 선택됨.
     """
     prev_watch_symbols = list(current_watch.keys()) if isinstance(current_watch, dict) else list(current_watch)
