@@ -409,7 +409,7 @@ class PatternDetector(Detector):
         # A/C가 신선한 실제 체결로 넘은 저항만 목표의 상한에서 제외한다.
         if setup['pattern']=='A' and resistance is not None and limit>=resistance:resistance=None
         if setup['pattern']=='C' and resistance is not None and t.price>resistance:resistance=None
-        if setup['pattern']=='D':resistance=None
+        if setup['pattern'] in {'D','E'}:resistance=None
         return min(resistance,setup['projection']) if resistance is not None else setup['projection']
 
     def box(self,bars):
@@ -417,6 +417,40 @@ class PatternDetector(Detector):
         seq=bars[-self.a.box_min_bars:]; top=max(b['high'] for b in seq); low=min(b['low'] for b in seq)
         if not 0<(top-low)/low<=self.a.box_max_range: return None
         return {'pattern':'C','breakout':top,'support':low,'projection':top+2*(top-low),'box_width':top-low}
+
+    def support_rebound(self,bars,t,watch):
+        if len(bars)<3: return None
+        seq=bars[-20:]
+        if len(seq)<3: return None
+        peak_idx=max(range(len(seq)-1),key=lambda i:seq[i]['high'])
+        if peak_idx==0 or peak_idx>=len(seq)-1: return None
+        peak=seq[peak_idx]['high']
+        impulse_bars=seq[:peak_idx+1]; pullback_bars=seq[peak_idx+1:]
+        base_low=min(b['low'] for b in impulse_bars)
+        rise=peak-base_low
+        if base_low<=0 or rise/base_low<getattr(self.a,'setup_e_min_rise',0.012): return None
+        support=min(b['low'] for b in pullback_bars)
+        retrace=(peak-support)/rise
+        min_ret=getattr(self.a,'setup_e_min_retrace',0.15); max_ret=getattr(self.a,'setup_e_max_retrace',0.75)
+        if not (min_ret<=retrace<=max_ret): return None
+        c=self.cfg; stop=floor_tick(support*(1-c.structural_buffer))
+        stop_dist=(t.price-stop)/t.price
+        min_stop=getattr(self.a,'setup_e_min_stop_distance',0.020); max_stop=getattr(self.a,'setup_e_max_stop_distance',0.045)
+        if stop_dist<min_stop:
+            stop=floor_tick(t.price*(1-min_stop))
+            stop_dist=(t.price-stop)/t.price
+        elif stop_dist>max_stop: return None
+        min_bounce=getattr(self.a,'setup_e_min_bounce',0.003)
+        if t.price<support*(1+min_bounce): return None
+        risk=t.price-stop; mult=getattr(self.a,'setup_e_reward_target_multiplier',2.5)
+        target_unconstrained=floor_tick(t.price+mult*risk)
+        res_val=watch.get('resistance')
+        if res_val is not None and isinstance(res_val,(int,float)) and res_val>t.price:
+            target=min(res_val,target_unconstrained)
+        else: target=target_unconstrained
+        return {'pattern':'E','breakout':floor_tick(support*(1+min_bounce)),'support':stop,
+                'projection':target,'peak':peak,'base_low':base_low,'retrace':retrace,
+                'entry_basis':'CONFIRMED_SUPPORT_REBOUND','paper_only':True}
 
     def _completed_bar_geometry(self,symbol,bars,tick_time=None):
         if len(bars)<2:
@@ -498,18 +532,25 @@ class PatternDetector(Detector):
                         'entry_basis': 'RESISTANCE_BREAKOUT_EXPANSION',
                         'paper_only': True
                     }
+        if getattr(self.a, 'support_rebound_reclaim_enabled', False) and len(bars) >= 3:
+            e_setup = self.support_rebound(bars, t, watch)
+            if e_setup:
+                setups['E'] = e_setup
         trials=[]
-        eval_names = ('A','B','C') if not getattr(self.a, 'resistance_breakout_expansion_enabled', False) else ('A','B','C','D')
+        eval_names = ['A','B','C']
+        if getattr(self.a, 'resistance_breakout_expansion_enabled', False): eval_names.append('D')
+        if getattr(self.a, 'support_rebound_reclaim_enabled', False): eval_names.append('E')
         for name in eval_names:
             if _only is not None and name!=_only:continue
             setup=setups.get(name)
-            required=2 if name in ('A','D') else 4 if name=='B' else self.a.box_min_bars
+            required=3 if name=='E' else 2 if name in ('A','D') else 4 if name=='B' else self.a.box_min_bars
             why=[]
             if not supported(t.time) and not is_after:why.append('OUT_OF_SUPPORTED_SESSION')
             if not setup:
                 why.append('INSUFFICIENT_USABLE_BARS' if len(bars)<required else
                            'PRIOR_HIGH_NOT_BROKEN' if name=='A' else
                            'RESISTANCE_NOT_BROKEN' if name=='D' else
+                           'SUPPORT_REBOUND_NOT_CONFIRMED' if name=='E' else
                            b_reason if name=='B' else 'BOX_NOT_FORMED')
             price_gates=self.setup_gates(t,watch,setup,bars=bars) if setup else {}
             # Market-status authorization remains at the unchanged engine/order boundary.
@@ -652,7 +693,9 @@ class PatternDetector(Detector):
         turnover=gates['liquidity']['values']['window_turnover']
         ratio=gates['acceleration']['values']['ratio'];gain=gates['acceleration']['values']['gain']
         # Preserve the existing B, C, A precedence when more than one setup qualifies.
-        setup_order = ('B','C','A') if not getattr(self.a, 'resistance_breakout_expansion_enabled', False) else ('B','C','A','D')
+        setup_order = ['B','C','A']
+        if getattr(self.a, 'resistance_breakout_expansion_enabled', False): setup_order.append('D')
+        if getattr(self.a, 'support_rebound_reclaim_enabled', False): setup_order.append('E')
         for name in setup_order:
             trial=next((x for x in trials if x['setup']==name), None)
             if trial is None: continue
@@ -762,7 +805,7 @@ class PatternDetector(Detector):
         if setup['pattern']=='B':
             breakout=setup.get('breakout',setup['support'])
         stop=floor_tick(setup['support']*(1-c.structural_buffer))
-        limit=floor_tick(t.ask if setup['pattern'] in {'A','B','D'} else min(t.ask,breakout*(1+c.max_chase))); resistance=watch.get('resistance')
+        limit=floor_tick(t.ask if setup['pattern'] in {'A','B','D','E'} else min(t.ask,breakout*(1+c.max_chase))); resistance=watch.get('resistance')
         target=self.target(t,watch,setup,limit)
         references=self.price_context.snapshot(t.symbol,t,limit) if self.a.entry_context_enabled else {}
         peak=references.get('nearest_confirmed_peak')
@@ -805,7 +848,7 @@ class PatternDetector(Detector):
         rr=(target-limit)/(limit-stop) if limit>stop else None
         gross_rr=rr;rr_basis='GROSS_PRICE_DISTANCE'
         economics=None;entry_zone=None
-        if setup['pattern'] in {'A','B'}:
+        if setup['pattern'] in {'A','B','E'}:
             from automation.capital import signal_economics,viable_entry_zone
             proof=breakout_evidence if setup['pattern']=='A' else structural
             valuation_signal=dict(pattern=setup['pattern'],limit=limit,stop=stop,target=target)
@@ -853,12 +896,12 @@ class PatternDetector(Detector):
             breakout_reason = ('PEAK_ALREADY_REACHED' if b_over_peak else
                                'RECOVERY_TRIGGER_NOT_REACHED' if t.price < breakout else None)
         else:
-            breakout_pass = (t.price >= breakout and limit >= breakout and not b_over_peak) if setup['pattern'] == 'D' else (t.price > breakout and limit > breakout and not b_over_peak)
+            breakout_pass = (t.price >= breakout and limit >= breakout and not b_over_peak) if setup['pattern'] in {'D','E'} else (t.price > breakout and limit > breakout and not b_over_peak)
             breakout_reason = ('PEAK_ALREADY_REACHED' if b_over_peak else
                                'BREAKOUT_QUOTE_NOT_CONFIRMED' if t.price > breakout and limit <= breakout else None)
         result={'breakout':gate(breakout_pass,price=t.price,breakout=breakout,setup=setup['pattern'],
                 ask=t.ask,entry=limit,reason=breakout_reason),
-            'chase':gate(t.ask/breakout-1<=c.max_chase,chase=t.ask/breakout-1,max_chase=c.max_chase,ask=t.ask),
+            'chase':gate((t.ask<=setup.get('peak',float('inf'))*0.995 and (t.ask-t.price)/t.price<=c.max_chase) if setup['pattern']=='E' else t.ask/breakout-1<=c.max_chase,chase=t.ask/setup.get('peak',1.0) if setup['pattern']=='E' else t.ask/breakout-1,max_chase=0.995 if setup['pattern']=='E' else c.max_chase,ask=t.ask),
             'invalidation':gate(invalidation_pass if distance is not None else None,
                 entry=limit,stop=stop,distance_pct=distance,min_pct=c.min_stop_fraction,
                 max_pct=None if structure_sized else c.max_stop_fraction,

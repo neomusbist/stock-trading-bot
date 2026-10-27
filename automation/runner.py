@@ -1473,7 +1473,7 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
         breakout_level = initial_sig.get('breakout')
         projected_target = initial_sig.get('projection') or initial_sig.get('target')
 
-        fresh=structure(bars,sig['limit'],replace(engine.c,max_recent_range=.99,min_resistance_room=0 if sig['pattern'] in {'A','C'} else engine.c.min_resistance_room),t.time.date())
+        fresh=structure(bars,sig['limit'],replace(engine.c,max_recent_range=.99,max_overhead_share=1.0 if sig['pattern'] in {'A','C','D','E'} else engine.c.max_overhead_share,min_resistance_room=0 if sig['pattern'] in {'A','C','D','E'} else engine.c.min_resistance_room),t.time.date())
         if fresh.get('status')!='ELIGIBLE':
             from automation.decisions import gate
             engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','STRUCTURE_REJECTED',
@@ -1546,7 +1546,7 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
     if prior.get(t.symbol)!=key:
         engine.event('ENTRY_CONTEXT_AUDIT',symbol=t.symbol,setup=sig.get('pattern'),review=context)
         prior[t.symbol]=key;engine._entry_context_keys=prior
-    if sig.get('paper_only') and engine.policy.mode != 'PAPER':
+    if sig.get('paper_only') and (engine.policy.mode == 'LIVE' and not getattr(engine, 'paper_mode', False)):
         engine.event('SIGNAL_BLOCKED', symbol=t.symbol, reason='PAPER_STRATEGY_BLOCKED_IN_LIVE')
         return None
     o=engine.enter(sig,t)

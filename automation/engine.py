@@ -563,7 +563,9 @@ class AutonomousEngine(ExistingExits,Engine):
             if signal['limit']<tick.ask:return 'ENTRY_QUOTE_ABOVE_LIMIT'
         if breakout is not None:
             if tick.price<=breakout or tick.ask<=breakout or signal['limit']<=breakout:return 'BREAKOUT_QUOTE_NOT_CONFIRMED'
-            if max(tick.price,signal['limit'])/breakout-1>self.c.max_chase:return 'ENTRY_CHASE_CHANGED'
+            if signal.get('pattern') == 'E':
+                if signal.get('peak') and tick.ask > signal['peak'] * 0.995: return 'ENTRY_CHASE_CHANGED'
+            elif max(tick.price,signal['limit'])/breakout-1>self.c.max_chase:return 'ENTRY_CHASE_CHANGED'
         # FAST's executable-depth requirement also applies in the regular
         # session. A fresh signal is not proof of liquidity at PRE_HTTP.
         if self.current_session()=='AFTER' or signal.get('pattern')=='FAST':
