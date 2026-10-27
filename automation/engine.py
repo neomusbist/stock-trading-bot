@@ -201,7 +201,7 @@ class AutonomousEngine(ExistingExits,Engine):
         risk_qty=int(risk_budget//unit) if unit>0 else 0
         fresh=self.capital_account_valid()
         economics=None
-        if signal.get('pattern') in {'A','B'}:
+        if signal.get('pattern') in {'A','B','E'}:
             from automation.capital import signal_economics,entry_quantity
             economics=signal_economics(self.c,self.a,signal)
             sized=entry_quantity(economics,amount,risk_budget)
@@ -231,7 +231,7 @@ class AutonomousEngine(ExistingExits,Engine):
         used=0.
         for p in self.s['positions'].values():
             if p.get('ownership','BOT')!='BOT':continue
-            if (p.get('signal') or {}).get('pattern',p.get('pattern')) in {'A','B'}:
+            if (p.get('signal') or {}).get('pattern',p.get('pattern')) in {'A','B','E'}:
                 from automation.exit_plan import invalidation_lines
                 emergency=invalidation_lines(self.c,self.a,p)['emergency']
                 unit=loss_reserve(p['avg'],emergency,self.costs,filled=True)
@@ -242,7 +242,7 @@ class AutonomousEngine(ExistingExits,Engine):
             used+=unit*p['qty']
         for o in self.active_orders(side='BUY') if buys is None else buys:
             sig=o.get('signal') or {};stop=sig.get('stop',o['limit'])
-            if sig.get('pattern') in {'A','B'}:
+            if sig.get('pattern') in {'A','B','E'}:
                 from automation.capital import signal_economics
                 econ=signal_economics(self.c,self.a,{**sig,'limit':o['limit']})
                 if econ.get('status')!='KNOWN':return self.daily_risk_budget()
@@ -352,7 +352,7 @@ class AutonomousEngine(ExistingExits,Engine):
         breakout=signal.get('evaluation_gates',{}).get('breakout',{}).get('values',{}).get('breakout')
         timing=tick_freshness(tick,self.clock(),self.c.stale_seconds)
         return qty,{**signal.get('evaluation_gates',{}),
-            'breakout_quote':gate(breakout is None or (tick.price>breakout and tick.ask>breakout and signal['limit']>breakout),
+            'breakout_quote':gate(breakout is None or ((tick.price>=breakout and tick.ask>=breakout and signal['limit']>=breakout) if signal.get('pattern') in {'D','E'} else (tick.price>breakout and tick.ask>breakout and signal['limit']>breakout)),
                 breakout=breakout,price=tick.price,ask=tick.ask,entry=signal['limit']),
             'policy':gate(not reason,reason=reason,mode=self.policy.mode,live_mode=self.c.live_mode,approved_cap=self.a.capital_limit,costs_confirmed=self.a.costs_confirmed),
             'market_status':gate(self.market_status.get(sym,{}).get('pass'),status=self.market_status.get(sym)),
@@ -381,7 +381,7 @@ class AutonomousEngine(ExistingExits,Engine):
                 return 'CRITICAL_LOW_DISK_SPACE'
         except Exception:
             return 'CRITICAL_LOW_DISK_SPACE'
-        if self.a.exit_plan_reward_guard_enabled or signal.get('pattern') in {'A','B'}:
+        if self.a.exit_plan_reward_guard_enabled or signal.get('pattern') in {'A','B','E'}:
             from automation.exit_plan import build_plan
             signal['exit_plan']=build_plan(self.c,self.a,signal,quantity=quantity)
             if not signal['exit_plan']['reward_guard_pass']:return 'EXIT_PLAN_REWARD_UNKNOWN_OR_LOW'
@@ -562,9 +562,9 @@ class AutonomousEngine(ExistingExits,Engine):
             # which can fill later after its momentum premise has changed.
             if signal['limit']<tick.ask:return 'ENTRY_QUOTE_ABOVE_LIMIT'
         if breakout is not None:
-            if tick.price<=breakout or tick.ask<=breakout or signal['limit']<=breakout:return 'BREAKOUT_QUOTE_NOT_CONFIRMED'
+            if (tick.price<breakout or tick.ask<breakout or signal['limit']<breakout) if signal.get('pattern') in {'D','E'} else (tick.price<=breakout or tick.ask<=breakout or signal['limit']<=breakout):return 'BREAKOUT_QUOTE_NOT_CONFIRMED'
             if signal.get('pattern') == 'E':
-                if signal.get('peak') and tick.ask > signal['peak'] * 0.995: return 'ENTRY_CHASE_CHANGED'
+                if (signal.get('peak') and tick.ask > signal['peak']) or (tick.ask-tick.price)/tick.price>self.c.max_chase: return 'ENTRY_CHASE_CHANGED'
             elif max(tick.price,signal['limit'])/breakout-1>self.c.max_chase:return 'ENTRY_CHASE_CHANGED'
         # FAST's executable-depth requirement also applies in the regular
         # session. A fresh signal is not proof of liquidity at PRE_HTTP.

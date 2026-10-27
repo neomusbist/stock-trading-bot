@@ -448,7 +448,7 @@ class PatternDetector(Detector):
         if res_val is not None and isinstance(res_val,(int,float)) and res_val>t.price:
             target=min(res_val,target_unconstrained)
         else: target=target_unconstrained
-        return {'pattern':'E','breakout':floor_tick(support*(1+min_bounce)),'support':stop,
+        return {'pattern':'E','breakout':floor_tick(support*(1+min_bounce)),'support':support,'stop':stop,
                 'projection':target,'peak':peak,'base_low':base_low,'retrace':retrace,
                 'entry_basis':'CONFIRMED_SUPPORT_REBOUND','paper_only':True}
 
@@ -746,7 +746,7 @@ class PatternDetector(Detector):
                     'time':b['time'].isoformat()} for b in bars[-(30 if self.a.structural_pullback_enabled else max(12,2*self.a.box_min_bars+2) if self.a.fresh_box_basis_enabled else 12):]],
                 'target':target,'target_basis':'과거 저항으로 제한한 관측 패턴 폭 연장 가설; 고정 익절선 아님',
                 **({'entry_economics':price_gates['risk_reward']['values']['economics'],
-                    'entry_zone':price_gates['risk_reward']['values']['entry_zone']} if name in {'A','B'} else {}),
+                    'entry_zone':price_gates['risk_reward']['values']['entry_zone']} if name in {'A','B','E'} else {}),
                 'turnover':turnover,'turnover_ratio':ratio,'gain':gain,
                 'efficiency':score,'source_count':watch.get('source_count',len(watch.get('source_details',{}))),'source_details':watch.get('source_details',{}),'source_deltas':watch.get('source_deltas',{}),
                 'fallback_source1':bool(watch.get('fallback_source1')),
@@ -804,14 +804,14 @@ class PatternDetector(Detector):
             return res_copy
         if setup['pattern']=='B':
             breakout=setup.get('breakout',setup['support'])
-        stop=floor_tick(setup['support']*(1-c.structural_buffer))
+        stop=setup['stop'] if setup['pattern']=='E' and 'stop' in setup else floor_tick(setup['support']*(1-c.structural_buffer))
         limit=floor_tick(t.ask if setup['pattern'] in {'A','B','D','E'} else min(t.ask,breakout*(1+c.max_chase))); resistance=watch.get('resistance')
         target=self.target(t,watch,setup,limit)
         references=self.price_context.snapshot(t.symbol,t,limit) if self.a.entry_context_enabled else {}
         peak=references.get('nearest_confirmed_peak')
         original_target=target
         if self.a.entry_context_enabled and peak and peak['price'] > limit:
-            if setup['pattern'] == 'B':
+            if setup['pattern'] in {'B', 'E'}:
                 if peak['price'] > setup.get('peak', limit):
                     target = min(target, peak['price'])
             elif setup['pattern'] == 'A' and setup.get('entry_basis') == 'TREND_BREAKOUT_BASE':
@@ -864,7 +864,8 @@ class PatternDetector(Detector):
         cost_risk=score.get('risk_per_share');cost_reward=score.get('reward_after_cost')
         net_rr=(cost_reward/cost_risk if isinstance(cost_risk,(int,float)) and cost_risk>0
                 and isinstance(cost_reward,(int,float)) else None)
-        invalidation_pass=bool(distance is not None and 0<stop<limit and c.min_stop_fraction<=distance<=c.max_stop_fraction)
+        max_stop_bound=getattr(self.a,'setup_e_max_stop_distance',c.max_stop_fraction) if setup['pattern']=='E' else c.max_stop_fraction
+        invalidation_pass=bool(distance is not None and 0<stop<limit and c.min_stop_fraction<=distance<=max_stop_bound)
         structure_sized=(breakout_pass is True or structural_pass is True and self.a.confirmed_invalidation_enabled or box_pass is True)
         if structure_sized:
             # Price distance is not account risk. The unchanged final risk gate
@@ -901,7 +902,7 @@ class PatternDetector(Detector):
                                'BREAKOUT_QUOTE_NOT_CONFIRMED' if t.price > breakout and limit <= breakout else None)
         result={'breakout':gate(breakout_pass,price=t.price,breakout=breakout,setup=setup['pattern'],
                 ask=t.ask,entry=limit,reason=breakout_reason),
-            'chase':gate((t.ask<=setup.get('peak',float('inf'))*0.995 and (t.ask-t.price)/t.price<=c.max_chase) if setup['pattern']=='E' else t.ask/breakout-1<=c.max_chase,chase=t.ask/setup.get('peak',1.0) if setup['pattern']=='E' else t.ask/breakout-1,max_chase=0.995 if setup['pattern']=='E' else c.max_chase,ask=t.ask),
+            'chase':gate((t.ask<=setup.get('peak',float('inf')) and (t.ask-t.price)/t.price<=c.max_chase) if setup['pattern']=='E' else t.ask/breakout-1<=c.max_chase,chase=t.ask/setup.get('peak',1.0) if setup['pattern']=='E' else t.ask/breakout-1,max_chase=1.0 if setup['pattern']=='E' else c.max_chase,ask=t.ask),
             'invalidation':gate(invalidation_pass if distance is not None else None,
                 entry=limit,stop=stop,distance_pct=distance,min_pct=c.min_stop_fraction,
                 max_pct=None if structure_sized else c.max_stop_fraction,
