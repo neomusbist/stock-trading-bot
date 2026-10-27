@@ -63,6 +63,7 @@ class AutomationConfig:
     abc_quote_retry_enabled: bool = True
     timeline_async_save_enabled: bool = True
     pullback_expansion_target_enabled: bool = False  # opt-in 50% expansion target beyond peak for Setup B  # R6 FAST live momentum entry integration
+    resistance_breakout_expansion_enabled: bool = False  # Setup D: resistance breakout expansion (PAPER-only)
     pullback_min_rise: float = 0.008
     pullback_min_retrace: float = 0.20  # minimum retrace fraction for confirmed controlled pullback
     min_stop_distance_fraction: float = 0.012  # minimum stop distance fraction (1.2%) to prevent tight noise stops
@@ -109,7 +110,7 @@ class AutomationConfig:
             if type(getattr(self,k)) is not int or getattr(self,k)<=0: raise ValueError(f'{k}: 양의 정수 필요')
         if type(self.ALLOW_OVERNIGHT) is not bool or type(self.costs_confirmed) is not bool or type(self.replacement_enabled) is not bool or type(self.entry_context_enabled) is not bool or type(self.stable_position_book_confirmation) is not bool:
             raise ValueError('불리언 설정 오류')
-        if any(type(getattr(self,k)) is not bool for k in ('confirmed_box_direction','confirmed_structure_protection','fresh_box_basis_enabled','setup_aware_watch_priority','structural_pullback_enabled','structural_breakout_enabled','intraday_context_enabled','confirmed_invalidation_enabled','after_momentum_failure_enabled','exit_plan_reward_guard_enabled','fast_momentum_enabled','pullback_expansion_target_enabled')):
+        if any(type(getattr(self,k)) is not bool for k in ('confirmed_box_direction','confirmed_structure_protection','fresh_box_basis_enabled','setup_aware_watch_priority','structural_pullback_enabled','structural_breakout_enabled','intraday_context_enabled','confirmed_invalidation_enabled','after_momentum_failure_enabled','exit_plan_reward_guard_enabled','fast_momentum_enabled','pullback_expansion_target_enabled','resistance_breakout_expansion_enabled')):
             raise ValueError('불리언 설정 오류')
         if any(type(getattr(self,k)) is not bool for k in ('a_short_reference_enabled','a_sustained_turnover_enabled','b_sustained_turnover_enabled','a_breakout_retest_entry_enabled','b_support_reclaim_entry_enabled','early_surge_priority_enabled','single_source_eligibility_fix_enabled','abc_quote_retry_enabled','timeline_async_save_enabled')):
             raise ValueError('불리언 설정 오류')

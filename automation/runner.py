@@ -1546,6 +1546,9 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
     if prior.get(t.symbol)!=key:
         engine.event('ENTRY_CONTEXT_AUDIT',symbol=t.symbol,setup=sig.get('pattern'),review=context)
         prior[t.symbol]=key;engine._entry_context_keys=prior
+    if sig.get('paper_only') and engine.policy.mode != 'PAPER':
+        engine.event('SIGNAL_BLOCKED', symbol=t.symbol, reason='PAPER_STRATEGY_BLOCKED_IN_LIVE')
+        return None
     o=engine.enter(sig,t)
     account.need_fills=bool(engine.active_orders())
     return o
