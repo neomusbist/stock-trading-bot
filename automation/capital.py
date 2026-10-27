@@ -3,6 +3,10 @@ from dataclasses import dataclass
 from decimal import Decimal
 import math
 
+# All detector setups use one cost/risk contract. A gross-only C/D gate could
+# pass a candidate which the same account cannot justify after costs.
+COMMON_COST_PATTERNS = frozenset({'A', 'B', 'C', 'D', 'E'})
+
 @dataclass(frozen=True)
 class Costs:
     buy: float

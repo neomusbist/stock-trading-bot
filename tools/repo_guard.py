@@ -12,9 +12,14 @@ ROOT_FILES={'main.py','candidate_builder.py','control.py','supervisor.py','opera
     'README.md','AUDIT_REPORT.md','TEST_REPORT.md','NEXT_SESSION_CHECK.md','운영요약.md','사용자_시운전_가이드.txt','DEPLOYMENT_LAYOUT.md','observation.example.json','REPOSITORY_GUIDE.md','SECURITY.md','THIRD_PARTY_NOTICES.md','SOURCE_MANIFEST.json','V1.3_HANDOFF_20261007.md','V1.2_설계감사_구현명세.md','TEST_AUDIT_REPORT.md','STORAGE_AUDIT_REPORT.md','HANDOFF.md','cleanup_audit_trail.json','GUI_PERFORMANCE_REPORT.md','HANDOFF_TRADE_QUALITY_20261013.md'}
 TOOLS={'repo_guard.py','live_overlay.py','setup_local.py','export_source.py','session_audit.py','offline_benchmark.py','offline_regression.py','night_profile.py','verify_fault_injection.py','benchmark_gui_performance.py','trade_quality_replay.py','trade_quality_v15_replay.py','exit_policy_replay.py'}
 TOOLS.add('measure_runtime_budget.py')  # Reviewed read-only OS sampler; generated process evidence stays private.
+TOOLS.add('benchmark_all_strategies.py')  # Offline evidence audit and typed PAPER replay only.
 TOOLS.update({'reproduce_89_signals.py','full_universe_backtest.py','account_level_replay.py',
               'eval_1019_theoretical.py','build_1019_bars.py','run_all_replays.py'})
 CAUSAL_RESEARCH_FILES={
+    'research/strict_benchmark.py',
+    'audit/r6_oct27_benchmark_fidelity/RESULTS.md',
+    'audit/r6_oct27_benchmark_fidelity/LEGACY_CLAIMS.csv',
+    'audit/r6_oct27_benchmark_fidelity/EVIDENCE_SUMMARY.json',
     'research/ab_replacement_strategies.py','audit/r6_oct26_ab_replacement/RESULTS.md','audit/r6_oct26_ab_replacement/CASES.csv',
     'research/recovery_stress.py','audit/r6_oct26_recovery_stress/RESULTS.md','audit/r6_oct26_recovery_stress/CASES.csv',
     'research/recovery_noise.py','audit/r6_oct24_recovery_noise/RESULTS.md','audit/r6_oct24_recovery_noise/CASES.csv',

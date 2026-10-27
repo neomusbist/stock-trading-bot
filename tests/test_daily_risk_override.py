@@ -33,7 +33,8 @@ class DailyRiskOverrideTests(unittest.TestCase):
     def override(self):
         return replace(self.auto,daily_risk_override_day='2026-10-12',daily_risk_override_budget_krw=3880.266).validate()
     def signal(self):
-        return {'symbol':fixture.SYMBOL,'limit':10020,'stop':9400,'pattern':'C','time':self.stamp[0].isoformat(),
+        # Explicit, pre-existing synthetic reward hypothesis, not a live target.
+        return {'symbol':fixture.SYMBOL,'limit':10020,'stop':9400,'target':11500,'pattern':'C','time':self.stamp[0].isoformat(),
                 'efficiency':efficiency(10020,9400,11500,.8,20,self.e.costs)}
     def tick(self):return Tick(fixture.SYMBOL,self.stamp[0],10020,100,100,10020,10010)
     def test_override_reaches_real_fake_broker_boundary_not_only_preview(self):

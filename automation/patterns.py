@@ -12,6 +12,7 @@ from automation.allocation import efficiency
 from automation.session import supported, after_supported
 from automation.decisions import gate,tick_source_identity
 from automation.price_context import PriceContext
+from automation.capital import COMMON_COST_PATTERNS
 
 def observation_locked(method):
     @wraps(method)
@@ -153,6 +154,10 @@ class PatternDetector(Detector):
 
     def pullback_analysis(self,bars):
         if len(bars)<4:return None,'INSUFFICIENT_USABLE_BARS',{}
+        if any(any(not isinstance(b.get(k),(int,float)) or isinstance(b.get(k),bool)
+                       or not math.isfinite(b[k]) for k in ('open','high','low','close','volume'))
+               for b in bars[-min(len(bars),24):]):
+            return None,'PULLBACK_BAR_DATA_UNKNOWN',{}
         seq=bars[-min(len(bars),24):]
         # A complete opening candle can contain the impulse itself. Excluding
         # it relabelled a lower pullback high as the peak, changing both the
@@ -762,7 +767,7 @@ class PatternDetector(Detector):
                     'time':b['time'].isoformat()} for b in bars[-(30 if self.a.structural_pullback_enabled else max(12,2*self.a.box_min_bars+2) if self.a.fresh_box_basis_enabled else 12):]],
                 'target':target,'target_basis':'과거 저항으로 제한한 관측 패턴 폭 연장 가설; 고정 익절선 아님',
                 **({'entry_economics':price_gates['risk_reward']['values']['economics'],
-                    'entry_zone':price_gates['risk_reward']['values']['entry_zone']} if name in {'A','B','E'} else {}),
+                    'entry_zone':price_gates['risk_reward']['values']['entry_zone']} if name in COMMON_COST_PATTERNS else {}),
                 'turnover':turnover,'turnover_ratio':ratio,'gain':gain,
                 'efficiency':score,'source_count':watch.get('source_count',len(watch.get('source_details',{}))),'source_details':watch.get('source_details',{}),'source_deltas':watch.get('source_deltas',{}),
                 'fallback_source1':bool(watch.get('fallback_source1')),
@@ -864,9 +869,9 @@ class PatternDetector(Detector):
         rr=(target-limit)/(limit-stop) if limit>stop else None
         gross_rr=rr;rr_basis='GROSS_PRICE_DISTANCE'
         economics=None;entry_zone=None
-        if setup['pattern'] in {'A','B','E'}:
+        if setup['pattern'] in COMMON_COST_PATTERNS:
             from automation.capital import signal_economics,viable_entry_zone
-            proof=breakout_evidence if setup['pattern']=='A' else structural
+            proof={'A':breakout_evidence,'B':structural,'C':box_evidence}.get(setup['pattern'])
             valuation_signal=dict(pattern=setup['pattern'],limit=limit,stop=stop,target=target)
             if proof:valuation_signal['invalidation_policy']={'enabled':True,**proof}
             economics=signal_economics(c,self.a,valuation_signal)

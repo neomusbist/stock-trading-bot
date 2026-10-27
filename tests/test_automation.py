@@ -53,7 +53,9 @@ class AutomationTests(unittest.TestCase):
     def tick(self,price=10000,sym=SYMBOL): return Tick(sym,self.clock[0],price,100,100,price+10,price-10)
     def signal(self,sym=SYMBOL):
         cost=self.engine.costs
-        return {'symbol':sym,'limit':10020,'stop':9800,'pattern':'B','time':self.clock[0].isoformat(),
+        # The target was already assumed by the efficiency fixture. Supply it
+        # explicitly; a score object must never manufacture entry authority.
+        return {'symbol':sym,'limit':10020,'stop':9800,'target':10600,'pattern':'B','time':self.clock[0].isoformat(),
                 'efficiency':efficiency(10020,9800,10600,.8,30,cost)}
     def buy(self):
         o=self.engine.enter(self.signal(),self.tick()); self.assertIsNotNone(o)
@@ -206,10 +208,10 @@ class RadarAndPatternTests(unittest.TestCase):
         self.assertFalse(self.radar.update([self.item()],lambda x:{'status':'UNKNOWN','reason':'missing'},START)[1])
     def test_pattern_b_pullback_requires_low_volume_and_support(self):
         d=PatternDetector(self.cfg,self.auto,self.costs)
-        bars=[{'low':10000,'high':10050,'close':10040,'volume':1000},
-              {'low':10040,'high':10200,'close':10190,'volume':2000},
-              {'low':10100,'high':10180,'close':10140,'volume':300},
-              {'low':10110,'high':10160,'close':10150,'volume':200}]
+        bars=[{'open':10000,'low':10000,'high':10050,'close':10040,'volume':1000},
+              {'open':10040,'low':10040,'high':10200,'close':10190,'volume':2000},
+              {'open':10170,'low':10100,'high':10180,'close':10140,'volume':300},
+              {'open':10140,'low':10110,'high':10160,'close':10150,'volume':200}]
         self.assertEqual(d.pullback(bars)['pattern'],'B')
         bars[-1]['volume']=10000; self.assertIsNone(d.pullback(bars))
         bars[-1].update(volume=200,low=9900); self.assertIsNone(d.pullback(bars))

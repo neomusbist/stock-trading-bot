@@ -1,0 +1,932 @@
+{
+  "schema": "R6_BENCHMARK_FIDELITY_V1",
+  "baseline_head": "104f19bc5d8c2013b808cbee1dc7b001ad6b0ac2",
+  "live_release": {
+    "commit": "93bdf9a",
+    "release_id": "R6-LIVE-OPS-20261021-10cf8d2",
+    "build_id": "V1.6-risk2-daily4-fast-live-r6-integrated-20261020"
+  },
+  "live_source_files": 92,
+  "live_manifest_mismatches": [],
+  "live_normalized_differences_93bdf9a": [],
+  "legacy_reproduced": [
+    {
+      "date": "2026-10-15",
+      "strategy": "ABC_BASELINE",
+      "mode": "STRICT",
+      "trade_count": 6,
+      "seconds": 47.75
+    },
+    {
+      "date": "2026-10-15",
+      "strategy": "ABC_BASELINE",
+      "mode": "PATTERN_ENGINE",
+      "trade_count": 0,
+      "seconds": 51.688000000081956
+    },
+    {
+      "date": "2026-10-26",
+      "strategy": "ABC_BASELINE",
+      "mode": "STRICT",
+      "trade_count": 0,
+      "seconds": 39.64100000006147
+    },
+    {
+      "date": "2026-10-26",
+      "strategy": "ABC_BASELINE",
+      "mode": "PATTERN_ENGINE",
+      "trade_count": 0,
+      "seconds": 35.811999999918044
+    },
+    {
+      "date": "2026-10-27",
+      "strategy": "ABC_BASELINE",
+      "mode": "STRICT",
+      "trade_count": 4,
+      "seconds": 28.281000000191852
+    },
+    {
+      "date": "2026-10-27",
+      "strategy": "ABC_BASELINE",
+      "mode": "PATTERN_ENGINE",
+      "trade_count": 0,
+      "seconds": 41.25
+    }
+  ],
+  "initial_all_dates_strict_zero_run_provenance": "NOT_RECOVERED_DO_NOT_IDENTIFY_WITH_PATTERN_ENGINE",
+  "live_flags_counterfactual_27": [
+    {
+      "date": "2026-10-27",
+      "mode": "STRICT",
+      "trade_count": 0,
+      "seconds": 128.46900000004098
+    },
+    {
+      "date": "2026-10-27",
+      "mode": "PATTERN_ENGINE",
+      "trade_count": 0,
+      "seconds": 201.0470000000205
+    }
+  ],
+  "live_max_consecutive_losses": null,
+  "study_max_consecutive_losses": 3,
+  "cache_audits": [
+    {
+      "input_sha256": "5daf77edc555491cea7a7a09330c925bcaf6b87df19709f830155a45e7adf8e4",
+      "counts": {
+        "rows": 121140,
+        "volume_alias_restored": 121140,
+        "off_tick_price": 1476,
+        "off_tick_ask": 181,
+        "off_tick_bid": 9
+      },
+      "dates": {
+        "2026-10-26": 121140
+      },
+      "missing_fields": {
+        "cumulative": 121140,
+        "regular": 121140,
+        "ask_qty": 121140,
+        "bid_qty": 121140,
+        "depth_available": 121140,
+        "depth_source": 121140,
+        "book_time": 121140,
+        "book_received_at": 121140,
+        "received_at": 121140,
+        "processed_at": 121140
+      },
+      "observed_volume": 19201236,
+      "execution_status": "UNKNOWN_MISSING_EVIDENCE",
+      "actual_orderable_signals": null,
+      "actual_trades": null,
+      "net_pnl": null,
+      "warning": "CACHE_CENSUS_NOT_STRICT_EXECUTION_OR_NO_OPPORTUNITY_PROOF"
+    },
+    {
+      "input_sha256": "eaa67a020c0d6d329327ee3d53cdb5cf6d858523a074c9fafc86e328a25804c1",
+      "counts": {
+        "rows": 117706,
+        "off_tick_price": 1370
+      },
+      "dates": {
+        "2026-10-27": 117706
+      },
+      "missing_fields": {
+        "cumulative": 117706,
+        "regular": 117706,
+        "ask_qty": 117706,
+        "bid_qty": 117706,
+        "depth_available": 117706,
+        "depth_source": 117706,
+        "book_time": 117706,
+        "book_received_at": 117706,
+        "received_at": 117706,
+        "processed_at": 117706
+      },
+      "observed_volume": 18103799,
+      "execution_status": "UNKNOWN_MISSING_EVIDENCE",
+      "actual_orderable_signals": null,
+      "actual_trades": null,
+      "net_pnl": null,
+      "warning": "CACHE_CENSUS_NOT_STRICT_EXECUTION_OR_NO_OPPORTUNITY_PROOF"
+    }
+  ],
+  "legacy_C_claims": [
+    {
+      "date": "2026-10-15",
+      "symbol": "069540",
+      "strategy": "C",
+      "entry_time": "2026-10-15T11:09:18+09:00",
+      "legacy_entry": 3972,
+      "entry_off_tick": true,
+      "inferred_pre_slippage_price": 3965,
+      "legacy_qty": 17,
+      "stop": 3915,
+      "target": 4040.0,
+      "gross_rr_at_pre_price": 1.5,
+      "net_rr_at_pre_price": 0.5803912971647159,
+      "max_entry": 3935,
+      "hypothetical_common_quantity": 17,
+      "legacy_exit": 4027,
+      "legacy_exit_reason": "TAKE_PROFIT",
+      "legacy_claimed_net_pnl": 777.6845499999908,
+      "legacy_mfe_pct": 1.7119838872104733,
+      "legacy_mae_pct": -0.3021148036253776,
+      "actual_orderable": "UNKNOWN",
+      "actual_fill": false,
+      "valid_strict_performance": false
+    },
+    {
+      "date": "2026-10-15",
+      "symbol": "387690",
+      "strategy": "C",
+      "entry_time": "2026-10-15T11:14:11+09:00",
+      "legacy_entry": 16362,
+      "entry_off_tick": true,
+      "inferred_pre_slippage_price": 16330,
+      "legacy_qty": 3,
+      "stop": 16070,
+      "target": 16780.0,
+      "gross_rr_at_pre_price": 1.7307692307692308,
+      "net_rr_at_pre_price": 0.8692764707439067,
+      "max_entry": 16230,
+      "hypothetical_common_quantity": 3,
+      "legacy_exit": 16729,
+      "legacy_exit_reason": "TAKE_PROFIT",
+      "legacy_claimed_net_pnl": 985.7350499999957,
+      "legacy_mfe_pct": 2.554699914435888,
+      "legacy_mae_pct": -0.19557511306686226,
+      "actual_orderable": "UNKNOWN",
+      "actual_fill": false,
+      "valid_strict_performance": false
+    },
+    {
+      "date": "2026-10-15",
+      "symbol": "002720",
+      "strategy": "C",
+      "entry_time": "2026-10-15T11:14:40+09:00",
+      "legacy_entry": 4478,
+      "entry_off_tick": true,
+      "inferred_pre_slippage_price": 4470,
+      "legacy_qty": 15,
+      "stop": 4410,
+      "target": 4565.0,
+      "gross_rr_at_pre_price": 1.5833333333333333,
+      "net_rr_at_pre_price": 0.6702600680227898,
+      "max_entry": 4435,
+      "hypothetical_common_quantity": 15,
+      "legacy_exit": 4551,
+      "legacy_exit_reason": "TAKE_PROFIT",
+      "legacy_claimed_net_pnl": 938.1547500000015,
+      "legacy_mfe_pct": 1.9428316212594907,
+      "legacy_mae_pct": -0.40196516301920504,
+      "actual_orderable": "UNKNOWN",
+      "actual_fill": false,
+      "valid_strict_performance": false
+    },
+    {
+      "date": "2026-10-15",
+      "symbol": "417200",
+      "strategy": "C",
+      "entry_time": "2026-10-15T11:19:24+09:00",
+      "legacy_entry": 14208,
+      "entry_off_tick": true,
+      "inferred_pre_slippage_price": 14180,
+      "legacy_qty": 5,
+      "stop": 14000,
+      "target": 14470.0,
+      "gross_rr_at_pre_price": 1.6111111111111112,
+      "net_rr_at_pre_price": 0.6546391022941608,
+      "max_entry": 14080,
+      "hypothetical_common_quantity": 4,
+      "legacy_exit": 13958,
+      "legacy_exit_reason": "STOP_LOSS",
+      "legacy_claimed_net_pnl": -1410.704500000007,
+      "legacy_mfe_pct": 0.15484234234234234,
+      "legacy_mae_pct": -1.4639639639639639,
+      "actual_orderable": "UNKNOWN",
+      "actual_fill": false,
+      "valid_strict_performance": false
+    },
+    {
+      "date": "2026-10-15",
+      "symbol": "387690",
+      "strategy": "C",
+      "entry_time": "2026-10-15T11:33:59+09:00",
+      "legacy_entry": 16512,
+      "entry_off_tick": true,
+      "inferred_pre_slippage_price": 16480,
+      "legacy_qty": 3,
+      "stop": 16200,
+      "target": 16940.0,
+      "gross_rr_at_pre_price": 1.6428571428571428,
+      "net_rr_at_pre_price": 0.8457235835953287,
+      "max_entry": 16370,
+      "hypothetical_common_quantity": 3,
+      "legacy_exit": 16151,
+      "legacy_exit_reason": "STOP_LOSS",
+      "legacy_claimed_net_pnl": -1194.6043499999942,
+      "legacy_mfe_pct": 0.4723837209302325,
+      "legacy_mae_pct": -1.88953488372093,
+      "actual_orderable": "UNKNOWN",
+      "actual_fill": false,
+      "valid_strict_performance": false
+    },
+    {
+      "date": "2026-10-15",
+      "symbol": "002720",
+      "strategy": "C",
+      "entry_time": "2026-10-15T11:45:33+09:00",
+      "legacy_entry": 4589,
+      "entry_off_tick": true,
+      "inferred_pre_slippage_price": 4580,
+      "legacy_qty": 2,
+      "stop": 4520,
+      "target": 4675.0,
+      "gross_rr_at_pre_price": 1.5833333333333333,
+      "net_rr_at_pre_price": 0.6558577181208054,
+      "max_entry": 4545,
+      "hypothetical_common_quantity": 15,
+      "legacy_exit": 4506,
+      "legacy_exit_reason": "STOP_LOSS",
+      "legacy_claimed_net_pnl": -186.7525000000005,
+      "legacy_mfe_pct": 0.56657223796034,
+      "legacy_mae_pct": -1.503595554587056,
+      "actual_orderable": "UNKNOWN",
+      "actual_fill": false,
+      "valid_strict_performance": false
+    },
+    {
+      "date": "2026-10-27",
+      "symbol": "253590",
+      "strategy": "C",
+      "entry_time": "2026-10-27T10:02:53+09:00",
+      "legacy_entry": 17214,
+      "entry_off_tick": true,
+      "inferred_pre_slippage_price": 17180,
+      "legacy_qty": 3,
+      "stop": 16930,
+      "target": 17610.0,
+      "gross_rr_at_pre_price": 1.72,
+      "net_rr_at_pre_price": 0.8082065825329133,
+      "max_entry": 17070,
+      "hypothetical_common_quantity": 3,
+      "legacy_exit": 17557,
+      "legacy_exit_reason": "TAKE_PROFIT",
+      "legacy_claimed_net_pnl": 908.0110499999864,
+      "legacy_mfe_pct": 2.3004531195538513,
+      "legacy_mae_pct": -0.25560590217265017,
+      "actual_orderable": "UNKNOWN",
+      "actual_fill": false,
+      "valid_strict_performance": false
+    },
+    {
+      "date": "2026-10-27",
+      "symbol": "098120",
+      "strategy": "C",
+      "entry_time": "2026-10-27T10:36:55+09:00",
+      "legacy_entry": 45741,
+      "entry_off_tick": true,
+      "inferred_pre_slippage_price": 45650,
+      "legacy_qty": 1,
+      "stop": 45050,
+      "target": 46600.0,
+      "gross_rr_at_pre_price": 1.5833333333333333,
+      "net_rr_at_pre_price": 0.6578070321613064,
+      "max_entry": 45300,
+      "hypothetical_common_quantity": 1,
+      "legacy_exit": 44914,
+      "legacy_exit_reason": "STOP_LOSS",
+      "legacy_claimed_net_pnl": -930.4262500000041,
+      "legacy_mfe_pct": 1.0034760936577687,
+      "legacy_mae_pct": -1.729301939179292,
+      "actual_orderable": "UNKNOWN",
+      "actual_fill": false,
+      "valid_strict_performance": false
+    },
+    {
+      "date": "2026-10-27",
+      "symbol": "192650",
+      "strategy": "C",
+      "entry_time": "2026-10-27T11:25:24+09:00",
+      "legacy_entry": 7565,
+      "entry_off_tick": true,
+      "inferred_pre_slippage_price": 7550,
+      "legacy_qty": 9,
+      "stop": 7450,
+      "target": 7700.0,
+      "gross_rr_at_pre_price": 1.5,
+      "net_rr_at_pre_price": 0.608748382923674,
+      "max_entry": 7490,
+      "hypothetical_common_quantity": 9,
+      "legacy_exit": 7427,
+      "legacy_exit_reason": "STOP_LOSS",
+      "legacy_claimed_net_pnl": -1395.9251999999979,
+      "legacy_mfe_pct": 0.0,
+      "legacy_mae_pct": -1.520158625247852,
+      "actual_orderable": "UNKNOWN",
+      "actual_fill": false,
+      "valid_strict_performance": false
+    },
+    {
+      "date": "2026-10-27",
+      "symbol": "396300",
+      "strategy": "C",
+      "entry_time": "2026-10-27T11:47:58+09:00",
+      "legacy_entry": 9699,
+      "entry_off_tick": true,
+      "inferred_pre_slippage_price": 9680,
+      "legacy_qty": 2,
+      "stop": 9580,
+      "target": 9830.0,
+      "gross_rr_at_pre_price": 1.5,
+      "net_rr_at_pre_price": 0.4617335394272079,
+      "max_entry": 9600,
+      "hypothetical_common_quantity": 7,
+      "legacy_exit": 9551,
+      "legacy_exit_reason": "STOP_LOSS",
+      "legacy_claimed_net_pnl": -339.97899999999936,
+      "legacy_mfe_pct": 0.3196205794411795,
+      "legacy_mae_pct": -1.2269306114032374,
+      "actual_orderable": "UNKNOWN",
+      "actual_fill": false,
+      "valid_strict_performance": false
+    }
+  ],
+  "legacy_C_claimed_total_net_pnl": -1848.8064000000286,
+  "legacy_C_net_RR_pass_at_pre_slippage_price": 0,
+  "neosem_recorded_packets": [
+    {
+      "event": "TRADE",
+      "transport_sequence": 382755,
+      "symbol": "253590",
+      "time": "2026-10-27T10:02:53+09:00",
+      "received": "2026-10-27T10:02:53.716238+09:00",
+      "exchange_at": "2026-10-27T10:02:53+09:00",
+      "receiver_at": "2026-10-27T10:02:53.716238+09:00",
+      "processed_at": "2026-10-27T10:02:53.724946+09:00",
+      "price": 17150.0,
+      "volume": 2,
+      "cumulative": 1175578,
+      "bid": 17150.0,
+      "ask": 17170.0,
+      "bid_qty": 491,
+      "ask_qty": 4074,
+      "depth_available": true,
+      "depth_source": "0D",
+      "book_time": "2026-10-27T10:02:53+09:00",
+      "book_received_at": "2026-10-27T10:02:53.716238+09:00",
+      "book_received_monotonic": 1064777.1915897,
+      "venue": "KRX",
+      "venue_basis": "RECEIVER_PARSED_NOT_INDEPENDENTLY_VERIFIED",
+      "subscription_item": null,
+      "raw_market_fields": null,
+      "regular": true,
+      "vi_active": false,
+      "depth_status": "AVAILABLE",
+      "record_sequence": 382755
+    },
+    {
+      "event": "TRADE",
+      "transport_sequence": 382770,
+      "symbol": "253590",
+      "time": "2026-10-27T10:02:53+09:00",
+      "received": "2026-10-27T10:02:54.211386+09:00",
+      "exchange_at": "2026-10-27T10:02:53+09:00",
+      "receiver_at": "2026-10-27T10:02:54.211386+09:00",
+      "processed_at": "2026-10-27T10:02:54.240151+09:00",
+      "price": 17170.0,
+      "volume": 4074,
+      "cumulative": 1179652,
+      "bid": 17150.0,
+      "ask": 17170.0,
+      "bid_qty": 489,
+      "ask_qty": 4074,
+      "depth_available": true,
+      "depth_source": "0D",
+      "book_time": "2026-10-27T10:02:53+09:00",
+      "book_received_at": "2026-10-27T10:02:53.923923+09:00",
+      "book_received_monotonic": 1064777.3992617,
+      "venue": "KRX",
+      "venue_basis": "RECEIVER_PARSED_NOT_INDEPENDENTLY_VERIFIED",
+      "subscription_item": null,
+      "raw_market_fields": null,
+      "regular": true,
+      "vi_active": false,
+      "depth_status": "AVAILABLE",
+      "record_sequence": 382770
+    },
+    {
+      "event": "TRADE",
+      "transport_sequence": 382771,
+      "symbol": "253590",
+      "time": "2026-10-27T10:02:53+09:00",
+      "received": "2026-10-27T10:02:54.211386+09:00",
+      "exchange_at": "2026-10-27T10:02:53+09:00",
+      "receiver_at": "2026-10-27T10:02:54.211386+09:00",
+      "processed_at": "2026-10-27T10:02:54.240614+09:00",
+      "price": 17180.0,
+      "volume": 1272,
+      "cumulative": 1180924,
+      "bid": 17170.0,
+      "ask": 17180.0,
+      "bid_qty": null,
+      "ask_qty": null,
+      "depth_available": false,
+      "depth_source": "BOOK_PRICE_MISMATCH",
+      "book_time": "2026-10-27T10:02:53+09:00",
+      "book_received_at": "2026-10-27T10:02:53.923923+09:00",
+      "book_received_monotonic": 1064777.3992617,
+      "venue": "KRX",
+      "venue_basis": "RECEIVER_PARSED_NOT_INDEPENDENTLY_VERIFIED",
+      "subscription_item": null,
+      "raw_market_fields": null,
+      "regular": true,
+      "vi_active": false,
+      "depth_status": "UNKNOWN_NOT_PROVIDED_OR_UNUSABLE",
+      "record_sequence": 382771
+    },
+    {
+      "event": "TRADE",
+      "transport_sequence": 382772,
+      "symbol": "253590",
+      "time": "2026-10-27T10:02:53+09:00",
+      "received": "2026-10-27T10:02:54.211386+09:00",
+      "exchange_at": "2026-10-27T10:02:53+09:00",
+      "receiver_at": "2026-10-27T10:02:54.211386+09:00",
+      "processed_at": "2026-10-27T10:02:54.240996+09:00",
+      "price": 17190.0,
+      "volume": 486,
+      "cumulative": 1181410,
+      "bid": 17170.0,
+      "ask": 17190.0,
+      "bid_qty": null,
+      "ask_qty": null,
+      "depth_available": false,
+      "depth_source": "BOOK_PRICE_MISMATCH",
+      "book_time": "2026-10-27T10:02:53+09:00",
+      "book_received_at": "2026-10-27T10:02:53.923923+09:00",
+      "book_received_monotonic": 1064777.3992617,
+      "venue": "KRX",
+      "venue_basis": "RECEIVER_PARSED_NOT_INDEPENDENTLY_VERIFIED",
+      "subscription_item": null,
+      "raw_market_fields": null,
+      "regular": true,
+      "vi_active": false,
+      "depth_status": "UNKNOWN_NOT_PROVIDED_OR_UNUSABLE",
+      "record_sequence": 382772
+    },
+    {
+      "event": "TRADE",
+      "transport_sequence": 382778,
+      "symbol": "253590",
+      "time": "2026-10-27T10:02:53+09:00",
+      "received": "2026-10-27T10:02:54.322049+09:00",
+      "exchange_at": "2026-10-27T10:02:53+09:00",
+      "receiver_at": "2026-10-27T10:02:54.322049+09:00",
+      "processed_at": "2026-10-27T10:02:54.347086+09:00",
+      "price": 17170.0,
+      "volume": 14,
+      "cumulative": 1181424,
+      "bid": 17170.0,
+      "ask": 17190.0,
+      "bid_qty": 207,
+      "ask_qty": 4092,
+      "depth_available": true,
+      "depth_source": "0D",
+      "book_time": "2026-10-27T10:02:53+09:00",
+      "book_received_at": "2026-10-27T10:02:54.316708+09:00",
+      "book_received_monotonic": 1064777.7920255,
+      "venue": "KRX",
+      "venue_basis": "RECEIVER_PARSED_NOT_INDEPENDENTLY_VERIFIED",
+      "subscription_item": null,
+      "raw_market_fields": null,
+      "regular": true,
+      "vi_active": false,
+      "depth_status": "AVAILABLE",
+      "record_sequence": 382778
+    },
+    {
+      "event": "TRADE",
+      "transport_sequence": 382780,
+      "symbol": "253590",
+      "time": "2026-10-27T10:02:53+09:00",
+      "received": "2026-10-27T10:02:54.417236+09:00",
+      "exchange_at": "2026-10-27T10:02:53+09:00",
+      "receiver_at": "2026-10-27T10:02:54.417236+09:00",
+      "processed_at": "2026-10-27T10:02:54.439674+09:00",
+      "price": 17170.0,
+      "volume": 3,
+      "cumulative": 1181427,
+      "bid": 17170.0,
+      "ask": 17190.0,
+      "bid_qty": 207,
+      "ask_qty": 4092,
+      "depth_available": true,
+      "depth_source": "0D",
+      "book_time": "2026-10-27T10:02:53+09:00",
+      "book_received_at": "2026-10-27T10:02:54.316708+09:00",
+      "book_received_monotonic": 1064777.7920255,
+      "venue": "KRX",
+      "venue_basis": "RECEIVER_PARSED_NOT_INDEPENDENTLY_VERIFIED",
+      "subscription_item": null,
+      "raw_market_fields": null,
+      "regular": true,
+      "vi_active": false,
+      "depth_status": "AVAILABLE",
+      "record_sequence": 382780
+    }
+  ],
+  "neosem_actual_entry_eval_samples": {
+    "A": {
+      "samples": 29,
+      "geometry_samples": 4,
+      "ready_samples": 0,
+      "reasons": {
+        "PRIOR_HIGH_NOT_BROKEN": 18,
+        "ACCELERATION_FAIL": 26,
+        "RISK_REWARD_FAIL": 4,
+        "CONTINUATION_COST_REWARD_RISK_FAIL": 2,
+        "INSUFFICIENT_USABLE_BARS": 7,
+        "WARMUP_FAIL": 7
+      }
+    },
+    "B": {
+      "samples": 29,
+      "geometry_samples": 1,
+      "ready_samples": 0,
+      "reasons": {
+        "RECOVERY_TRIGGER_NOT_REACHED": 1,
+        "INVALIDATION_FAIL": 1,
+        "RISK_REWARD_FAIL": 1,
+        "RESISTANCE_FAIL": 1,
+        "ECONOMIC_FAIL": 1,
+        "PULLBACK_SUPPORT_BREACHED": 1,
+        "NO_CONTROLLED_PULLBACK": 7,
+        "PULLBACK_VOLUME_FAIL": 5,
+        "INSUFFICIENT_USABLE_BARS": 12,
+        "WARMUP_FAIL": 7,
+        "IMPULSE_CLOSE_PROGRESS_INSUFFICIENT": 4
+      }
+    },
+    "C": {
+      "samples": 29,
+      "geometry_samples": 2,
+      "ready_samples": 0,
+      "reasons": {
+        "BREAKOUT_NOT_REACHED": 2,
+        "INVALIDATION_FAIL": 1,
+        "BOX_ORIGIN_OR_DIRECTION_INVALID": 2,
+        "BOX_CONTAINS_COMPLETED_BREAKOUT": 1,
+        "DECLINING_RANGE": 1,
+        "BOX_NOT_FORMED": 13,
+        "INSUFFICIENT_USABLE_BARS": 14,
+        "WARMUP_FAIL": 7
+      }
+    }
+  },
+  "neosem_focus_frame_count": 2818,
+  "neosem_actual_entry_eval_count": 29,
+  "actual_ledger_trade_rows_by_day_pattern": {
+    "2026-10-15:A": 1,
+    "2026-10-15:FAST": 2
+  },
+  "synthetic_full_path_examples": [
+    {
+      "scenario": "PROFIT_PROTECTION",
+      "entry": 38100,
+      "qty": 1,
+      "stop": 37300,
+      "target": 40100,
+      "fills": [
+        {
+          "at": "2026-10-27T10:30:01+09:00",
+          "side": "BUY",
+          "symbol": "089890",
+          "qty": 1,
+          "price": 38100,
+          "order": "PAPER-L1-1",
+          "source_id": "2026-10-27T10:30:01+09:00",
+          "basis": "SYNTHETIC_TEST_L1_SIMULATION",
+          "input_evidence_basis": "SYNTHETIC_TEST_QUOTE",
+          "latency_ms": 25.0,
+          "actual_fill": false
+        },
+        {
+          "at": "2026-10-27T10:30:04+09:00",
+          "side": "SELL",
+          "symbol": "089890",
+          "qty": 1,
+          "price": 39400,
+          "order": "PAPER-L1-2",
+          "source_id": "2026-10-27T10:30:04+09:00",
+          "basis": "SYNTHETIC_TEST_L1_SIMULATION",
+          "input_evidence_basis": "SYNTHETIC_TEST_QUOTE",
+          "latency_ms": 25.0,
+          "actual_fill": false
+        }
+      ],
+      "completed_trades": [
+        {
+          "trade_id": "2026-10-27-1",
+          "symbol": "089890",
+          "opened": "2026-10-27T10:30:01+09:00",
+          "closed": "2026-10-27T10:30:04+09:00",
+          "qty": 1,
+          "net_pnl": 1209.575,
+          "MFE": 2100.0,
+          "MAE": 0.0,
+          "reason": "구조/이익보호선 이탈"
+        }
+      ],
+      "net_pnl": 1209.575,
+      "actual_fill": false,
+      "basis": "SYNTHETIC_TEST_QUOTE"
+    },
+    {
+      "scenario": "EMERGENCY_LOSS",
+      "entry": 38100,
+      "qty": 1,
+      "stop": 37300,
+      "target": 40100,
+      "fills": [
+        {
+          "at": "2026-10-27T10:30:01+09:00",
+          "side": "BUY",
+          "symbol": "089890",
+          "qty": 1,
+          "price": 38100,
+          "order": "PAPER-L1-1",
+          "source_id": "2026-10-27T10:30:01+09:00",
+          "basis": "SYNTHETIC_TEST_L1_SIMULATION",
+          "input_evidence_basis": "SYNTHETIC_TEST_QUOTE",
+          "latency_ms": 25.0,
+          "actual_fill": false
+        },
+        {
+          "at": "2026-10-27T10:30:03+09:00",
+          "side": "SELL",
+          "symbol": "089890",
+          "qty": 1,
+          "price": 36950,
+          "order": "PAPER-L1-2",
+          "source_id": "2026-10-27T10:30:03+09:00",
+          "basis": "SYNTHETIC_TEST_L1_SIMULATION",
+          "input_evidence_basis": "SYNTHETIC_TEST_QUOTE",
+          "latency_ms": 25.0,
+          "actual_fill": false
+        }
+      ],
+      "completed_trades": [
+        {
+          "trade_id": "2026-10-27-1",
+          "symbol": "089890",
+          "opened": "2026-10-27T10:30:01+09:00",
+          "closed": "2026-10-27T10:30:03+09:00",
+          "qty": 1,
+          "net_pnl": -1235.1574999999998,
+          "MFE": 0.0,
+          "MAE": 1100.0,
+          "reason": "구조/이익보호선 이탈"
+        }
+      ],
+      "net_pnl": -1235.1574999999998,
+      "actual_fill": false,
+      "basis": "SYNTHETIC_TEST_QUOTE"
+    }
+  ],
+  "actual_orderable_signals": {
+    "A": null,
+    "B": null,
+    "C": null,
+    "D": null,
+    "E2": null
+  },
+  "actual_profitability": "UNKNOWN_INVALID_LEGACY_FILLS_AND_INCOMPLETE_POINT_IN_TIME_QUALIFICATION",
+  "LIVE_changed": false,
+  "recorded_focus_replay": {
+    "counts": {
+      "TRADE": 2818,
+      "MISSING:ask_qty": 605,
+      "MISSING:bid_qty": 605
+    },
+    "strategies": {
+      "A": {
+        "frames": 2818,
+        "entry_funnel": {
+          "evaluation_calls": 0,
+          "setup_ready_evaluations": 0,
+          "ledger_buy_orders": 0,
+          "submitted_buy_orders": 0,
+          "buy_fill_events": 0
+        },
+        "reasons": {
+          "POINT_IN_TIME_WATCH_UNKNOWN": 2120,
+          "MEASURED_DEPTH_UNKNOWN": 604,
+          "OFF_TICK_MARKET_PRICE": 62,
+          "BOOK_STALE_OR_FUTURE": 4,
+          "DETECTOR_INGEST_REJECTED": 28
+        }
+      },
+      "B": {
+        "frames": 2818,
+        "entry_funnel": {
+          "evaluation_calls": 0,
+          "setup_ready_evaluations": 0,
+          "ledger_buy_orders": 0,
+          "submitted_buy_orders": 0,
+          "buy_fill_events": 0
+        },
+        "reasons": {
+          "POINT_IN_TIME_WATCH_UNKNOWN": 2120,
+          "MEASURED_DEPTH_UNKNOWN": 604,
+          "OFF_TICK_MARKET_PRICE": 62,
+          "BOOK_STALE_OR_FUTURE": 4,
+          "DETECTOR_INGEST_REJECTED": 28
+        }
+      },
+      "C": {
+        "frames": 2818,
+        "entry_funnel": {
+          "evaluation_calls": 0,
+          "setup_ready_evaluations": 0,
+          "ledger_buy_orders": 0,
+          "submitted_buy_orders": 0,
+          "buy_fill_events": 0
+        },
+        "reasons": {
+          "POINT_IN_TIME_WATCH_UNKNOWN": 2120,
+          "MEASURED_DEPTH_UNKNOWN": 604,
+          "OFF_TICK_MARKET_PRICE": 62,
+          "BOOK_STALE_OR_FUTURE": 4,
+          "DETECTOR_INGEST_REJECTED": 28
+        }
+      },
+      "D": {
+        "frames": 2818,
+        "entry_funnel": {
+          "evaluation_calls": 0,
+          "setup_ready_evaluations": 0,
+          "ledger_buy_orders": 0,
+          "submitted_buy_orders": 0,
+          "buy_fill_events": 0
+        },
+        "reasons": {
+          "POINT_IN_TIME_WATCH_UNKNOWN": 2120,
+          "MEASURED_DEPTH_UNKNOWN": 604,
+          "OFF_TICK_MARKET_PRICE": 62,
+          "BOOK_STALE_OR_FUTURE": 4,
+          "DETECTOR_INGEST_REJECTED": 28
+        }
+      },
+      "E2": {
+        "frames": 2818,
+        "entry_funnel": {
+          "evaluation_calls": 0,
+          "setup_ready_evaluations": 0,
+          "ledger_buy_orders": 0,
+          "submitted_buy_orders": 0,
+          "buy_fill_events": 0
+        },
+        "reasons": {
+          "POINT_IN_TIME_WATCH_UNKNOWN": 2120,
+          "MEASURED_DEPTH_UNKNOWN": 604,
+          "OFF_TICK_MARKET_PRICE": 62,
+          "BOOK_STALE_OR_FUTURE": 4,
+          "DETECTOR_INGEST_REJECTED": 28
+        }
+      }
+    },
+    "qualification_not_reconstructed": true,
+    "actual_orderable_signals": null
+  },
+  "corrected_cost_27_legacy_engine": [
+    {
+      "date": "2026-10-27",
+      "mode": "STRICT",
+      "trade_count": 3
+    },
+    {
+      "date": "2026-10-27",
+      "mode": "PATTERN_ENGINE",
+      "trade_count": 0
+    }
+  ],
+  "test_result": {
+    "tests": 217,
+    "passed": 216,
+    "failed": 1,
+    "errors": 0,
+    "new_tests_passed": 15,
+    "preexisting_failed_contract": "A_resistance_is_fixed_by_structure_trigger_not_decision_price",
+    "baseline_failure_reproduced": true
+  },
+  "source_input_sha256": {
+    "00_SETUP_E_CAUSAL_EVALUATION.json": "326f5f91234a66544766811bf7968caafb72790e31cc17ba8b8cf1180b7e99d0",
+    "01_PORTFOLIO_AUDIT_MODEL_A.json": "81f14c190a5035b4dd8ba02d063ac42adffe84467d91d79af3b7e102d8e96de1",
+    "02_REPLAY_FULL_COHORT.json": "5dd70f4de911d11579d9c693617387c47fa1df10887e4ce026a136d0670f4b3f",
+    "03_benchmark_all_strategies.py": "667b28daa2437205b85e72bee1438f03743f87fbc4ed6f57d320534b1f3ae7f6",
+    "04_benchmark_all_strategies.json": "3fb7cc56309ee8d3410e3106276d724d014f72dae80749feabce046078c191fb",
+    "05_r6_multi_strategy_cross_benchmark_and_empirical_evidence_20261027.md": "b4571ed6fe76cf87f1cf6e4b6b0e2f2168b80ab7d921945d500a9ea1559dc8a2",
+    "06_oct26_target_ticks.json": "5daf77edc555491cea7a7a09330c925bcaf6b87df19709f830155a45e7adf8e4",
+    "07_oct27_replay_ticks_cache.json": "eaa67a020c0d6d329327ee3d53cdb5cf6d858523a074c9fafc86e328a25804c1",
+    "shadow_ticks.jsonl.1": "3f72fa4d5a2be8b60fba45e46b832b8dc27ca86df046d380d57b24e9ed26c44f",
+    "shadow_ticks.jsonl.2": "133569bf855cb6a18c1b3a150435aedfc4a2233a11ded104acac22450d3208b2",
+    "task-45070.log": "e756760ac5ccd8bf2285971c534ddd3ca24bd4fc65d26a9598e0eadc36562152",
+    "task-45285.log": "596b0a6756f60f1154c8decce464dcf32b57d6e69247eda6dac6b3de7519d427"
+  },
+  "focused_source_extents": [
+    {
+      "frozen_byte_extent": 67133081,
+      "sha256": "5410bfbb5688c1f276e685b5c3230921e098aef6ec6ad658fb5ff813a1eab888",
+      "matching_records": 1708,
+      "source_file": "shadow_ticks.jsonl.25"
+    },
+    {
+      "frozen_byte_extent": 67115840,
+      "sha256": "20b87811ff2455f4a4fd9c79cf0559d6dec498676d5102d0e43a7c10cd6c6c71",
+      "matching_records": 1110,
+      "source_file": "shadow_ticks.jsonl.26"
+    },
+    {
+      "frozen_byte_extent": 67156622,
+      "sha256": "2a31afc33582c90fb8ee8f200ce480501be70a613b002a5fc0bc37078158731d",
+      "matching_records": 0,
+      "source_file": "shadow_ticks.jsonl.27"
+    },
+    {
+      "frozen_byte_extent": 67129520,
+      "sha256": "946dcc7b690fff5978b8c53448dd21e7a8ffa4e05b70c7f0604c73bc4e3a3293",
+      "matching_records": 0,
+      "source_file": "shadow_ticks.jsonl.28"
+    },
+    {
+      "frozen_byte_extent": 67176991,
+      "sha256": "dc898c86b314e44d6c0bae9022d4d462d21a618c01e2e97305e3eb50b1c9d961",
+      "matching_records": 0,
+      "source_file": "shadow_ticks.jsonl.29"
+    },
+    {
+      "frozen_byte_extent": 67146761,
+      "sha256": "9ace6325020f190bfcbdfc4f4b9499e32f26092f933ac4927ae439bd0f8dddc7",
+      "matching_records": 0,
+      "source_file": "shadow_ticks.jsonl.30"
+    },
+    {
+      "frozen_byte_extent": 67131393,
+      "sha256": "9ec35ad1c72a53708de9e6beaeccc77029bb36eb587ca75595e82ff6e0e60b9b",
+      "matching_records": 0,
+      "source_file": "shadow_ticks.jsonl.31"
+    },
+    {
+      "frozen_byte_extent": 67175622,
+      "sha256": "81a165264a3ef64feeb616b0da622a2f407f314c746cddf011894077151c118e",
+      "matching_records": 0,
+      "source_file": "shadow_ticks.jsonl.32"
+    },
+    {
+      "frozen_byte_extent": 67218853,
+      "sha256": "f8eea2bf75d4e67c287c8c7d3dbb203fa2e39c8d1baeda9ca84eeef0a4faab19",
+      "matching_records": 0,
+      "source_file": "shadow_ticks.jsonl.33"
+    },
+    {
+      "frozen_byte_extent": 64882875,
+      "sha256": "f39653e54d3fa40b5c45836ad3f41ea12612fa1f23c6b43eda66e9ab321c9c49",
+      "matching_records": 0,
+      "source_file": "shadow_ticks.jsonl"
+    },
+    {
+      "frozen_byte_extent": 36413122,
+      "sha256": "d51814125839a4746d9f7bdf697337be8e761020e5197e7ffa248d26ba23817b",
+      "matching_records": 0,
+      "source_file": "events.jsonl"
+    },
+    {
+      "frozen_byte_extent": 67131622,
+      "sha256": "e3d0a1b889f93a29f99aeb06a948b564319e1493b506244d0207a02bb021c83a",
+      "matching_records": 37,
+      "source_file": "events.jsonl.20261027-103130-432129.30280.dabdf80d"
+    }
+  ]
+}

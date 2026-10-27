@@ -13,7 +13,7 @@ import tempfile
 import time
 
 from core.settings import Config
-from core.util import atomic_json, tick_size
+from core.util import atomic_json, tick_size, floor_tick
 from core.engine import TERMINAL
 from core.broker import Rejected
 from automation.engine import AutonomousEngine
@@ -73,13 +73,18 @@ class QuoteReplayBroker:
 
     def advance(self,frame):
         self.frame=frame;t=frame.tick;e=self.engine
+        # A recorded/synthetic off-grid quote is bad evidence, not a fill price.
+        # In particular, never execute the old benchmark's 17,214 KRW price.
+        market_prices_valid=all(finite(p,False) and p == floor_tick(p) for p in (t.price,t.ask,t.bid))
         changed=any(o['canceled'] for o in self.pending.values())
         for oid,o in list(self.pending.items()):
             if o['canceled'] or not o['remaining']:continue
+            if not market_prices_valid:continue
             if o['symbol']!=t.symbol or o['arrives_at']>frame.available_at:continue
             if frame.quote_reason(frame.available_at,e.c.stale_seconds):continue
             side=o['side'];step=tick_size(t.ask if side=='BUY' else t.bid)
             price=t.ask+self.adverse_ticks*step if side=='BUY' else t.bid-self.adverse_ticks*step
+            if price != floor_tick(price):continue
             if price<=0 or o['limit'] and (price>o['limit'] if side=='BUY' else price<o['limit']):continue
             key=(side,frame.book_key());remaining_depth=(t.ask_qty if side=='BUY' else t.bid_qty)-self.consumed.get(key,0)
             qty=min(o['remaining'],max(0,int(remaining_depth)))
