@@ -1468,24 +1468,63 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
     else:
         from automation.entry_timing import annotate_signal
         annotate_signal(engine,detector,watch,sig)
+        initial_sig = dict(sig)
+        initial_pattern = sig.get('pattern')
+        breakout_level = initial_sig.get('breakout')
+        projected_target = initial_sig.get('projection') or initial_sig.get('target')
+
         fresh=structure(bars,sig['limit'],replace(engine.c,max_recent_range=.99,min_resistance_room=0 if sig['pattern'] in {'A','C'} else engine.c.min_resistance_room),t.time.date())
         if fresh.get('status')!='ELIGIBLE':
             from automation.decisions import gate
             engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','STRUCTURE_REJECTED',
                 {'structure':gate(False,**fresh)},signal=sig,price=t.price)
             engine.event('NO_TRADE',symbol=t.symbol,reason=fresh['reason']); return None
+
         fresh_watch={**watch,**fresh}
-        if sig.get('pattern') in {'A','C'}:
-            fresh_watch['resistance']=watch.get('resistance')
+        confirmed_overhead_resistance = fresh.get('resistance') or watch.get('resistance')
+        if confirmed_overhead_resistance is not None:
+            fresh_watch['resistance'] = confirmed_overhead_resistance
+
         sig=detector.signal(t,fresh_watch)
         if not sig:
-            engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','FRESH_STRUCTURE_SIGNAL_NOT_READY',
-                detector.evaluation_gates(t,fresh_watch),price=t.price,
-                extra={'signal_detected':False,'setup_trials':detector.last_eval.get(t.symbol,{}).get('trials',[])})
+            trials = detector.last_eval.get(t.symbol, {}).get('trials', [])
+            matching_trial = next((tr for tr in trials if tr.get('setup') == initial_pattern), None)
+            fail_reasons = (matching_trial.get('failed_reasons') or []) if matching_trial else []
+            if 'RISK_REWARD_FAIL' in fail_reasons:
+                primary_code = 'FRESH_RESISTANCE_REWARD_INSUFFICIENT'
+            elif matching_trial and matching_trial.get('primary_reason_code'):
+                primary_code = f"FRESH_STRUCTURE_{matching_trial['primary_reason_code']}"
+            else:
+                primary_code = 'FRESH_STRUCTURE_SIGNAL_NOT_READY'
+
+            economic_reward_ref = (
+                min(projected_target, confirmed_overhead_resistance)
+                if (confirmed_overhead_resistance is not None and confirmed_overhead_resistance > t.price)
+                else projected_target
+            )
+            semantic_evidence = {
+                'breakout_level': breakout_level,
+                'confirmed_overhead_resistance': confirmed_overhead_resistance,
+                'projected_target': projected_target,
+                'economic_reward_reference': economic_reward_ref,
+                'signal_detected': False,
+                'setup_trials': trials,
+                'rejection_basis': 'OVERHEAD_CEILING_COMPRESSED_NET_RR' if 'RISK_REWARD_FAIL' in fail_reasons else primary_code
+            }
+            engine.decisions.emit('ENTRY_EVAL', t.symbol, 'NO_BUY', primary_code,
+                detector.evaluation_gates(t, fresh_watch), price=t.price,
+                signal=initial_sig,
+                extra=semantic_evidence)
+            engine.event('NO_TRADE', symbol=t.symbol, reason=primary_code)
             return None
+
         sig['name']=watch.get('name')
         annotate_signal(engine,detector,watch,sig)
         sig['fallback_source1']=bool(watch.get('fallback_source1'))
+        sig['breakout_level'] = breakout_level
+        sig['confirmed_overhead_resistance'] = confirmed_overhead_resistance
+        sig['projected_target'] = projected_target
+        sig['economic_reward_reference'] = sig.get('target')
     for sym,p in (list(engine.s['positions'].items()) if engine.a.replacement_enabled else []):
         if sym==t.symbol or p.get('exit_requested'): continue
         history=radar.cache.get((t.time.date(),sym)); price=prices.get(sym)

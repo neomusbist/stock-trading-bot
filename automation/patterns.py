@@ -661,6 +661,10 @@ class PatternDetector(Detector):
             # Engine sizing and the final order boundary validate the actual quantity.
             planned_qty=1
             return {'symbol':t.symbol,'time':t.time.isoformat(),'limit':limit,'stop':stop,**setup,
+                'breakout_level': setup.get('breakout'),
+                'confirmed_overhead_resistance': watch.get('resistance'),
+                'projected_target': setup.get('projection'),
+                'economic_reward_reference': target,
                 'receipt_evidence':tick_source_identity(t),
                 'evaluation_gates':gates,'setup_trials':trials,'acceleration_required':required_acceleration,
                 'entry_confirmation_basis':trial['entry_confirmation_basis'],
