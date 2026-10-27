@@ -72,8 +72,8 @@ class SetupEPaperTests(unittest.TestCase):
         bars = [
             {'time': t_base + timedelta(minutes=1), 'open': 37000.0, 'high': 37300.0, 'low': 37000.0, 'close': 37300.0, 'volume': 20000},
             {'time': t_base + timedelta(minutes=2), 'open': 37300.0, 'high': 38500.0, 'low': 37200.0, 'close': 38400.0, 'volume': 50000},
-            {'time': t_base + timedelta(minutes=3), 'open': 38400.0, 'high': 38400.0, 'low': 37600.0, 'close': 37700.0, 'volume': 15000},
-            {'time': t_base + timedelta(minutes=4), 'open': 37700.0, 'high': 37800.0, 'low': 37650.0, 'close': 37750.0, 'volume': 10000},
+            {'time': t_base + timedelta(minutes=3), 'open': 38400.0, 'high': 38400.0, 'low': 37800.0, 'close': 37900.0, 'volume': 15000},
+            {'time': t_base + timedelta(minutes=4), 'open': 37900.0, 'high': 38000.0, 'low': 37600.0, 'close': 37750.0, 'volume': 10000},
             {'time': t_base + timedelta(minutes=5), 'open': 37750.0, 'high': 38100.0, 'low': 37700.0, 'close': 38050.0, 'volume': 25000},
         ]
         
@@ -124,8 +124,8 @@ class SetupEPaperTests(unittest.TestCase):
         bars = [
             {'time': t_base + timedelta(minutes=1), 'open': 37000.0, 'high': 37300.0, 'low': 37000.0, 'close': 37300.0, 'volume': 20000},
             {'time': t_base + timedelta(minutes=2), 'open': 37300.0, 'high': 38500.0, 'low': 37200.0, 'close': 38400.0, 'volume': 50000},
-            {'time': t_base + timedelta(minutes=3), 'open': 38400.0, 'high': 38400.0, 'low': 37600.0, 'close': 37700.0, 'volume': 15000},
-            {'time': t_base + timedelta(minutes=4), 'open': 37700.0, 'high': 37800.0, 'low': 37650.0, 'close': 37750.0, 'volume': 10000},
+            {'time': t_base + timedelta(minutes=3), 'open': 38400.0, 'high': 38400.0, 'low': 37800.0, 'close': 37900.0, 'volume': 15000},
+            {'time': t_base + timedelta(minutes=4), 'open': 37900.0, 'high': 38000.0, 'low': 37600.0, 'close': 37750.0, 'volume': 10000},
             {'time': t_base + timedelta(minutes=5), 'open': 37750.0, 'high': 38100.0, 'low': 37700.0, 'close': 38050.0, 'volume': 25000},
         ]
         tick = Tick('089890', t_now, 38100.0, 50000, 15000000, 38100.0, 38050.0)
@@ -177,8 +177,8 @@ class SetupEPaperTests(unittest.TestCase):
                 bars = [
                     {'time': t_base + timedelta(minutes=1), 'open': 37000.0, 'high': 37300.0, 'low': 37000.0, 'close': 37300.0, 'volume': 20000},
                     {'time': t_base + timedelta(minutes=2), 'open': 37300.0, 'high': 38500.0, 'low': 37200.0, 'close': 38400.0, 'volume': 50000},
-                    {'time': t_base + timedelta(minutes=3), 'open': 38400.0, 'high': 38400.0, 'low': 37600.0, 'close': 37700.0, 'volume': 15000},
-                    {'time': t_base + timedelta(minutes=4), 'open': 37700.0, 'high': 37800.0, 'low': 37650.0, 'close': 37750.0, 'volume': 10000},
+                    {'time': t_base + timedelta(minutes=3), 'open': 38400.0, 'high': 38400.0, 'low': 37800.0, 'close': 37900.0, 'volume': 15000},
+                    {'time': t_base + timedelta(minutes=4), 'open': 37900.0, 'high': 38000.0, 'low': 37600.0, 'close': 37750.0, 'volume': 10000},
                     {'time': t_base + timedelta(minutes=5), 'open': 37750.0, 'high': 38100.0, 'low': 37700.0, 'close': 38050.0, 'volume': 25000},
                 ]
                 
@@ -251,8 +251,8 @@ class SetupEPaperTests(unittest.TestCase):
                 bars = [
                     {'time': t_base + timedelta(minutes=1), 'open': 37000.0, 'high': 37300.0, 'low': 37000.0, 'close': 37300.0, 'volume': 20000},
                     {'time': t_base + timedelta(minutes=2), 'open': 37300.0, 'high': 38500.0, 'low': 37200.0, 'close': 38400.0, 'volume': 50000},
-                    {'time': t_base + timedelta(minutes=3), 'open': 38400.0, 'high': 38400.0, 'low': 37600.0, 'close': 37700.0, 'volume': 15000},
-                    {'time': t_base + timedelta(minutes=4), 'open': 37700.0, 'high': 37800.0, 'low': 37650.0, 'close': 37750.0, 'volume': 10000},
+                    {'time': t_base + timedelta(minutes=3), 'open': 38400.0, 'high': 38400.0, 'low': 37800.0, 'close': 37900.0, 'volume': 15000},
+                    {'time': t_base + timedelta(minutes=4), 'open': 37900.0, 'high': 38000.0, 'low': 37600.0, 'close': 37750.0, 'volume': 10000},
                     {'time': t_base + timedelta(minutes=5), 'open': 37750.0, 'high': 38100.0, 'low': 37700.0, 'close': 38050.0, 'volume': 25000},
                 ]
                 
@@ -341,8 +341,8 @@ class SetupEPaperTests(unittest.TestCase):
                 bars = [
                     {'time': t_base + timedelta(minutes=1), 'open': 1900.0, 'high': 1920.0, 'low': 1900.0, 'close': 1915.0, 'volume': 20000},
                     {'time': t_base + timedelta(minutes=2), 'open': 1915.0, 'high': 1980.0, 'low': 1910.0, 'close': 1975.0, 'volume': 50000},
-                    {'time': t_base + timedelta(minutes=3), 'open': 1975.0, 'high': 1975.0, 'low': 1925.0, 'close': 1930.0, 'volume': 15000},
-                    {'time': t_base + timedelta(minutes=4), 'open': 1930.0, 'high': 1935.0, 'low': 1928.0, 'close': 1932.0, 'volume': 10000},
+                    {'time': t_base + timedelta(minutes=3), 'open': 1975.0, 'high': 1975.0, 'low': 1935.0, 'close': 1940.0, 'volume': 15000},
+                    {'time': t_base + timedelta(minutes=4), 'open': 1940.0, 'high': 1940.0, 'low': 1925.0, 'close': 1930.0, 'volume': 10000},
                     {'time': t_base + timedelta(minutes=5), 'open': 1932.0, 'high': 1948.0, 'low': 1930.0, 'close': 1945.0, 'volume': 25000},
                 ]
                 detector = PatternDetector(cfg, auto, self.costs)
@@ -392,6 +392,48 @@ class SetupEPaperTests(unittest.TestCase):
                 # but true cash-flow risk_per_share is ~55.02 KRW, giving exactly 25 shares (<= 1,387.95 KRW budget).
                 self.assertEqual(qd['quantity'], 25)
                 self.assertLessEqual(qd['quantity'] * qd['risk_per_share'], qd['risk_budget'])
+
+    def test_setup_e2_reclaim_high_rejection_when_below_support_bar_high(self):
+        """E2 Rule: When price is above support but still below the high of the support-setting candle, entry is REJECTED."""
+        auto_enabled = replace(self.auto, support_rebound_reclaim_enabled=True, setup_e_reclaim_mode='PULLBACK_HIGH_RECLAIM')
+        detector = PatternDetector(self.cfg, auto_enabled, self.costs)
+        t_now = datetime(2026, 10, 27, 10, 30, tzinfo=KST)
+        t_base = t_now - timedelta(minutes=6)
+        # Pullback candle Bar 4 has low 37,600 and high 38,000
+        bars = [
+            {'time': t_base + timedelta(minutes=1), 'open': 37000.0, 'high': 37300.0, 'low': 37000.0, 'close': 37300.0, 'volume': 20000},
+            {'time': t_base + timedelta(minutes=2), 'open': 37300.0, 'high': 38500.0, 'low': 37200.0, 'close': 38400.0, 'volume': 50000},
+            {'time': t_base + timedelta(minutes=3), 'open': 38400.0, 'high': 38400.0, 'low': 37800.0, 'close': 37900.0, 'volume': 15000},
+            {'time': t_base + timedelta(minutes=4), 'open': 37900.0, 'high': 38000.0, 'low': 37600.0, 'close': 37750.0, 'volume': 10000},
+            {'time': t_base + timedelta(minutes=5), 'open': 37750.0, 'high': 37900.0, 'low': 37700.0, 'close': 37850.0, 'volume': 25000},
+        ]
+        # Price 37,850 is +0.66% above support (37,600), but below Bar 4 high (38,000)
+        tick = Tick('089890', t_now, 37850.0, 50000, 15000000, 37850.0, 37800.0)
+        watch = {'code': '089890', 'resistance': 45000.0, 'status': 'WATCH'}
+        setup_e2 = detector.support_rebound(bars, tick, watch)
+        self.assertIsNone(setup_e2, "Price below support candle high must be rejected")
+
+    def test_setup_e2_reclaim_high_approval_when_price_reclaims_support_bar_high(self):
+        """E2 Rule: When price reclaims above the high of the support-setting candle, entry is APPROVED."""
+        auto_enabled = replace(self.auto, support_rebound_reclaim_enabled=True, setup_e_reclaim_mode='PULLBACK_HIGH_RECLAIM')
+        detector = PatternDetector(self.cfg, auto_enabled, self.costs)
+        t_now = datetime(2026, 10, 27, 10, 30, tzinfo=KST)
+        t_base = t_now - timedelta(minutes=6)
+        bars = [
+            {'time': t_base + timedelta(minutes=1), 'open': 37000.0, 'high': 37300.0, 'low': 37000.0, 'close': 37300.0, 'volume': 20000},
+            {'time': t_base + timedelta(minutes=2), 'open': 37300.0, 'high': 38500.0, 'low': 37200.0, 'close': 38400.0, 'volume': 50000},
+            {'time': t_base + timedelta(minutes=3), 'open': 38400.0, 'high': 38400.0, 'low': 37800.0, 'close': 37900.0, 'volume': 15000},
+            {'time': t_base + timedelta(minutes=4), 'open': 37900.0, 'high': 38000.0, 'low': 37600.0, 'close': 37750.0, 'volume': 10000},
+            {'time': t_base + timedelta(minutes=5), 'open': 37750.0, 'high': 38100.0, 'low': 37700.0, 'close': 38050.0, 'volume': 25000},
+        ]
+        # Price 38,100 reclaims Bar 4 high (38,000)
+        tick = Tick('089890', t_now, 38100.0, 50000, 15000000, 38100.0, 38050.0)
+        watch = {'code': '089890', 'resistance': 45000.0, 'status': 'WATCH'}
+        setup_e2 = detector.support_rebound(bars, tick, watch)
+        self.assertIsNotNone(setup_e2)
+        self.assertEqual(setup_e2['breakout'], 38000.0)
+        self.assertEqual(setup_e2['entry_basis'], 'CONFIRMED_SUPPORT_REBOUND_RECLAIM')
+        self.assertTrue(setup_e2['paper_only'])
 
 if __name__ == '__main__':
     unittest.main()

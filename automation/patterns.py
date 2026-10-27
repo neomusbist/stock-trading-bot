@@ -429,7 +429,9 @@ class PatternDetector(Detector):
         base_low=min(b['low'] for b in impulse_bars)
         rise=peak-base_low
         if base_low<=0 or rise/base_low<getattr(self.a,'setup_e_min_rise',0.012): return None
-        support=min(b['low'] for b in pullback_bars)
+        sup_i=min(range(len(pullback_bars)),key=lambda i:pullback_bars[i]['low'])
+        sup_bar=pullback_bars[sup_i]
+        support=sup_bar['low']
         retrace=(peak-support)/rise
         min_ret=getattr(self.a,'setup_e_min_retrace',0.15); max_ret=getattr(self.a,'setup_e_max_retrace',0.75)
         if not (min_ret<=retrace<=max_ret): return None
@@ -440,17 +442,31 @@ class PatternDetector(Detector):
             stop=floor_tick(t.price*(1-min_stop))
             stop_dist=(t.price-stop)/t.price
         elif stop_dist>max_stop: return None
-        min_bounce=getattr(self.a,'setup_e_min_bounce',0.003)
-        if t.price<support*(1+min_bounce): return None
+        mode=getattr(self.a,'setup_e_reclaim_mode','PULLBACK_HIGH_RECLAIM')
+        if mode=='PULLBACK_HIGH_RECLAIM':
+            breakout=floor_tick(sup_bar['high'])
+            if breakout<=support:
+                breakout=floor_tick(support*(1+getattr(self.a,'setup_e_min_bounce',0.003)))
+            if breakout>=peak: return None
+            if t.price<breakout: return None
+            if t.ask>peak: return None
+            if (t.ask-t.price)/t.price>c.max_chase: return None
+            entry_basis='CONFIRMED_SUPPORT_REBOUND_RECLAIM'
+        else:
+            min_bounce=getattr(self.a,'setup_e_min_bounce',0.003)
+            breakout=floor_tick(support*(1+min_bounce))
+            if t.price<breakout: return None
+            entry_basis='CONFIRMED_SUPPORT_REBOUND'
+
         risk=t.price-stop; mult=getattr(self.a,'setup_e_reward_target_multiplier',2.5)
         target_unconstrained=floor_tick(t.price+mult*risk)
         res_val=watch.get('resistance')
         if res_val is not None and isinstance(res_val,(int,float)) and res_val>t.price:
             target=min(res_val,target_unconstrained)
         else: target=target_unconstrained
-        return {'pattern':'E','breakout':floor_tick(support*(1+min_bounce)),'support':support,'stop':stop,
+        return {'pattern':'E','breakout':breakout,'support':support,'stop':stop,
                 'projection':target,'peak':peak,'base_low':base_low,'retrace':retrace,
-                'entry_basis':'CONFIRMED_SUPPORT_REBOUND','paper_only':True}
+                'entry_basis':entry_basis,'paper_only':True}
 
     def _completed_bar_geometry(self,symbol,bars,tick_time=None):
         if len(bars)<2:
@@ -891,7 +907,7 @@ class PatternDetector(Detector):
                 elif setup['pattern']=='C':
                     invalidation_pass=False
         peak_val = setup.get('peak', float('inf'))
-        b_over_peak = (setup['pattern'] == 'B' and limit >= peak_val)
+        b_over_peak = (setup['pattern'] in {'B', 'E'} and limit >= peak_val)
         if setup['pattern'] == 'B' and setup.get('entry_basis') == 'SUPPORT_RECOVERY':
             breakout_pass = (t.price >= breakout and not b_over_peak)
             breakout_reason = ('PEAK_ALREADY_REACHED' if b_over_peak else

@@ -72,6 +72,7 @@ class AutomationConfig:
     setup_e_max_stop_distance: float = 0.045  # maximum stop distance (4.5%)
     setup_e_reward_target_multiplier: float = 2.5  # target projection multiplier (2.5R)
     setup_e_min_bounce: float = 0.003  # minimum bounce above support (0.3%) for reclaim confirmation
+    setup_e_reclaim_mode: str = 'PULLBACK_HIGH_RECLAIM'  # E2: reclaim high of support-setting bar
     pullback_min_rise: float = 0.008
     pullback_min_retrace: float = 0.20  # minimum retrace fraction for confirmed controlled pullback
     min_stop_distance_fraction: float = 0.012  # minimum stop distance fraction (1.2%) to prevent tight noise stops
@@ -109,7 +110,7 @@ class AutomationConfig:
         for k,v in asdict(self).items():
             if k in ('daily_risk_override_day','daily_risk_override_budget_krw'): continue
             if k=='max_consecutive_losses' and v is None: continue
-            if k in ('new_entry_cutoff','force_flatten_start','after_prep_start','after_market_start','after_entry_cutoff','after_force_flatten_start','after_market_close'): continue
+            if k in ('setup_e_reclaim_mode','new_entry_cutoff','force_flatten_start','after_prep_start','after_market_start','after_entry_cutoff','after_force_flatten_start','after_market_close'): continue
             if isinstance(v,bool): continue
             if not isinstance(v,(int,float)) or not math.isfinite(v) or v<0:
                 raise ValueError(f'{k}: 유효한 0 이상 숫자 필요')
@@ -126,6 +127,8 @@ class AutomationConfig:
             raise ValueError('A 재확인 진입은 구조 검증과 확정 무효화 정책이 필요합니다')
         if self.b_support_reclaim_entry_enabled and not (self.structural_pullback_enabled and self.confirmed_invalidation_enabled):
             raise ValueError('B 지지 회복 진입은 구조 검증과 확정 무효화 정책이 필요합니다')
+        if self.setup_e_reclaim_mode not in ('PULLBACK_HIGH_RECLAIM', 'SIMPLE_BOUNCE'):
+            raise ValueError('setup_e_reclaim_mode 설정 오류')
         for k in ('new_entry_cutoff','force_flatten_start','after_prep_start','after_market_start','after_entry_cutoff','after_force_flatten_start','after_market_close'):
             datetime.strptime(getattr(self,k),'%H:%M:%S')
         if not '09:00:00'<self.new_entry_cutoff<self.force_flatten_start<'15:20:00':
