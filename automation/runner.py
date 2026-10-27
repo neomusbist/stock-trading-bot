@@ -1474,10 +1474,13 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
             engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','STRUCTURE_REJECTED',
                 {'structure':gate(False,**fresh)},signal=sig,price=t.price)
             engine.event('NO_TRADE',symbol=t.symbol,reason=fresh['reason']); return None
-        sig=detector.signal(t,{**watch,**fresh})
+        fresh_watch={**watch,**fresh}
+        if sig.get('pattern') in {'A','C'}:
+            fresh_watch['resistance']=watch.get('resistance')
+        sig=detector.signal(t,fresh_watch)
         if not sig:
             engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','FRESH_STRUCTURE_SIGNAL_NOT_READY',
-                detector.evaluation_gates(t,{**watch,**fresh}),price=t.price,
+                detector.evaluation_gates(t,fresh_watch),price=t.price,
                 extra={'signal_detected':False,'setup_trials':detector.last_eval.get(t.symbol,{}).get('trials',[])})
             return None
         sig['name']=watch.get('name')
