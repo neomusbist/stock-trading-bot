@@ -846,7 +846,8 @@ def apply_focus_selection(engine,lookup,by_symbol,selection):
         if timeline is not None:
             first_watch=timeline.watch(sym,datetime.fromisoformat(selection.focus_epoch))['first_watch_at']
         lookup[sym]={**row,'status':'WATCH','fallback_source1':source1,
-                     'watch_type':'FALLBACK_SOURCE1' if source1 else 'PRIMARY','first_watch_at':first_watch}
+                     'watch_type':'FALLBACK_SOURCE1' if source1 else 'PRIMARY','first_watch_at':first_watch,
+                     'watch_entered_at':selection.focus_epoch}
         engine.names[sym]=row.get('name')
         if row.get('market_status'):
             engine.market_status[sym]=row.get('market_status')
@@ -889,8 +890,11 @@ def resolve_radar_focus(engine,lookup,rows,rank_watch,readiness,cfg,auto,stamp):
         first_watch=watch_started(row,lookup.get(sym),stamp)
         timeline=getattr(engine,'observation_timeline',None)
         if timeline is not None:first_watch=timeline.watch(sym,stamp,rejoined=sym not in previous)['first_watch_at']
+        prior_entered = (lookup.get(sym) or {}).get('watch_entered_at')
+        watch_entered = prior_entered if sym in previous and prior_entered else stamp.isoformat()
         lookup[sym]={**row,'status':'WATCH','fallback_source1':source1,
-                     'watch_type':'FALLBACK_SOURCE1' if source1 else 'PRIMARY','first_watch_at':first_watch}
+                     'watch_type':'FALLBACK_SOURCE1' if source1 else 'PRIMARY',
+                     'first_watch_at':first_watch,'watch_entered_at':watch_entered}
         if sym in engine.source_qualification:engine.source_qualification[sym]['fallback_source1']=source1
     return selection
 
@@ -2070,6 +2074,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         last_radar=time.monotonic(); counts['radar_cycles']+=1
                         engine.event('RADAR_UPDATED',watch=list(lookup),changes={'added':sorted(set(lookup)-prior_watch),'removed':sorted(prior_watch-set(lookup))},rank_changes=result['changes'])
                 focus_dirty=False
+                highest_notif_tier=99
                 while in_session and hasattr(shadow,'focus_notifications') and not shadow.focus_notifications.empty():
                     notif=shadow.focus_notifications.get_nowait()
                     try:
@@ -2080,7 +2085,14 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         engine.event('FOCUS_SELECTION_BLOCKED',symbol=notif.symbol,reason='NOTIFICATION_STALE')
                         continue
                     focus_dirty=True
+                    highest_notif_tier=min(highest_notif_tier,getattr(notif,'tier',3))
                 if focus_dirty:
+                    last_focus_mono=getattr(engine,'_last_focus_eval_mono',None)
+                    now_mono=time.monotonic()
+                    if highest_notif_tier>=2 and last_focus_mono and (now_mono-last_focus_mono)<1.0:
+                        focus_dirty=False
+                if focus_dirty:
+                    engine._last_focus_eval_mono=time.monotonic()
                     rows=merge_verified_shadow_candidates(rows,shadow,lookup,now(),auto.scan_seconds*3)
                     by_symbol={row['code']:row for row in rows}
                     readiness=focus_readiness(detector,shadow.runtime_view().get('evaluations',{}),now())

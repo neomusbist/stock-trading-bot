@@ -247,13 +247,17 @@ def select_focus(
         is_existing = (sym in prev_watch_symbols)
         p_blocked = retained_price_block(r_info,clock_iso)
         tenure_protected = False
-        if is_existing and clock_iso and not p_blocked and tier < TIER_FRESH_WEAK:
+        if is_existing and clock_iso and not p_blocked:
             w_info = current_watch.get(sym, {}) if isinstance(current_watch, dict) else {}
-            first_watch = w_info.get('first_watch_at') or r.get('first_watch_at')
-            if first_watch:
+            watch_start = (w_info.get('watch_entered_at') or
+                           w_info.get('last_watch_rejoin_at') or
+                           w_info.get('first_watch_at') or
+                           r.get('watch_entered_at') or
+                           r.get('first_watch_at'))
+            if watch_start:
                 try:
                     c_dt = datetime.fromisoformat(clock_iso)
-                    w_dt = datetime.fromisoformat(first_watch)
+                    w_dt = datetime.fromisoformat(watch_start)
                     if c_dt.tzinfo and w_dt.tzinfo:
                         dwell = (c_dt - w_dt).total_seconds()
                         if 0 <= dwell < min_dwell_seconds:

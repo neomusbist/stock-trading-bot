@@ -448,6 +448,121 @@ class OpeningStabilityVerificationTests(unittest.TestCase):
         self.assertFalse(freshness['fresh'], "Tick older than stale_seconds must be marked not fresh")
         self.assertGreater(freshness['effective_age_seconds'], cfg.stale_seconds)
 
+    def test_rejoined_watch_stock_preserves_dwell_tenure_protection(self):
+        """[09:43:03 플래핑 수정 검증 1] 이른 아침(09:16:12)에 최초 편입된 이력이 있더라도,
+        09:43:03에 재편입(rejoin)된 경우 watch_entered_at 기준 체류시간이 0.5초이므로
+        min_dwell_seconds(240s) 보호를 정상 적용받아 고점수 도전자에게 즉시 밀려나지 않음을 검증.
+        (과거 first_watch_at 잔존으로 인한 300ms 초고속 탈락 버그 해결 입증)
+        """
+        base = datetime(2026, 10, 27, 9, 43, 3, tzinfo=KST)
+        current_watch = {
+            '078350': {
+                'code': '078350',
+                'discovery_score': 80.0,
+                'source_count': 2,
+                'first_watch_at': datetime(2026, 10, 27, 9, 16, 12, tzinfo=KST).isoformat(),
+                'watch_entered_at': base.isoformat(),
+            }
+        }
+        candidates = [
+            {'code': '078350', 'discovery_score': 80.0, 'source_count': 2, 'status': 'WATCH'},
+            {'code': '098460', 'discovery_score': 88.0, 'source_count': 2, 'status': 'ELIGIBLE'},
+        ]
+        readiness_map = {
+            '078350': {'tier': TIER_RANK_ONLY, 'timestamp': base.isoformat()},
+            '098460': {'tier': TIER_RANK_ONLY, 'timestamp': base.isoformat()},
+        }
+        # 0.5초 경과 시점
+        eval_clock = (base + timedelta(milliseconds=500)).isoformat()
+        selection = select_focus(current_watch, candidates, readiness_map, max_watchlist=1, clock_iso=eval_clock)
+        self.assertEqual(selection.next_watch, ['078350'], "Rejoined incumbent must be tenure-protected against rank challenger")
+
+    def test_warming_incumbent_with_fresh_weak_tier_retains_dwell_tenure(self):
+        """[09:43:03 플래핑 수정 검증 2] 체류 초기 틱/거래대금 부족으로 일시적 TIER_FRESH_WEAK(Tier 4)가
+        되더라도, 구조적 가격 훼손(p_blocked)이 없는 한 dwell tenure 보호가 유지되어
+        미관측 도전자(Tier 3)에 의해 300ms 만에 축출되지 않음을 검증.
+        """
+        base = datetime(2026, 10, 27, 9, 43, 3, tzinfo=KST)
+        current_watch = {
+            '078350': {
+                'code': '078350',
+                'discovery_score': 80.0,
+                'source_count': 2,
+                'watch_entered_at': base.isoformat(),
+            }
+        }
+        candidates = [
+            {'code': '078350', 'discovery_score': 80.0, 'source_count': 2, 'status': 'WATCH'},
+            {'code': '098460', 'discovery_score': 95.0, 'source_count': 2, 'status': 'ELIGIBLE'},
+        ]
+        # 현 주식이 웜업/거래대금 미달로 TIER_FRESH_WEAK인 상태 (가격 구조 훼손은 없음)
+        readiness_map = {
+            '078350': {'tier': TIER_FRESH_WEAK, 'timestamp': base.isoformat(), 'gates': {'liquidity': {'result': 'FAIL'}}},
+            '098460': {'tier': TIER_RANK_ONLY, 'timestamp': base.isoformat()},
+        }
+        eval_clock = (base + timedelta(seconds=10)).isoformat()
+        selection = select_focus(current_watch, candidates, readiness_map, max_watchlist=1, clock_iso=eval_clock)
+        self.assertEqual(selection.next_watch, ['078350'], "Warming incumbent with FRESH_WEAK must retain tenure against unobserved challenger")
+
+    def test_structurally_broken_incumbent_evicted_despite_dwell(self):
+        """[09:43:03 플래핑 수정 검증 3] 최소 체류기간(240s) 이내라도, 박스 지지선 이탈 또는
+        손절선 무효화 등 구조적 가격 훼손(p_blocked)이 발생하면 tenure 보호가 즉시 박탈되어
+        적격 종목으로 교체됨을 검증. (불필요한 무효 종목 체류 방지)
+        """
+        base = datetime(2026, 10, 27, 9, 43, 3, tzinfo=KST)
+        current_watch = {
+            '078350': {
+                'code': '078350',
+                'discovery_score': 80.0,
+                'source_count': 2,
+                'watch_entered_at': base.isoformat(),
+            }
+        }
+        candidates = [
+            {'code': '078350', 'discovery_score': 80.0, 'source_count': 2, 'status': 'WATCH'},
+            {'code': '098460', 'discovery_score': 75.0, 'source_count': 2, 'status': 'ELIGIBLE'},
+        ]
+        # 가격 구조 무효화 발생 (지지선 붕괴 등)
+        readiness_map = {
+            '078350': {
+                'tier': TIER_FRESH_WEAK,
+                'timestamp': base.isoformat(),
+                'setup_trials': [{'setup': 'A', 'candidate_generated': True, 'gates': {'invalidation': {'result': 'FAIL'}}}]
+            },
+            '098460': {'tier': TIER_RANK_ONLY, 'timestamp': base.isoformat()},
+        }
+        eval_clock = (base + timedelta(seconds=10)).isoformat()
+        selection = select_focus(current_watch, candidates, readiness_map, max_watchlist=1, clock_iso=eval_clock)
+        self.assertEqual(selection.next_watch, ['098460'], "Structurally broken incumbent must be evicted despite tenure")
+
+    def test_signal_ready_candidate_displaces_incumbent_at_capacity(self):
+        """[09:43:03 플래핑 수정 검증 4] 기존 WATCH 종목이 tenure 보호 중이더라도,
+        진짜 주문 직전 신호(TIER_SIGNAL_READY, Tier 0)를 확보한 종목이 나타나면
+        용량 한도(max_watchlist) 내에서 기존 종목을 정당하게 교체함을 검증.
+        (Section ⑥-3 규칙의 일관성 확인)
+        """
+        base = datetime(2026, 10, 27, 9, 43, 3, tzinfo=KST)
+        current_watch = {
+            '078350': {
+                'code': '078350',
+                'discovery_score': 80.0,
+                'source_count': 2,
+                'watch_entered_at': base.isoformat(),
+            }
+        }
+        candidates = [
+            {'code': '078350', 'discovery_score': 80.0, 'source_count': 2, 'status': 'WATCH'},
+            {'code': '098460', 'discovery_score': 70.0, 'source_count': 2, 'status': 'ELIGIBLE'},
+        ]
+        # 098460은 모든 게이트 통과된 완벽한 SIGNAL_READY (Tier 0)
+        readiness_map = {
+            '078350': {'tier': TIER_RANK_ONLY, 'timestamp': base.isoformat()},
+            '098460': {'tier': TIER_SIGNAL_READY, 'timestamp': base.isoformat()},
+        }
+        eval_clock = (base + timedelta(seconds=10)).isoformat()
+        selection = select_focus(current_watch, candidates, readiness_map, max_watchlist=1, clock_iso=eval_clock)
+        self.assertEqual(selection.next_watch, ['098460'], "Tier 0 SIGNAL_READY must displace lower-tier incumbent")
+
 
 if __name__ == '__main__':
     unittest.main()
