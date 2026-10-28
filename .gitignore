@@ -190,3 +190,6 @@ operator_*approval*.json
 !/audit/r6_oct27_paper_evidence/RUNBOOK.md
 !/audit/r6_oct27_paper_evidence/MEASURED_SUMMARY.json
 !/audit/r6_oct27_paper_evidence/OVERLAY_MANIFEST.json
+!/audit/kt00018_20261028/RESULTS.md
+!/audit/kt00018_20261028/CALL_PATHS.json
+!/audit/kt00018_20261028/DEPLOYMENT_RECEIPT.json

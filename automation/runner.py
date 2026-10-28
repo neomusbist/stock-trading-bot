@@ -52,11 +52,25 @@ from automation.decisions import tick_source_identity
 
 def error_record(error):
     record=exception_details(error)
+    if getattr(error,'balance_rate_limited',False):record['balance_rate_limited']=True
     if isinstance(error,Rejected):
         record.update(error=str(error),api=error.api,raw_response=error.response,
             return_code=error.response.get('return_code') if error.response else None,
             return_msg=error.response.get('return_msg') if error.response else None)
     return record
+
+def account_query_failed(engine,result):
+    """A balance throttle blocks BUY; it never fabricates cash/holdings or a fresh account.
+
+    Preserve the already-verified account for protection only until its ORIGINAL
+    freshness deadline. Unknown/old accounts and other errors keep failing closed.
+    """
+    if result.get('balance_rate_limited') and result.get('api')=='kt00018':
+        engine.balance_refresh_uncertain=True
+        engine.account_ok=bool(engine.account_ok and
+            0<=time.monotonic()-engine.last_account<=engine.c.reconcile_seconds*3)
+    else:engine.account_ok=False
+    engine.event('ACCOUNT_UNAVAILABLE',**{k:v for k,v in result.items() if k!='started'})
 
 def user_command(policy,command):
     with ProcessLock(policy.path.parent/'control.lock'): policy.command(command)
@@ -128,8 +142,15 @@ class AccountWorker:
                     except (Rejected,ValueError,KeyError,RuntimeError,OSError) as e:
                         snapshot['book_errors'][sym]=error_record(e)  # 오류 원문 보존; 누락 호가는 HOLD
                 snapshot['performance']={'account_ms':(time.monotonic()-started)*1000,'external_book_ms':(time.perf_counter()-book_started)*1000,'external_book_calls':book_calls}
+                snapshot['performance']['kt00018_profile']={k:v for k,v in getattr(self.rest,'profile',{}).items() if k.startswith('kt00018_')}
                 result={'snapshot':snapshot,'fills':fills,'started':started,'error':None}
-            except Exception as e: result={**error_record(e),'started':started}
+            except Exception as e:
+                result={**error_record(e),'started':started}
+                if result.get('balance_rate_limited') and result.get('api')=='kt00018':
+                    # Independent order-status reads remain available. Do NOT
+                    # reconcile a partial result as zero cash/zero holdings.
+                    try:result['order_status_refresh']={'orders':self.rest.open_orders(),'fills':fills,'known_at':now().isoformat()}
+                    except Exception as status_error:result['order_status_error']=error_record(status_error)
             if self.q.full(): self.q.get_nowait()
             self.q.put_nowait(result)
             self.request.wait(self.interval); self.request.clear()
@@ -2048,7 +2069,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 done=engine.controls(prices)
                 for result in ready_account_results(account,in_session):
                     if result['error']:
-                        engine.account_ok=False; engine.event('ACCOUNT_UNAVAILABLE',**{k:v for k,v in result.items() if k!='started'})
+                        account_query_failed(engine,result)
                     elif time.monotonic()-result['started']>effective.reconcile_seconds*3:
                         engine.account_ok=False; engine.event('ACCOUNT_UNAVAILABLE',error='조회 지연')
                     else:

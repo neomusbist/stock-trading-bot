@@ -1,0 +1,191 @@
+{
+  "scope": "LIVE_AND_DEV_COMMON_BALANCE_TRANSPORT",
+  "central_path": "Rest.snapshot -> Rest.pages -> Rest.call -> Rest._http -> BalanceRateBudget.slot -> Rest._http_common",
+  "calls": [
+    {
+      "file": "core/broker.py",
+      "line": 213,
+      "function": "Rest.snapshot",
+      "call": "self.pages",
+      "explicit_kt00018": true
+    },
+    {
+      "file": "automation/runner.py",
+      "line": 127,
+      "function": "AccountWorker.run",
+      "call": "self.rest.snapshot",
+      "explicit_kt00018": false
+    },
+    {
+      "file": "automation/runner.py",
+      "line": 1240,
+      "function": "evaluate_shadow_opportunity",
+      "call": "detector.price_context.snapshot",
+      "explicit_kt00018": false
+    },
+    {
+      "file": "automation/runner.py",
+      "line": 1413,
+      "function": "evaluate_actual_entry",
+      "call": "detector.price_context.snapshot",
+      "explicit_kt00018": false
+    },
+    {
+      "file": "automation/runner.py",
+      "line": 2229,
+      "function": "run",
+      "call": "context_checkpoint.snapshot",
+      "explicit_kt00018": false
+    },
+    {
+      "file": "automation/runner.py",
+      "line": 2401,
+      "function": "run",
+      "call": "diagnostics.snapshot",
+      "explicit_kt00018": false
+    },
+    {
+      "file": "automation/runner.py",
+      "line": 2407,
+      "function": "run",
+      "call": "context_checkpoint.snapshot",
+      "explicit_kt00018": false
+    },
+    {
+      "file": "main.py",
+      "line": 76,
+      "function": "refresh_account",
+      "call": "rest.snapshot",
+      "explicit_kt00018": false
+    },
+    {
+      "file": "main.py",
+      "line": 127,
+      "function": "check_account",
+      "call": "rest.snapshot",
+      "explicit_kt00018": false
+    },
+    {
+      "file": "operator_service.py",
+      "line": 149,
+      "function": "Gateway._snapshot_stopped",
+      "call": "rest.snapshot",
+      "explicit_kt00018": false
+    },
+    {
+      "file": "operator_service.py",
+      "line": 164,
+      "function": "Gateway.recovery_snapshot",
+      "call": "rest.snapshot",
+      "explicit_kt00018": false
+    },
+    {
+      "file": "operator_service.py",
+      "line": 547,
+      "function": "OperatorService.pilot",
+      "call": "self.gateway.snapshot",
+      "explicit_kt00018": false
+    },
+    {
+      "file": "operator_service.py",
+      "line": 713,
+      "function": "OperatorService.release",
+      "call": "self.gateway.snapshot",
+      "explicit_kt00018": false
+    },
+    {
+      "file": "operator_service.py",
+      "line": 788,
+      "function": "OperatorService.prepare_live",
+      "call": "self.gateway.snapshot",
+      "explicit_kt00018": false
+    },
+    {
+      "file": "operator_ui_service.py",
+      "line": 592,
+      "function": "UserOperations.start_user",
+      "call": "self.snapshot",
+      "explicit_kt00018": false
+    },
+    {
+      "file": "operator_ui_service.py",
+      "line": 629,
+      "function": "UserOperations.prepare_start",
+      "call": "self.snapshot",
+      "explicit_kt00018": false
+    },
+    {
+      "file": "operator_ui_service.py",
+      "line": 658,
+      "function": "UserOperations.prepare_start",
+      "call": "self.gateway.snapshot",
+      "explicit_kt00018": false
+    },
+    {
+      "file": "operator_ui_service.py",
+      "line": 758,
+      "function": "UserOperations.prepare_capital",
+      "call": "self.gateway.snapshot",
+      "explicit_kt00018": false
+    },
+    {
+      "file": "local_diagnostics.py",
+      "line": 66,
+      "function": "account_diagnostic",
+      "call": "rest.snapshot",
+      "explicit_kt00018": false
+    }
+  ],
+  "triggers": [
+    "periodic AccountWorker, configured reconcile_seconds=5",
+    "request Event after order/fill/capital refresh",
+    "new worker/reconnect/day roll initial refresh",
+    "stopped GUI account/start/recovery probe under idle lock",
+    "main CLI check/pilot/continuous refresh",
+    "read-only local diagnostic",
+    "pagination/auth recovery/transport retry at every HTTP attempt"
+  ],
+  "gui_normal_refresh": "CACHED_STATE_NOT_A_BROKER_BALANCE_REQUEST_EACH_FRAME",
+  "account_worker_min_start_interval_seconds": 1,
+  "old_shared_session_generic_interval_seconds": 0.3,
+  "new_production_quiet_gap_after_HTTP_seconds": 0.55,
+  "new_mock_quiet_gap_seconds": 1.05,
+  "new_max_production_dispatches_in_any_one_second": 2,
+  "sharing": "LOCAL_WINDOWS_USER_APP_KEY_AND_SERVER_ALL_UPDATED_CLIENTS_THREADS_AND_PROCESSES",
+  "measurements": {
+    "old_synthetic_dispatch_seconds": [
+      0.0,
+      0.3,
+      0.6,
+      0.8999999999999999
+    ],
+    "old_max_dispatches_per_sliding_second": 4,
+    "actual_historical_wire_max": "UNKNOWN_NO_PER_HTTP_TR_DISPATCH_LOG",
+    "log_sources": [
+      {
+        "file": "events.jsonl",
+        "bytes": 36413122,
+        "sha256": "d51814125839a4746d9f7bdf697337be8e761020e5197e7ffa248d26ba23817b",
+        "uncompressed_bytes_scanned": 36413122,
+        "account_latency_events": 379,
+        "kt00018_error_events": 0,
+        "scan_truncated": false
+      },
+      {
+        "file": "operator_error_history.jsonl",
+        "bytes": 43718,
+        "sha256": "797b4fff45de407010b440cb1b8ab2383a4069edf5f5544f54fce1eeabe5d865",
+        "uncompressed_bytes_scanned": 43718,
+        "account_latency_events": 0,
+        "kt00018_error_events": 0,
+        "scan_truncated": false
+      }
+    ],
+    "kt00018_error_codes": {},
+    "successful_account_result_events": 379,
+    "minimum_result_event_gap_seconds": 1.7840700149536133,
+    "median_result_event_gap_seconds": 5.667983055114746,
+    "proxy_is_not_HTTP_rate": true
+  },
+  "actual_Broker_HTTP_rate_after_install": "NOT_MEASURED_NO_REAL_API_CALL"
+}

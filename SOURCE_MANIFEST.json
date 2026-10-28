@@ -12,8 +12,8 @@
     },
     {
       "path": ".gitignore",
-      "sha256": "f0a73599e3de795112a5f694b3c0fac767203c05c9c325d06b9f7738314a160e",
-      "git_blob_sha256": "ded5215d6bc96cc2067b52d2e8c8f21ed174a01c"
+      "sha256": "9d6cc01781451926e4faeb17426a26cf300c67191d93e54e52ebffe3df353fad",
+      "git_blob_sha256": "d89990b05f122b1d0fe6389511d9359f4c3765b2"
     },
     {
       "path": "AUDIT_REPORT.md",
@@ -91,6 +91,21 @@
       "git_blob_sha256": "f423d22d2e2edd3a9798c613c8230e65060b0213"
     },
     {
+      "path": "audit/kt00018_20261028/CALL_PATHS.json",
+      "sha256": "9b7936fefd44d17852b2c7999a698627da1c17ce9769614c6064b6a5866ae423",
+      "git_blob_sha256": "ed5050af8f22b94ac6e40846b0d2914ed408b999"
+    },
+    {
+      "path": "audit/kt00018_20261028/DEPLOYMENT_RECEIPT.json",
+      "sha256": "4cd9e7fdd2427bf3e82ea41983ebf417dada8e24b964e03899b8ef359f95a535",
+      "git_blob_sha256": "4f223655ecbcbae9f315e5e1e25b9f850dd96cd4"
+    },
+    {
+      "path": "audit/kt00018_20261028/RESULTS.md",
+      "sha256": "5f0655d25243a3dfeac989d4cd10f08b142e05008d5067e6b81ec2fe6e35d4ae",
+      "git_blob_sha256": "9ba2893792076ce8f567dd194c0df0dff69ee033"
+    },
+    {
       "path": "audit/r6_oct27_paper_evidence/MEASURED_SUMMARY.json",
       "sha256": "9986b1a4e5aacbd3b13da6f81db9225a84fa1c2fd19085508ba0e1a177564505",
       "git_blob_sha256": "6e49ea9469c075c1c83e8c839381ef96062611b0"
@@ -152,8 +167,8 @@
     },
     {
       "path": "automation/engine.py",
-      "sha256": "2e835817e84c6fc1f0b8ad1dec8ca2ed230fced48368c4f1ca610652b174c3b0",
-      "git_blob_sha256": "5aa5acee003612e2e397c5dd24c09f7f50645dd4"
+      "sha256": "ea87f692b832854ca5988a54b9e9484ae915f84bb5a6040dd9d5b7c2a4749c0c",
+      "git_blob_sha256": "b143eee84d7dddecd9b0f58195df756287d3d2d2"
     },
     {
       "path": "automation/entry_context_audit.py",
@@ -267,8 +282,8 @@
     },
     {
       "path": "automation/runner.py",
-      "sha256": "d9121b4624e8bd57e379cf627bf68a69f724232f49ef69d5f250040ffd40a870",
-      "git_blob_sha256": "1b27e93918a43fc151a0100fc8937a0d9f9a72e9"
+      "sha256": "beff90f24c485f5685f0c2afb5930c36398a1a3a593fa06ee465ab9a55d16b2c",
+      "git_blob_sha256": "ddc9b0c571506607c40a3f64a6d0651f84216ec2"
     },
     {
       "path": "automation/session.py",
@@ -331,9 +346,14 @@
       "git_blob_sha256": "8b137891791fe96927ad78e64b0aad7bded08bdc"
     },
     {
+      "path": "core/balance_rate.py",
+      "sha256": "f4fecf565234d87c6417c98c1f7dcdc8cdde3ea69ab12061b4e6e49fe5dee6ac",
+      "git_blob_sha256": "2d75fc07a92fb1ad22d43a34a195e851b8c0ecb3"
+    },
+    {
       "path": "core/broker.py",
-      "sha256": "78ce5d610e525d5156e81a0e348c9763f10cfd1dad7ebcec8221971b808917b6",
-      "git_blob_sha256": "6837267ec092d18cdcef4329426e7cec18d68ac7"
+      "sha256": "bcedad37e6c418e7d5812a43660745ea8e9d8fe4c07008559878063d230a08cc",
+      "git_blob_sha256": "e8aa9c92bebe53a77db2f9118e8936e24db778a3"
     },
     {
       "path": "core/engine.py",
@@ -629,6 +649,11 @@
       "path": "tests/test_guided_start.py",
       "sha256": "a1e035ad3535795dee4c9cd77469a59e8bbbbc3cdfd4d22cf12deb28f91e4d22",
       "git_blob_sha256": "5a37fbc21308107cc251670bb6f120cc09e4504e"
+    },
+    {
+      "path": "tests/test_kt00018_rate_budget.py",
+      "sha256": "914b53f74d37f905c13decf50a048ec042f8c51af87cbd201e3a1b328ab70a2c",
+      "git_blob_sha256": "61625912ed8b8d2dea89704d125fafde4f4835ec"
     },
     {
       "path": "tests/test_live_diagnostics.py",
@@ -967,8 +992,8 @@
     },
     {
       "path": "tools/repo_guard.py",
-      "sha256": "d24fb18e63fb77770d9fc77da2460c373c9d37f9e703d0f97872c49960f1e0ea",
-      "git_blob_sha256": "8cc1c493aa5f57c280a22504cded1f8063f5003b"
+      "sha256": "622bb0960c16956ea2ac4cd9677c86e0409c4763dd4a7c97b67af0d518cb560b",
+      "git_blob_sha256": "2fdb94778c87c7461cfc0713a2fc63718e484150"
     },
     {
       "path": "tools/session_audit.py",

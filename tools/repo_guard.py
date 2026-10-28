@@ -17,6 +17,9 @@ TOOLS.add('observe_paper.py')  # Read-only source tail; no broker connection or 
 TOOLS.update({'reproduce_89_signals.py','full_universe_backtest.py','account_level_replay.py',
               'eval_1019_theoretical.py','build_1019_bars.py','run_all_replays.py'})
 CAUSAL_RESEARCH_FILES={
+    'audit/kt00018_20261028/RESULTS.md',
+    'audit/kt00018_20261028/CALL_PATHS.json',
+    'audit/kt00018_20261028/DEPLOYMENT_RECEIPT.json',
     'research/strict_benchmark.py',
     'research/observed_paper.py',
     'audit/r6_oct27_paper_evidence/RESULTS.md',

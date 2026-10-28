@@ -253,6 +253,7 @@ class AutonomousEngine(ExistingExits,Engine):
         return used
 
     def new_entry_reason(self,symbol):
+        if getattr(self,'balance_refresh_uncertain',False):return 'KT00018_BALANCE_REFRESH_UNCERTAIN'
         try:
             from automation.storage_governor import check_disk_safety_gate
             gate = check_disk_safety_gate(getattr(self, 'folder', Path('.')))
@@ -322,7 +323,8 @@ class AutonomousEngine(ExistingExits,Engine):
         return max(0,min(self.available_cash,self.a.capital_limit))
 
     def capital_account_valid(self):
-        return self.account_ok and time.monotonic()-self.last_account<=self.c.reconcile_seconds*3
+        return (not getattr(self,'balance_refresh_uncertain',False) and self.account_ok
+                and time.monotonic()-self.last_account<=self.c.reconcile_seconds*3)
 
     def capital_context(self):
         equity=self.risk_equity()
@@ -1122,6 +1124,7 @@ class AutonomousEngine(ExistingExits,Engine):
         self.reconciled_at=self.clock().isoformat()
         self.reconcile_query_started=snapshot.get('query_started_at',self.reconciled_at)
         self.reconcile_has_orders=bool(snapshot['orders'])
+        if self.account_ok:self.balance_refresh_uncertain=False
 
     def recover_io_halt(self):
         info=self.s.get('halt_info',{})

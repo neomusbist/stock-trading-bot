@@ -1,0 +1,45 @@
+{
+  "checked_at": "2026-10-28T20:08:44.781817+09:00",
+  "release_id": "R6-KT00018-20261028-7d3c3d949105",
+  "status": "APPLIED_STOPPED",
+  "declared_source_hashes": 103,
+  "source_mismatches": [],
+  "protected_mismatches": [],
+  "mode": "STOP",
+  "bot_positions": 0,
+  "active_orders": 0,
+  "changed_files": [
+    "core/broker.py",
+    "automation/engine.py",
+    "automation/runner.py",
+    "core/balance_rate.py",
+    "runtime/RELEASE_IDENTITY.json"
+  ],
+  "actual_API_called": false,
+  "program_started": false,
+  "files": {
+    "core/broker.py": {
+      "before": "78ce5d610e525d5156e81a0e348c9763f10cfd1dad7ebcec8221971b808917b6",
+      "after": "331a3f08602789c90201165b7fcebb0bd233ff776c22bb9a22ad68bf2041e83f"
+    },
+    "automation/engine.py": {
+      "before": "a362bed0e7dcd0f714c74ab6e202172b0e42827b463d8992444ed26d1df4ba32",
+      "after": "52558aa9c9a3fd0b6988856b15ec4fe5952ae48835522c2174aabac278e52aa6"
+    },
+    "automation/runner.py": {
+      "before": "94b50f7c090dedc866d0d1f6815c8641df85c7d6ed36120ad763862b5bbd9d83",
+      "after": "9ee12044c2c29549808f0663d3c28679a7838667e7bbd3ef1d86f01045d8afbf"
+    },
+    "core/balance_rate.py": {
+      "before": null,
+      "after": "f4fecf565234d87c6417c98c1f7dcdc8cdde3ea69ab12061b4e6e49fe5dee6ac"
+    },
+    "runtime/RELEASE_IDENTITY.json": {
+      "before": "16e92856d2b2889c5484b7a61c1aa85dcb0b2f20e49ce3bee48f1603a5e3c329",
+      "after": "b2852e6602556cbc2e01d46b4fdc436102ecf21b31f5f9cdd8a71ad59540873c"
+    }
+  },
+  "backup_directory_name": "overlay-20261028-200745-521896",
+  "user_authorization": "CURRENT_REQUEST_EXPLICITLY_AUTHORIZES_NEEDED_LIVE_DEPLOYMENT",
+  "strategy_or_risk_setting_changes": false
+}

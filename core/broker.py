@@ -56,6 +56,46 @@ class Rest:
             return self.token
 
     def _http(self,path,body,headers):
+        if headers.get('api-id')!='kt00018':return self._http_common(path,body,headers)
+        from core.balance_rate import BalanceBudgetError
+        try:
+            with self.balance_budget().slot(getattr(self,'diagnostic_only',False)) as waited:
+                self.profile['kt00018_wait_ms']=self.profile.get('kt00018_wait_ms',0.)+waited
+                return self._http_common(path,body,headers)
+        except BalanceBudgetError as error:
+            raise self.balance_rejection('LOCAL_KT00018_BUDGET',{'return_msg':str(error)}) from error
+
+    def balance_budget(self):
+        if not hasattr(self,'_balance_budget'):
+            from core.balance_rate import BalanceRateBudget
+            self._balance_budget=BalanceRateBudget(self.identity,mock=self.cfg.broker_environment=='mock')
+        return self._balance_budget
+
+    @staticmethod
+    def balance_rejection(code,response):
+        error=Rejected('kt00018: 잔고 조회 유량제어 대기/실패',api='kt00018',response={**response,'return_code':code})
+        error.balance_rate_limited=True
+        return error
+
+    def balance_backoff(self,attempt,headers):
+        from email.utils import parsedate_to_datetime
+        delay=float(2**attempt)
+        raw=next((v for k,v in headers.items() if k.lower()=='retry-after'),None)
+        if raw is not None:
+            try:extra=float(raw)
+            except (TypeError,ValueError):
+                try:extra=parsedate_to_datetime(raw).timestamp()-time.time()
+                except (ValueError,TypeError,OverflowError):extra=0.
+            import math
+            if math.isfinite(extra):delay=max(delay,min(3600.,extra))
+        from core.balance_rate import BalanceBudgetError
+        try:self.balance_budget().backoff(delay)
+        except BalanceBudgetError as error:
+            raise self.balance_rejection('LOCAL_KT00018_BUDGET',{'return_msg':str(error)}) from error
+        self.profile['kt00018_rate_rejections']=self.profile.get('kt00018_rate_rejections',0)+1
+        return delay
+
+    def _http_common(self,path,body,headers):
         # 같은 앱키를 쓰는 조회 스레드는 토큰과 전송 간격을 공유한다.
         wait_started=time.perf_counter()
         deadline=time.monotonic()+1.2
@@ -82,6 +122,9 @@ class Rest:
         observer=getattr(self,'submission_observer',None)
         if api in {'kt10000','kt10001','kt10003'} and observer is not None: observer(api,body)
         http_started=time.perf_counter()
+        if api=='kt00018':
+            self.profile['kt00018_requests']=self.profile.get('kt00018_requests',0)+1
+            self.profile['kt00018_last_request_unix']=time.time()
         try:
             with self.opener(req,timeout=8) as response:
                 data=json.load(response)
@@ -111,6 +154,11 @@ class Rest:
                 headers={'authorization':'Bearer '+used_token,'api-id':api,'cont-yn':cont,'next-key':key}
                 data,headers=self._http(path,body,headers)
                 if data.get('return_code') not in (0,'0'):
+                    if api=='kt00018' and not mutation and (str(data.get('return_code')) in {'1700','429'}
+                            or '[1700:' in str(data.get('return_msg',''))):
+                        delay=self.balance_backoff(attempt,headers)
+                        if attempt+1<attempts and delay<=self.balance_budget().max_wait and not getattr(self,'diagnostic_only',False):continue
+                        raise self.balance_rejection(data.get('return_code'),data)
                     if 'return_code' not in data and mutation:
                         raise AmbiguousOrder('주문 응답 결과코드 없음')
                     # HTTP 200 can contain an explicitly invalid token. Retry
@@ -132,6 +180,10 @@ class Rest:
             except (HTTPError,URLError,TimeoutError,OSError,ValueError,KeyError) as e:
                 if mutation:
                     raise AmbiguousOrder(f'{api}: 응답 불명확, 재전송 금지 ({type(e).__name__})') from None
+                if api=='kt00018' and isinstance(e,HTTPError) and e.code==429:
+                    delay=self.balance_backoff(attempt,e.headers or {})
+                    if attempt+1<attempts and delay<=self.balance_budget().max_wait and not getattr(self,'diagnostic_only',False):continue
+                    raise self.balance_rejection(429,{'http_status':429}) from None
                 if isinstance(e,HTTPError) and e.code==401:
                     self.token=''
                 if attempt+1==attempts:
@@ -161,8 +213,7 @@ class Rest:
         holdings,summary=self.pages('kt00018',{'qry_tp':'2','dmst_stex_tp':'KRX'},'acnt_evlt_remn_indv_tot')
         cash=self.query('kt00001',{'qry_tp':'2'})
         # Production with AFTER enabled must see foreign/self NXT as well as KRX orders.
-        exchange='0' if getattr(self.cfg,'after_enabled',False) is True and self.cfg.broker_environment=='production' else '1'
-        orders,_=self.pages('ka10075',{'all_stk_tp':'0','trde_tp':'0','stk_cd':'','stex_tp':exchange},'oso')
+        orders=self.open_orders()
         balances={}
         for h in holdings:
             symbol=code(h['stk_cd'])
@@ -173,6 +224,10 @@ class Rest:
                 balances[symbol]={'qty':qty,'available':int(number(h['trde_able_qty'])),'avg':number(h['pur_pric'])}
         return {'holdings':balances,'orders':orders,'cash':number(cash['100stk_ord_alow_amt'],signed=True),
                 'equity':number(summary['prsm_dpst_aset_amt'],signed=True)}
+
+    def open_orders(self):
+        exchange='0' if getattr(self.cfg,'after_enabled',False) is True and self.cfg.broker_environment=='production' else '1'
+        return self.pages('ka10075',{'all_stk_tp':'0','trde_tp':'0','stk_cd':'','stex_tp':exchange},'oso')[0]
 
     def fills(self):
         exchange='0' if getattr(self.cfg,'after_enabled',False) is True and self.cfg.broker_environment=='production' else '1'
