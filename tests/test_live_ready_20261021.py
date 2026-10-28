@@ -30,6 +30,7 @@ AT=datetime(2026,10,21,10,30,tzinfo=KST)
 SYM='999990'
 RESULTS=[]
 
+
 def settings():
     root=os.environ.get('R6_LIVE_CONFIG_ROOT')
     if root:
@@ -53,7 +54,7 @@ class IntentCheckingBroker(FakeBroker):
         intents=[o for o in persisted['orders'].values() if o['symbol']==sym and o['side']==side
                  and o['status']=='INTENT' and o['qty']==qty and o['limit']==limit]
         if len(intents)!=1:raise AssertionError('durable exact INTENT must precede fake transport')
-        if side=='BUY' and intents[0]['signal'].get('pattern') in {'A','B'}:
+        if side=='BUY' and intents[0]['signal'].get('pattern') in {'A','B','C'}:
             from automation.capital import signal_economics
             signal=intents[0]['signal']
             common=signal_economics(self.engine.c,self.engine.a,signal)
@@ -216,7 +217,13 @@ class LiveReadyLifecycle(unittest.TestCase):
 
     def test_A_full_receive_watch_order_fill_manage_exit(self):self.lifecycle('A')
     def test_B_full_receive_watch_order_fill_manage_exit(self):self.lifecycle('B')
-    def test_C_full_receive_watch_order_fill_manage_exit(self):self.lifecycle('C')
+    def test_C_gross_positive_is_rejected_before_intent_after_costs(self):
+        self.seed('C')
+        self.assertEqual(self.broker.orders,[])
+        trial=next(t for t in self.detector.last_eval[SYM]['trials'] if t['setup']=='C')
+        self.assertIn('RISK_REWARD_FAIL',trial['failed_reasons'])
+        rr=trial['gates']['risk_reward']['values']
+        self.assertGreaterEqual(rr['gross_rr'],1.5);self.assertLess(rr['net_rr'],1.5)
     def test_FAST_full_receive_watch_order_fill_manage_exit(self):self.lifecycle('FAST')
 
     def test_daily_loss_limit_still_blocks_valid_signal(self):

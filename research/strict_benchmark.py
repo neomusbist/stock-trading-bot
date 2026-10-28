@@ -89,7 +89,7 @@ class IsolatedDetector(PatternDetector):
     """Use the actual signal constructor, isolating a setup without rebuilding it."""
     def __init__(self, cfg, auto, costs, setup):
         super().__init__(cfg, auto, costs)
-        self.isolated_setup = 'E' if setup == 'E2' else setup
+        self.isolated_setup = None if setup=='LIVE_ABC' else 'E' if setup == 'E2' else setup
         self.continuous_observation = True
 
     def setup_trials(self, *args, **kwargs):
@@ -104,11 +104,11 @@ class FullPathReplay:
     LIVE by this library. E2/D are isolated PAPER options, never deployments.
     """
     def __init__(self, start, strategy, cfg, auto, initial_cash, *, latency_ms=25):
-        if strategy not in STRATEGIES:
+        if strategy not in STRATEGIES+('LIVE_ABC',):
             raise ValueError('UNKNOWN_STRATEGY')
         self.strategy = strategy
         self.cfg = cfg
-        self.auto = replace(auto,
+        self.auto = auto if strategy=='LIVE_ABC' else replace(auto,
             resistance_breakout_expansion_enabled=strategy == 'D',
             support_rebound_reclaim_enabled=strategy == 'E2',
             setup_e_reclaim_mode='PULLBACK_HIGH_RECLAIM')
@@ -123,13 +123,15 @@ class FullPathReplay:
         self.decisions = []; self.opportunities = {}; self.frames = 0
         self.profile = dict(config=asdict(cfg), automation=asdict(self.auto),
                             initial_cash=initial_cash, latency_ms=latency_ms,
-                            requested_strategy=strategy, independent_account=True)
+                            requested_strategy=strategy, independent_account=strategy!='LIVE_ABC')
         self.profile_sha256 = hashlib.sha256(json.dumps(self.profile, sort_keys=True).encode()).hexdigest()
         self.source_sha256={name:hashlib.sha256(Path(importlib.import_module(
             name[:-3].replace('/','.')).__file__).read_bytes()).hexdigest()
             for name in ('automation/patterns.py','automation/runner.py','automation/engine.py',
                          'automation/capital.py','automation/allocation.py','automation/exit_plan.py',
                          'core/engine.py','research/causal_account.py','research/strict_benchmark.py')}
+        self.account.e.evidence_source_identity={'source_sha256':self.source_sha256,'profile_sha256':self.profile_sha256,
+                                                'scope':'PAPER_LOADED_MODULE_FILES'}
 
     def close(self):
         self.account.close()
@@ -152,11 +154,12 @@ class FullPathReplay:
         self.radar.cache[(known.date(), symbol)] = deepcopy(bars)
         self.radar.cache[(known.date(), symbol, 'known_at')] = known
 
-    def step(self, frame, *, quote_retry=False):
+    def step(self, frame, *, quote_retry=False, evaluate=True):
         if not isinstance(frame, Frame):
             raise TypeError('EVIDENCE_FRAME_REQUIRED')
         self.frames += 1
         tick = frame.tick; at = frame.available_at
+        self.account.e.evidence_input_basis=frame.basis
         accepted = True if quote_retry else self.detector.ingest(tick, at)
         bar_events = []
         for bar in self.detector.completed.get(tick.symbol, ()):
@@ -169,6 +172,7 @@ class FullPathReplay:
         if not accepted:
             self.reasons['DETECTOR_INGEST_REJECTED'] += 1
             return None
+        if not evaluate:return None
         why = frame.quote_reason(at, self.cfg.stale_seconds)
         if why:
             self.reasons[why] += 1
@@ -201,6 +205,8 @@ class FullPathReplay:
                                       e.prices, self.account_view, self.last_eval, quote_retry=quote_retry)
         trials = self.detector.last_eval.get(tick.symbol, {}).get('trials', [])
         trial = next((t for t in trials if t.get('setup') == self.detector.isolated_setup), None)
+        if self.detector.isolated_setup is None:
+            trial=next((t for t in trials if t.get('entry_ready')),trials[0] if trials else None)
         if trial and trial.get('setup_geometry'):
             geometry = trial.get('setup_geometry') or {}
             key = (tick.symbol, geometry.get('pattern'), geometry.get('breakout'),

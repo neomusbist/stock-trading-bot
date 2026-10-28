@@ -152,6 +152,7 @@ class AutonomousEngine(ExistingExits,Engine):
             try:
                 captured_at=self.clock()
                 capture.event_ref(kind,data,captured_at,self.s.get('positions',{}))
+                if hasattr(capture,'order_evidence'):capture.order_evidence(kind,order,data,captured_at)
                 if kind=='ENTRY_CANDIDATE' and data.get('pattern')=='FAST':
                     decision_at=data.get('signal_detected_at') or data.get('time')
                     if decision_at and hasattr(capture,'decision_tape'):

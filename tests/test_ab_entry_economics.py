@@ -38,6 +38,19 @@ class ABPriceContracts(unittest.TestCase):
         setup=dict(pattern='A',breakout=1030,support=1000,projection=1090)
         self.assertEqual(d.target(tick,{'resistance':1040},setup,1050),1040)
 
+    def test_A_ask_crossing_trigger_cannot_retire_resistance_without_trade(self):
+        d=PatternDetector(Config(),AutomationConfig(),COSTS)
+        setup=dict(pattern='A',breakout=1030,support=1000,projection=1090)
+        tick=Tick('999990',AT,1029,100,10000,1031,1029)
+        self.assertEqual(d.target(tick,{'resistance':1030},setup,1031),1030)
+
+    def test_A_trigger_resistance_can_clear_but_next_overhead_still_caps(self):
+        d=PatternDetector(Config(),AutomationConfig(),COSTS)
+        setup=dict(pattern='A',breakout=1030,support=1000,projection=1090)
+        tick=Tick('999990',AT,1031,100,10000,1031,1030)
+        self.assertEqual(d.target(tick,{'resistance':1030},setup,1031),1090)
+        self.assertEqual(d.target(tick,{'resistance':1080},setup,1031),1080)
+
     def test_A_costs_use_the_observed_ask_even_when_chase_blocks_it(self):
         d=PatternDetector(Config(),AutomationConfig(),COSTS)
         tick=Tick('999990',AT,1100,100,10000,1100,1099)

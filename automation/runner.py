@@ -1327,6 +1327,9 @@ def evaluate_observed_entry(engine,detector,t,received,lookup,radar,prices,accou
 
 
 def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_evaluated_frame=None,*,quote_retry=False):
+    capture=getattr(engine,'trade_review',None)
+    if capture is not None and hasattr(capture,'bind_entry_context'):
+        capture.bind_entry_context(t,watch or {},detector,engine.clock())
     if not watch or not engine.connected: return None
     if entry_history_pending(engine,t):return None
     if watch.get('status') and watch.get('status') != 'WATCH':
@@ -1364,6 +1367,8 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
                                  engine.clock(),engine.a.scan_seconds*3)
     engine.names[t.symbol]=watch.get('name')
     engine.market_status[t.symbol]=watch.get('market_status',{'pass':None,'reason_code':'MARKET_STATUS_UNKNOWN'})
+    if capture is not None and hasattr(capture,'bind_entry_context'):
+        capture.bind_entry_context(t,watch,detector,engine.clock())
     sig=detector.signal(t,watch)
     fast_evaluation=None
     if not sig and getattr(engine.a, 'fast_momentum_enabled', False) and getattr(engine, 'fast_strategy', None) is not None:
@@ -1482,8 +1487,20 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
 
         fresh_watch={**watch,**fresh}
         confirmed_overhead_resistance = fresh.get('resistance') or watch.get('resistance')
+        if initial_pattern=='A' and breakout_level:
+            # Search ABOVE THE FIXED TRIGGER, never above the moving ask. This
+            # retains a known ceiling even if the decision print overshot it.
+            trigger_view=structure(bars,breakout_level,
+                replace(engine.c,max_recent_range=.99,max_overhead_share=1.0,min_resistance_room=0),t.time.date())
+            candidates=[v for v in (watch.get('resistance'),trigger_view.get('resistance'))
+                        if type(v) in (int,float) and v>breakout_level]
+            if candidates:confirmed_overhead_resistance=min(candidates)
+            fresh_watch['a_resistance_search_basis']='KNOWN_DAILY_BARS_ABOVE_FIXED_STRUCTURE_TRIGGER'
         if confirmed_overhead_resistance is not None:
             fresh_watch['resistance'] = confirmed_overhead_resistance
+
+        if capture is not None and hasattr(capture,'bind_entry_context'):
+            capture.bind_entry_context(t,fresh_watch,detector,engine.clock())
 
         sig=detector.signal(t,fresh_watch)
         if not sig:
@@ -1784,6 +1801,9 @@ def heartbeat_order_readiness(heartbeat,cfg,stamp):
     return ready
 
 def record_order_readiness_transition(engine,ready):
+    evidence_clock=getattr(engine,'clock',None)
+    engine.last_order_readiness_evidence={'known_at':evidence_clock().isoformat() if callable(evidence_clock) else None,
+        'order_ready':ready.get('order_ready'),'reason_codes':list(ready.get('off_reasons',[]))}
     signature=(ready['order_ready'],tuple(ready.get('off_reasons',[])),ready.get('tick_lag_source'))
     if signature==getattr(engine,'last_order_readiness_signature',None):return False
     engine.last_order_readiness_signature=signature
@@ -1884,6 +1904,12 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     try:
         from automation.trade_review_capture import TradeReviewCapture
         engine.trade_review=TradeReviewCapture(folder/'trade-review',clock=now)
+        engine.evidence_input_basis='ACTUAL_RECEIVED_LIVE_PIPELINE' if effective.live_mode else 'OBSERVATION_PIPELINE'
+        identity_path=root/'runtime/RELEASE_IDENTITY.json'
+        if identity_path.is_file():
+            identity_bytes=identity_path.read_bytes();identity=json.loads(identity_bytes.decode('utf-8-sig'))
+            engine.evidence_source_identity={'release_id':identity.get('release_id'),'commit':identity.get('commit'),
+                'manifest_sha256':hashlib.sha256(identity_bytes).hexdigest()}
     except OSError as error:
         engine.event('TRADE_REVIEW_CAPTURE_UNAVAILABLE',error_type=type(error).__name__)
     observation_settings=load_observation(root);engine.observation_settings=observation_settings

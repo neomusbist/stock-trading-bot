@@ -13,10 +13,16 @@ ROOT_FILES={'main.py','candidate_builder.py','control.py','supervisor.py','opera
 TOOLS={'repo_guard.py','live_overlay.py','setup_local.py','export_source.py','session_audit.py','offline_benchmark.py','offline_regression.py','night_profile.py','verify_fault_injection.py','benchmark_gui_performance.py','trade_quality_replay.py','trade_quality_v15_replay.py','exit_policy_replay.py'}
 TOOLS.add('measure_runtime_budget.py')  # Reviewed read-only OS sampler; generated process evidence stays private.
 TOOLS.add('benchmark_all_strategies.py')  # Offline evidence audit and typed PAPER replay only.
+TOOLS.add('observe_paper.py')  # Read-only source tail; no broker connection or LIVE writes.
 TOOLS.update({'reproduce_89_signals.py','full_universe_backtest.py','account_level_replay.py',
               'eval_1019_theoretical.py','build_1019_bars.py','run_all_replays.py'})
 CAUSAL_RESEARCH_FILES={
     'research/strict_benchmark.py',
+    'research/observed_paper.py',
+    'audit/r6_oct27_paper_evidence/RESULTS.md',
+    'audit/r6_oct27_paper_evidence/RUNBOOK.md',
+    'audit/r6_oct27_paper_evidence/MEASURED_SUMMARY.json',
+    'audit/r6_oct27_paper_evidence/OVERLAY_MANIFEST.json',
     'audit/r6_oct27_benchmark_fidelity/RESULTS.md',
     'audit/r6_oct27_benchmark_fidelity/LEGACY_CLAIMS.csv',
     'audit/r6_oct27_benchmark_fidelity/EVIDENCE_SUMMARY.json',

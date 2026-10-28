@@ -411,8 +411,13 @@ class PatternDetector(Detector):
 
     def target(self,t,watch,setup,limit):
         resistance=watch.get('resistance')
-        # A/C가 신선한 실제 체결로 넘은 저항만 목표의 상한에서 제외한다.
-        if setup['pattern']=='A' and resistance is not None and limit>=resistance:resistance=None
+        # A's structural trigger is fixed before the decision print. A quote
+        # above a different overhead level cannot erase that reward ceiling.
+        # Only a resistance at/below the actual structure trigger is the level
+        # being broken; the runner searches the same known daily bars above it.
+        if (setup['pattern']=='A' and resistance is not None
+                and resistance<=setup.get('breakout',0) and t.price>setup.get('breakout',0)):
+            resistance=None
         if setup['pattern']=='C' and resistance is not None and t.price>resistance:resistance=None
         if setup['pattern'] in {'D','E'}:resistance=None
         return min(resistance,setup['projection']) if resistance is not None else setup['projection']

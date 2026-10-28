@@ -157,7 +157,13 @@ class FunnelPipelineTests(unittest.TestCase):
 
     def test_A_funnel_through_durable_order_partial_fill_and_exit(self):self.lifecycle('A')
     def test_B_funnel_through_durable_order_partial_fill_and_exit(self):self.lifecycle('B')
-    def test_C_funnel_through_durable_order_partial_fill_and_exit(self):self.lifecycle('C')
+    def test_C_cost_rejection_never_reaches_intent_or_broker(self):
+        from tests.test_live_ready_20261021 import LiveReadyLifecycle
+        h=LiveReadyLifecycle('runTest');h.setUp();self.addCleanup(h.doCleanups)
+        h.e.candidate_audit=CandidateAudit();h.test_C_gross_positive_is_rejected_before_intent_after_costs()
+        snapshot=h.e.candidate_audit.funnel.snapshot(h.clock)
+        self.assertEqual(snapshot['stages'].get('ORDER_ACCEPTED:BUY',0),0)
+        self.assertGreater(snapshot['strategies']['REGULAR:WATCH:C']['REJECT'],0)
     def test_FAST_funnel_through_durable_order_partial_fill_and_exit(self):self.lifecycle('FAST')
     def test_telemetry_failure_preserves_order_and_exit_path(self):self.lifecycle('FAST',True)
 

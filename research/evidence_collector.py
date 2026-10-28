@@ -24,10 +24,11 @@ from research.causal_data import Frame,json_values
 
 class JsonTail:
     """Bounded cursor; partial records and truncation never become evidence."""
-    def __init__(self,path,*,start_at_end=False,max_line=262144):
+    def __init__(self,path,*,start_at_end=False,max_line=262144,with_provenance=False):
         self.path=Path(path);st=self.path.stat() if self.path.exists() else None
         self.offset=st.st_size if start_at_end and st else 0
         self.identity=st.st_ino if st else None;self.max_line=max_line;self.stats=Counter()
+        self.with_provenance=with_provenance
 
     def read(self,max_rows=2000):
         if not self.path.exists():return []
@@ -36,7 +37,8 @@ class JsonTail:
             self.offset=0;self.stats['ROTATED_WITH_POSSIBLE_GAP']+=1
         if st.st_size<self.offset:self.offset=0;self.stats['TRUNCATED_GAP']+=1
         self.identity=identity;rows=[]
-        with self.path.open('rb') as stream:
+        from core.util import shared_binary_reader
+        with shared_binary_reader(self.path) as stream:
             stream.seek(self.offset)
             for _ in range(max_rows):
                 start=stream.tell();line=stream.readline(self.max_line+1)
@@ -47,7 +49,12 @@ class JsonTail:
                     self.offset=stream.tell();continue
                 if not line.endswith(b'\n'):break
                 self.offset=stream.tell()
-                try:rows.append(json.loads(line))
+                try:
+                    row=json.loads(line)
+                    if self.with_provenance and isinstance(row,dict):
+                        row['_source_record']={'file':self.path.name,'byte_start':start,'byte_end':self.offset,
+                                               'sha256':hashlib.sha256(line).hexdigest()}
+                    rows.append(row)
                 except (ValueError,UnicodeError):self.stats['MALFORMED_JSON_GAP']+=1
         return rows
 

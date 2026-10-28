@@ -77,6 +77,11 @@ class DecisionLog:
         e=self.engine; p=position or {}; sig=signal or p.get('signal') or {}; extra=extra or {}
         gates=gates or {}; key=(kind,symbol)
         reason=reason_code(reason,p)
+        capture=getattr(e,'trade_review',None)
+        if kind=='ENTRY_EVAL' and capture is not None and hasattr(capture,'decision_evidence'):
+            # Preserve first structural/gate transitions before display sampling.
+            # This reuses the recorder queue; failure cannot authorize an order.
+            capture.decision_evidence(e,symbol,decision,reason,gates,sig,extra)
         if kind=='ENTRY_EVAL':
             pat=sig.get('pattern')
             if pat in self.signal_keys_by_setup and sig.get('limit') and sig.get('stop'):

@@ -26,6 +26,7 @@ class V13RiskIdentityTests(unittest.TestCase):
     def signal(self, stop=9750, symbol=fixture.SYMBOL):
         entry = 10000
         return {'symbol':symbol, 'limit':entry, 'stop':stop, 'pattern':'A',
+                'target':11200,  # preserve the target already used by this fixture's efficiency model
                 'time':self.clock[0].isoformat(),
                 'efficiency':efficiency(entry, stop, 11200, .8, 10, self.engine.costs)}
 

@@ -70,6 +70,9 @@ class TradeReviewCapture:
         self.storage_blocked=False;self.last_error='';self.last_lines={};self.last_bar={};self.last_evaluation_at={}
         self.rejected_buffer_at={};self.rejected_buffers=0;self.rejected_buffer_bytes=0;self.rejected_buffer_skips=0
         self.last_status_write=0.
+        from automation.entry_evidence import EntryDecisionEvidence
+        self.entry_evidence=EntryDecisionEvidence()
+        self.entry_order_episode={}
         self.day='';self.day_written=0;self.total_written=0;self.path=None;self.path_size=0
         own=sorted(self.folder.glob('trade-review-????????-????.jsonl'))
         self.total_written=sum(p.stat().st_size for p in own)
@@ -316,6 +319,21 @@ class TradeReviewCapture:
             'sampling_interval_seconds':interval,'coverage':'SAMPLED_NOT_ALL_OPPORTUNITIES',
             'orders_enabled':False,'actual_order_permission':False},symbol,force=True)
 
+    def bind_entry_context(self,t,watch,detector,at):
+        """Memory only. The caller's actual input, not a diagnostic re-evaluation."""
+        try:
+            with self.lock:self.entry_evidence.bind(t,watch,detector,at)
+        except Exception as error:
+            self.errors+=1;self.last_error=type(error).__name__
+
+    def decision_evidence(self,engine,symbol,decision,reason,gates,signal,extra):
+        try:
+            with self.lock:row=self.entry_evidence.row(engine,symbol,decision,reason,gates,signal,extra)
+            # Do not consume the queue capacity reserved for held positions.
+            if row is not None:self._record(row,symbol)
+        except Exception as error:
+            self.errors+=1;self.last_error=type(error).__name__
+
     def rejected_candidate_buffer(self,symbol,evaluation,asof):
         """Retain a bounded real prefix when only economic gates rejected it.
 
@@ -367,6 +385,23 @@ class TradeReviewCapture:
             'confirmed_protection':p.get('protection_evidence'),
             'target':sig.get('target'),'orders_enabled':False},symbol,force=True)
 
+    def order_evidence(self,kind,order,data,at):
+        if kind not in {'ENTRY_EXECUTION_RECHECK','ORDER_ACCEPTED','ORDER_REJECTED','ORDER_UNKNOWN','FILL'} or not order:return
+        signal=order.get('signal') or {};symbol=order.get('symbol')
+        setup='E2' if signal.get('pattern')=='E' else signal.get('pattern')
+        episode=self.entry_evidence.episodes.get((symbol,setup)) or {}
+        if order.get('side')=='BUY' and order.get('status')=='INTENT':
+            episode=self.entry_evidence.prepare_episode(symbol,setup,signal,at)
+            self.entry_order_episode[symbol]=episode
+        elif symbol in self.entry_order_episode:episode=self.entry_order_episode[symbol]
+        self._record(dict(event='ORDER_PATH_EVIDENCE',existing_event=kind,at=iso(at),symbol=symbol,
+            episode_id=episode.get('id'),local=order.get('local'),broker_order_id=order.get('id'),
+            side=order.get('side'),status=order.get('status'),quantity=order.get('qty'),
+            filled=order.get('filled'),limit=order.get('limit'),entry_receipt=signal.get('receipt_evidence'),
+            phase=data.get('phase'),reason=data.get('reason'),fill_price=data.get('price'),
+            observed_intent_persisted=kind=='ENTRY_EXECUTION_RECHECK' and order.get('status')=='INTENT',
+            not_an_order_ledger=True,actual_order_permission=False),symbol)
+
     def event_ref(self,kind,data,at,positions):
         symbol=data.get('symbol')
         if kind=='ENTRY_CANDIDATE' and symbol:
@@ -393,6 +428,7 @@ class TradeReviewCapture:
                 'write_errors':self.errors,'last_error':self.last_error,'storage_blocked':self.storage_blocked,
                 'rejected_buffers':self.rejected_buffers,'rejected_buffer_bytes':self.rejected_buffer_bytes,
                 'rejected_buffer_skips':self.rejected_buffer_skips,
+                'entry_evidence':dict(self.entry_evidence.counts),
                 'continuous_watch':self.continuous_watch,'storage_block_reason':self.storage_block_reason,
                 'limits':{'file_bytes':self.file_limit,'day_bytes':self.day_limit,'total_bytes':self.total_limit,'min_free_bytes':self.min_free_bytes},
                 'coverage':'UNKNOWN_IF_LOSS_OR_GAP_OR_PARTIAL_BUFFER','orders_enabled':False,

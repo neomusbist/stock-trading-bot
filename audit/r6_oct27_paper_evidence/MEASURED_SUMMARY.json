@@ -1,0 +1,127 @@
+{
+  "base_commit": "408f8bbe671dd34549e78db68b36a1901d85922d",
+  "completed_date": "2026-10-28",
+  "market_input_day": "2026-10-27",
+  "symbol": "253590",
+  "requested_window": "09:44-10:18 KST",
+  "source_counts": {
+    "INPUT:SUBSCRIPTION_SCOPE": 171,
+    "PREEXISTING_CAPTURE_LOSS_UNKNOWN": 42707,
+    "INPUT:STREAM_STATE": 171,
+    "INPUT:WATCH_METADATA": 49,
+    "INPUT:TRADE": 7646,
+    "TRADE_PROCESSING_OR_RECEIPT_UNKNOWN": 3824,
+    "INPUT:BOOK": 3844,
+    "INGESTED_TRADE": 3822,
+    "INPUT:OPPORTUNITY_SAMPLE": 26,
+    "SAMPLED_CONTEXT_NOT_FINAL_ORDER_AUTHORITY": 26,
+    "QUOTE_RETRY": 3823,
+    "INPUT:REFERENCE_BARS_PART": 40
+  },
+  "source_manifest": [
+    {
+      "source_file": "CAPTURE_NEO.jsonl",
+      "byte_end": 12858571,
+      "sha256": "e064a5bb46e45c4adf0f94f3d6ece523aafa4e73951de8175c67dfc2d1bd2e8c"
+    }
+  ],
+  "native_transition_or_legacy_sample_replay": {
+    "entry_funnel": {
+      "evaluation_calls": 15,
+      "setup_ready_evaluations": 0,
+      "ledger_buy_orders": 0,
+      "submitted_buy_orders": 0,
+      "buy_fill_events": 0
+    },
+    "distinct_structure_geometries": 2,
+    "reasons": {
+      "INSUFFICIENT_USABLE_BARS": 8,
+      "WARMUP_FAIL": 8,
+      "LIQUIDITY_FAIL": 2,
+      "ACCELERATION_FAIL": 15,
+      "PRIOR_HIGH_NOT_BROKEN": 4,
+      "RISK_REWARD_FAIL": 3,
+      "ECONOMIC_FAIL": 3,
+      "CONTINUATION_COST_REWARD_RISK_FAIL": 3,
+      "MEASURED_DEPTH_UNKNOWN": 1,
+      "OFF_TICK_MARKET_PRICE": 1
+    },
+    "source_decision_completeness": "UNKNOWN_LEGACY_SAMPLED_SOURCE"
+  },
+  "per_trade_offline_research": {
+    "entry_funnel": {
+      "evaluation_calls": 6947,
+      "setup_ready_evaluations": 0,
+      "ledger_buy_orders": 0,
+      "submitted_buy_orders": 0,
+      "buy_fill_events": 0
+    },
+    "distinct_structure_geometries": 6,
+    "reasons": {
+      "INSUFFICIENT_USABLE_BARS": 3915,
+      "WARMUP_FAIL": 3915,
+      "LIQUIDITY_FAIL": 240,
+      "ACCELERATION_FAIL": 6935,
+      "OFF_TICK_MARKET_PRICE": 181,
+      "MEASURED_DEPTH_UNKNOWN": 517,
+      "PRIOR_HIGH_NOT_BROKEN": 2571,
+      "RISK_REWARD_FAIL": 461,
+      "ECONOMIC_FAIL": 461,
+      "BREAKOUT_QUOTE_NOT_CONFIRMED": 13,
+      "UNCONFIRMED_OR_BROKEN_RANGE_BASE": 13,
+      "CONTINUATION_COST_REWARD_RISK_FAIL": 407,
+      "SPREAD_FAIL": 13,
+      "CHASE_FAIL": 13
+    }
+  },
+  "actual_qualified_signals_verified": 0,
+  "actual_qualified_signal_existence_in_unobserved_windows": "UNKNOWN",
+  "risk_quantity": "NOT_REACHED_IN_THIS_OBSERVED_WINDOW_NOT_AN_ACTUAL_ZERO_QUANTITY_CALCULATION",
+  "configured_C_economics": {
+    "basis": "MATHEMATICAL_UPPER_BOUND_NOT_MARKET_SIGNAL",
+    "box_max_range": 0.015,
+    "maximum_projection_widths": 2,
+    "net_rr_upper_bound": 1.004645747741495,
+    "required_net_rr": 1.5,
+    "configured_intersection_possible": false,
+    "ignored_cost_increases": [
+      "STOP_BUFFER",
+      "NOISE",
+      "BREAKOUT_OVERSHOOT"
+    ],
+    "actual_order_permission": false
+  },
+  "cost_profile": {
+    "buy_commission": 0.00015,
+    "sell_commission": 0.00015,
+    "sell_tax": 0.002,
+    "entry_slippage_reserve": 0.002,
+    "exit_slippage_reserve": 0.003
+  },
+  "counterfactual_account_basis": "70420_KRW_FRESH_PAPER_SCENARIO_REQUIRES_OBSERVED_ACCOUNT_AND_FINAL_NATIVE_GATES",
+  "full_day_market_opportunities": "UNKNOWN_NOT_A_FULL_UNIVERSE_REPLAY",
+  "order_origin_396300_20261015": {
+    "result": "UNKNOWN",
+    "preserved_state_sources_scanned": 18,
+    "matched_buy_intent_or_broker_order": false,
+    "excluded_from_autonomous_success_count": true
+  },
+  "tests": {
+    "broad_executed": 232,
+    "broad_passed": 230,
+    "broad_skipped": 2,
+    "broad_failures": 0,
+    "final_observer_tests_passed": 12,
+    "overlay_transaction_tests_passed": 11,
+    "native93_compatibility_synthetic_setups": [
+      "A",
+      "B"
+    ]
+  },
+  "new_replay_recorder_losses": 0,
+  "new_replay_write_errors": 0,
+  "actual_orders": false,
+  "LIVE_modified": false,
+  "opening_load_performance": "UNVERIFIED",
+  "profitability": "UNVERIFIED"
+}

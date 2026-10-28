@@ -1,0 +1,49 @@
+{
+  "release_id": "R6-ENTRYTRACE-20261027-4c756a1b2bb2",
+  "base_commit": "93bdf9a",
+  "files": {
+    "automation/decisions.py": {
+      "before": "fdc3ba3217df1686401f551741723f98deb1e9d540ed86054e9032f217619b1a",
+      "after": "96af84566184ee794003d332276ea58a1a4cf683e7addd0387e55e313fc13f7b"
+    },
+    "automation/engine.py": {
+      "before": "a362bed0e7dcd0f714c74ab6e202172b0e42827b463d8992444ed26d1df4ba32",
+      "after": "6417934e05f81566415ff8220ca59db12641dd991068bcd4be4aafb27f727e0e"
+    },
+    "automation/runner.py": {
+      "before": "94b50f7c090dedc866d0d1f6815c8641df85c7d6ed36120ad763862b5bbd9d83",
+      "after": "bf3329a20a628f6070519b7aa33bf372b4fa6115cdbbd7b750cd6f84fe19bc73"
+    },
+    "automation/trade_review_capture.py": {
+      "before": "ce27c3859739f641097dfb74309e9e748822b5e69a6c4b3b0529e76421ae4178",
+      "after": "c32affcb08507efcc7d6176f734a7bbb9ad9deac99ccc1867e1c690a99d6a41e"
+    },
+    "automation/entry_evidence.py": {
+      "before": null,
+      "after": "028486ee2c5cb509f799ff39fbaea3d6474a5b5416a503b0086cfef09f3e10ff"
+    },
+    "runtime/RELEASE_IDENTITY.json": {
+      "before": "16e92856d2b2889c5484b7a61c1aa85dcb0b2f20e49ce3bee48f1603a5e3c329",
+      "after": "208a670ffd25f227d0e5d2083b2d4d48a5e4c8466ffa16b7e369eeca87861425"
+    }
+  },
+  "additional_existing_dependency_hashes": {
+    "automation/early_discovery.py": "cd46e6d068cd5b5dfc1a2e6ebe71569b41e0ba7788411a2b503161664f9297fa",
+    "automation/early_impulse_pullback.py": "7fc9d0e8c41cc0b9b3757f80afd201b40fa47fc0f8bfd8318a4d14230cd7f99f",
+    "automation/entry_funnel.py": "2e539cd58683cbd0439ba7d86036273968e1dfdfc32af3ad0537a3ea3a8a7a51",
+    "automation/fast_horizon_research.py": "e7b0adc08006220a19ce8bb7ec762930d18485d553ab5c405da424530cf303e9",
+    "automation/local_breakout.py": "967e9da1fc9a87eeee7e75e6563b8679a7b83ef276a50afd3b91d3354b5856c5",
+    "automation/opportunity_audit.py": "b2485686f5c8336027d87d3ad1700929a0f1e1d3cb69a90f101f313f80b958fe",
+    "automation/opportunity_replay_cli.py": "798792809addd180b433bd3e9294298831d439850759c3a164a223a6c20a8a74",
+    "automation/reclaim_research.py": "45c8f7726a6cd96ed7d907f486cd3558db31faefae43bf16287a2a57e48a3e76",
+    "automation/redesign_strategies.py": "05fce90e1515381bd07720b941ef43925ba01af446a93f6b42330b11d6f6d86d",
+    "core/market_evidence.py": "6db6559259f8646773642372926517fc3d4f531be0ced01b305728d29c81c497"
+  },
+  "source_scope": "INSTALLED_BASE_PLUS_OBSERVATION_ONLY",
+  "LIVE_applied": false,
+  "validation_scope": "11_SYNTHETIC_TRANSACTION_TESTS_PLUS_NATIVE93_COPIED_SOURCE_AB_COMPATIBILITY",
+  "installation_status": "NOT_APPLIED_EXPLICIT_APPROVAL_AND_FRESH_STANDBY_CHECK_REQUIRED",
+  "settings_changes": [],
+  "strategy_changes": [],
+  "raw_ledger_included": false
+}

@@ -154,6 +154,7 @@ class FinalOrderFreshnessTests(unittest.TestCase):
             engine.readiness_reason=lambda:'' if readiness_snapshot(engine,{'subscription_acks':1},True,AT)['order_ready'] else 'DATA_NOT_READY'
             self.assertTrue(readiness_snapshot(engine,{'subscription_acks':1},True,AT)['order_ready'])
             signal={'symbol':'999990','limit':10020,'stop':9800,'pattern':'B','time':AT.isoformat(),
+                    'target':10600,  # same explicit target as the pre-existing efficiency calculation
                     'efficiency':efficiency(10020,9800,10600,.8,30,engine.costs)}
             order=engine.enter(signal,ticks[0])
             self.assertIsNotNone(order);self.assertEqual(order['status'],'REJECTED')

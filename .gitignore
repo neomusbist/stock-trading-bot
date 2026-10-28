@@ -181,6 +181,12 @@ operator_*approval*.json
 !/research/recovery_stress.py
 !/research/ab_replacement_strategies.py
 !/research/strict_benchmark.py
+!/research/observed_paper.py
 !/tools/benchmark_all_strategies.py
+!/tools/observe_paper.py
 !/audit/r6_oct26_night/READINESS_AND_REPLAY.md
 !/audit/r6_causal_validation_20261020/HANDOFF_TO_AG.md
+!/audit/r6_oct27_paper_evidence/RESULTS.md
+!/audit/r6_oct27_paper_evidence/RUNBOOK.md
+!/audit/r6_oct27_paper_evidence/MEASURED_SUMMARY.json
+!/audit/r6_oct27_paper_evidence/OVERLAY_MANIFEST.json
