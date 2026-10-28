@@ -185,6 +185,12 @@ operator_*approval*.json
 !/research/c2_retest.py
 !/research/c2_validation.py
 !/research/c2_exits.py
+!/research/paper_funnel.py
+!/audit/r6_protection_20261029/RESULTS.md
+!/audit/r6_protection_20261029/RUNBOOK.md
+!/audit/r6_protection_20261029/SAFETY_CONTRACT.json
+!/audit/r6_protection_20261029/MEASURED_SUMMARY.json
+!/audit/r6_protection_20261029/OVERLAY_MANIFEST.json
 !/tools/c2_paper.py
 !/audit/r6_c2_observe_20261028/RESULTS.md
 !/audit/r6_c2_observe_20261028/RUNBOOK.md

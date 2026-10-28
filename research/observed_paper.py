@@ -16,6 +16,7 @@ from core.realtime import current_book_tick
 from core.market_evidence import aware,finite
 from research.causal_data import Frame,json_values
 from research.strict_benchmark import FullPathReplay
+from research.paper_funnel import PaperFunnel
 
 
 def configured_c_reward_bound(cfg,auto,costs):
@@ -145,6 +146,7 @@ class ObservedPaperSession:
         self.replay.account.e.trade_review=self.capture
         self.basis=basis;self.last_trade={};self.books={};self.counts=Counter();self.source_losses={};self.references={}
         self.evaluate_each_trade=evaluate_each_trade
+        self.funnel=PaperFunnel()
 
     def feed(self,row,source_id='',observer_at=None):
         event=row.get('event');self.counts['INPUT:'+str(event)]+=1
@@ -153,6 +155,7 @@ class ObservedPaperSession:
         if stamp is None:self.counts['UNKNOWN_AVAILABILITY']+=1;return
         source_stamp=stamp
         if observer_at is not None:stamp=max(stamp,observer_at)
+        self.funnel.feed(row)
         session=row.get('capture_session');loss=row.get('capture_losses')
         if session and type(loss) is int:
             previous=self.source_losses.get(session)
@@ -242,10 +245,12 @@ class ObservedPaperSession:
             context=self.authority.context.get(frame.tick.symbol,{})
             measured=context.get('input_evidence_basis') in {'ACTUAL_RECEIVED_LIVE_PIPELINE','MEASURED_PAIRED_TRADE_QUOTE'}
             self.counts['MEASURED_CONTEXT_PAPER_BUY_INTENTS' if measured else 'SYNTHETIC_PAPER_BUY_INTENTS']+=1
+            if measured and order.get('status')=='ACCEPTED':self.counts['MEASURED_CONTEXT_PAPER_ACCEPTED_BUYS']+=1
         self.counts['QUOTE_RETRY' if retry else 'INGESTED_TRADE']+=1
 
     def result(self):
         result=self.replay.result()
+        result['measurement_funnel']=self.funnel.result(result,self.counts)
         result.update(observation_mode=self.basis,source_counts=dict(self.counts),
             configured_C_economics=configured_c_reward_bound(self.replay.cfg,self.replay.auto,self.replay.account.e.costs),
             evaluation_scope='EACH_TRADE_RESEARCH' if self.evaluate_each_trade else 'NATIVE_DECISION_TRANSITIONS_OR_LEGACY_SAMPLES',

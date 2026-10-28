@@ -84,7 +84,8 @@ class PositionDataHealth:
             previous_age=self.age(prior['snapshot_confirmed_at'],current)
             received_age=self.age(book.get('received_at'),current)
             if previous_age is not None and received_age is not None and received_age>previous_age:return False
-        self.quotes[symbol]={'time':book['time'],'bid':bid,'ask':ask,'source':source}
+        self.quotes[symbol]={'time':book['time'],'bid':bid,'ask':ask,'source':source,
+            **{k:book.get(k) for k in ('bid_qty','ask_qty','received_at','received_monotonic','venue','session','depth_available')}}
         if confirmed:self.quotes[symbol].update(snapshot_confirmed_at=book['received_at'],confirmation='MATCHED_STANDING_BOOK',
             confirmation_book={k:book[k] for k in ('time','best_bid','best_ask','bid_qty','ask_qty')})
         p['last_quote']=dict(self.quotes[symbol]);e.prices[symbol]=bid

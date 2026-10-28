@@ -18,6 +18,8 @@ TOOLS.add('c2_paper.py')  # Offline sealed PAPER experiment, never a LIVE activa
 TOOLS.update({'reproduce_89_signals.py','full_universe_backtest.py','account_level_replay.py',
               'eval_1019_theoretical.py','build_1019_bars.py','run_all_replays.py'})
 CAUSAL_RESEARCH_FILES={
+    'research/paper_funnel.py',
+    *('audit/r6_protection_20261029/'+n for n in ('RESULTS.md','RUNBOOK.md','SAFETY_CONTRACT.json','MEASURED_SUMMARY.json','OVERLAY_MANIFEST.json')),
     *('research/'+n for n in ('c2_retest.py','c2_validation.py','c2_exits.py')),
     *('audit/r6_c2_observe_20261028/'+n for n in ('RESULTS.md','RUNBOOK.md','MEASURED_SUMMARY.json','STRATEGY_CONTRACT.json','OVERLAY_MANIFEST.json')),
     'audit/kt00018_20261028/RESULTS.md',

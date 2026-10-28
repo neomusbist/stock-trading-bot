@@ -1,0 +1,76 @@
+{
+  "release_id": "R6-PROTECT-OBS-20261029-239d14a4fd41",
+  "target": "<LIVE_ROOT>",
+  "base_release": "R6-KT00018-20261028-7d3c3d949105",
+  "files": {
+    "automation/decisions.py": {
+      "before": "fdc3ba3217df1686401f551741723f98deb1e9d540ed86054e9032f217619b1a",
+      "after": "96af84566184ee794003d332276ea58a1a4cf683e7addd0387e55e313fc13f7b"
+    },
+    "automation/entry_evidence.py": {
+      "before": null,
+      "after": "14cf8fc76de88b2d07488bc4d1b6038079923ca5a8e07a84fea788477d159df1"
+    },
+    "automation/trade_review_capture.py": {
+      "before": "ce27c3859739f641097dfb74309e9e748822b5e69a6c4b3b0529e76421ae4178",
+      "after": "c832e3dcaf7252810b096343185830d8fa1c88be90ec2b053e420ed47f361d23"
+    },
+    "automation/engine.py": {
+      "before": "52558aa9c9a3fd0b6988856b15ec4fe5952ae48835522c2174aabac278e52aa6",
+      "after": "a7415583415ea727af03aa1e9729101fddd1e39a559144c088e79c404b7443fd"
+    },
+    "automation/runner.py": {
+      "before": "9ee12044c2c29549808f0663d3c28679a7838667e7bbd3ef1d86f01045d8afbf",
+      "after": "97b3050878f7848b35f549bebf8b6aab27df5c0912fa39cf2f0d3794a98c7794"
+    },
+    "automation/protection_safety.py": {
+      "before": null,
+      "after": "f510d5addcec64483048c9b8b41d79f4740ea145f9a0510f3b94e7f2b804d1eb"
+    },
+    "automation/position_health.py": {
+      "before": "8e87a666c2dda34affd6d0d564d16c78b5f05ee471f97bba7addf9030ac56e30",
+      "after": "07b69a8024ce0681676445c1183c18716ca925fd478e52ab692c4e653fb6d416"
+    },
+    "core/engine.py": {
+      "before": "349819d2b01b1421b333c8a1dbf28b98424e2d771f13f866514d65902250dd42",
+      "after": "d9a78ee09ba431d1ebbbf8f1556f9435c89de402230fc95a8ad135eaadbdd6a9"
+    },
+    "operator_service.py": {
+      "before": "6e820a5388dcea6761a5faf7df23cb6d8efd533c64d9af0e8298f890918d0589",
+      "after": "7099cae4f65684fbc9796a868f1a686c26ae0a5cf66feb0c767c7e92646dc475"
+    },
+    "operator_ui_service.py": {
+      "before": "5fba94391859b7348ca8c99b91b3e490d82407ffdc1faa0c1bb72e6508e12730",
+      "after": "05861dd90a7febf18bd8523ca8f06cc409e8d2857ad1705e712638139770d04e"
+    },
+    "runtime/RELEASE_IDENTITY.json": {
+      "before": "b2852e6602556cbc2e01d46b4fdc436102ecf21b31f5f9cdd8a71ad59540873c",
+      "after": "2ab3aad39eb93b19ede7c3f820369dbe162bc1874e84da34434201296e81a99c"
+    }
+  },
+  "protected_hashes": {
+    "core/broker.py": "331a3f08602789c90201165b7fcebb0bd233ff776c22bb9a22ad68bf2041e83f",
+    "core/balance_rate.py": "f4fecf565234d87c6417c98c1f7dcdc8cdde3ea69ab12061b4e6e49fe5dee6ac",
+    "config.json": "dd7f86c35d391c23dfe58cf3b14ac49dfaa37bdcfe7eec8a930d235bace05741",
+    "automation.json": "6b5848de0c179ca7633d84bfb87970af08e1a8ecc01984b0b8a1e2df2fb7744d"
+  },
+  "preserve_current": [
+    "runtime/automation_policy.json",
+    "runtime/automation-production/state.json",
+    "runtime/operator_user_authorization.json"
+  ],
+  "validation_status": "PASS",
+  "LIVE_applied": false,
+  "validation": {
+    "development_related": 260,
+    "native_installed_source_and_actual_settings": 46,
+    "installer_rollback": 11
+  },
+  "known_risks": [
+    "DUAL_ACCOUNT_AND_ORDER_QUERY_OUTAGE_CANNOT_GUARANTEE_EXECUTION",
+    "UNKNOWN_OR_CONTRADICTORY_QUANTITY_REQUIRES_FULL_RECONCILIATION",
+    "ORDER_ACCEPTANCE_NOT_FILL_GUARANTEE",
+    "UNOBSERVED_EXTERNAL_CUSTODY_CHANGES_NOT_GUARANTEED",
+    "REAL_PAPER_PROFITABILITY_UNKNOWN"
+  ]
+}

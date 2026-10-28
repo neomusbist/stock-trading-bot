@@ -347,13 +347,15 @@ class TradeReviewCapture:
             if prior and prior[0]==key and (at-prior[1]).total_seconds()<30:return
             self._account_protection_last=(key,at)
             for symbol,p in positions.items():
+                proof=engine.protection_certificate(symbol,p['qty']) if blocked and hasattr(engine,'protection_certificate') else {}
                 self._record(dict(event='PROTECTION_ACCOUNT_EVIDENCE',symbol=symbol,asof=iso(at),
                     existing_event=kind,account_age_seconds=age,original_freshness_limit_seconds=engine.c.reconcile_seconds*3,
                     account_ok=engine.account_ok,balance_refresh_uncertain=getattr(engine,'balance_refresh_uncertain',False),
                     ledger_quantity=p.get('qty'),exit_requested=bool(p.get('exit_requested')),
                     exit_reason=p.get('exit_reason'),active_order_count=len(engine.active_orders(symbol)),
-                    protection_status='BLOCKED_ACCOUNT_UNCERTAIN' if blocked else 'LAST_VERIFIED_ACCOUNT_STILL_WITHIN_ORIGINAL_DEADLINE',
-                    recovery='FRESH_COMPLETE_RECONCILIATION_REQUIRED_NO_QUANTITY_ASSUMPTION' if blocked else None,
+                    protection_status='PROTECTION_ONLY_VERIFIED' if proof.get('allowed') else 'BLOCKED_ACCOUNT_UNCERTAIN' if blocked else 'LAST_VERIFIED_ACCOUNT_STILL_WITHIN_ORIGINAL_DEADLINE',
+                    protection_authority=proof or None,
+                    recovery='FRESH_COMPLETE_RECONCILIATION_REQUIRED_NO_QUANTITY_ASSUMPTION' if blocked and not proof.get('allowed') else None,
                     actual_order_permission=False,not_an_order_ledger=True),symbol)
         except Exception as error:
             self.errors+=1;self.last_error=type(error).__name__

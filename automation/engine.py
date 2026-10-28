@@ -14,9 +14,10 @@ from automation.policy import LEGACY_SYMBOL,BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL,
 from automation.session import supported, SessionPlan, AfterSessionPlan, after_supported, after_entry_supported, current_session
 from automation.decisions import DecisionLog,gate,STRATEGY_VERSION,BUILD_ID,STRATEGY_EXPERIMENT,safe_values
 from automation.existing import ExistingExits
+from automation.protection_safety import ProtectionSafety
 
 
-class AutonomousEngine(ExistingExits,Engine):
+class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
     def __init__(self,cfg,auto,policy,folder,broker,clock,shadow=False):
         source_clock=clock
         def clock():
@@ -88,6 +89,7 @@ class AutonomousEngine(ExistingExits,Engine):
         self.save()
 
     def disconnect(self):
+        self.invalidate_protection_orders('TRANSPORT_DISCONNECTED',disconnect=True)
         super().disconnect()
         if hasattr(self, 'fast_strategy') and self.fast_strategy is not None:
             self.fast_strategy.reset('DISCONNECT')
@@ -254,6 +256,7 @@ class AutonomousEngine(ExistingExits,Engine):
         return used
 
     def new_entry_reason(self,symbol):
+        if self.s.get('protection_safety',{}).get('active_failures'):return 'PROTECTION_UNAVAILABLE_NEW_BUY_BLOCKED'
         if getattr(self,'balance_refresh_uncertain',False):return 'KT00018_BALANCE_REFRESH_UNCERTAIN'
         try:
             from automation.storage_governor import check_disk_safety_gate
@@ -862,9 +865,17 @@ class AutonomousEngine(ExistingExits,Engine):
             elif intents[0].get('signal',{} ) and intents[0]['signal'].get('ownership')=='LEGACY_REPLACEMENT':
                 if not self.legacy_exit_allowed(sym,qty,intents[0]['signal']): raise Rejected('기존 포지션 교체 조건 실패')
             elif not p or not self.can_exit(sym,p) or qty>p['qty']: raise Rejected('봇 소유 수량 초과')
-            actual=self.actual.get(sym)
-            if not actual or actual['available']<qty: raise Rejected('실제 매도 가능 수량 부족')
-        if time.monotonic()-self.last_account>self.c.reconcile_seconds*3: raise Rejected('계좌 대조 지연')
+            if self.protection_account_fresh():
+                actual=self.actual.get(sym)
+                if not actual or actual['available']<qty: raise Rejected('실제 매도 가능 수량 부족')
+            else:
+                proof=self.protection_certificate(sym,qty,intents[0])
+                if not proof['allowed']:
+                    self.record_protection_failure(sym,proof['reason'])
+                    raise Rejected('PROTECTION_UNVERIFIED: '+proof['reason'])
+                intents[0]['protection_authority']=proof
+                self.save()  # exact reduced authority must be durable before transport
+        if side=='BUY' and time.monotonic()-self.last_account>self.c.reconcile_seconds*3: raise Rejected('계좌 대조 지연')
 
     def research_paper_allowed(self,signal):
         if signal.get('research_strategy')!='C2':return True
@@ -983,7 +994,7 @@ class AutonomousEngine(ExistingExits,Engine):
         if not p or p.get('ownership','BOT')!='BOT':return
         from automation.exit_plan import state_for_position
         from automation.exit_candidates import observe_candidates
-        allowed=self.can_exit(symbol,p) and self.account_ok and (not self.c.live_mode or time.monotonic()-self.last_account<=self.c.reconcile_seconds*3)
+        allowed=self.can_exit(symbol,p) and self.exit_account_ready(symbol,p['qty'])
         orders=self.active_orders(symbol)
         p['exit_state']=state_for_position(self.c,self.a,p,self.clock(),len(orders),allowed,orders=orders)
         key=[p.get('last_complete_bar_at'),p.get('target_touch',{}).get('time'),bool(p.get('exit_requested')),p['qty']]
@@ -1138,7 +1149,9 @@ class AutonomousEngine(ExistingExits,Engine):
         self.reconciled_at=self.clock().isoformat()
         self.reconcile_query_started=snapshot.get('query_started_at',self.reconciled_at)
         self.reconcile_has_orders=bool(snapshot['orders'])
-        if self.account_ok:self.balance_refresh_uncertain=False
+        if self.account_ok:
+            self.balance_refresh_uncertain=False
+            self.anchor_protection_account()
 
     def recover_io_halt(self):
         info=self.s.get('halt_info',{})
@@ -1227,6 +1240,7 @@ class AutonomousEngine(ExistingExits,Engine):
         return mode in {'OFF','STOP','STOP_FLAT','KILL'} and not self.s['positions'] and not self.active_orders()
 
     def drive_exits(self,prices=None):
+        self.audit_protection_health()
         sess=self.current_session()
         t_str=self.clock().strftime('%H:%M:%S')
         is_after_flatten=(sess=='AFTER' and not self.a.ALLOW_OVERNIGHT and
@@ -1252,7 +1266,7 @@ class AutonomousEngine(ExistingExits,Engine):
             if any(o.get('status') in {'UNKNOWN','INTENT'} for o in self.s['orders'].values() if o.get('symbol')==sym):
                 continue # UNKNOWN/INTENT 발생 시 fail-closed (reconcile 후 재개)
             if p.get('qty_blocked') or p['qty']<=0: continue
-            if self.c.live_mode and (not self.account_ok or time.monotonic()-self.last_account>self.c.reconcile_seconds*3):
+            if not self.exit_account_ready(sym,p['qty']):
                 continue
 
             # 일반 정상 청산의 max_exit_attempts=3 제한을 우회하여 19:55~19:59:50 지속 재시도
@@ -1293,6 +1307,7 @@ class AutonomousEngine(ExistingExits,Engine):
         for sym,p in self.s['positions'].items(): self.position_eval(sym,p)
 
     def on_tick(self,t,completed_low=None):
+        self.observe_protection_tick(t)
         self.names.setdefault(t.symbol,None)
         previous=self.s['positions'].get(t.symbol,{}).get('stop')
         p=self.s['positions'].get(t.symbol)
@@ -1351,7 +1366,7 @@ class AutonomousEngine(ExistingExits,Engine):
 
     def position_eval(self,sym,p,price=None):
         self.refresh_exit_state(sym)
-        allowed=self.can_exit(sym,p) and self.account_ok and (not self.c.live_mode or time.monotonic()-self.last_account<=self.c.reconcile_seconds*3)
+        allowed=self.can_exit(sym,p) and self.exit_account_ready(sym,p['qty'])
         requested=p.get('exit_requested',False)
         gates={'exit_requested':gate(requested,reason=p.get('exit_reason'),time=self.clock().strftime('%H:%M:%S'),flatten=self.a.force_flatten_start,allow_overnight=self.a.ALLOW_OVERNIGHT),
                'exit_safe':gate(allowed,qty=p['qty'],qty_blocked=p.get('qty_blocked'),market=self.market,account_ok=self.account_ok),

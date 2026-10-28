@@ -327,6 +327,7 @@ def presentation(s):
         reasons=s.get('order_off_reasons',[])
         shown=[labels[r] for r in reasons if r in labels]
         if shown:safety='주문 대기 — '+', '.join(dict.fromkeys(shown))
+    if s.get('protection_failures'):safety='긴급 — 보호청산 불가 / 계좌·주문 재대조 필요'
     return operation,market,safety
 
 def candidate_display(s):

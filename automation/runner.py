@@ -70,6 +70,11 @@ def account_query_failed(engine,result):
         engine.account_ok=bool(engine.account_ok and
             0<=time.monotonic()-engine.last_account<=engine.c.reconcile_seconds*3)
     else:engine.account_ok=False
+    if hasattr(engine,'invalidate_protection_orders'):
+        engine.invalidate_protection_orders('ACCOUNT_AND_ORDER_STATUS_UNAVAILABLE')
+        view=result.get('order_status_refresh')
+        if view:engine.accept_protection_orders(view)
+        engine.audit_protection_health()
     engine.event('ACCOUNT_UNAVAILABLE',**{k:v for k,v in result.items() if k!='started'})
 
 def user_command(policy,command):
@@ -120,10 +125,12 @@ class AccountWorker:
                 time.sleep(self.min_query_interval-elapsed)
             started=time.monotonic(); query_started_at=now().isoformat()
             self.last_query_started=started
+            stage='fills';fills=[];fills_due=False
             try:
-                fills_due=self.need_fills or (self.settlement_pending and started-self.last_fill_query>=self.settlement_interval)
+                fills_due=self.need_fills or bool(self.position_symbols) or (self.settlement_pending and started-self.last_fill_query>=self.settlement_interval)
                 fills=self.rest.fills() if fills_due else []
                 if fills_due:self.last_fill_query=started
+                stage='snapshot'
                 snapshot=self.rest.snapshot()
                 snapshot['query_started_at']=query_started_at
                 snapshot['books']={}
@@ -146,10 +153,11 @@ class AccountWorker:
                 result={'snapshot':snapshot,'fills':fills,'started':started,'error':None}
             except Exception as e:
                 result={**error_record(e),'started':started}
-                if result.get('balance_rate_limited') and result.get('api')=='kt00018':
+                if stage=='snapshot':
                     # Independent order-status reads remain available. Do NOT
                     # reconcile a partial result as zero cash/zero holdings.
-                    try:result['order_status_refresh']={'orders':self.rest.open_orders(),'fills':fills,'known_at':now().isoformat()}
+                    try:result['order_status_refresh']={'orders':self.rest.open_orders(),'fills':fills,
+                        'query_started_at':query_started_at,'known_at':now().isoformat(),'known_monotonic':time.monotonic(),'complete':bool(fills_due)}
                     except Exception as status_error:result['order_status_error']=error_record(status_error)
             if self.q.full(): self.q.get_nowait()
             self.q.put_nowait(result)
@@ -1588,7 +1596,7 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
         engine.event('SIGNAL_BLOCKED', symbol=t.symbol, reason='PAPER_STRATEGY_BLOCKED_IN_LIVE')
         return None
     o=engine.enter(sig,t)
-    account.need_fills=bool(engine.active_orders())
+    account.need_fills=bool(engine.active_orders() or engine.s['positions'])
     return o
 
 def drain_feed(feed, consume, *, clock=None, monotonic=None,
@@ -1636,7 +1644,7 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
     for item in message.get('data',[]):
         kind=item.get('type')
         if kind=='00':
-            engine.on_order_event(item['values']); account.need_fills=bool(engine.active_orders()); account.request.set()
+            engine.on_order_event(item['values']); account.need_fills=bool(engine.active_orders() or engine.s['positions']); account.request.set()
         elif kind=='0D' and item.get('item') in symbols:
             book=item.get('_book') or {}
             health=getattr(engine,'position_health',None)
@@ -1983,7 +1991,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
     from automation.position_health import PositionDataHealth
     position_health=PositionDataHealth(engine,feed,account,subscriptions)
     radar.refresh_account=account.request.set
-    account.need_fills=bool(engine.active_orders())
+    account.need_fills=bool(engine.active_orders() or engine.s['positions'])
     reporter=Reporter(root)
     from automation.observation_worker import ObservationWorker
     observation_rest=Rest(replace(effective,live_mode=False),auth_session=rest.auth_session);observation_rest.session_guard=lambda:control_supported(now()) or (getattr(effective,'after_enabled',False) and after_control_supported(now()));observation_rest.diagnostic_only=True
@@ -2048,7 +2056,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 if in_session and not data_active:
                     if ever_started: radar,account,feed=clients(); radar.refresh_account=account.request.set
                     position_health.feed=feed;position_health.account=account
-                    account.need_fills=bool(engine.active_orders()); radar.extra_symbols=set(engine.s['positions'])
+                    account.need_fills=bool(engine.active_orders() or engine.s['positions']); radar.extra_symbols=set(engine.s['positions'])
                     radar.start(); account.start(); feed.start(); data_active=True; ever_started=True
                     engine.reset_detector=True
                 elif not in_session and data_active:
@@ -2071,7 +2079,10 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                     if result['error']:
                         account_query_failed(engine,result)
                     elif time.monotonic()-result['started']>effective.reconcile_seconds*3:
-                        engine.account_ok=False; engine.event('ACCOUNT_UNAVAILABLE',error='조회 지연')
+                        engine.account_ok=False
+                        engine.invalidate_protection_orders('ACCOUNT_RESULT_EXPIRED')
+                        engine.audit_protection_health()
+                        engine.event('ACCOUNT_UNAVAILABLE',error='조회 지연')
                     else:
                         for sym,error in result['snapshot'].get('book_errors',{}).items(): engine.event('EXISTING_BOOK_UNAVAILABLE',symbol=sym,**error)
                         position_health.probe_results(result['snapshot'],now())
@@ -2092,7 +2103,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         radar.extra_symbols=set(engine.s['positions'])
                         if kill_requested_at is not None and result['started']<kill_requested_at: engine.kill_checked=False
                         if engine.kill_checked: kill_requested_at=None
-                    account.need_fills=bool(engine.active_orders())
+                    account.need_fills=bool(engine.active_orders() or engine.s['positions'])
                     account.settlement_pending=pending_broker_settlement(engine.s)
                     account.settlement_interval=auto.scan_seconds
                 focus_promotions=[]

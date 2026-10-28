@@ -1,0 +1,149 @@
+{
+  "base_development_commit": "0f2abe78b87935b32ae21b11c44274bd6c155775",
+  "live_release": "R6-KT00018-20261028-7d3c3d949105",
+  "candidate_release": "R6-PROTECT-OBS-20261029-239d14a4fd41",
+  "candidate_files": [
+    "automation/decisions.py",
+    "automation/entry_evidence.py",
+    "automation/trade_review_capture.py",
+    "automation/engine.py",
+    "automation/runner.py",
+    "automation/protection_safety.py",
+    "automation/position_health.py",
+    "core/engine.py",
+    "operator_service.py",
+    "operator_ui_service.py",
+    "runtime/RELEASE_IDENTITY.json"
+  ],
+  "LIVE_modified": false,
+  "program_started": false,
+  "financial_authorization_changed": false,
+  "actual_orders": false,
+  "tests": {
+    "development_related": 260,
+    "native_installed_source_and_actual_settings": 46,
+    "installer_rollback": 11
+  },
+  "fail_to_pass": {
+    "test": "tests.test_protection_account_outage.ProtectionOutageTests.test_balance_only_failure_can_protect_verified_fills_beyond_15_seconds",
+    "before": "FAIL_PROTECTIVE_SELL_COUNT_0",
+    "after": "PASS_ACCEPTED_PROTECTIVE_SELL_VERIFIED_QUANTITY",
+    "basis": "SYNTHETIC_NATIVE_ENGINE_NOT_ACTUAL_MARKET"
+  },
+  "preservation": {
+    "release": "R6-PROTECT-OBS-20261029-239d14a4fd41",
+    "LIVE_unchanged": true,
+    "declared_live_sources": 103,
+    "candidate_sources": 105,
+    "API_and_strategy_source_hashes": {
+      "core/broker.py": "331a3f08602789c90201165b7fcebb0bd233ff776c22bb9a22ad68bf2041e83f",
+      "core/balance_rate.py": "f4fecf565234d87c6417c98c1f7dcdc8cdde3ea69ab12061b4e6e49fe5dee6ac",
+      "automation/patterns.py": "619f985b97bf536870c6f539a8f63cb54fbac1b59619dd23765816c698db82fc",
+      "automation/policy.py": "60aff21fa23406e5bb9b71501976b754392164afaa4165e11f7f00042a3a25a2",
+      "automation/capital.py": "b3f159e325115f24c419be0e5e926878b60ea815f6d71d9fb61a228eb3825c0d",
+      "automation/allocation.py": "d4b8aa9f1cd82708c8b734267ea059fa54896022dbbf6814035a09f01ca19b2c",
+      "automation/exit_plan.py": "23e8ad8f6608d6dd1345add0268a54b4550d0e189dccd1ef13653e6fbe4d97dc",
+      "automation/fast_momentum.py": "bbd9b56ad6d15ade3a7ea08d3d635a0f578ac3cc6155b1f97d0901e7632a3545"
+    },
+    "changes_vs_previous_observer_or_installed_source": {
+      "automation/decisions.py": {
+        "changed": [],
+        "added": [],
+        "removed": []
+      },
+      "automation/entry_evidence.py": {
+        "changed": [],
+        "added": [],
+        "removed": []
+      },
+      "automation/trade_review_capture.py": {
+        "changed": [
+          "TradeReviewCapture.account_protection_evidence"
+        ],
+        "added": [],
+        "removed": []
+      },
+      "automation/engine.py": {
+        "changed": [
+          "AutonomousEngine.disconnect",
+          "AutonomousEngine.drive_exits",
+          "AutonomousEngine.new_entry_reason",
+          "AutonomousEngine.on_tick",
+          "AutonomousEngine.order_guard",
+          "AutonomousEngine.position_eval",
+          "AutonomousEngine.reconcile",
+          "AutonomousEngine.refresh_exit_state"
+        ],
+        "added": [],
+        "removed": []
+      },
+      "automation/runner.py": {
+        "changed": [
+          "AccountWorker.run",
+          "account_query_failed",
+          "evaluate_actual_entry",
+          "process_message",
+          "run"
+        ],
+        "added": [],
+        "removed": []
+      },
+      "automation/position_health.py": {
+        "changed": [
+          "PositionDataHealth.accept_book"
+        ],
+        "added": [],
+        "removed": []
+      },
+      "core/engine.py": {
+        "changed": [
+          "Engine.drive_exits"
+        ],
+        "added": [
+          "Engine.exit_account_ready"
+        ],
+        "removed": []
+      },
+      "operator_service.py": {
+        "changed": [
+          "OperatorService.public_status"
+        ],
+        "added": [],
+        "removed": []
+      },
+      "operator_ui_service.py": {
+        "changed": [
+          "presentation"
+        ],
+        "added": [],
+        "removed": []
+      }
+    },
+    "new_module": "automation/protection_safety.py",
+    "class_change": "AutonomousEngine(ProtectionSafety,ExistingExits,Engine)",
+    "research_strategy_code_in_payload": false,
+    "config_changes": [],
+    "actual_API_calls": false
+  },
+  "actual_market_metrics": {
+    "observed_watch_symbols": null,
+    "judgable_structures": null,
+    "economic_signals": null,
+    "validated_account_order_gates": null,
+    "paper_buys": null,
+    "paper_exits": null,
+    "net_pnl": null,
+    "status": "UNKNOWN_NEXT_ACTUAL_SESSION_NOT_STARTED"
+  },
+  "profitability_proven": false,
+  "old_C2_audit_repeated": false,
+  "workload_change": "ADDITIONAL_READ_ONLY_FILL_PAGES_WHILE_BOT_HOLDING_IN_ACCOUNT_WORKER_EXISTING_TR_LIMITERS_APPLY",
+  "live_opening_performance": "UNVERIFIED_NO_LIVE_INSTALL_OR_START",
+  "residual_limits": [
+    "DUAL_ACCOUNT_AND_ORDER_QUERY_OUTAGE_CANNOT_GUARANTEE_EXECUTION",
+    "UNKNOWN_OR_CONTRADICTORY_QUANTITY_REQUIRES_FULL_RECONCILIATION",
+    "ORDER_ACCEPTANCE_NOT_FILL_GUARANTEE",
+    "UNOBSERVED_EXTERNAL_CUSTODY_CHANGES_NOT_GUARANTEED",
+    "REAL_PAPER_PROFITABILITY_UNKNOWN"
+  ]
+}

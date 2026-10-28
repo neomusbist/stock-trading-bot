@@ -127,11 +127,13 @@ class PositionHealthTests(unittest.TestCase):
 
     def test_book_probe_is_read_only_worker_path_for_held_symbol(self):
         rest=Mock();worker=AccountWorker(rest,5);worker.position_symbols=frozenset({SYM})
+        rest.profile={};rest.fills.return_value=[]
         rest.snapshot.return_value={'cash':15000,'holdings':{SYM:{'qty':9}},'orders':[]}
         rest.existing_book.return_value={'time':BASE.isoformat(),'bid':7170,'regular':True}
         worker.request.wait=lambda _:worker.stop.set()
         worker.run();result=worker.q.get_nowait()
         rest.existing_book.assert_called_once_with(SYM)
+        rest.fills.assert_called_once_with()
         self.assertIn(SYM,result['snapshot']['books'])
         rest.submit.assert_not_called();rest.cancel.assert_not_called()
 

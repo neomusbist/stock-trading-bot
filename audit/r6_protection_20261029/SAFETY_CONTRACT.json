@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "purpose": "PROTECTIVE_SELL_ONLY_DURING_ACCOUNT_OUTAGE",
+  "new_BUY_authority": false,
+  "unchanged": [
+    "KT00018_SHARED_2_PER_SECOND",
+    "PAGED_LIMITS",
+    "SHARED_BACKOFF",
+    "NO_ORDER_AUTORETRY",
+    "RISK_2_PERCENT",
+    "DAILY_4_PERCENT",
+    "HARD_LOCK",
+    "CONFIG",
+    "STRATEGIES",
+    "5_SECOND_MARKET_FRESHNESS"
+  ],
+  "anchor": "COMPLETE_RECONCILIATION_IN_THIS_PROCESS_SAME_DATE_SESSION_NOT_RESTORED_FROM_LEDGER",
+  "holding_proof": "ANCHOR_HOLDINGS_PLUS_KNOWN_BUY_FILLS_MINUS_KNOWN_SELL_FILLS_EQUALS_PERSISTED_BOT_POSITION",
+  "order_view": {
+    "source": "COMPLETE_PAGED_FILL_AND_OPEN_ORDER_READS",
+    "max_age_seconds": 5,
+    "expiry": "WALL_AND_MONOTONIC",
+    "no_missing_as_zero": true,
+    "unique_ID_and_symbol_required": true,
+    "terminal_vs_positive_open_conflict": "DROP_ANCHOR_REQUIRE_FULL_ACCOUNT_RECONCILIATION"
+  },
+  "pending_sell": "ONE_OUTSTANDING_SELL_PER_SYMBOL_RESERVE_REMAINDER_UNTIL_CONFIRMED",
+  "unknown_order": "NO_DUPLICATE_NO_AUTORETRY_PERSIST_FAILURE",
+  "quote": "KNOWN_RECEIPT_AND_ORIGINAL_MARKET_TIME_WITHIN_EXISTING_5_SECONDS_FINITE_POSITIVE_BID_AND_DEPTH_0D_CAN_ARRIVE_WITHOUT_0B",
+  "final_boundary": [
+    "PERSISTED_EXIT_REQUEST",
+    "EXACT_DURABLE_INTENT",
+    "OWNERSHIP",
+    "VERIFIED_QUANTITY",
+    "PENDING_ORDERS",
+    "FRESH_PROOF",
+    "SESSION_AND_POLICY"
+  ],
+  "critical_storage": "DURABLE_FAILURE_AND_INTENT_CHECKPOINT_BEFORE_TRANSPORT_NO_BEST_EFFORT_FINANCIAL_WRITES",
+  "failure_alert": "FINANCIAL_STATE_PROTECTION_SAFETY_ACTIVE_FAILURES_PLUS_STDERR_AND_GUI_URGENT_WITHOUT_DIAGNOSTIC_LOG_DEPENDENCY",
+  "recovery": "NEW_COMPLETE_ACCOUNT_RECONCILIATION_AFTER_RESTART_DISCONNECT_QUANTITY_CONFLICT_GENERAL_HALT_RETAINS_EXISTING_MANUAL_REVIEW",
+  "supported_stop_order": {
+    "documented_API_kind": "kt10001 trde_tp=28",
+    "documented_conditional_field": "cond_uv",
+    "registered_or_enabled": false,
+    "broker_account_acceptance": "UNVERIFIED",
+    "OCO": "NOT_IMPLEMENTED",
+    "fill_guarantee": false,
+    "primary_sources": [
+      "https://github.com/Kiwoom-Securities/Kiwoom-REST-API/blob/main/kiwoom/_data/kiwoom_api_spec.json",
+      "https://download.kiwoom.com/hero4_help_new/4991.htm"
+    ]
+  }
+}

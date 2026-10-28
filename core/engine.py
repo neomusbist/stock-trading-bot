@@ -380,7 +380,7 @@ class Engine:
         for sym,p in list(self.s['positions'].items()):
             if not self.can_exit(sym,p): continue
             if not p['exit_requested'] or self.active_orders(sym) or p.get('qty_blocked'): continue
-            if self.c.live_mode and (not self.account_ok or time.monotonic()-self.last_account>self.c.reconcile_seconds*3):
+            if not self.exit_account_ready(sym,p['qty']):
                 continue
             if not self.c.live_mode and sym not in prices:
                 continue
@@ -393,6 +393,9 @@ class Engine:
                 if px is None:
                     o['status']='CANCELED'; self.save(); continue
                 self.cumulative_fill(o,o['qty'],o['qty']*px*(1-self.c.exit_slippage_fraction))
+
+    def exit_account_ready(self,symbol,qty):
+        return not self.c.live_mode or (self.account_ok and 0<=time.monotonic()-self.last_account<=self.c.reconcile_seconds*3)
 
     def on_tick(self,t,completed_low=None):
         p=self.s['positions'].get(t.symbol)
