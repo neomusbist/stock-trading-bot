@@ -72,6 +72,9 @@ class ObservedAuthority:
             if len(self.context)>12:self.context.pop(next(iter(self.context)))
 
     def reason(self):
+        return self.context_reason()
+
+    def context_reason(self,*,require_native_signal=True):
         e=self.account.e;frame=self.frame
         if frame is None:return self._why('OBSERVED_FRAME_UNKNOWN')
         row=self.context.get(frame.tick.symbol)
@@ -92,21 +95,23 @@ class ObservedAuthority:
         authority=row.get('authority') or {};a=row.get('account') or {}
         if row.get('input_evidence_basis') not in {'ACTUAL_RECEIVED_LIVE_PIPELINE','MEASURED_PAIRED_TRADE_QUOTE','SYNTHETIC_TEST_QUOTE'}:
             return self._why('OBSERVED_INPUT_ORIGIN_UNKNOWN')
-        for k in AUTHORITY_GATES:
-            value=authority.get('observed_final_gates',{}).get(k)
-            if value!='PASS':return self._why('OBSERVED_GATE_'+('UNKNOWN_' if value in (None,'UNKNOWN') else 'BLOCKED_')+k.upper())
-        final=row.get('final_gate_results') or {}
-        required=row.get('final_required_gate_results') or {}
-        if not required or any(value!='PASS' or final.get(k)!=value for k,value in required.items()):
-            return self._why('OBSERVED_FINAL_GATE_NOT_PASS_OR_UNKNOWN')
-        if type(a.get('quantity')) is not int or a['quantity']<1:
-            return self._why('OBSERVED_PRE_INTENT_QUANTITY_NOT_POSITIVE_OR_UNKNOWN')
+        if require_native_signal:
+            for k in AUTHORITY_GATES:
+                value=authority.get('observed_final_gates',{}).get(k)
+                if value!='PASS':return self._why('OBSERVED_GATE_'+('UNKNOWN_' if value in (None,'UNKNOWN') else 'BLOCKED_')+k.upper())
+            final=row.get('final_gate_results') or {}
+            required=row.get('final_required_gate_results') or {}
+            if not required or any(value!='PASS' or final.get(k)!=value for k,value in required.items()):
+                return self._why('OBSERVED_FINAL_GATE_NOT_PASS_OR_UNKNOWN')
+            if type(a.get('quantity')) is not int or a['quantity']<1:
+                return self._why('OBSERVED_PRE_INTENT_QUANTITY_NOT_POSITIVE_OR_UNKNOWN')
         if authority.get('mode')!='LIVE' or authority.get('live_authorized') is not True:
             return self._why('OBSERVED_LIVE_AUTHORITY_NOT_CONFIRMED')
         if any(authority.get(k) is not True for k in ('live_mode','connected','account_ok')):
             return self._why('OBSERVED_CONNECTION_OR_ACCOUNT_NOT_CONFIRMED')
         if authority.get('costs_confirmed') is not True or authority.get('halt'):
             return self._why('OBSERVED_COSTS_OR_HALT_BLOCKED')
+        if authority.get('balance_refresh_uncertain') is True:return self._why('OBSERVED_BALANCE_UNCERTAIN')
         snapshot=aware(a.get('snapshot_at'))
         if (a.get('account_fresh') is not True or snapshot is None
                 or not 0<=(now-snapshot).total_seconds()<=e.c.reconcile_seconds*3):
@@ -131,9 +136,10 @@ class ObservedAuthority:
 
 
 class ObservedPaperSession:
-    def __init__(self,start,cfg,auto,cash,output,*,basis='RECORDED_REPLAY',start_writer=True,evaluate_each_trade=False):
-        self.replay=FullPathReplay(start,'LIVE_ABC',cfg,auto,cash)
-        self.authority=ObservedAuthority(self.replay.account)
+    def __init__(self,start,cfg,auto,cash,output,*,basis='RECORDED_REPLAY',start_writer=True,evaluate_each_trade=False,
+                 replay_factory=FullPathReplay,authority_factory=ObservedAuthority):
+        self.replay=replay_factory(start,'LIVE_ABC',cfg,auto,cash)
+        self.authority=authority_factory(self.replay.account)
         self.capture=TradeReviewCapture(output,clock=lambda:self.replay.account.at,start=start_writer,
             day_bytes=64*1024**2,total_bytes=256*1024**2,queue_rows=1024,queue_bytes=2*1024**2)
         self.replay.account.e.trade_review=self.capture

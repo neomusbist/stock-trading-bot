@@ -334,6 +334,30 @@ class TradeReviewCapture:
         except Exception as error:
             self.errors+=1;self.last_error=type(error).__name__
 
+    def account_protection_evidence(self,engine,kind,at):
+        """Observe a blocked protection path; never change account/order authority."""
+        if kind not in {'ACCOUNT_UNAVAILABLE','ACCOUNT_LATENCY','EXIT_REQUEST'}:return
+        try:
+            import time
+            positions=engine.s.get('positions',{})
+            age=max(0,time.monotonic()-engine.last_account)
+            blocked=not engine.account_ok or age>engine.c.reconcile_seconds*3
+            key=(bool(positions),blocked,tuple(sorted((s,bool(p.get('exit_requested'))) for s,p in positions.items())))
+            prior=getattr(self,'_account_protection_last',None)
+            if prior and prior[0]==key and (at-prior[1]).total_seconds()<30:return
+            self._account_protection_last=(key,at)
+            for symbol,p in positions.items():
+                self._record(dict(event='PROTECTION_ACCOUNT_EVIDENCE',symbol=symbol,asof=iso(at),
+                    existing_event=kind,account_age_seconds=age,original_freshness_limit_seconds=engine.c.reconcile_seconds*3,
+                    account_ok=engine.account_ok,balance_refresh_uncertain=getattr(engine,'balance_refresh_uncertain',False),
+                    ledger_quantity=p.get('qty'),exit_requested=bool(p.get('exit_requested')),
+                    exit_reason=p.get('exit_reason'),active_order_count=len(engine.active_orders(symbol)),
+                    protection_status='BLOCKED_ACCOUNT_UNCERTAIN' if blocked else 'LAST_VERIFIED_ACCOUNT_STILL_WITHIN_ORIGINAL_DEADLINE',
+                    recovery='FRESH_COMPLETE_RECONCILIATION_REQUIRED_NO_QUANTITY_ASSUMPTION' if blocked else None,
+                    actual_order_permission=False,not_an_order_ledger=True),symbol)
+        except Exception as error:
+            self.errors+=1;self.last_error=type(error).__name__
+
     def rejected_candidate_buffer(self,symbol,evaluation,asof):
         """Retain a bounded real prefix when only economic gates rejected it.
 

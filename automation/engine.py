@@ -153,6 +153,7 @@ class AutonomousEngine(ExistingExits,Engine):
                 captured_at=self.clock()
                 capture.event_ref(kind,data,captured_at,self.s.get('positions',{}))
                 if hasattr(capture,'order_evidence'):capture.order_evidence(kind,order,data,captured_at)
+                if hasattr(capture,'account_protection_evidence'):capture.account_protection_evidence(self,kind,captured_at)
                 if kind=='ENTRY_CANDIDATE' and data.get('pattern')=='FAST':
                     decision_at=data.get('signal_detected_at') or data.get('time')
                     if decision_at and hasattr(capture,'decision_tape'):
@@ -591,6 +592,9 @@ class AutonomousEngine(ExistingExits,Engine):
         return None
 
     def enter(self,signal,tick):
+        if not self.research_paper_allowed(signal):
+            self.decisions.emit('ENTRY_EVAL',tick.symbol,'NO_BUY','C2_PAPER_ONLY',signal=signal,price=tick.price)
+            return None
         if signal.get('pattern') in ('EarlyMomentumBreakout', 'PullbackReclaimBreakout'):
             if not (getattr(self.a, 'enable_redesign_live', False) and getattr(self.c, 'enable_redesign_live', False)):
                 self.decisions.emit('ENTRY_EVAL', tick.symbol, 'NO_BUY', 'REDESIGN_STRATEGY_LIVE_NOT_AUTHORIZED', signal=signal, price=tick.price)
@@ -700,6 +704,8 @@ class AutonomousEngine(ExistingExits,Engine):
         finally: self.entry_intent=None;self.entry_tick=None
 
     def submit(self,side,symbol,qty,limit=0,signal=None):
+        research_signal=signal or self.s['positions'].get(symbol,{}).get('signal') or {}
+        if not self.research_paper_allowed(research_signal):return None
         # 강제로 생성한 주문도 같은 경계를 통과하며 ARMED에는 모의체결도 만들지 않는다.
         if not self.is_supported_now() or symbol in HARD_LOCKS or self.policy.locked(symbol): return None
         if side=='BUY' and signal and (signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or signal.get('diagnostic_only') is True): return None
@@ -810,6 +816,8 @@ class AutonomousEngine(ExistingExits,Engine):
                     if bad_kw in raw_text: raise Rejected(r_code)
         intents=[o for o in self.active_orders(sym,side) if o['status']=='INTENT' and o['qty']==qty and o['limit']==limit]
         if len(intents)!=1: raise Rejected('저장된 봇 주문 의도 없는 직접 주문 차단')
+        research_signal=intents[0].get('signal') or self.s['positions'].get(sym,{}).get('signal') or {}
+        if not self.research_paper_allowed(research_signal):raise Rejected('C2_PAPER_ONLY')
         if side=='BUY':
             st=self.market_status.get(sym,{})
             if st.get('vi_active') or st.get('single_price_auction'):
@@ -857,6 +865,12 @@ class AutonomousEngine(ExistingExits,Engine):
             actual=self.actual.get(sym)
             if not actual or actual['available']<qty: raise Rejected('실제 매도 가능 수량 부족')
         if time.monotonic()-self.last_account>self.c.reconcile_seconds*3: raise Rejected('계좌 대조 지연')
+
+    def research_paper_allowed(self,signal):
+        if signal.get('research_strategy')!='C2':return True
+        broker=type(self.broker)
+        return (getattr(self,'paper_mode',False) is True and broker.__module__=='research.causal_account'
+                and broker.__name__=='QuoteReplayBroker' and self.policy.state.get('PAPER_FIXTURE_ONLY') is True)
 
     def can_exit(self,symbol,p):
         sess=self.current_session()

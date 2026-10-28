@@ -24,7 +24,15 @@ class EntryDecisionEvidence:
     def bind(self,t,watch,detector,asof):
         if self.day!=asof.date():
             self.context.clear();self.last.clear();self.episodes.clear();self.day=asof.date()
-        self.context[t.symbol]=(t,dict(watch),detector,asof)
+        metadata=dict(watch);previous=self.context.get(t.symbol)
+        # Daily-structure rechecking uses ELIGIBLE, which is not a WATCH
+        # membership transition. Retain only same-received-print scope proof.
+        if metadata.get('status') in {'WATCH','SHADOW'}:
+            metadata['entry_scope_status']=metadata['status']
+        elif (metadata.get('status')=='ELIGIBLE' and previous
+              and (previous[0].time,previous[0].cumulative)==(t.time,t.cumulative)):
+            metadata['entry_scope_status']=previous[1].get('entry_scope_status')
+        self.context[t.symbol]=(t,metadata,detector,asof)
         self.context.move_to_end(t.symbol)
         while len(self.context)>self.limit:
             old,_=self.context.popitem(last=False)
@@ -118,7 +126,7 @@ class EntryDecisionEvidence:
             ask_qty=t.ask_qty,bid_qty=t.bid_qty,depth_source=t.depth_source,
             depth_available=t.depth_available,regular=t.regular,venue=t.venue,
             book_time=t.book_time.isoformat() if t.book_time else None,book_received_at=t.book_received_at,
-            watch={k:watch.get(k) for k in ('status','source_count','fallback_source1','first_raw_at','first_watch_at','observed_at','resistance')},
+            watch={k:watch.get(k) for k in ('status','entry_scope_status','source_count','fallback_source1','first_raw_at','first_watch_at','observed_at','resistance')},
             first_discovery_basis='CACHED_METADATA_UNLESS_JOINED_TO_RAW_RECOGNITION',
             valid_completed_bars=warm.get('completed_bars'),warmup=warm,
             coverage_gap=detector.coverage_gaps.get(symbol),turnover=liquidity,
@@ -127,6 +135,8 @@ class EntryDecisionEvidence:
                        entry_slippage=e.costs.entry_slippage,exit_slippage=e.costs.exit_slippage),
             authority=dict(mode=e.policy.mode,live_authorized=e.policy.state.get('live_authorized'),
                 live_mode=e.c.live_mode,connected=e.connected,account_ok=e.account_ok,
+                market_state=e.market,session=e.current_session(),
+                balance_refresh_uncertain=getattr(e,'balance_refresh_uncertain',False),
                 costs_confirmed=e.a.costs_confirmed,halt=e.s.get('halt'),
                 readiness=getattr(e,'last_order_readiness_evidence',None),
                 observed_final_gates={k:final.get(k,'UNKNOWN') for k in AUTHORITY_GATES}),

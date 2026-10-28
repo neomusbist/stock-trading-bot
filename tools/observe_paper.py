@@ -25,7 +25,7 @@ def known(row):
                 if (at:=aware(row.get(k))) is not None),default=None)
 
 
-def offline(paths,output,cfg,auto,cash,day,evaluate_each_trade=False):
+def offline(paths,output,cfg,auto,cash,day,evaluate_each_trade=False,*,session_factory=ObservedPaperSession):
     """Disk-backed causal merge of bounded source extents, not exchange sort."""
     db=sqlite3.connect(output/'input-index.sqlite');manifest=[];session=None;unknown=0
     try:
@@ -53,7 +53,7 @@ def offline(paths,output,cfg,auto,cash,day,evaluate_each_trade=False):
             manifest.append(dict(source_file=p.name,byte_end=extent,sha256=digest.hexdigest()))
         db.commit()
         for stamp,source,raw in db.execute('SELECT known,source,row FROM events ORDER BY known,ordinal'):
-            if session is None:session=ObservedPaperSession(aware(stamp),cfg,auto,cash,output/'evidence',evaluate_each_trade=evaluate_each_trade)
+            if session is None:session=session_factory(aware(stamp),cfg,auto,cash,output/'evidence',evaluate_each_trade=evaluate_each_trade)
             session.feed(json.loads(raw),source)
         result=session.result() if session else {'no_source_events':True}
         result.update(source_manifest=manifest,unparseable_or_unavailable_rows=unknown,

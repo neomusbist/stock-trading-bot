@@ -55,7 +55,14 @@ class KT00018RateBudgetTests(unittest.TestCase):
 
     def assert_budget(self,stamps,gap=.55):
         stamps=sorted(stamps);self.assertGreater(len(stamps),1)
-        self.assertTrue(all(b-a>=gap-.001 for a,b in zip(stamps,stamps[1:])),stamps)
+        # Windows/Python here uses 15.625ms GetTickCount64 / wall clocks
+        # inside the limiter but QPC for these dispatch observations. One
+        # quantization tick is not a 1-second rate violation. Keep the real
+        # sliding-window <=2 assertion exact; do not relax the API budget.
+        resolution=max(time.get_clock_info(k).resolution for k in ('monotonic','time'))
+        tolerance=max(.001,resolution+.001)
+        self.assertGreater(gap-tolerance,.5)
+        self.assertTrue(all(b-a>=gap-tolerance for a,b in zip(stamps,stamps[1:])),stamps)
         self.assertLessEqual(max(sum(t<=s<t+1 for s in stamps) for t in stamps),2)
 
     def test_all_clients_pages_and_recreated_sessions_share_one_budget(self):

@@ -182,6 +182,15 @@ operator_*approval*.json
 !/research/ab_replacement_strategies.py
 !/research/strict_benchmark.py
 !/research/observed_paper.py
+!/research/c2_retest.py
+!/research/c2_validation.py
+!/research/c2_exits.py
+!/tools/c2_paper.py
+!/audit/r6_c2_observe_20261028/RESULTS.md
+!/audit/r6_c2_observe_20261028/RUNBOOK.md
+!/audit/r6_c2_observe_20261028/MEASURED_SUMMARY.json
+!/audit/r6_c2_observe_20261028/STRATEGY_CONTRACT.json
+!/audit/r6_c2_observe_20261028/OVERLAY_MANIFEST.json
 !/tools/benchmark_all_strategies.py
 !/tools/observe_paper.py
 !/audit/r6_oct26_night/READINESS_AND_REPLAY.md

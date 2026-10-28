@@ -44,11 +44,23 @@ class ObservedPaperTests(unittest.TestCase):
         self.assertTrue(all(x=='PASS' for x in row['authority']['observed_final_gates'].values()))
         self.assertEqual(row['producer_execution'],'PAPER')
         self.assertEqual(row['input_evidence_basis'],'SYNTHETIC_TEST_QUOTE')
+        self.assertEqual(row['watch']['entry_scope_status'],'WATCH')
         self.assertEqual([s['setup'] for s in row['strategies']],['A','B','C','D','E2'])
         self.assertEqual(next(s for s in row['strategies'] if s['setup']=='D')['status'],'DISABLED')
         orders=[r for r in rows if r['event']=='ORDER_PATH_EVIDENCE']
         self.assertTrue(any(r['observed_intent_persisted'] for r in orders))
         self.assertTrue(any(r['broker_order_id'].startswith('PAPER-') for r in orders if r['broker_order_id']))
+
+    def test_daily_ELIGIBLE_recheck_preserves_only_same_print_WATCH_scope(self):
+        from automation.entry_evidence import EntryDecisionEvidence
+        evidence=EntryDecisionEvidence();r,_=self.replay('scope')
+        t=packet(AT,38100,20000).tick
+        evidence.bind(t,{'status':'WATCH'},r.detector,AT)
+        evidence.bind(t,{'status':'ELIGIBLE'},r.detector,AT)
+        self.assertEqual(evidence.context[SYMBOL][1]['entry_scope_status'],'WATCH')
+        newer=replace(t,time=AT+timedelta(seconds=1),cumulative=20001)
+        evidence.bind(newer,{'status':'ELIGIBLE'},r.detector,newer.time)
+        self.assertIsNone(evidence.context[SYMBOL][1].get('entry_scope_status'))
 
     def test_observed_engine_buy_fill_and_protective_exit_without_network(self):
         row,cum,_=self.source_evidence();r,c=self.replay('observed');populate(r)
