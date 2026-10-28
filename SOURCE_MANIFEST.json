@@ -12,8 +12,8 @@
     },
     {
       "path": ".gitignore",
-      "sha256": "9d6cc01781451926e4faeb17426a26cf300c67191d93e54e52ebffe3df353fad",
-      "git_blob_sha256": "d89990b05f122b1d0fe6389511d9359f4c3765b2"
+      "sha256": "da84293d078a939fc297d1725d2d0ae73fdce348871901ed06bd8caa4e07fb0b",
+      "git_blob_sha256": "c9b34412bba898946f547b3e240a2e99390ec195"
     },
     {
       "path": "AUDIT_REPORT.md",
@@ -566,6 +566,16 @@
       "git_blob_sha256": "23bcdccd6531dd7397dd67316fccb1d8467b1d62"
     },
     {
+      "path": "tests/test_c2_paper_follow.py",
+      "sha256": "b8edfa13fec432517f876502b16ab682efefd58219d58e7627b5714c9cb7c54a",
+      "git_blob_sha256": "29773d8734daee2dc1478c8123cc8a60fe993bbf"
+    },
+    {
+      "path": "tests/test_c_cost_overlay.py",
+      "sha256": "6571ddd17187b60e9aa33f93ae0a6d2c1b884e266f7db4d5da0aeebe813cf974",
+      "git_blob_sha256": "46dc72b5b79db792bba719a50b38a69c18302884"
+    },
+    {
       "path": "tests/test_cap_incident_fix.py",
       "sha256": "5eef0488554953f3f988d79b2c1284f20c65f9b00df6f39c8f8b1dfe7b6c528f",
       "git_blob_sha256": "887fe11f78413fac00ec2a03e68679c3a0907de1"
@@ -961,6 +971,11 @@
       "git_blob_sha256": "7a723e68e1b69db876d450efd3b57e98372846eb"
     },
     {
+      "path": "tools/c2_paper_follow.py",
+      "sha256": "e9bc994d84153da1599e9a8edc79207b37a9580c872f30fcc317bae24c75e0d0",
+      "git_blob_sha256": "9612ac50c843e79b45a57978f18bee56f4149609"
+    },
+    {
       "path": "tools/exit_policy_replay.py",
       "sha256": "e8e3b09be9d402cfcdee82ff9b0dd04c8a860605fb4a38cb81400dbadf0da6e1",
       "git_blob_sha256": "de264786efeb6ad44b9efb177ea1de0598fc035e"
@@ -977,8 +992,8 @@
     },
     {
       "path": "tools/observe_paper.py",
-      "sha256": "bcbfd38f53fb82335a0c1e4d65ffa024006de31ea56035b976bbc616fbe79206",
-      "git_blob_sha256": "342050f8c974307eb5e63fe4e5af1139a5567992"
+      "sha256": "24440cef1fa90ef8b2becaf396a2183e3a174daea9676bda6b198f8be00ae6b1",
+      "git_blob_sha256": "ddb55dcec420f78f43e5fef35f701fb8a467efe8"
     },
     {
       "path": "tools/offline_benchmark.py",
@@ -992,8 +1007,8 @@
     },
     {
       "path": "tools/repo_guard.py",
-      "sha256": "622bb0960c16956ea2ac4cd9677c86e0409c4763dd4a7c97b67af0d518cb560b",
-      "git_blob_sha256": "2fdb94778c87c7461cfc0713a2fc63718e484150"
+      "sha256": "48e1158fadd6479c68437430c8b8f2db0c3d1a9a50bee844cdb434804b31e752",
+      "git_blob_sha256": "61c2834e7dda5b73d712fb2654ee8e341b9ee1c4"
     },
     {
       "path": "tools/session_audit.py",

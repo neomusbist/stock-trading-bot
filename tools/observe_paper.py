@@ -20,6 +20,18 @@ EVENTS={'WATCH_METADATA','DAILY_REFERENCE','REFERENCE_BARS_PART','SUBSCRIPTION_S
         'STREAM_STATE','ENTRY_DECISION_EVIDENCE','OPPORTUNITY_SAMPLE','BOOK','TRADE','TICK'}
 
 
+def set_idle_priority():
+    """Fail explicitly if Windows cannot lower this sidecar's process priority."""
+    if os.name!='nt':return
+    import ctypes
+    kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+    kernel.GetCurrentProcess.restype=ctypes.c_void_p
+    kernel.SetPriorityClass.argtypes=(ctypes.c_void_p,ctypes.c_uint32)
+    kernel.SetPriorityClass.restype=ctypes.c_int
+    if not kernel.SetPriorityClass(kernel.GetCurrentProcess(),0x40):
+        raise RuntimeError('LOW_PRIORITY_SETUP_FAILED')
+
+
 def known(row):
     return max((at for k in ('processed_at','known_at','asof','received_at','received','at','time')
                 if (at:=aware(row.get(k))) is not None),default=None)
@@ -70,7 +82,7 @@ def follow(root,output,cfg,auto,cash,seconds,poll=1.,cpu_budget_ms=50.):
     """Bounded, idle-priority observer; overload is visible, never freshness relaxation."""
     root=Path(root).resolve();start=datetime.now(KST)
     session=ObservedPaperSession(start,cfg,auto,cash,output/'evidence',basis='REALTIME_SIDECAR')
-    tails={};pending=deque();initial=True;deadline=time.monotonic()+seconds;budget_hits=0;rows=0;references={}
+    tails={};known_paths=set();pending=deque();initial=True;deadline=time.monotonic()+seconds;budget_hits=0;rows=0;references={}
     reference_log=[];reference_bytes=0
     def reference_snapshot(symbol):
         nonlocal reference_bytes
@@ -103,6 +115,23 @@ def follow(root,output,cfg,auto,cash,seconds,poll=1.,cpu_budget_ms=50.):
         while time.monotonic()<deadline and not session.capture.storage_blocked:
             paths=sorted((root/'runtime/automation-production/trade-review').glob('trade-review-'+start.strftime('%Y%m%d')+'-*.jsonl'))
             current=paths[-2:]  # catch rotation without opening the whole historical tape
+            # Existing files at startup are intentionally ignored. New files
+            # skipped due to rapid rotation are explicit evidence gaps.
+            if not initial:
+                for skipped in set(paths[:-2])-known_paths:
+                    try:missing=max(1,skipped.stat().st_size)
+                    except OSError:missing=1
+                    session.counts['OBSERVER_UNSEEN_ROTATION_GAP_BYTES_UNKNOWN']+=missing
+                    for sym in session.last_trade:session.replay.detector.mark_coverage_gap(sym,datetime.now(KST),'OBSERVER_UNSEEN_ROTATION')
+            known_paths.update(paths)
+            for old in list(tails):
+                if old in current:continue
+                tail=tails.pop(old)
+                try:unread=max(0,old.stat().st_size-tail.offset)
+                except OSError:unread=1
+                if unread:
+                    session.counts['OBSERVER_ROTATION_GAP_BYTES_UNKNOWN']+=unread
+                    for sym in session.last_trade:session.replay.detector.mark_coverage_gap(sym,datetime.now(KST),'OBSERVER_ROTATION_BACKLOG_GAP')
             began=time.process_time()
             for path in current:
                 if path not in tails:tails[path]=JsonTail(path,start_at_end=initial,with_provenance=True)
@@ -115,14 +144,6 @@ def follow(root,output,cfg,auto,cash,seconds,poll=1.,cpu_budget_ms=50.):
                 if (time.process_time()-began)*1000>=cpu_budget_ms:
                     budget_hits+=1;break
             initial=False
-            if len(tails)>4:
-                for old in sorted(tails)[:-4]:
-                    tail=tails.pop(old)
-                    try:unread=max(0,old.stat().st_size-tail.offset)
-                    except OSError:unread=1
-                    if unread:
-                        session.counts['OBSERVER_ROTATION_GAP_BYTES_UNKNOWN']+=unread
-                        for sym in session.last_trade:session.replay.detector.mark_coverage_gap(sym,datetime.now(KST),'OBSERVER_ROTATION_BACKLOG_GAP')
             time.sleep(min(poll,max(0,deadline-time.monotonic())))
         result=session.result()
         result.update(observer_cpu_budget_hits=budget_hits,observer_rows=rows,
@@ -155,9 +176,7 @@ def main(argv=None):
     if a.follow_root and a.day!=datetime.now(KST).date().isoformat():p.error('follow day must be today')
     if a.follow_root and a.evaluate_each_trade:p.error('per-trade research replay is forbidden in the live observer')
     cfg=read_settings(a.config,Config);auto=read_settings(a.automation,AutomationConfig)
-    if os.name=='nt':
-        import ctypes
-        ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(),0x40)
+    set_idle_priority()
     output.mkdir(parents=True)
     # Console mirroring is not another evidence journal; critical engine logs
     # and the persisted fake-account book remain intact in their owned root.

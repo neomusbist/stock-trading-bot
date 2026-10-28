@@ -14,10 +14,13 @@ TOOLS={'repo_guard.py','live_overlay.py','setup_local.py','export_source.py','se
 TOOLS.add('measure_runtime_budget.py')  # Reviewed read-only OS sampler; generated process evidence stays private.
 TOOLS.add('benchmark_all_strategies.py')  # Offline evidence audit and typed PAPER replay only.
 TOOLS.add('observe_paper.py')  # Read-only source tail; no broker connection or LIVE writes.
+TOOLS.add('c2_paper_follow.py')  # Bounded no-network C2 PAPER journal follower.
 TOOLS.add('c2_paper.py')  # Offline sealed PAPER experiment, never a LIVE activation.
 TOOLS.update({'reproduce_89_signals.py','full_universe_backtest.py','account_level_replay.py',
               'eval_1019_theoretical.py','build_1019_bars.py','run_all_replays.py'})
 CAUSAL_RESEARCH_FILES={
+    'audit/r6_unified_20261029/RESULTS.md',
+    'audit/r6_unified_20261029/ABC_SAFETY.patch',
     'research/paper_funnel.py',
     *('audit/r6_protection_20261029/'+n for n in ('RESULTS.md','RUNBOOK.md','SAFETY_CONTRACT.json','MEASURED_SUMMARY.json','OVERLAY_MANIFEST.json')),
     *('research/'+n for n in ('c2_retest.py','c2_validation.py','c2_exits.py')),

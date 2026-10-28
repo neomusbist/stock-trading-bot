@@ -1,0 +1,134 @@
+--- a/automation/patterns.py
++++ b/automation/patterns.py
+@@ -155,0 +156,4 @@
++        if any(not isinstance(b,dict) or any(not isinstance(b.get(k),(int,float)) or isinstance(b.get(k),bool)
++                       or not math.isfinite(b[k]) for k in ('open','high','low','close','volume'))
++               for b in bars[-min(len(bars),24):]):
++            return None,'PULLBACK_BAR_DATA_UNKNOWN',{}
+@@ -409,2 +413,4 @@
+-        # A/C가 신선한 실제 체결로 넘은 저항만 목표의 상한에서 제외한다.
+-        if setup['pattern']=='A' and resistance is not None and limit>=resistance:resistance=None
++        # A의 구조적 돌파 기준을 고정하고, 다른 상단 저항은 현재 호가로 지우지 않는다.
++        if (setup['pattern']=='A' and resistance is not None
++                and resistance<=setup.get('breakout',0) and t.price>setup.get('breakout',0)):
++            resistance=None
+@@ -683 +689 @@
+-                    'entry_zone':price_gates['risk_reward']['values']['entry_zone']} if name in {'A','B'} else {}),
++                    'entry_zone':price_gates['risk_reward']['values']['entry_zone']} if name in {'A','B','C'} else {}),
+@@ -785 +791 @@
+-        if setup['pattern'] in {'A','B'}:
++        if setup['pattern'] in {'A','B','C'}:
+@@ -787 +793 @@
+-            proof=breakout_evidence if setup['pattern']=='A' else structural
++            proof={'A':breakout_evidence,'B':structural,'C':box_evidence}.get(setup['pattern'])
+--- a/automation/runner.py
++++ b/automation/runner.py
+@@ -2,0 +3 @@
++import math
+@@ -1355,0 +1357,56 @@
++
++
++def fixed_trigger_a_watch(bars, trigger, watch, fresh, cfg, asof):
++    """Use known daily bars at the signal trigger, never the later decision ask."""
++    if isinstance(trigger,bool) or not isinstance(trigger,(int,float)) or not math.isfinite(trigger) or trigger<=0:
++        return None, 'A_STRUCTURE_TRIGGER_UNKNOWN'
++    try:
++        dates=[datetime.fromisoformat(str(bar['datetime'])[:10]).date() for bar in bars]
++        if any(day>=asof for day in dates) or dates!=sorted(set(dates)):
++            return None, 'A_RESISTANCE_REFERENCE_UNKNOWN'
++        trigger_view=structure(bars,trigger,replace(cfg,max_recent_range=.99,
++            max_overhead_share=1.0,min_resistance_room=0),asof)
++    except (TypeError,ValueError,KeyError,ArithmeticError):
++        return None, 'A_RESISTANCE_REFERENCE_UNKNOWN'
++    if trigger_view.get('status') not in {'ELIGIBLE','REJECT'} or 'resistance' not in trigger_view:
++        return None, 'A_RESISTANCE_REFERENCE_UNKNOWN'
++    levels=[]
++    for level in (watch.get('resistance'),fresh.get('resistance'),trigger_view.get('resistance')):
++        if level is None:continue
++        if isinstance(level,bool) or not isinstance(level,(int,float)) or not math.isfinite(level) or level<=0:
++            return None, 'A_RESISTANCE_REFERENCE_UNKNOWN'
++        if level>trigger:levels.append(level)
++    return {**watch,**fresh,'resistance':min(levels) if levels else None,
++            'a_resistance_search_basis':'KNOWN_DAILY_BARS_ABOVE_FIXED_STRUCTURE_TRIGGER'}, None
++
++
++def fresh_structure_rejection(engine, initial, watch, trials):
++    """Preserve the observed failure; claim a ceiling cause only if cost model proves it."""
++    trial=next((tr for tr in trials if tr.get('setup')==initial.get('pattern')),None)
++    reasons=(trial.get('failed_reasons') or []) if trial else []
++    primary='FRESH_STRUCTURE_SIGNAL_NOT_READY'
++    if 'RISK_REWARD_FAIL' in reasons:
++        primary='FRESH_STRUCTURE_RISK_REWARD_FAIL'
++    elif trial and trial.get('primary_reason_code'):
++        primary='FRESH_STRUCTURE_'+str(trial['primary_reason_code'])
++    ceiling=watch.get('resistance')
++    target=initial.get('target')
++    projected=initial.get('projection',target)
++    details={'signal_detected':False,'setup_trials':trials,
++             'breakout_level':initial.get('breakout'),
++             'confirmed_overhead_resistance':ceiling,'projected_target':projected,
++             'economic_reward_reference':None,'rejection_basis':primary}
++    valid=lambda v:isinstance(v,(int,float)) and not isinstance(v,bool) and math.isfinite(v) and v>0
++    if valid(target):
++        details['economic_reward_reference']=min(target,ceiling) if valid(ceiling) else target
++    if 'RISK_REWARD_FAIL' in reasons and valid(target) and valid(ceiling) and ceiling<target:
++        from automation.capital import signal_economics
++        try:
++            before=signal_economics(engine.c,engine.a,initial)
++            capped=signal_economics(engine.c,engine.a,{**initial,'target':ceiling})
++        except (TypeError,ValueError,KeyError,ArithmeticError):
++            before=capped={}
++        if before.get('status')=='KNOWN' and before.get('rr_pass') is True and capped.get('status')=='KNOWN' and capped.get('rr_pass') is False:
++            primary='FRESH_RESISTANCE_REWARD_INSUFFICIENT'
++            details['rejection_basis']='OVERHEAD_CEILING_COMPRESSED_NET_RR'
++    return primary,details
+@@ -1511,0 +1569,10 @@
++        initial_sig=dict(sig)
++        initial_pattern=sig.get('pattern')
++        initial_breakout=sig.get('breakout')
++        if initial_pattern=='A':
++            fresh_observation_watch,reason=fixed_trigger_a_watch(
++                bars,initial_breakout,watch,fresh,engine.c,t.time.date())
++            if reason:
++                engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY',reason,signal=sig,price=t.price)
++                engine.event('NO_TRADE',symbol=t.symbol,reason=reason)
++                return None
+@@ -1516,3 +1583,10 @@
+-            engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','FRESH_STRUCTURE_SIGNAL_NOT_READY',
+-                detector.evaluation_gates(t,{**watch,**fresh}),price=t.price,
+-                extra={'signal_detected':False,'setup_trials':detector.last_eval.get(t.symbol,{}).get('trials',[])})
++            trials=detector.last_eval.get(t.symbol,{}).get('trials',[])
++            reason,details=fresh_structure_rejection(engine,initial_sig,fresh_observation_watch,trials)
++            engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY',reason,
++                detector.evaluation_gates(t,fresh_observation_watch),signal=initial_sig,price=t.price,
++                extra=details)
++            return None
++        if initial_pattern=='A' and (sig.get('pattern')!='A' or sig.get('breakout')!=initial_breakout):
++            engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','FRESH_SETUP_CHANGED',signal=sig,price=t.price,
++                extra={'initial_breakout':initial_breakout,'fresh_breakout':sig.get('breakout')})
++            engine.event('NO_TRADE',symbol=t.symbol,reason='FRESH_SETUP_CHANGED')
+--- a/automation/engine.py
++++ b/automation/engine.py
+@@ -208 +208 @@
+-        if signal.get('pattern') in {'A','B'}:
++        if signal.get('pattern') in {'A','B','C'}:
+@@ -238 +238 @@
+-            if (p.get('signal') or {}).get('pattern',p.get('pattern')) in {'A','B'}:
++            if (p.get('signal') or {}).get('pattern',p.get('pattern')) in {'A','B','C'}:
+@@ -249 +249 @@
+-            if sig.get('pattern') in {'A','B'}:
++            if sig.get('pattern') in {'A','B','C'}:
+@@ -391 +391 @@
+-        if self.a.exit_plan_reward_guard_enabled or signal.get('pattern') in {'A','B'}:
++        if self.a.exit_plan_reward_guard_enabled or signal.get('pattern') in {'A','B','C'}:
+@@ -688 +688 @@
+-        if (self.a.exit_plan_reward_guard_enabled or signal.get('pattern') == 'B') and not signal['exit_plan']['reward_guard_pass']:
++        if (self.a.exit_plan_reward_guard_enabled or signal.get('pattern') in {'B','C'}) and not signal['exit_plan']['reward_guard_pass']:
+--- a/automation/exit_plan.py
++++ b/automation/exit_plan.py
+@@ -72 +72 @@
+-    if signal.get('pattern') in {'A','B'}:
++    if signal.get('pattern') in {'A','B','C'}:
+@@ -111 +111 @@
+-            'reward_guard_enabled': auto.exit_plan_reward_guard_enabled or setup in {'A','B'},
++            'reward_guard_enabled': auto.exit_plan_reward_guard_enabled or setup in {'A','B','C'},
