@@ -9,7 +9,7 @@ from core.broker import Rejected
 from core.settings import KST
 from core.market_time import market_freshness,tick_freshness,book_freshness
 from core.util import code, floor_tick,tick_size,read_json_retry,atomic_json
-from automation.capital import COMMON_COST_PATTERNS, Costs, initial_allocation, owned_equity
+from automation.capital import Costs, initial_allocation, owned_equity
 from automation.policy import LEGACY_SYMBOL,BREAKEVEN_EXITS,TEST_RELEASE_SYMBOL,HARD_LOCKS,legacy_test_release_enabled
 from automation.session import supported, SessionPlan, AfterSessionPlan, after_supported, after_entry_supported, current_session
 from automation.decisions import DecisionLog,gate,STRATEGY_VERSION,BUILD_ID,STRATEGY_EXPERIMENT,safe_values
@@ -205,7 +205,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
         risk_qty=int(risk_budget//unit) if unit>0 else 0
         fresh=self.capital_account_valid()
         economics=None
-        if signal.get('pattern') in COMMON_COST_PATTERNS:
+        if signal.get('pattern') in {'A','B','C'}:
             from automation.capital import signal_economics,entry_quantity
             economics=signal_economics(self.c,self.a,signal)
             sized=entry_quantity(economics,amount,risk_budget)
@@ -235,7 +235,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
         used=0.
         for p in self.s['positions'].values():
             if p.get('ownership','BOT')!='BOT':continue
-            if (p.get('signal') or {}).get('pattern',p.get('pattern')) in COMMON_COST_PATTERNS:
+            if (p.get('signal') or {}).get('pattern',p.get('pattern')) in {'A','B','C'}:
                 from automation.exit_plan import invalidation_lines
                 emergency=invalidation_lines(self.c,self.a,p)['emergency']
                 unit=loss_reserve(p['avg'],emergency,self.costs,filled=True)
@@ -246,7 +246,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
             used+=unit*p['qty']
         for o in self.active_orders(side='BUY') if buys is None else buys:
             sig=o.get('signal') or {};stop=sig.get('stop',o['limit'])
-            if sig.get('pattern') in COMMON_COST_PATTERNS:
+            if sig.get('pattern') in {'A','B','C'}:
                 from automation.capital import signal_economics
                 econ=signal_economics(self.c,self.a,{**sig,'limit':o['limit']})
                 if econ.get('status')!='KNOWN':return self.daily_risk_budget()
@@ -359,7 +359,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
         breakout=signal.get('evaluation_gates',{}).get('breakout',{}).get('values',{}).get('breakout')
         timing=tick_freshness(tick,self.clock(),self.c.stale_seconds)
         return qty,{**signal.get('evaluation_gates',{}),
-            'breakout_quote':gate(breakout is None or ((tick.price>=breakout and tick.ask>=breakout and signal['limit']>=breakout) if signal.get('pattern') in {'D','E'} else (tick.price>breakout and tick.ask>breakout and signal['limit']>breakout)),
+            'breakout_quote':gate(breakout is None or (tick.price>breakout and tick.ask>breakout and signal['limit']>breakout),
                 breakout=breakout,price=tick.price,ask=tick.ask,entry=signal['limit']),
             'policy':gate(not reason,reason=reason,mode=self.policy.mode,live_mode=self.c.live_mode,approved_cap=self.a.capital_limit,costs_confirmed=self.a.costs_confirmed),
             'market_status':gate(self.market_status.get(sym,{}).get('pass'),status=self.market_status.get(sym)),
@@ -388,7 +388,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
                 return 'CRITICAL_LOW_DISK_SPACE'
         except Exception:
             return 'CRITICAL_LOW_DISK_SPACE'
-        if self.a.exit_plan_reward_guard_enabled or signal.get('pattern') in COMMON_COST_PATTERNS:
+        if self.a.exit_plan_reward_guard_enabled or signal.get('pattern') in {'A','B','C'}:
             from automation.exit_plan import build_plan
             signal['exit_plan']=build_plan(self.c,self.a,signal,quantity=quantity)
             if not signal['exit_plan']['reward_guard_pass']:return 'EXIT_PLAN_REWARD_UNKNOWN_OR_LOW'
@@ -569,10 +569,8 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
             # which can fill later after its momentum premise has changed.
             if signal['limit']<tick.ask:return 'ENTRY_QUOTE_ABOVE_LIMIT'
         if breakout is not None:
-            if (tick.price<breakout or tick.ask<breakout or signal['limit']<breakout) if signal.get('pattern') in {'D','E'} else (tick.price<=breakout or tick.ask<=breakout or signal['limit']<=breakout):return 'BREAKOUT_QUOTE_NOT_CONFIRMED'
-            if signal.get('pattern') == 'E':
-                if (signal.get('peak') and tick.ask > signal['peak']) or (tick.ask-tick.price)/tick.price>self.c.max_chase: return 'ENTRY_CHASE_CHANGED'
-            elif max(tick.price,signal['limit'])/breakout-1>self.c.max_chase:return 'ENTRY_CHASE_CHANGED'
+            if tick.price<=breakout or tick.ask<=breakout or signal['limit']<=breakout:return 'BREAKOUT_QUOTE_NOT_CONFIRMED'
+            if max(tick.price,signal['limit'])/breakout-1>self.c.max_chase:return 'ENTRY_CHASE_CHANGED'
         # FAST's executable-depth requirement also applies in the regular
         # session. A fresh signal is not proof of liquidity at PRE_HTTP.
         if self.current_session()=='AFTER' or signal.get('pattern')=='FAST':
@@ -594,9 +592,21 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
             if min(ask_qty,bid_qty)<max(1,quantity):return 'ENTRY_DEPTH_BELOW_ACTUAL_QUANTITY'
         return None
 
+    def research_paper_allowed(self,signal):
+        """Research entries may reach only the explicitly sealed offline broker."""
+        if not isinstance(signal,dict):return False
+        research=(signal.get('paper_only') is True or signal.get('pattern') in {'D','E','E2'}
+                  or signal.get('research_strategy') in {'D','E','E2','C2'})
+        if not research:return True
+        broker=type(self.broker)
+        return (getattr(self,'paper_mode',False) is True
+                and broker.__module__=='research.causal_account'
+                and broker.__name__=='QuoteReplayBroker'
+                and self.policy.state.get('PAPER_FIXTURE_ONLY') is True)
+
     def enter(self,signal,tick):
         if not self.research_paper_allowed(signal):
-            self.decisions.emit('ENTRY_EVAL',tick.symbol,'NO_BUY','C2_PAPER_ONLY',signal=signal,price=tick.price)
+            self.decisions.emit('ENTRY_EVAL',tick.symbol,'NO_BUY','RESEARCH_PAPER_ONLY',signal=signal,price=tick.price)
             return None
         if signal.get('pattern') in ('EarlyMomentumBreakout', 'PullbackReclaimBreakout'):
             if not (getattr(self.a, 'enable_redesign_live', False) and getattr(self.c, 'enable_redesign_live', False)):
@@ -690,7 +700,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
                        ttl_seconds=signal.get('ttl_seconds', 15.0), ask=tick.ask, limit=signal['limit'])
         from automation.exit_plan import build_plan
         signal['exit_plan']=build_plan(self.c,self.a,signal,quantity=qty)
-        if (self.a.exit_plan_reward_guard_enabled or signal.get('pattern') in COMMON_COST_PATTERNS) and not signal['exit_plan']['reward_guard_pass']:
+        if (self.a.exit_plan_reward_guard_enabled or signal.get('pattern') in {'B','C'}) and not signal['exit_plan']['reward_guard_pass']:
             self.decisions.emit('ENTRY_EVAL',tick.symbol,'NO_BUY','EXIT_PLAN_REWARD_UNKNOWN_OR_LOW',
                 {'exit_plan_reward':gate(False,plan=signal['exit_plan'])},signal=signal,price=tick.price)
             return None
@@ -707,10 +717,9 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
         finally: self.entry_intent=None;self.entry_tick=None
 
     def submit(self,side,symbol,qty,limit=0,signal=None):
-        research_signal=signal or self.s['positions'].get(symbol,{}).get('signal') or {}
-        if not self.research_paper_allowed(research_signal):return None
         # 강제로 생성한 주문도 같은 경계를 통과하며 ARMED에는 모의체결도 만들지 않는다.
         if not self.is_supported_now() or symbol in HARD_LOCKS or self.policy.locked(symbol): return None
+        if side=='BUY' and signal and not self.research_paper_allowed(signal): return None
         if side=='BUY' and signal and (signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or signal.get('diagnostic_only') is True): return None
         if side=='BUY' and self.new_entry_reason(symbol): return None
         if side=='BUY' and (signal is not self.entry_intent or signal is None): return None
@@ -743,6 +752,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
 
     def live_order_allowed(self,side,symbol,qty,limit,signal):
         if symbol in HARD_LOCKS: return False
+        if side=='BUY' and signal and not self.research_paper_allowed(signal): return False
         if side=='BUY':
             try:
                 from automation.storage_governor import check_disk_safety_gate
@@ -819,8 +829,6 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
                     if bad_kw in raw_text: raise Rejected(r_code)
         intents=[o for o in self.active_orders(sym,side) if o['status']=='INTENT' and o['qty']==qty and o['limit']==limit]
         if len(intents)!=1: raise Rejected('저장된 봇 주문 의도 없는 직접 주문 차단')
-        research_signal=intents[0].get('signal') or self.s['positions'].get(sym,{}).get('signal') or {}
-        if not self.research_paper_allowed(research_signal):raise Rejected('C2_PAPER_ONLY')
         if side=='BUY':
             st=self.market_status.get(sym,{})
             if st.get('vi_active') or st.get('single_price_auction'):
@@ -831,6 +839,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
             if self.s.get('halt'):
                 raise Rejected(f'HALT 상태: 신규 매수 차단 ({self.s["halt"]})')
             signal=intents[0].get('signal') or {}
+            if not self.research_paper_allowed(signal):raise Rejected('RESEARCH_PAPER_ONLY')
             if signal.get('SHADOW_ONLY') is True or signal.get('actual_order_permission') is False or signal.get('diagnostic_only') is True or ('source_count' in signal and signal['source_count']<max(2,self.a.min_source_count) and not signal.get('fallback_source1')):raise Rejected('OBSERVATION_NOT_BUY_PERMISSION')
             breakout=signal.get('evaluation_gates',{}).get('breakout',{}).get('values',{}).get('breakout')
             if breakout is not None and limit<=breakout:raise Rejected('BREAKOUT_QUOTE_NOT_CONFIRMED')
@@ -876,12 +885,6 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
                 intents[0]['protection_authority']=proof
                 self.save()  # exact reduced authority must be durable before transport
         if side=='BUY' and time.monotonic()-self.last_account>self.c.reconcile_seconds*3: raise Rejected('계좌 대조 지연')
-
-    def research_paper_allowed(self,signal):
-        if signal.get('research_strategy')!='C2':return True
-        broker=type(self.broker)
-        return (getattr(self,'paper_mode',False) is True and broker.__module__=='research.causal_account'
-                and broker.__name__=='QuoteReplayBroker' and self.policy.state.get('PAPER_FIXTURE_ONLY') is True)
 
     def can_exit(self,symbol,p):
         sess=self.current_session()

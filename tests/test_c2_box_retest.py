@@ -103,7 +103,7 @@ class C2Tests(unittest.TestCase):
         e.paper_mode=True  # flag alone cannot turn a real/unknown broker into the sealed fake broker
         self.assertIsNone(e.enter(signal,f.tick));wire.submit.assert_not_called()
         e.s['orders']['C2-FAKE']=dict(local='C2-FAKE',id='',symbol=SYM,side='BUY',qty=1,limit=10050,status='INTENT',signal=signal)
-        with self.assertRaisesRegex(Rejected,'C2_PAPER_ONLY'):e.order_guard('kt10000',{'stk_cd':SYM,'ord_qty':'1','ord_uv':'10050'})
+        with self.assertRaisesRegex(Rejected,'RESEARCH_PAPER_ONLY|C2_PAPER_ONLY'):e.order_guard('kt10000',{'stk_cd':SYM,'ord_qty':'1','ord_uv':'10050'})
 
     def test_stale_account_keeps_exit_intent_and_records_protection_block_without_zeroing_account(self):
         r=self.replay();order,f=populate(r);r.step(packet(f.available_at+timedelta(seconds=1),10050,f.tick.cumulative+5000,5000,symbol=SYM,depth=10000))

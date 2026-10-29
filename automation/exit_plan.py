@@ -7,7 +7,6 @@ from copy import deepcopy
 from datetime import datetime, timedelta
 import math
 from core.util import floor_tick, tick_size
-from automation.capital import COMMON_COST_PATTERNS
 
 
 def number(value):
@@ -70,7 +69,7 @@ def build_plan(cfg, auto, signal, entry=None, quantity=None, filled=False):
     risk_net = (entry-risk_stop+entry*auto.commission_buy+risk_stop*(auto.commission_sell+auto.sell_tax+cfg.exit_slippage_fraction)) if valid_risk else None
     net_rr = reward_net/risk_net if reward_net is not None and risk_net and risk_net > 0 else None
     economics=None
-    if signal.get('pattern') in COMMON_COST_PATTERNS:
+    if signal.get('pattern') in {'A','B','C'}:
         from automation.capital import signal_economics
         economics=signal_economics(cfg,auto,signal,entry=entry,filled=filled,
             actual_entry_fee_per_share=signal.get('actual_entry_fee_per_share') if filled else None)
@@ -94,7 +93,7 @@ def build_plan(cfg, auto, signal, entry=None, quantity=None, filled=False):
                   '신선한 호가·체결의 비상선 이탈', '실제 전역 데이터 장애 확인', 'STOP_FLAT/KILL 청산 요청']
     if burst: conditions.append('AFTER 급등 후 낮은 반등 및 3개 확정봉 하락 실패')
     deadline = (auto.after_force_flatten_start if session == 'AFTER' else auto.force_flatten_start) if not auto.ALLOW_OVERNIGHT else None
-    return {'version': 1, 'setup': setup, 'entry_logic': {'A': '관측 돌파 또는 확정 상승 지속', 'B': '상승 후 확인된 눌림 회복', 'C': '관측 박스 돌파', 'E': '지지 확인 후 재상승 회복', 'FAST': '실시간 마이크로 구조 모멘텀 진입'}.get(setup, '진입 근거 미확인'),
+    return {'version': 1, 'setup': setup, 'entry_logic': {'A': '관측 돌파 또는 확정 상승 지속', 'B': '상승 후 확인된 눌림 회복', 'C': '관측 박스 돌파', 'FAST': '실시간 마이크로 구조 모멘텀 진입'}.get(setup, '진입 근거 미확인'),
             'entry': entry, 'quantity': quantity, 'entry_basis': 'ACTUAL_AVERAGE_FILL' if filled else 'ORDER_LIMIT',
             'initial_invalidation': structure, 'initial_emergency': emergency, 'initial_price_risk': risk,
             'one_r_price': entry+risk if valid_risk else None,
@@ -109,7 +108,7 @@ def build_plan(cfg, auto, signal, entry=None, quantity=None, filled=False):
             'net_reward_risk': net_rr, 'minimum_net_reward_risk': cfg.min_reward_risk,
             'entry_economics':economics,'maximum_entry_price':economics.get('max_entry_price') if economics else None,
             'reward_guard_pass': bool((economics['rr_pass'] if economics is not None else net_rr is not None and net_rr >= cfg.min_reward_risk) and valid_target and valid_risk),
-            'reward_guard_enabled': auto.exit_plan_reward_guard_enabled or setup in COMMON_COST_PATTERNS,
+            'reward_guard_enabled': auto.exit_plan_reward_guard_enabled or setup in {'A','B','C'},
             'cost_basis': '설정 비용·슬리피지 추정; 청산 후 증권사 비용으로 정산', 'costs': costs,
             'profit_policy': 'AE3', 'confirmed_pivot_protection': confirmed,
             'profit_activation': '1R 이후 비용을 넘는 확정 높은 저점' if confirmed else '1R 이후 기존 트레일링·수익 반납선',

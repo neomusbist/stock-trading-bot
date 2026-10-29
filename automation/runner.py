@@ -1,5 +1,6 @@
 """일봉/계좌 조회는 별도 스레드, 주문/체결/보호 상태는 주 스레드 하나에서 변경한다."""
 import copy
+import math
 import os
 from contextlib import nullcontext
 from operator_process import process_identity
@@ -1355,6 +1356,62 @@ def evaluate_observed_entry(engine,detector,t,received,lookup,radar,prices,accou
     return evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,engine._last_eval_frame,quote_retry=quote_retry)
 
 
+def fixed_trigger_a_watch(bars, trigger, watch, fresh, cfg, asof):
+    """Use known daily bars at the signal trigger, never the later decision ask."""
+    if isinstance(trigger,bool) or not isinstance(trigger,(int,float)) or not math.isfinite(trigger) or trigger<=0:
+        return None, 'A_STRUCTURE_TRIGGER_UNKNOWN'
+    try:
+        dates=[datetime.fromisoformat(str(bar['datetime'])[:10]).date() for bar in bars]
+        if any(day>=asof for day in dates) or dates!=sorted(set(dates)):
+            return None, 'A_RESISTANCE_REFERENCE_UNKNOWN'
+        trigger_view=structure(bars,trigger,replace(cfg,max_recent_range=.99,
+            max_overhead_share=1.0,min_resistance_room=0),asof)
+    except (TypeError,ValueError,KeyError,ArithmeticError):
+        return None, 'A_RESISTANCE_REFERENCE_UNKNOWN'
+    if trigger_view.get('status') not in {'ELIGIBLE','REJECT'} or 'resistance' not in trigger_view:
+        return None, 'A_RESISTANCE_REFERENCE_UNKNOWN'
+    levels=[]
+    for level in (watch.get('resistance'),fresh.get('resistance'),trigger_view.get('resistance')):
+        if level is None:continue
+        if isinstance(level,bool) or not isinstance(level,(int,float)) or not math.isfinite(level) or level<=0:
+            return None, 'A_RESISTANCE_REFERENCE_UNKNOWN'
+        if level>trigger:levels.append(level)
+    return {**watch,**fresh,'resistance':min(levels) if levels else None,
+            'a_resistance_search_basis':'KNOWN_DAILY_BARS_ABOVE_FIXED_STRUCTURE_TRIGGER'}, None
+
+
+def fresh_structure_rejection(engine, initial, watch, trials):
+    """Preserve the observed failure; claim a ceiling cause only if cost model proves it."""
+    trial=next((tr for tr in trials if tr.get('setup')==initial.get('pattern')),None)
+    reasons=(trial.get('failed_reasons') or []) if trial else []
+    primary='FRESH_STRUCTURE_SIGNAL_NOT_READY'
+    if 'RISK_REWARD_FAIL' in reasons:
+        primary='FRESH_STRUCTURE_RISK_REWARD_FAIL'
+    elif trial and trial.get('primary_reason_code'):
+        primary='FRESH_STRUCTURE_'+str(trial['primary_reason_code'])
+    ceiling=watch.get('resistance')
+    target=initial.get('target')
+    projected=initial.get('projection',target)
+    details={'signal_detected':False,'setup_trials':trials,
+             'breakout_level':initial.get('breakout'),
+             'confirmed_overhead_resistance':ceiling,'projected_target':projected,
+             'economic_reward_reference':None,'rejection_basis':primary}
+    valid=lambda v:isinstance(v,(int,float)) and not isinstance(v,bool) and math.isfinite(v) and v>0
+    if valid(target):
+        details['economic_reward_reference']=min(target,ceiling) if valid(ceiling) else target
+    if 'RISK_REWARD_FAIL' in reasons and valid(target) and valid(ceiling) and ceiling<target:
+        from automation.capital import signal_economics
+        try:
+            before=signal_economics(engine.c,engine.a,initial)
+            capped=signal_economics(engine.c,engine.a,{**initial,'target':ceiling})
+        except (TypeError,ValueError,KeyError,ArithmeticError):
+            before=capped={}
+        if before.get('status')=='KNOWN' and before.get('rr_pass') is True and capped.get('status')=='KNOWN' and capped.get('rr_pass') is False:
+            primary='FRESH_RESISTANCE_REWARD_INSUFFICIENT'
+            details['rejection_basis']='OVERHEAD_CEILING_COMPRESSED_NET_RR'
+    return primary,details
+
+
 def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_evaluated_frame=None,*,quote_retry=False):
     capture=getattr(engine,'trade_review',None)
     if capture is not None and hasattr(capture,'bind_entry_context'):
@@ -1502,75 +1559,41 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
     else:
         from automation.entry_timing import annotate_signal
         annotate_signal(engine,detector,watch,sig)
-        initial_sig = dict(sig)
-        initial_pattern = sig.get('pattern')
-        breakout_level = initial_sig.get('breakout')
-        projected_target = initial_sig.get('projection') or initial_sig.get('target')
-
-        fresh=structure(bars,sig['limit'],replace(engine.c,max_recent_range=.99,max_overhead_share=1.0 if sig['pattern'] in {'A','C','D','E'} else engine.c.max_overhead_share,min_resistance_room=0 if sig['pattern'] in {'A','C','D','E'} else engine.c.min_resistance_room),t.time.date())
+        fresh=structure(bars,sig['limit'],replace(engine.c,max_recent_range=.99,min_resistance_room=0 if sig['pattern'] in {'A','C'} else engine.c.min_resistance_room),t.time.date())
         if fresh.get('status')!='ELIGIBLE':
             from automation.decisions import gate
             engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','STRUCTURE_REJECTED',
                 {'structure':gate(False,**fresh)},signal=sig,price=t.price)
             engine.event('NO_TRADE',symbol=t.symbol,reason=fresh['reason']); return None
-
-        fresh_watch={**watch,**fresh}
-        confirmed_overhead_resistance = fresh.get('resistance') or watch.get('resistance')
-        if initial_pattern=='A' and breakout_level:
-            # Search ABOVE THE FIXED TRIGGER, never above the moving ask. This
-            # retains a known ceiling even if the decision print overshot it.
-            trigger_view=structure(bars,breakout_level,
-                replace(engine.c,max_recent_range=.99,max_overhead_share=1.0,min_resistance_room=0),t.time.date())
-            candidates=[v for v in (watch.get('resistance'),trigger_view.get('resistance'))
-                        if type(v) in (int,float) and v>breakout_level]
-            if candidates:confirmed_overhead_resistance=min(candidates)
-            fresh_watch['a_resistance_search_basis']='KNOWN_DAILY_BARS_ABOVE_FIXED_STRUCTURE_TRIGGER'
-        if confirmed_overhead_resistance is not None:
-            fresh_watch['resistance'] = confirmed_overhead_resistance
-
+        fresh_observation_watch={**watch,**fresh}
+        initial_sig=dict(sig)
+        initial_pattern=sig.get('pattern')
+        initial_breakout=sig.get('breakout')
+        if initial_pattern=='A':
+            fresh_observation_watch,reason=fixed_trigger_a_watch(
+                bars,initial_breakout,watch,fresh,engine.c,t.time.date())
+            if reason:
+                engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY',reason,signal=sig,price=t.price)
+                engine.event('NO_TRADE',symbol=t.symbol,reason=reason)
+                return None
         if capture is not None and hasattr(capture,'bind_entry_context'):
-            capture.bind_entry_context(t,fresh_watch,detector,engine.clock())
-
-        sig=detector.signal(t,fresh_watch)
+            capture.bind_entry_context(t,fresh_observation_watch,detector,engine.clock())
+        sig=detector.signal(t,fresh_observation_watch)
         if not sig:
-            trials = detector.last_eval.get(t.symbol, {}).get('trials', [])
-            matching_trial = next((tr for tr in trials if tr.get('setup') == initial_pattern), None)
-            fail_reasons = (matching_trial.get('failed_reasons') or []) if matching_trial else []
-            if 'RISK_REWARD_FAIL' in fail_reasons:
-                primary_code = 'FRESH_RESISTANCE_REWARD_INSUFFICIENT'
-            elif matching_trial and matching_trial.get('primary_reason_code'):
-                primary_code = f"FRESH_STRUCTURE_{matching_trial['primary_reason_code']}"
-            else:
-                primary_code = 'FRESH_STRUCTURE_SIGNAL_NOT_READY'
-
-            economic_reward_ref = (
-                min(projected_target, confirmed_overhead_resistance)
-                if (confirmed_overhead_resistance is not None and confirmed_overhead_resistance > t.price)
-                else projected_target
-            )
-            semantic_evidence = {
-                'breakout_level': breakout_level,
-                'confirmed_overhead_resistance': confirmed_overhead_resistance,
-                'projected_target': projected_target,
-                'economic_reward_reference': economic_reward_ref,
-                'signal_detected': False,
-                'setup_trials': trials,
-                'rejection_basis': 'OVERHEAD_CEILING_COMPRESSED_NET_RR' if 'RISK_REWARD_FAIL' in fail_reasons else primary_code
-            }
-            engine.decisions.emit('ENTRY_EVAL', t.symbol, 'NO_BUY', primary_code,
-                detector.evaluation_gates(t, fresh_watch), price=t.price,
-                signal=initial_sig,
-                extra=semantic_evidence)
-            engine.event('NO_TRADE', symbol=t.symbol, reason=primary_code)
+            trials=detector.last_eval.get(t.symbol,{}).get('trials',[])
+            reason,details=fresh_structure_rejection(engine,initial_sig,fresh_observation_watch,trials)
+            engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY',reason,
+                detector.evaluation_gates(t,fresh_observation_watch),signal=initial_sig,price=t.price,
+                extra=details)
             return None
-
+        if initial_pattern=='A' and (sig.get('pattern')!='A' or sig.get('breakout')!=initial_breakout):
+            engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','FRESH_SETUP_CHANGED',signal=sig,price=t.price,
+                extra={'initial_breakout':initial_breakout,'fresh_breakout':sig.get('breakout')})
+            engine.event('NO_TRADE',symbol=t.symbol,reason='FRESH_SETUP_CHANGED')
+            return None
         sig['name']=watch.get('name')
         annotate_signal(engine,detector,watch,sig)
         sig['fallback_source1']=bool(watch.get('fallback_source1'))
-        sig['breakout_level'] = breakout_level
-        sig['confirmed_overhead_resistance'] = confirmed_overhead_resistance
-        sig['projected_target'] = projected_target
-        sig['economic_reward_reference'] = sig.get('target')
     for sym,p in (list(engine.s['positions'].items()) if engine.a.replacement_enabled else []):
         if sym==t.symbol or p.get('exit_requested'): continue
         history=radar.cache.get((t.time.date(),sym)); price=prices.get(sym)
@@ -1592,9 +1615,6 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
     if prior.get(t.symbol)!=key:
         engine.event('ENTRY_CONTEXT_AUDIT',symbol=t.symbol,setup=sig.get('pattern'),review=context)
         prior[t.symbol]=key;engine._entry_context_keys=prior
-    if sig.get('paper_only') and (engine.policy.mode == 'LIVE' and not getattr(engine, 'paper_mode', False)):
-        engine.event('SIGNAL_BLOCKED', symbol=t.symbol, reason='PAPER_STRATEGY_BLOCKED_IN_LIVE')
-        return None
     o=engine.enter(sig,t)
     account.need_fills=bool(engine.active_orders() or engine.s['positions'])
     return o
@@ -1630,6 +1650,8 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
     if tr=='REG':
         if message.get('return_code') not in (0,'0'):
             engine.halt('실시간 구독 실패'); return 0
+        # Group ACK is not per-symbol continuity; no 0D chain spans a refresh.
+        if hasattr(detector,'clear_no_trade_chain'):detector.clear_no_trade_chain()
         if not engine.connected:
             if getattr(engine,'reset_detector',True): detector.reset()
             engine.reset_detector=False; engine.account_ok=False; account.request.set()
@@ -1651,6 +1673,20 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
             if health is not None and book:
                 health.accept_book(item['item'],book,engine.clock())
             sym=item['item']
+            if hasattr(detector,'note_no_trade_book'):
+                try:
+                    if (book and engine.connected and subscriptions is not None
+                            and sym in subscriptions.symbols and not subscriptions.refresh_pending
+                            and sym not in subscriptions.waiting):
+                        detector.note_no_trade_book(sym,received,book,item.get('_subscription_item'))
+                    else:detector.clear_no_trade_chain(sym)
+                except Exception:
+                    # Evidence collection must not stop book, order or protection handling.
+                    # Until the detector is reset, no interrupted chain can prove a gap.
+                    detector._no_trade_evidence_broken=True
+                    try:detector.clear_no_trade_chain(sym)
+                    except Exception:pass
+                    engine._no_trade_evidence_errors=getattr(engine,'_no_trade_evidence_errors',0)+1
             if book and radar_ok and engine.connected and (sym in lookup or (by_symbol and sym in by_symbol)) and _quote_blocked(engine,detector,sym):
                 if not hasattr(engine,'_quote_entry_pending'):engine._quote_entry_pending={}
                 engine._quote_entry_pending[sym]=True

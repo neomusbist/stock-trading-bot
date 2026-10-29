@@ -12,7 +12,6 @@ from automation.allocation import efficiency
 from automation.session import supported, after_supported
 from automation.decisions import gate,tick_source_identity
 from automation.price_context import PriceContext
-from automation.capital import COMMON_COST_PATTERNS
 
 def observation_locked(method):
     @wraps(method)
@@ -31,6 +30,8 @@ class PatternDetector(Detector):
         self.continuous_observation=False
         self.last_gap_reason={}
         self.coverage_gaps={}
+        self._no_trade_book_chains={}
+        self._no_trade_evidence_broken=False
         self.observation_start={}; self.observation_session={}
         self._entry_geometry_cache={}
         self._bar_structure_cache={}
@@ -44,6 +45,8 @@ class PatternDetector(Detector):
         self.after_day_high.clear(); self.after_prior_high.clear()
         self.last_eval.clear(); self.last_gap_reason.clear()
         self.coverage_gaps.clear()
+        self._no_trade_book_chains.clear()
+        self._no_trade_evidence_broken=False
         self._eval_keys.clear()
         self.observation_start.clear(); self.observation_session.clear()
         self._entry_geometry_cache.clear()
@@ -51,108 +54,270 @@ class PatternDetector(Detector):
         self._setup_gates_cache.clear()
 
     @observation_locked
-    def ingest(self,t,received):
-        if (not supported(t.time) and not after_supported(t.time)) or (not supported(received) and not after_supported(received)): return False
-        gap=self.coverage_gaps.get(t.symbol)
-        if gap and received<=gap['at']:return False
-        resuming=bool(gap and gap.get('pending'))
-        old=self.last.get(t.symbol)
-        if not super().ingest(t,received,preserve_observation=self.continuous_observation): return False
-        if resuming:
-            gap['pending']=False
-            self.observation_start[t.symbol]=t.time
-        if old and (t.time-old.time).total_seconds()>self.cfg.stale_seconds and not self.continuous_observation:
-            self.history.pop(t.symbol,None); self.current.pop(t.symbol,None)
-            self.last_gap_reason[t.symbol]='DISCONNECT_GAP'
-            self.observation_start.pop(t.symbol,None)
-        session=(t.time.date(),'AFTER' if after_supported(t.time) else 'REGULAR')
-        if t.symbol not in self.observation_start or self.observation_session.get(t.symbol)!=session:
-            self.observation_start[t.symbol]=t.time; self.observation_session[t.symbol]=session
-        minute=t.time.replace(second=0,microsecond=0); b=self.current.get(t.symbol)
-        if t.time.strftime('%H:%M:%S')>='15:40:00':
-            self.after_prior_high.setdefault(t.symbol,t.price)
-            if b and b['time']!=minute:
-                self.after_prior_high[t.symbol]=self.after_day_high.get(t.symbol,t.price)
-            self.after_day_high[t.symbol]=max(t.price,self.after_day_high.get(t.symbol,t.price))
+    def clear_no_trade_chain(self,symbol=None):
+        """A group refresh or actual coverage gap invalidates the local book chain."""
+        if symbol is None:self._no_trade_book_chains.clear()
+        else:self._no_trade_book_chains.pop(symbol,None)
+
+    @observation_locked
+    def note_no_trade_book(self,symbol,received,book,wire_symbol):
+        """Record actual subscription-specific 0D receipts without assuming trades."""
+        chain=self._no_trade_book_chains
+        if self._no_trade_evidence_broken:return False
+        if (not isinstance(received,datetime) or received.tzinfo is None or not isinstance(book,dict)
+                or not isinstance(wire_symbol,str) or wire_symbol not in {symbol,symbol+'_NX',symbol+'_AL'}
+                or self.coverage_gaps.get(symbol,{}).get('pending')):
+            chain.pop(symbol,None);return False
+        venue='NXT' if wire_symbol.endswith('_NX') else 'SOR' if wire_symbol.endswith('_AL') else 'KRX'
+        try:
+            recorded=datetime.fromisoformat(book['received_at'])
+            mono=book['received_monotonic']
+            if recorded.tzinfo is None or recorded!=received or type(mono) not in (int,float) or not math.isfinite(mono):raise ValueError()
+        except (KeyError,TypeError,ValueError):
+            chain.pop(symbol,None);return False
+        previous=chain.get(symbol)
+        if (not previous or previous['venue']!=venue or mono<=previous['last_mono']
+                or mono-previous['last_mono']>self.cfg.stale_seconds or received<previous['last_received']):
+            chain[symbol]={'venue':venue,'first_mono':mono,'last_mono':mono,'last_received':received,'count':1}
         else:
-            self.prior_high.setdefault(t.symbol,t.price)
+            previous.update(last_mono=mono,last_received=received,count=previous['count']+1)
+        return True
+
+    def _no_trade_chain_covers(self,old,t,received):
+        """Prove local observed 0D cadence over the gap; exchange packet loss remains unprovable."""
+        if self._no_trade_evidence_broken:return False
+        chain=self._no_trade_book_chains.get(t.symbol)
+        start=getattr(old,'received_monotonic',None);end=getattr(t,'received_monotonic',None)
+        if not chain or chain['count']<2 or chain['venue']!=t.venue:return False
+        if type(start) not in (int,float) or type(end) not in (int,float):return False
+        if not math.isfinite(start) or not math.isfinite(end) or not 0<start<end:return False
+        if not chain['first_mono']<=start+self.cfg.stale_seconds:return False
+        if not (end-self.cfg.stale_seconds<=chain['last_mono']<=end):return False
+        try:
+            before=datetime.fromisoformat(old.received_at);after=datetime.fromisoformat(t.received_at)
+            return bool(before.tzinfo and after.tzinfo and before<=after<=received)
+        except (TypeError,ValueError):return False
+
+    @observation_locked
+
+    def ingest(self,t,received):
+
+        if (not supported(t.time) and not after_supported(t.time)) or (not supported(received) and not after_supported(received)): return False
+
+        gap=self.coverage_gaps.get(t.symbol)
+
+        if gap and received<=gap['at']:return False
+
+        resuming=bool(gap and gap.get('pending'))
+
+        old=self.last.get(t.symbol)
+
+        if not super().ingest(t,received,preserve_observation=self.continuous_observation): return False
+
+        if resuming:
+
+            gap['pending']=False
+
+            self.observation_start[t.symbol]=t.time
+
+        if old and (t.time-old.time).total_seconds()>self.cfg.stale_seconds and not self.continuous_observation:
+
+            self.history.pop(t.symbol,None); self.current.pop(t.symbol,None)
+
+            self.last_gap_reason[t.symbol]='DISCONNECT_GAP'
+
+            self.observation_start.pop(t.symbol,None)
+
+        previous_session=self.observation_session.get(t.symbol)
+
+        session=(t.time.date(),'AFTER' if after_supported(t.time) else 'REGULAR')
+
+        if t.symbol not in self.observation_start or self.observation_session.get(t.symbol)!=session:
+
+            self.observation_start[t.symbol]=t.time; self.observation_session[t.symbol]=session
+
+        minute=t.time.replace(second=0,microsecond=0); b=self.current.get(t.symbol)
+
+        if t.time.strftime('%H:%M:%S')>='15:40:00':
+
+            self.after_prior_high.setdefault(t.symbol,t.price)
+
             if b and b['time']!=minute:
+
+                self.after_prior_high[t.symbol]=self.after_day_high.get(t.symbol,t.price)
+
+            self.after_day_high[t.symbol]=max(t.price,self.after_day_high.get(t.symbol,t.price))
+
+        else:
+
+            self.prior_high.setdefault(t.symbol,t.price)
+
+            if b and b['time']!=minute:
+
                 self.prior_high[t.symbol]=self.day_high.get(t.symbol,t.price)
+
             self.day_high[t.symbol]=max(t.price,self.day_high.get(t.symbol,t.price))
+
         had_minute_gap = False
+
         resumed_from_pure_no_trade = False
+
         no_trade_gap_seconds = 0
+
         gap_type = None
 
+
+
         if b and b['time']!=minute:
+
             gap_seconds = (minute - b['time']).total_seconds()
+
             if gap_seconds == 60:
+
                 # Prior confirmed references are distinct from consecutive signal bars.
-                self.price_context.record(t.symbol,{**b,'venue':getattr(self.cfg,'after_default_venue','SOR') if t.time.strftime('%H:%M:%S')>=self.a.after_prep_start else 'KRX'},t.time,self.cfg.stale_seconds)
+
+                self.price_context.record(t.symbol,{**b,'venue':getattr(self.cfg,'after_default_venue','SOR') if b['time'].strftime('%H:%M:%S')>=self.a.after_prep_start else 'KRX'},t.time,self.cfg.stale_seconds)
+
                 self.history.setdefault(t.symbol,deque(maxlen=30)).append(b)
+
             else:
+
                 # Distinguish no-trade gap, network data loss, disconnect/subscription, or unknown
+
                 volume_lost = (t.cumulative - old.cumulative) - t.volume if old else 0
+
                 has_pending_gap = bool(self.coverage_gaps.get(t.symbol, {}).get('pending'))
+
                 is_stale_rx = (received - t.time).total_seconds() > self.cfg.stale_seconds
 
+
+
                 if volume_lost > 0:
+
                     gap_type = 'DATA_LOSS_GAP'
+
+                elif volume_lost < 0:
+
+                    gap_type = 'CUMULATIVE_INCONSISTENT'
+
                 elif resuming or has_pending_gap:
+
                     gap_type = 'SUBSCRIPTION_GAP'
+
                 elif is_stale_rx or not self.continuous_observation:
+
                     gap_type = 'DISCONNECT_GAP'
+
                 elif old is None or t.symbol not in self.observation_start:
+
                     gap_type = 'UNKNOWN_GAP'
+
+                elif old.venue != t.venue or previous_session != session:
+
+                    gap_type = 'VENUE_OR_SESSION_CHANGED'
+
+                elif not self._no_trade_chain_covers(old,t,received):
+
+                    gap_type = 'NO_TRADE_COVERAGE_UNPROVEN'
+
                 else:
+
                     resumed_from_pure_no_trade = True
+
                     no_trade_gap_seconds = int(gap_seconds - 60)
 
+
+
                 if resumed_from_pure_no_trade:
+
                     # Pure market no-trade interval: retain completed bar without fabricating fake bars
+
                     b['pure_no_trade_gap_after_seconds'] = no_trade_gap_seconds
-                    self.price_context.record(t.symbol,{**b,'venue':getattr(self.cfg,'after_default_venue','SOR') if t.time.strftime('%H:%M:%S')>=self.a.after_prep_start else 'KRX'},t.time,self.cfg.stale_seconds)
+
+                    self.price_context.record(t.symbol,{**b,'venue':getattr(self.cfg,'after_default_venue','SOR') if b['time'].strftime('%H:%M:%S')>=self.a.after_prep_start else 'KRX'},t.time,self.cfg.stale_seconds)
+
                     self.history.setdefault(t.symbol,deque(maxlen=30)).append(b)
+
                 else:
+
                     had_minute_gap = True
+
                     self.last_gap_reason[t.symbol] = gap_type or 'MISSING_MINUTE'
+
                     if self.continuous_observation:
-                        self.price_context.record(t.symbol,{**b,'venue':getattr(self.cfg,'after_default_venue','SOR') if t.time.strftime('%H:%M:%S')>=self.a.after_prep_start else 'KRX'},t.time,self.cfg.stale_seconds)
+
+                        self.price_context.record(t.symbol,{**b,'venue':getattr(self.cfg,'after_default_venue','SOR') if b['time'].strftime('%H:%M:%S')>=self.a.after_prep_start else 'KRX'},t.time,self.cfg.stale_seconds)
+
                         self.history.setdefault(t.symbol,deque(maxlen=30)).append(b)
+
                     else:
+
                         self.history.pop(t.symbol,None)
+
                         self.completed.pop(t.symbol,None)
+
             b=None
+
         if b is None:
+
             start=self.observation_start.get(t.symbol)
+
             if resumed_from_pure_no_trade:
+
                 was_observing = True
+
                 gap_reason = None
+
             else:
+
                 was_observing = (start is not None and start <= minute) and not had_minute_gap
+
                 gap_reason = None if (was_observing or t.time.second<=self.cfg.stale_seconds) else (gap_type or ('MISSING_MINUTE' if had_minute_gap else 'FIRST_TRADE_AFTER_5S_COVERAGE_UNKNOWN'))
+
             b={'time':minute,'open':t.price,'high':t.price,'low':t.price,'close':t.price,'volume':0,
+
                'first_second':0 if was_observing else t.time.second,'last_second':t.time.second,
+
                'first_trade_time':t.time.isoformat(),'last_trade_time':t.time.isoformat(),
+
                'tick_count':0,'coverage_start':minute.isoformat(),
+
                'coverage_end':(minute+timedelta(seconds=60)).isoformat(),
+
                'local_drop_count':0,'gap_reason':gap_reason}
+
             if resumed_from_pure_no_trade:
+
                 b['resumed_from_no_trade_gap'] = True
+
                 b['preceding_no_trade_seconds'] = no_trade_gap_seconds
+
             b['observation_source']='ACTUAL_RECEIVED'
+
             self.current[t.symbol]=b
+
         if resuming:
+
             # Retained bars are references, not evidence for an unobserved
+
             # interval. The first resumed minute is explicitly partial.
+
             b['gap_reason']=gap['reason']
+
             b['coverage_resumed_at']=received.isoformat()
+
         b['high']=max(b['high'],t.price); b['low']=min(b['low'],t.price); b['close']=t.price; b['volume']+=t.volume
+
         b['last_second']=t.time.second; b['last_trade_time']=t.time.isoformat(); b['tick_count']+=1
+
         capture=getattr(self,'accepted_tick_capture',None)
+
         if callable(capture):
+
             try:capture(t,received)
+
             except Exception:pass  # Diagnostic recording never interrupts protection/ingestion.
+
         return True
 
     @observation_locked
@@ -160,6 +325,7 @@ class PatternDetector(Detector):
         """Invalidate entry continuity without deleting genuine completed bars."""
         prior=self.coverage_gaps.get(symbol)
         if prior and at<=prior['at']:return False
+        self._no_trade_book_chains.pop(symbol,None)
         self.coverage_gaps[symbol]={'at':at,'reason':reason,'pending':True}
         self.last_gap_reason[symbol]=reason
         # Keep the retained observation container stable for short detach/rejoin
@@ -189,7 +355,7 @@ class PatternDetector(Detector):
 
     def pullback_analysis(self,bars):
         if len(bars)<4:return None,'INSUFFICIENT_USABLE_BARS',{}
-        if any(any(not isinstance(b.get(k),(int,float)) or isinstance(b.get(k),bool)
+        if any(not isinstance(b,dict) or any(not isinstance(b.get(k),(int,float)) or isinstance(b.get(k),bool)
                        or not math.isfinite(b[k]) for k in ('open','high','low','close','volume'))
                for b in bars[-min(len(bars),24):]):
             return None,'PULLBACK_BAR_DATA_UNKNOWN',{}
@@ -253,72 +419,137 @@ class PatternDetector(Detector):
                 **evidence},None,evidence
 
     @observation_locked
+
     def usable_bars(self,symbol,after_only=False):
+
         if self.coverage_gaps.get(symbol,{}).get('pending'):return []
+
         bars=list(self.history.get(symbol,()))
+
         if not bars:return []
+
         cur=self.current.get(symbol)
+
         if cur is not None:
+
             if (cur.get('gap_reason') is not None or cur.get('coverage_resumed_at')):
+
                 return []
+
             gap_to_last = (cur['time'] - bars[-1]['time']).total_seconds()
+
             if gap_to_last == 60:
+
                 pass
+
             elif cur.get('resumed_from_no_trade_gap') or bars[-1].get('pure_no_trade_gap_after_seconds'):
+
                 if gap_to_last > 900:
+
                     return []
+
             else:
+
                 return []
+
         valid=[]
+
         for bar in reversed(bars):
+
             if bar.get('gap_reason') is not None or bar.get('first_second',0)>self.cfg.stale_seconds:break
+
             if after_only and bar['time'].strftime('%H:%M:%S')<'15:40:00':
+
                 break
+
             if valid:
+
                 step_gap = (valid[-1]['time'] - bar['time']).total_seconds()
+
                 if step_gap == 60:
+
                     pass
+
                 elif bar.get('pure_no_trade_gap_after_seconds') and step_gap == bar['pure_no_trade_gap_after_seconds'] + 60 and step_gap <= 900:
+
                     pass
+
                 else:
+
                     break
+
                 if (valid[0]['time'] - bar['time']).total_seconds() > 1800:
+
                     break
+
             valid.append(bar)
+
         return list(reversed(valid))
 
     @observation_locked
+
     def quality_summary(self,symbol,after_only=False):
+
         history=list(self.history.get(symbol,[]))
+
         if after_only:
+
             history=[b for b in history if b['time'].strftime('%H:%M:%S')>='15:40:00']
+
         usable=self.usable_bars(symbol,after_only=after_only)
+
         stored_count=len(history)
+
         usable_count=len(usable)
+
         diff_reason=None
+
         if stored_count>usable_count:
+
             cur=self.current.get(symbol)
+
             if usable_count==0 and cur is not None and (cur.get('gap_reason') is not None or ((cur['time']-history[-1]['time']).total_seconds()!=60 and not cur.get('resumed_from_no_trade_gap'))):
+
                 diff_reason=cur.get('gap_reason') or 'MISSING_MINUTE'
+
             else:
+
                 inv_idx=stored_count-usable_count-1
+
                 if 0<=inv_idx<stored_count:
+
                     inv_bar=history[inv_idx]
+
                     if inv_bar.get('gap_reason'):
+
                         diff_reason=inv_bar['gap_reason']
+
                     elif inv_bar.get('first_second',0)>self.cfg.stale_seconds:
+
                         diff_reason='FIRST_TRADE_AFTER_5S_COVERAGE_UNKNOWN'
+
                     elif inv_idx+1<stored_count and (history[inv_idx+1]['time']-inv_bar['time']).total_seconds()!=60 and not inv_bar.get('pure_no_trade_gap_after_seconds'):
+
                         diff_reason='MISSING_MINUTE'
+
                     else:
+
                         diff_reason='PARTIAL_SUBSCRIPTION_START'
+
         elif stored_count==0 and symbol in self.last_gap_reason:
+
             diff_reason=self.last_gap_reason[symbol]
+
         return {
+
             'stored_completed_bars':stored_count,
+
             'usable_completed_bars':usable_count,
+
             'difference_reason':diff_reason,
+
             'data_quality_status':'DATA_QUALITY_CHANGE_UNVERIFIED'
+
         }
 
     @observation_locked
@@ -365,6 +596,7 @@ class PatternDetector(Detector):
 
     @observation_locked
     def forget(self,symbol):
+        self._no_trade_book_chains.pop(symbol,None)
         for mapping in (self.buffers,self.minutes,self.completed,self.last,self.history,self.current,self.day_high,self.prior_high,self.after_day_high,self.after_prior_high,self.last_eval,self.observation_start,self.observation_session):mapping.pop(symbol,None)
         self._eval_keys.pop(symbol,None)
         self.coverage_gaps.pop(symbol,None)
@@ -415,6 +647,8 @@ class PatternDetector(Detector):
                 mapping=getattr(self,key)
                 if key in snapshot:mapping[symbol]=snapshot[key]
                 else:mapping.pop(symbol,None)
+            # A shadow-to-WATCH handoff cannot carry another detector's proof chain.
+            self._no_trade_book_chains.pop(symbol,None)
             self.last_eval.pop(symbol,None);self._eval_keys.pop(symbol,None)
             self._bar_structure_cache.pop(symbol,None);self._setup_gates_cache.pop(symbol,None)
             return True
@@ -461,15 +695,11 @@ class PatternDetector(Detector):
 
     def target(self,t,watch,setup,limit):
         resistance=watch.get('resistance')
-        # A's structural trigger is fixed before the decision print. A quote
-        # above a different overhead level cannot erase that reward ceiling.
-        # Only a resistance at/below the actual structure trigger is the level
-        # being broken; the runner searches the same known daily bars above it.
+        # A의 구조적 돌파 기준을 고정하고, 다른 상단 저항은 현재 호가로 지우지 않는다.
         if (setup['pattern']=='A' and resistance is not None
                 and resistance<=setup.get('breakout',0) and t.price>setup.get('breakout',0)):
             resistance=None
         if setup['pattern']=='C' and resistance is not None and t.price>resistance:resistance=None
-        if setup['pattern'] in {'D','E'}:resistance=None
         return min(resistance,setup['projection']) if resistance is not None else setup['projection']
 
     def box(self,bars):
@@ -477,56 +707,6 @@ class PatternDetector(Detector):
         seq=bars[-self.a.box_min_bars:]; top=max(b['high'] for b in seq); low=min(b['low'] for b in seq)
         if not 0<(top-low)/low<=self.a.box_max_range: return None
         return {'pattern':'C','breakout':top,'support':low,'projection':top+2*(top-low),'box_width':top-low}
-
-    def support_rebound(self,bars,t,watch):
-        if len(bars)<3: return None
-        seq=bars[-20:]
-        if len(seq)<3: return None
-        peak_idx=max(range(len(seq)-1),key=lambda i:seq[i]['high'])
-        if peak_idx==0 or peak_idx>=len(seq)-1: return None
-        peak=seq[peak_idx]['high']
-        impulse_bars=seq[:peak_idx+1]; pullback_bars=seq[peak_idx+1:]
-        base_low=min(b['low'] for b in impulse_bars)
-        rise=peak-base_low
-        if base_low<=0 or rise/base_low<getattr(self.a,'setup_e_min_rise',0.012): return None
-        sup_i=min(range(len(pullback_bars)),key=lambda i:pullback_bars[i]['low'])
-        sup_bar=pullback_bars[sup_i]
-        support=sup_bar['low']
-        retrace=(peak-support)/rise
-        min_ret=getattr(self.a,'setup_e_min_retrace',0.15); max_ret=getattr(self.a,'setup_e_max_retrace',0.75)
-        if not (min_ret<=retrace<=max_ret): return None
-        c=self.cfg; stop=floor_tick(support*(1-c.structural_buffer))
-        stop_dist=(t.price-stop)/t.price
-        min_stop=getattr(self.a,'setup_e_min_stop_distance',0.020); max_stop=getattr(self.a,'setup_e_max_stop_distance',0.045)
-        if stop_dist<min_stop:
-            stop=floor_tick(t.price*(1-min_stop))
-            stop_dist=(t.price-stop)/t.price
-        elif stop_dist>max_stop: return None
-        mode=getattr(self.a,'setup_e_reclaim_mode','PULLBACK_HIGH_RECLAIM')
-        if mode=='PULLBACK_HIGH_RECLAIM':
-            breakout=floor_tick(sup_bar['high'])
-            if breakout<=support:
-                breakout=floor_tick(support*(1+getattr(self.a,'setup_e_min_bounce',0.003)))
-            if breakout>=peak: return None
-            if t.price<breakout: return None
-            if t.ask>peak: return None
-            if (t.ask-t.price)/t.price>c.max_chase: return None
-            entry_basis='CONFIRMED_SUPPORT_REBOUND_RECLAIM'
-        else:
-            min_bounce=getattr(self.a,'setup_e_min_bounce',0.003)
-            breakout=floor_tick(support*(1+min_bounce))
-            if t.price<breakout: return None
-            entry_basis='CONFIRMED_SUPPORT_REBOUND'
-
-        risk=t.price-stop; mult=getattr(self.a,'setup_e_reward_target_multiplier',2.5)
-        target_unconstrained=floor_tick(t.price+mult*risk)
-        res_val=watch.get('resistance')
-        if res_val is not None and isinstance(res_val,(int,float)) and res_val>t.price:
-            target=min(res_val,target_unconstrained)
-        else: target=target_unconstrained
-        return {'pattern':'E','breakout':breakout,'support':support,'stop':stop,
-                'projection':target,'peak':peak,'base_low':base_low,'retrace':retrace,
-                'entry_basis':entry_basis,'paper_only':True}
 
     def _completed_bar_geometry(self,symbol,bars,tick_time=None):
         if len(bars)<2:
@@ -594,39 +774,16 @@ class PatternDetector(Detector):
                                 'local_range_start':base[0]['time'].isoformat()}
         else:
             setups=_setups
-        if getattr(self.a, 'resistance_breakout_expansion_enabled', False) and len(bars) >= 2:
-            res = watch.get('resistance')
-            if res and t.price >= res and (t.price - res) / res <= 0.015:
-                stop = floor_tick(res * (1 - getattr(self.a, 'min_stop_distance_fraction', 0.012)))
-                risk = t.price - stop
-                if risk > 0:
-                    setups['D'] = {
-                        'pattern': 'D',
-                        'breakout': res,
-                        'support': stop,
-                        'projection': floor_tick(t.price + 2.5 * risk),
-                        'entry_basis': 'RESISTANCE_BREAKOUT_EXPANSION',
-                        'paper_only': True
-                    }
-        if getattr(self.a, 'support_rebound_reclaim_enabled', False) and len(bars) >= 3:
-            e_setup = self.support_rebound(bars, t, watch)
-            if e_setup:
-                setups['E'] = e_setup
         trials=[]
-        eval_names = ['A','B','C']
-        if getattr(self.a, 'resistance_breakout_expansion_enabled', False): eval_names.append('D')
-        if getattr(self.a, 'support_rebound_reclaim_enabled', False): eval_names.append('E')
-        for name in eval_names:
+        for name in ('A','B','C'):
             if _only is not None and name!=_only:continue
             setup=setups.get(name)
-            required=3 if name=='E' else 2 if name in ('A','D') else 4 if name=='B' else self.a.box_min_bars
+            required=2 if name=='A' else 4 if name=='B' else self.a.box_min_bars
             why=[]
             if not supported(t.time) and not is_after:why.append('OUT_OF_SUPPORTED_SESSION')
             if not setup:
                 why.append('INSUFFICIENT_USABLE_BARS' if len(bars)<required else
                            'PRIOR_HIGH_NOT_BROKEN' if name=='A' else
-                           'RESISTANCE_NOT_BROKEN' if name=='D' else
-                           'SUPPORT_REBOUND_NOT_CONFIRMED' if name=='E' else
                            b_reason if name=='B' else 'BOX_NOT_FORMED')
             price_gates=self.setup_gates(t,watch,setup,bars=bars) if setup else {}
             # Market-status authorization remains at the unchanged engine/order boundary.
@@ -769,13 +926,9 @@ class PatternDetector(Detector):
         turnover=gates['liquidity']['values']['window_turnover']
         ratio=gates['acceleration']['values']['ratio'];gain=gates['acceleration']['values']['gain']
         # Preserve the existing B, C, A precedence when more than one setup qualifies.
-        setup_order = ['B','C','A']
-        if getattr(self.a, 'resistance_breakout_expansion_enabled', False): setup_order.append('D')
-        if getattr(self.a, 'support_rebound_reclaim_enabled', False): setup_order.append('E')
-        for name in setup_order:
-            trial=next((x for x in trials if x['setup']==name), None)
-            if trial is None: continue
-            if not trial['entry_ready']:continue
+        for name in ('B','C','A'):
+            trial=next((x for x in trials if x['setup']==name),None)
+            if not trial or not trial['entry_ready']:continue
             setup=trial['setup_geometry']
             price_gates=trial['gates']
             stop=trial['virtual_invalidation'];limit=trial['virtual_entry']
@@ -799,10 +952,6 @@ class PatternDetector(Detector):
             # Engine sizing and the final order boundary validate the actual quantity.
             planned_qty=1
             return {'symbol':t.symbol,'time':t.time.isoformat(),'limit':limit,'stop':stop,**setup,
-                'breakout_level': setup.get('breakout'),
-                'confirmed_overhead_resistance': watch.get('resistance'),
-                'projected_target': setup.get('projection'),
-                'economic_reward_reference': target,
                 'receipt_evidence':tick_source_identity(t),
                 'evaluation_gates':gates,'setup_trials':trials,'acceleration_required':required_acceleration,
                 'entry_confirmation_basis':trial['entry_confirmation_basis'],
@@ -822,7 +971,7 @@ class PatternDetector(Detector):
                     'time':b['time'].isoformat()} for b in bars[-(30 if self.a.structural_pullback_enabled else max(12,2*self.a.box_min_bars+2) if self.a.fresh_box_basis_enabled else 12):]],
                 'target':target,'target_basis':'과거 저항으로 제한한 관측 패턴 폭 연장 가설; 고정 익절선 아님',
                 **({'entry_economics':price_gates['risk_reward']['values']['economics'],
-                    'entry_zone':price_gates['risk_reward']['values']['entry_zone']} if name in COMMON_COST_PATTERNS else {}),
+                    'entry_zone':price_gates['risk_reward']['values']['entry_zone']} if name in {'A','B','C'} else {}),
                 'turnover':turnover,'turnover_ratio':ratio,'gain':gain,
                 'efficiency':score,'source_count':watch.get('source_count',len(watch.get('source_details',{}))),'source_details':watch.get('source_details',{}),'source_deltas':watch.get('source_deltas',{}),
                 'fallback_source1':bool(watch.get('fallback_source1')),
@@ -880,14 +1029,14 @@ class PatternDetector(Detector):
             return res_copy
         if setup['pattern']=='B':
             breakout=setup.get('breakout',setup['support'])
-        stop=setup['stop'] if setup['pattern']=='E' and 'stop' in setup else floor_tick(setup['support']*(1-c.structural_buffer))
-        limit=floor_tick(t.ask if setup['pattern'] in {'A','B','D','E'} else min(t.ask,breakout*(1+c.max_chase))); resistance=watch.get('resistance')
+        stop=floor_tick(setup['support']*(1-c.structural_buffer))
+        limit=floor_tick(t.ask if setup['pattern'] in {'A','B'} else min(t.ask,breakout*(1+c.max_chase))); resistance=watch.get('resistance')
         target=self.target(t,watch,setup,limit)
         references=self.price_context.snapshot(t.symbol,t,limit) if self.a.entry_context_enabled else {}
         peak=references.get('nearest_confirmed_peak')
         original_target=target
         if self.a.entry_context_enabled and peak and peak['price'] > limit:
-            if setup['pattern'] in {'B', 'E'}:
+            if setup['pattern'] == 'B':
                 if peak['price'] > setup.get('peak', limit):
                     target = min(target, peak['price'])
             elif setup['pattern'] == 'A' and setup.get('entry_basis') == 'TREND_BREAKOUT_BASE':
@@ -924,7 +1073,7 @@ class PatternDetector(Detector):
         rr=(target-limit)/(limit-stop) if limit>stop else None
         gross_rr=rr;rr_basis='GROSS_PRICE_DISTANCE'
         economics=None;entry_zone=None
-        if setup['pattern'] in COMMON_COST_PATTERNS:
+        if setup['pattern'] in {'A','B','C'}:
             from automation.capital import signal_economics,viable_entry_zone
             proof={'A':breakout_evidence,'B':structural,'C':box_evidence}.get(setup['pattern'])
             valuation_signal=dict(pattern=setup['pattern'],limit=limit,stop=stop,target=target)
@@ -935,13 +1084,12 @@ class PatternDetector(Detector):
             entry_zone=viable_entry_zone(economics,breakout,c.max_chase,is_recovery=is_recovery)
             entry_zone['structure_confirmed']=(breakout_pass is True if setup['pattern']=='A' and self.a.structural_breakout_enabled
                 else structural_pass is True if setup['pattern']=='B' and self.a.structural_pullback_enabled else True)
-        horizon=getattr(self.a,'horizon_'+setup['pattern'].lower()+'_minutes', 15)
+        horizon=getattr(self.a,'horizon_'+setup['pattern'].lower()+'_minutes')
         score=efficiency(limit,stop,target,min(1.,0.4+0.1*len(watch.get('source_details',{}))),horizon,self.costs,self.a.min_efficiency_score,economics=economics)
         cost_risk=score.get('risk_per_share');cost_reward=score.get('reward_after_cost')
         net_rr=(cost_reward/cost_risk if isinstance(cost_risk,(int,float)) and cost_risk>0
                 and isinstance(cost_reward,(int,float)) else None)
-        max_stop_bound=getattr(self.a,'setup_e_max_stop_distance',c.max_stop_fraction) if setup['pattern']=='E' else c.max_stop_fraction
-        invalidation_pass=bool(distance is not None and 0<stop<limit and c.min_stop_fraction<=distance<=max_stop_bound)
+        invalidation_pass=bool(distance is not None and 0<stop<limit and c.min_stop_fraction<=distance<=c.max_stop_fraction)
         structure_sized=(breakout_pass is True or structural_pass is True and self.a.confirmed_invalidation_enabled or box_pass is True)
         if structure_sized:
             # Price distance is not account risk. The unchanged final risk gate
@@ -967,18 +1115,18 @@ class PatternDetector(Detector):
                 elif setup['pattern']=='C':
                     invalidation_pass=False
         peak_val = setup.get('peak', float('inf'))
-        b_over_peak = (setup['pattern'] in {'B', 'E'} and limit >= peak_val)
+        b_over_peak = (setup['pattern'] == 'B' and limit >= peak_val)
         if setup['pattern'] == 'B' and setup.get('entry_basis') == 'SUPPORT_RECOVERY':
             breakout_pass = (t.price >= breakout and not b_over_peak)
             breakout_reason = ('PEAK_ALREADY_REACHED' if b_over_peak else
                                'RECOVERY_TRIGGER_NOT_REACHED' if t.price < breakout else None)
         else:
-            breakout_pass = (t.price >= breakout and limit >= breakout and not b_over_peak) if setup['pattern'] in {'D','E'} else (t.price > breakout and limit > breakout and not b_over_peak)
+            breakout_pass = (t.price > breakout and limit > breakout and not b_over_peak)
             breakout_reason = ('PEAK_ALREADY_REACHED' if b_over_peak else
                                'BREAKOUT_QUOTE_NOT_CONFIRMED' if t.price > breakout and limit <= breakout else None)
         result={'breakout':gate(breakout_pass,price=t.price,breakout=breakout,setup=setup['pattern'],
                 ask=t.ask,entry=limit,reason=breakout_reason),
-            'chase':gate((t.ask<=setup.get('peak',float('inf')) and (t.ask-t.price)/t.price<=c.max_chase) if setup['pattern']=='E' else t.ask/breakout-1<=c.max_chase,chase=t.ask/setup.get('peak',1.0) if setup['pattern']=='E' else t.ask/breakout-1,max_chase=1.0 if setup['pattern']=='E' else c.max_chase,ask=t.ask),
+            'chase':gate(t.ask/breakout-1<=c.max_chase,chase=t.ask/breakout-1,max_chase=c.max_chase,ask=t.ask),
             'invalidation':gate(invalidation_pass if distance is not None else None,
                 entry=limit,stop=stop,distance_pct=distance,min_pct=c.min_stop_fraction,
                 max_pct=None if structure_sized else c.max_stop_fraction,
