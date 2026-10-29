@@ -695,12 +695,35 @@ class PatternDetector(Detector):
 
     def target(self,t,watch,setup,limit):
         resistance=watch.get('resistance')
+        if setup['pattern']=='D':
+            # The crossed level is the trigger, not an overhead target.
+            # Only the independently timestamped next ceiling may replace it.
+            resistance=setup.get('confirmed_overhead')
         # A의 구조적 돌파 기준을 고정하고, 다른 상단 저항은 현재 호가로 지우지 않는다.
         if (setup['pattern']=='A' and resistance is not None
                 and resistance<=setup.get('breakout',0) and t.price>setup.get('breakout',0)):
             resistance=None
         if setup['pattern']=='C' and resistance is not None and t.price>resistance:resistance=None
         return min(resistance,setup['projection']) if resistance is not None else setup['projection']
+
+    def resistance_breakout_paper(self,bars,t,watch):
+        """D only: crossed known resistance, independently known next ceiling."""
+        if len(bars)<2:return None
+        try:
+            from core.market_evidence import aware
+            level=watch.get('resistance');ceiling=watch.get('next_resistance')
+            known=aware(watch.get('next_resistance_known_at'))
+            if not all(type(x) in (int,float) and math.isfinite(x) and x>0 for x in (level,ceiling,t.ask,t.price)):return None
+            if known is None or known>t.time or not level<t.price<=t.ask<ceiling:return None
+            if t.ask/level-1>self.cfg.max_chase:return None
+            lows=[b['low'] for b in bars[-2:]]
+            if any(type(x) not in (int,float) or not math.isfinite(x) or x<=0 for x in lows):return None
+            support=min(lows)
+            if support>=level:return None
+            return {'pattern':'D','breakout':level,'support':support,'projection':ceiling,
+                    'confirmed_overhead':ceiling,'ceiling_known_at':known.isoformat(),
+                    'entry_basis':'RESISTANCE_BREAKOUT_EXPANSION','paper_only':True}
+        except (KeyError,TypeError,ValueError,ZeroDivisionError):return None
 
     def box(self,bars):
         if len(bars)<self.a.box_min_bars: return None
@@ -806,21 +829,24 @@ class PatternDetector(Detector):
                                 'local_range_start':base[0]['time'].isoformat()}
         else:
             setups=_setups
+        if _setups is None and getattr(self.a,'resistance_breakout_expansion_enabled',False):
+            candidate=self.resistance_breakout_paper(bars,t,watch)
+            if candidate:setups['D']=candidate
         if _setups is None and getattr(self.a,'support_rebound_reclaim_enabled',False):
             candidate=self.support_rebound(bars,t,watch)
             if candidate:setups['E']=candidate
         trials=[]
-        names=('A','B','C','E') if getattr(self.a,'support_rebound_reclaim_enabled',False) else ('A','B','C')
+        names=('A','B','C')+ (('D',) if getattr(self.a,'resistance_breakout_expansion_enabled',False) else ()) + (('E',) if getattr(self.a,'support_rebound_reclaim_enabled',False) else ())
         for name in names:
             if _only is not None and name!=_only:continue
             setup=setups.get(name)
-            required=3 if name=='E' else 2 if name=='A' else 4 if name=='B' else self.a.box_min_bars
+            required=3 if name=='E' else 2 if name in ('A','D') else 4 if name=='B' else self.a.box_min_bars
             why=[]
             if not supported(t.time) and not is_after:why.append('OUT_OF_SUPPORTED_SESSION')
             if not setup:
                 why.append('INSUFFICIENT_USABLE_BARS' if len(bars)<required else
                            'PRIOR_HIGH_NOT_BROKEN' if name=='A' else
-                           b_reason if name=='B' else 'SUPPORT_REBOUND_NOT_CONFIRMED' if name=='E' else 'BOX_NOT_FORMED')
+                           b_reason if name=='B' else 'SUPPORT_REBOUND_NOT_CONFIRMED' if name=='E' else 'D_BREAKOUT_OR_OVERHEAD_UNKNOWN' if name=='D' else 'BOX_NOT_FORMED')
             price_gates=self.setup_gates(t,watch,setup,bars=bars) if setup else {}
             # Market-status authorization remains at the unchanged engine/order boundary.
             common={k:gates[k] for k in ('warmup','spread','structure')}
@@ -962,7 +988,7 @@ class PatternDetector(Detector):
         turnover=gates['liquidity']['values']['window_turnover']
         ratio=gates['acceleration']['values']['ratio'];gain=gates['acceleration']['values']['gain']
         # Preserve the existing B, C, A precedence when more than one setup qualifies.
-        names=('B','C','A','E') if getattr(self.a,'support_rebound_reclaim_enabled',False) else ('B','C','A')
+        names=('B','C','A')+ (('D',) if getattr(self.a,'resistance_breakout_expansion_enabled',False) else ()) + (('E',) if getattr(self.a,'support_rebound_reclaim_enabled',False) else ())
         for name in names:
             trial=next((x for x in trials if x['setup']==name),None)
             if not trial or not trial['entry_ready']:continue
@@ -1006,9 +1032,9 @@ class PatternDetector(Detector):
                 'decision_bar_snapshot':[{**{k:b.get(k) for k in ('open','high','low','close','volume')},
                     **({k:b[k] for k in ('first_second','gap_reason') if k in b} if self.a.structural_pullback_enabled else {}),
                     'time':b['time'].isoformat()} for b in bars[-(30 if self.a.structural_pullback_enabled else max(12,2*self.a.box_min_bars+2) if self.a.fresh_box_basis_enabled else 12):]],
-                'target':target,'target_basis':('KNOWN_RESISTANCE' if name=='E' else '과거 저항으로 제한한 관측 패턴 폭 연장 가설; 고정 익절선 아님'),
+                'target':target,'target_basis':('KNOWN_RESISTANCE' if name in ('D','E') else '과거 저항으로 제한한 관측 패턴 폭 연장 가설; 고정 익절선 아님'),
                 **({'entry_economics':price_gates['risk_reward']['values']['economics'],
-                    'entry_zone':price_gates['risk_reward']['values']['entry_zone']} if name in {'A','B','C','E'} else {}),
+                    'entry_zone':price_gates['risk_reward']['values']['entry_zone']} if name in {'A','B','C','D','E'} else {}),
                 'turnover':turnover,'turnover_ratio':ratio,'gain':gain,
                 'efficiency':score,'source_count':watch.get('source_count',len(watch.get('source_details',{}))),'source_details':watch.get('source_details',{}),'source_deltas':watch.get('source_deltas',{}),
                 'fallback_source1':bool(watch.get('fallback_source1')),
@@ -1110,7 +1136,7 @@ class PatternDetector(Detector):
         rr=(target-limit)/(limit-stop) if limit>stop else None
         gross_rr=rr;rr_basis='GROSS_PRICE_DISTANCE'
         economics=None;entry_zone=None
-        if setup['pattern'] in {'A','B','C','E'}:
+        if setup['pattern'] in {'A','B','C','D','E'}:
             from automation.capital import signal_economics,viable_entry_zone
             proof={'A':breakout_evidence,'B':structural,'C':box_evidence}.get(setup['pattern'])
             valuation_signal=dict(pattern=setup['pattern'],limit=limit,stop=stop,target=target)
@@ -1122,7 +1148,7 @@ class PatternDetector(Detector):
             entry_zone=viable_entry_zone(economics,breakout,c.max_chase,is_recovery=is_recovery)
             entry_zone['structure_confirmed']=(breakout_pass is True if setup['pattern']=='A' and self.a.structural_breakout_enabled
                 else structural_pass is True if setup['pattern']=='B' and self.a.structural_pullback_enabled else True)
-        horizon=getattr(self.a,'horizon_'+('b' if setup['pattern']=='E' else setup['pattern'].lower())+'_minutes')
+        horizon=getattr(self.a,'horizon_'+('b' if setup['pattern']=='E' else 'a' if setup['pattern']=='D' else setup['pattern'].lower())+'_minutes')
         score=efficiency(limit,stop,target,min(1.,0.4+0.1*len(watch.get('source_details',{}))),horizon,self.costs,self.a.min_efficiency_score,economics=economics)
         cost_risk=score.get('risk_per_share');cost_reward=score.get('reward_after_cost')
         net_rr=(cost_reward/cost_risk if isinstance(cost_risk,(int,float)) and cost_risk>0

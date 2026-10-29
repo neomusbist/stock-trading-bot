@@ -26,13 +26,14 @@ class SetupDPaperTests(unittest.TestCase):
         self.assertEqual(setups_evaluated, ['A', 'B', 'C'])
         self.assertNotIn('D', setups_evaluated)
 
-    def test_setup_d_geometry_and_unconstrained_target(self):
-        """When enabled, Setup D captures breakout above resistance and does not clamp target to resistance."""
+    def test_setup_d_geometry_requires_independent_known_target(self):
+        """The broken trigger is not the overhead target; no 2.5R target is invented."""
         auto_enabled = replace(self.auto, resistance_breakout_expansion_enabled=True)
         detector = PatternDetector(self.cfg, auto_enabled, self.costs)
         t_now = datetime(2026, 10, 27, 12, 7, 48, tzinfo=KST)
         tick = Tick('138360', t_now, 2210.0, 50000, 15000000, 2210.0, 2205.0)
-        watch = {'code': '138360', 'resistance': 2205.0, 'status': 'WATCH'}
+        watch = {'code': '138360', 'resistance': 2205.0, 'status': 'WATCH',
+                 'next_resistance': 2450.0, 'next_resistance_known_at': t_now.isoformat()}
         
         # Inject 2 fake usable completed bars
         bars = [
@@ -53,7 +54,7 @@ class SetupDPaperTests(unittest.TestCase):
         # Target check: target() should not clamp to 2205
         target_val = detector.target(tick, watch, setup, 2210.0)
         self.assertEqual(target_val, setup['projection'])
-        self.assertGreater(target_val, 2205.0)
+        self.assertEqual(target_val, 2450.0)
 
     def test_paper_only_signal_blocked_in_live_mode(self):
         """Signals with paper_only=True must be strictly blocked when policy.mode is LIVE."""

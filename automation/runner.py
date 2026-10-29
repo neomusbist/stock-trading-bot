@@ -1576,6 +1576,15 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
                 engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY',reason,signal=sig,price=t.price)
                 engine.event('NO_TRADE',symbol=t.symbol,reason=reason)
                 return None
+        elif initial_pattern=='D':
+            # A fresh overhead reference may lower the research target, but
+            # it must not replace the already-observed breakout trigger.
+            ceiling=initial_sig.get('confirmed_overhead')
+            new_ceiling=fresh.get('resistance')
+            if isinstance(new_ceiling,(int,float)) and new_ceiling>initial_breakout:
+                ceiling=min(ceiling,new_ceiling) if isinstance(ceiling,(int,float)) else new_ceiling
+            fresh_observation_watch={**fresh_observation_watch,'resistance':initial_breakout,
+                'next_resistance':ceiling,'next_resistance_known_at':initial_sig.get('ceiling_known_at')}
         if capture is not None and hasattr(capture,'bind_entry_context'):
             capture.bind_entry_context(t,fresh_observation_watch,detector,engine.clock())
         sig=detector.signal(t,fresh_observation_watch)
@@ -1590,6 +1599,9 @@ def evaluate_actual_entry(engine,detector,t,watch,radar,prices,account,last_eval
             engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','FRESH_SETUP_CHANGED',signal=sig,price=t.price,
                 extra={'initial_breakout':initial_breakout,'fresh_breakout':sig.get('breakout')})
             engine.event('NO_TRADE',symbol=t.symbol,reason='FRESH_SETUP_CHANGED')
+            return None
+        if initial_pattern=='D' and (sig.get('pattern')!='D' or sig.get('breakout')!=initial_breakout):
+            engine.decisions.emit('ENTRY_EVAL',t.symbol,'NO_BUY','FRESH_SETUP_CHANGED',signal=sig,price=t.price)
             return None
         sig['name']=watch.get('name')
         annotate_signal(engine,detector,watch,sig)
