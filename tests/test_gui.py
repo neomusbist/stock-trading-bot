@@ -146,6 +146,17 @@ class GuiTests(unittest.TestCase):
         self.wait(lambda:'STOP' in self.s.calls); self.assertFalse(event.isAccepted()); self.assertTrue(self.w.wait_close)
         self.w._read_done(synthetic_status(positions=1)); self.assertFalse(self.w.allow_close)
         self.w._read_done(synthetic_status()); self.assertTrue(self.w.allow_close)
+    def test_stop_close_closes_when_runner_running_but_mode_stopped_and_flat(self):
+        self.s.status['process']['running']=True; self.w.close_choice=Mock(return_value='stop'); event=QCloseEvent(); self.w.closeEvent(event)
+        self.wait(lambda:'STOP' in self.s.calls); self.assertFalse(event.isAccepted()); self.assertTrue(self.w.wait_close)
+        self.w._read_done(synthetic_status(process={'running':True,'state':'RUNNING'},mode='STOP',positions=0,pending=0,uncertain=0))
+        self.assertTrue(self.w.allow_close)
+    def test_stop_close_timeout_closes_flat_account(self):
+        self.s.status['process']['running']=True; self.w.close_choice=Mock(return_value='stop'); event=QCloseEvent(); self.w.closeEvent(event)
+        self.wait(lambda:'STOP' in self.s.calls); self.assertFalse(event.isAccepted()); self.assertTrue(self.w.wait_close)
+        self.w.wait_close_time = time.monotonic() - 10.0
+        self.w._read_done(synthetic_status(process={'running':True,'state':'RUNNING'},mode='ARMED',positions=0,pending=0,uncertain=0))
+        self.assertTrue(self.w.allow_close)
     def test_refresh_service_readonly(self): self.w.refresh(); self.wait(lambda:not self.w.reading); self.assertEqual(self.s.snapshot_calls,1); self.assertEqual(self.s.calls,[])
     def test_refresh_coalesces_requests(self):
         self.s.snapshot=Mock(side_effect=lambda:(time.sleep(.1),synthetic_status())[1]); self.w.refresh(); self.w.refresh(); self.wait(lambda:not self.w.reading)

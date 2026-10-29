@@ -438,8 +438,12 @@ class MainWindow(QMainWindow):
         self._work(self.read_pool,self.service.snapshot,self._read_done,self._read_failed)
     def _read_done(self,s):
         self.reading=False; self.apply_status(s)
-        if self.wait_close and not self.working and not s['process']['running'] and not(s['positions'] or s['pending'] or s['uncertain']):
-            self.allow_close=True; self.close()
+        if self.wait_close and not self.working:
+            is_safe_mode=s.get('mode') in {'STOP','OFF','KILL'} or not s.get('process',{}).get('running')
+            is_flat=not(s.get('positions') or s.get('pending') or s.get('uncertain'))
+            timeout_expired=hasattr(self,'wait_close_time') and (time.monotonic()-self.wait_close_time>4.0)
+            if (is_safe_mode and is_flat) or (timeout_expired and is_flat):
+                self._force_close()
     def _read_failed(self,message):
         self.reading=False; self.buttons['start'].setEnabled(False); self.cards['safety'].setText('주의 — 상태 읽기 오류')
         self.notice.setText('상태를 읽을 수 없습니다. 시작은 차단하며 중지·비상정지는 사용할 수 있습니다. '+message)
@@ -766,19 +770,49 @@ class MainWindow(QMainWindow):
         stop=box.addButton('자동매매 중지 후 닫기',QMessageBox.ButtonRole.DestructiveRole)
         box.setDefaultButton(cancel); box.exec()
         return 'window' if box.clickedButton()==only else 'stop' if box.clickedButton()==stop else 'cancel'
+    def _cleanup_and_close(self,event):
+        try: self.timer.stop()
+        except Exception: pass
+        try: self.check_timer.stop()
+        except Exception: pass
+        try: self.read_pool.clear()
+        except Exception: pass
+        try: self.command_pool.clear()
+        except Exception: pass
+        try: self.emergency_pool.clear()
+        except Exception: pass
+        try: self.read_pool.waitForDone(300)
+        except Exception: pass
+        try: self.command_pool.waitForDone(300)
+        except Exception: pass
+        try: self.emergency_pool.waitForDone(300)
+        except Exception: pass
+        event.accept()
+        app=QApplication.instance()
+        if app: app.quit()
+
+    def _force_close(self):
+        self.allow_close=True; self.close()
+
     def closeEvent(self,event):
-        if self.allow_close: self.timer.stop(); event.accept(); return
-        if self.working: self.problem('설정·검사 작업이 진행 중입니다. 완료 후 닫으세요. 비상정지는 사용할 수 있습니다.'); event.ignore(); return
+        if self.allow_close:
+            self._cleanup_and_close(event); return
+        if self.working and not self.wait_close:
+            self.problem('설정·검사 작업이 진행 중입니다. 완료 후 닫으세요. 비상정지는 사용할 수 있습니다.'); event.ignore(); return
         # 창을 닫는 순간의 실제 프로세스도 읽기 전용으로 확인한다.
         try: running=self.service.running()
-        except Exception: self.problem('감시 상태를 확인하지 못했습니다. 콘솔에서 상태를 확인하세요.'); event.ignore(); return
+        except Exception:
+            self._cleanup_and_close(event); return
         if running:
             choice=self.close_choice()
-            if choice=='window': self.timer.stop(); event.accept(); return
+            if choice=='window':
+                self._cleanup_and_close(event); return
             if choice=='stop':
-                self.wait_close=True; self.submit(lambda:self.service.stop('STOP'),lambda _:self.notice.setText('중지를 요청했습니다. 기존 보호·주문 처리가 종료될 때까지 창을 유지합니다.'),emergency=True)
+                self.wait_close=True
+                self.wait_close_time=time.monotonic()
+                self.submit(lambda:self.service.stop('STOP'),lambda _:self.notice.setText('중지를 요청했습니다. 기존 보호·주문 처리가 종료될 때까지 창을 유지합니다.'),emergency=True)
             event.ignore(); return
-        self.timer.stop(); event.accept()
+        self._cleanup_and_close(event)
 
 def run(service=None):
     app=QApplication.instance() or QApplication(sys.argv); configure_font(app)

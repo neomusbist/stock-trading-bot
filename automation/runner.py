@@ -1961,7 +1961,6 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
         context_cache_path=root/'runtime'/'price_context_cache.json'
         if context_cache_path.exists():
             try:
-                import json
                 with open(context_cache_path,'r',encoding='utf-8') as f:cached=json.load(f)
                 recovered=restore_reference_cache(detector.price_context,cached,now())
                 if recovered:engine.event('PRICE_CONTEXT_CACHE_RESTORED',recovered_bars=recovered,symbols=len(detector.price_context.rows))
