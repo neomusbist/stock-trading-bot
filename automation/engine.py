@@ -205,7 +205,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
         risk_qty=int(risk_budget//unit) if unit>0 else 0
         fresh=self.capital_account_valid()
         economics=None
-        if signal.get('pattern') in {'A','B','C'}:
+        if signal.get('pattern') in {'A','B','C','D','E','E2'}:
             from automation.capital import signal_economics,entry_quantity
             economics=signal_economics(self.c,self.a,signal)
             sized=entry_quantity(economics,amount,risk_budget)
@@ -235,7 +235,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
         used=0.
         for p in self.s['positions'].values():
             if p.get('ownership','BOT')!='BOT':continue
-            if (p.get('signal') or {}).get('pattern',p.get('pattern')) in {'A','B','C'}:
+            if (p.get('signal') or {}).get('pattern',p.get('pattern')) in {'A','B','C','D','E','E2'}:
                 from automation.exit_plan import invalidation_lines
                 emergency=invalidation_lines(self.c,self.a,p)['emergency']
                 unit=loss_reserve(p['avg'],emergency,self.costs,filled=True)
@@ -246,7 +246,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
             used+=unit*p['qty']
         for o in self.active_orders(side='BUY') if buys is None else buys:
             sig=o.get('signal') or {};stop=sig.get('stop',o['limit'])
-            if sig.get('pattern') in {'A','B','C'}:
+            if sig.get('pattern') in {'A','B','C','D','E','E2'}:
                 from automation.capital import signal_economics
                 econ=signal_economics(self.c,self.a,{**sig,'limit':o['limit']})
                 if econ.get('status')!='KNOWN':return self.daily_risk_budget()
@@ -388,7 +388,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
                 return 'CRITICAL_LOW_DISK_SPACE'
         except Exception:
             return 'CRITICAL_LOW_DISK_SPACE'
-        if self.a.exit_plan_reward_guard_enabled or signal.get('pattern') in {'A','B','C'}:
+        if self.a.exit_plan_reward_guard_enabled or signal.get('pattern') in {'A','B','C','D','E','E2'}:
             from automation.exit_plan import build_plan
             signal['exit_plan']=build_plan(self.c,self.a,signal,quantity=quantity)
             if not signal['exit_plan']['reward_guard_pass']:return 'EXIT_PLAN_REWARD_UNKNOWN_OR_LOW'
@@ -700,7 +700,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
                        ttl_seconds=signal.get('ttl_seconds', 15.0), ask=tick.ask, limit=signal['limit'])
         from automation.exit_plan import build_plan
         signal['exit_plan']=build_plan(self.c,self.a,signal,quantity=qty)
-        if (self.a.exit_plan_reward_guard_enabled or signal.get('pattern') in {'B','C'}) and not signal['exit_plan']['reward_guard_pass']:
+        if (self.a.exit_plan_reward_guard_enabled or signal.get('pattern') in {'B','C','D','E','E2'}) and not signal['exit_plan']['reward_guard_pass']:
             self.decisions.emit('ENTRY_EVAL',tick.symbol,'NO_BUY','EXIT_PLAN_REWARD_UNKNOWN_OR_LOW',
                 {'exit_plan_reward':gate(False,plan=signal['exit_plan'])},signal=signal,price=tick.price)
             return None

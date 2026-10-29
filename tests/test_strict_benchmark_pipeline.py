@@ -52,8 +52,11 @@ def metadata(at, resistance=45000):
 def populate(replay):
     start = AT-timedelta(minutes=5)
     daily = [dict(datetime=(start.date()-timedelta(days=i)).isoformat(),
-        open=35000, high=45000, low=34000, close=37000, volume=500000)
+        open=35000, high=38000, low=34000, close=37000, volume=500000)
         for i in range(600, 0, -1)]
+    # One previously known resistance, not 600 identical high-volume bars
+    # above the entry: those fail the production overhead supply gate.
+    daily[250]['high'] = 45000
     replay.reference(SYMBOL, daily, start)
     # Construct candles solely by causal ingestion of explicitly synthetic prints.
     candles = [(37000,37300,37000,37300), (37300,38500,37200,38400),

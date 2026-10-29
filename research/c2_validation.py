@@ -15,7 +15,9 @@ class C2Replay(FullPathReplay):
     def __init__(self,start,strategy,cfg,auto,cash,**kwargs):
         if (cfg.risk_fraction!=.02 or cfg.max_daily_loss_fraction!=.04 or cfg.max_positions!=1
                 or cfg.max_position_fraction!=1 or cfg.min_reward_risk!=1.5):raise ValueError('C2_FIXED_RISK_PROFILE_REQUIRED')
-        if auto.fast_momentum_enabled or auto.pullback_expansion_target_enabled or auto.resistance_breakout_expansion_enabled or auto.support_rebound_reclaim_enabled:
+        if (auto.fast_momentum_enabled or auto.pullback_expansion_target_enabled
+                or getattr(auto,'resistance_breakout_expansion_enabled',False)
+                or getattr(auto,'support_rebound_reclaim_enabled',False)):
             raise ValueError('C2_UNRELATED_STRATEGIES_MUST_BE_OFF')
         if not auto.confirmed_invalidation_enabled:raise ValueError('C2_EXISTING_CONFIRMED_INVALIDATION_REQUIRED')
         super().__init__(start,'C',cfg,auto,cash,**kwargs)

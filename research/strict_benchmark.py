@@ -108,10 +108,20 @@ class FullPathReplay:
             raise ValueError('UNKNOWN_STRATEGY')
         self.strategy = strategy
         self.cfg = cfg
-        self.auto = auto if strategy=='LIVE_ABC' else replace(auto,
-            resistance_breakout_expansion_enabled=strategy == 'D',
-            support_rebound_reclaim_enabled=strategy == 'E2',
-            setup_e_reclaim_mode='PULLBACK_HIGH_RECLAIM')
+        if strategy=='LIVE_ABC':
+            self.auto=auto
+        else:
+            # A runtime without research options cannot silently run D/E2;
+            # frozen A/B/C and C2 do not need those absent fields.
+            available=set(auto.__dataclass_fields__)
+            required={'D':{'resistance_breakout_expansion_enabled'},
+                      'E2':{'support_rebound_reclaim_enabled','setup_e_reclaim_mode'}}.get(strategy,set())
+            if not required<=available:
+                raise ValueError('PAPER_RESEARCH_STRATEGY_NOT_IN_RUNTIME: '+strategy)
+            requested=dict(resistance_breakout_expansion_enabled=strategy=='D',
+                           support_rebound_reclaim_enabled=strategy=='E2',
+                           setup_e_reclaim_mode='PULLBACK_HIGH_RECLAIM')
+            self.auto=replace(auto,**{k:v for k,v in requested.items() if k in available})
         self.account = PaperAccount(start, cfg=cfg, auto=self.auto,
                                     initial_cash=initial_cash, latency_ms=latency_ms)
         self.account.e.paper_mode = True

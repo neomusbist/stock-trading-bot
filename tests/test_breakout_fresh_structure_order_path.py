@@ -85,6 +85,15 @@ class BreakoutFreshStructureOrderPathTests(unittest.TestCase):
                 'pattern': 'A', 'limit': 2130, 'stop': 2030, 'target': 2325,
                 'invalidation_policy': {'enabled': True, 'emergency_stop': 2030, 'structural_stop': 2045}
             })
+            # At a 2,130 entry the 2,325 target clears the cost-inclusive
+            # threshold; the older 2,320 fixture did not meet 1.5 net RR.
+            self.assertTrue(econ['rr_pass'])
+            self.assertGreaterEqual(econ['net_rr'], 1.5)
+            worse = signal_economics(self.cfg, self.auto, {
+                'pattern': 'A', 'limit': 2135, 'stop': 2030, 'target': 2325,
+                'invalidation_policy': {'enabled': True, 'emergency_stop': 2030, 'structural_stop': 2045}
+            })
+            self.assertFalse(worse['rr_pass'])
             eff = efficiency(2130, 2030, 2325, 0.8, 30, self.costs, economics=econ)
             
             gates = {

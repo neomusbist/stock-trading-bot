@@ -89,6 +89,10 @@ class SetupEPaperTests(unittest.TestCase):
         self.assertEqual(setup_e['base_low'], 37000.0)
         self.assertAlmostEqual(setup_e['retrace'], (38500.0 - 37600.0)/(38500.0 - 37000.0), places=3)
         self.assertGreaterEqual(setup_e['projection'], 38100.0 * 1.04)
+        self.assertEqual(setup_e['projection'], watch['resistance'])
+        self.assertLessEqual(setup_e['invalidation_policy']['emergency_stop'], setup_e['invalidation_policy']['structural_stop'])
+        self.assertIsNone(detector.support_rebound(bars, tick, {'status': 'WATCH'}))
+        self.assertIsNone(detector.support_rebound(bars, tick, {**watch, 'resistance': 38100.0}))
 
         # Gates evaluation
         gates = detector.setup_gates(tick, watch, setup_e, bars)
@@ -137,8 +141,8 @@ class SetupEPaperTests(unittest.TestCase):
         self.assertFalse(e_trial['gates']['risk_reward']['result'] == 'PASS')
         self.assertFalse(e_trial['entry_ready'])
 
-    def test_setup_e_paper_mode_submits_fakebroker_buy(self):
-        """End-to-End: In paper/simulation mode, a qualifying Setup E executes FakeBroker BUY order."""
+    def test_setup_e_generic_fakebroker_cannot_bypass_research_seal(self):
+        """A paper_mode flag alone cannot authorize a research order."""
         with patch('automation.release_integrity.check_runtime_integrity', return_value={'valid': True, 'reasons': []}):
             with tempfile.TemporaryDirectory() as temp_dir:
                 folder = Path(temp_dir)
@@ -198,16 +202,10 @@ class SetupEPaperTests(unittest.TestCase):
                 self.assertEqual(sig['pattern'], 'E')
                 self.assertTrue(sig['paper_only'])
                 
-                # Execute actual entry in paper mode
+                # A generic FakeBroker is not the isolated, sealed replay broker.
                 order = evaluate_actual_entry(engine, detector, tick, watch, radar, prices, account, {})
-                self.assertIsNotNone(order)
-                self.assertEqual(order['status'], 'ACCEPTED')
-                self.assertEqual(len(broker.orders), 1)
-                side, sym, qty, limit = broker.orders[0]
-                self.assertEqual(side, 'BUY')
-                self.assertEqual(sym, '089890')
-                self.assertGreaterEqual(qty, 1)
-                self.assertEqual(limit, 38100.0)
+                self.assertIsNone(order)
+                self.assertEqual(broker.orders, [])
 
     def test_setup_e_live_mode_blocked_paper_guard(self):
         """End-to-End: In LIVE mode, Setup E is strictly blocked by PAPER_STRATEGY_BLOCKED_IN_LIVE guard."""
@@ -385,13 +383,15 @@ class SetupEPaperTests(unittest.TestCase):
                 engine.account_ok = True
 
                 # Oct 27 Trade 2 (001510): limit 2,090, stop 2,050
-                sig = {'pattern': 'E', 'symbol': '001510', 'limit': 2090.0, 'stop': 2050.0, 'target': 2190.0, 'paper_only': True}
                 rem = engine.daily_risk_budget(69397.67) - engine.s['daily_loss']
-                qd = engine.quantity_details(sig, 69397.67, 69397.67, rem)
                 # Price-only risk is 40 KRW, which would naively give 34 shares (or 31 at 2094),
                 # but true cash-flow risk_per_share is ~55.02 KRW, giving exactly 25 shares (<= 1,387.95 KRW budget).
-                self.assertEqual(qd['quantity'], 25)
-                self.assertLessEqual(qd['quantity'] * qd['risk_per_share'], qd['risk_budget'])
+                for pattern in ('D', 'E', 'E2'):
+                    with self.subTest(pattern=pattern):
+                        sig = {'pattern': pattern, 'symbol': '001510', 'limit': 2090.0, 'stop': 2050.0, 'target': 2190.0, 'paper_only': True}
+                        qd = engine.quantity_details(sig, 69397.67, 69397.67, rem)
+                        self.assertEqual(qd['quantity'], 25)
+                        self.assertLessEqual(qd['quantity'] * qd['risk_per_share'], qd['risk_budget'])
 
     def test_setup_e2_reclaim_high_rejection_when_below_support_bar_high(self):
         """E2 Rule: When price is above support but still below the high of the support-setting candle, entry is REJECTED."""
