@@ -80,31 +80,66 @@ class PatternDetector(Detector):
                 self.prior_high[t.symbol]=self.day_high.get(t.symbol,t.price)
             self.day_high[t.symbol]=max(t.price,self.day_high.get(t.symbol,t.price))
         had_minute_gap = False
+        resumed_from_pure_no_trade = False
+        no_trade_gap_seconds = 0
+        gap_type = None
+
         if b and b['time']!=minute:
-            if (minute-b['time']).total_seconds()==60:
+            gap_seconds = (minute - b['time']).total_seconds()
+            if gap_seconds == 60:
                 # Prior confirmed references are distinct from consecutive signal bars.
                 self.price_context.record(t.symbol,{**b,'venue':getattr(self.cfg,'after_default_venue','SOR') if t.time.strftime('%H:%M:%S')>=self.a.after_prep_start else 'KRX'},t.time,self.cfg.stale_seconds)
                 self.history.setdefault(t.symbol,deque(maxlen=30)).append(b)
             else:
-                had_minute_gap = True
-                self.last_gap_reason[t.symbol]='MISSING_MINUTE'
-                if self.continuous_observation:
+                # Distinguish no-trade gap, network data loss, disconnect/subscription, or unknown
+                volume_lost = (t.cumulative - old.cumulative) - t.volume if old else 0
+                has_pending_gap = bool(self.coverage_gaps.get(t.symbol, {}).get('pending'))
+                is_stale_rx = (received - t.time).total_seconds() > self.cfg.stale_seconds
+
+                if volume_lost > 0:
+                    gap_type = 'DATA_LOSS_GAP'
+                elif resuming or has_pending_gap:
+                    gap_type = 'SUBSCRIPTION_GAP'
+                elif is_stale_rx or not self.continuous_observation:
+                    gap_type = 'DISCONNECT_GAP'
+                elif old is None or t.symbol not in self.observation_start:
+                    gap_type = 'UNKNOWN_GAP'
+                else:
+                    resumed_from_pure_no_trade = True
+                    no_trade_gap_seconds = int(gap_seconds - 60)
+
+                if resumed_from_pure_no_trade:
+                    # Pure market no-trade interval: retain completed bar without fabricating fake bars
+                    b['pure_no_trade_gap_after_seconds'] = no_trade_gap_seconds
                     self.price_context.record(t.symbol,{**b,'venue':getattr(self.cfg,'after_default_venue','SOR') if t.time.strftime('%H:%M:%S')>=self.a.after_prep_start else 'KRX'},t.time,self.cfg.stale_seconds)
                     self.history.setdefault(t.symbol,deque(maxlen=30)).append(b)
                 else:
-                    self.history.pop(t.symbol,None)
-                    self.completed.pop(t.symbol,None)
+                    had_minute_gap = True
+                    self.last_gap_reason[t.symbol] = gap_type or 'MISSING_MINUTE'
+                    if self.continuous_observation:
+                        self.price_context.record(t.symbol,{**b,'venue':getattr(self.cfg,'after_default_venue','SOR') if t.time.strftime('%H:%M:%S')>=self.a.after_prep_start else 'KRX'},t.time,self.cfg.stale_seconds)
+                        self.history.setdefault(t.symbol,deque(maxlen=30)).append(b)
+                    else:
+                        self.history.pop(t.symbol,None)
+                        self.completed.pop(t.symbol,None)
             b=None
         if b is None:
             start=self.observation_start.get(t.symbol)
-            was_observing = (start is not None and start <= minute) and not had_minute_gap
-            gap_reason=None if (was_observing or t.time.second<=self.cfg.stale_seconds) else ('MISSING_MINUTE' if had_minute_gap else 'FIRST_TRADE_AFTER_5S_COVERAGE_UNKNOWN')
+            if resumed_from_pure_no_trade:
+                was_observing = True
+                gap_reason = None
+            else:
+                was_observing = (start is not None and start <= minute) and not had_minute_gap
+                gap_reason = None if (was_observing or t.time.second<=self.cfg.stale_seconds) else (gap_type or ('MISSING_MINUTE' if had_minute_gap else 'FIRST_TRADE_AFTER_5S_COVERAGE_UNKNOWN'))
             b={'time':minute,'open':t.price,'high':t.price,'low':t.price,'close':t.price,'volume':0,
                'first_second':0 if was_observing else t.time.second,'last_second':t.time.second,
                'first_trade_time':t.time.isoformat(),'last_trade_time':t.time.isoformat(),
                'tick_count':0,'coverage_start':minute.isoformat(),
                'coverage_end':(minute+timedelta(seconds=60)).isoformat(),
                'local_drop_count':0,'gap_reason':gap_reason}
+            if resumed_from_pure_no_trade:
+                b['resumed_from_no_trade_gap'] = True
+                b['preceding_no_trade_seconds'] = no_trade_gap_seconds
             b['observation_source']='ACTUAL_RECEIVED'
             self.current[t.symbol]=b
         if resuming:
@@ -224,16 +259,31 @@ class PatternDetector(Detector):
         if not bars:return []
         cur=self.current.get(symbol)
         if cur is not None:
-            if (cur.get('gap_reason')=='MISSING_MINUTE' or cur.get('coverage_resumed_at')
-                    or (cur['time']-bars[-1]['time']).total_seconds()!=60):
+            if (cur.get('gap_reason') is not None or cur.get('coverage_resumed_at')):
+                return []
+            gap_to_last = (cur['time'] - bars[-1]['time']).total_seconds()
+            if gap_to_last == 60:
+                pass
+            elif cur.get('resumed_from_no_trade_gap') or bars[-1].get('pure_no_trade_gap_after_seconds'):
+                if gap_to_last > 900:
+                    return []
+            else:
                 return []
         valid=[]
         for bar in reversed(bars):
             if bar.get('gap_reason') is not None or bar.get('first_second',0)>self.cfg.stale_seconds:break
             if after_only and bar['time'].strftime('%H:%M:%S')<'15:40:00':
                 break
-            if valid and (valid[-1]['time']-bar['time']).total_seconds()!=60:
-                break
+            if valid:
+                step_gap = (valid[-1]['time'] - bar['time']).total_seconds()
+                if step_gap == 60:
+                    pass
+                elif bar.get('pure_no_trade_gap_after_seconds') and step_gap == bar['pure_no_trade_gap_after_seconds'] + 60 and step_gap <= 900:
+                    pass
+                else:
+                    break
+                if (valid[0]['time'] - bar['time']).total_seconds() > 1800:
+                    break
             valid.append(bar)
         return list(reversed(valid))
 
@@ -248,8 +298,8 @@ class PatternDetector(Detector):
         diff_reason=None
         if stored_count>usable_count:
             cur=self.current.get(symbol)
-            if usable_count==0 and cur is not None and (cur.get('gap_reason')=='MISSING_MINUTE' or (cur['time']-history[-1]['time']).total_seconds()!=60):
-                diff_reason='MISSING_MINUTE'
+            if usable_count==0 and cur is not None and (cur.get('gap_reason') is not None or ((cur['time']-history[-1]['time']).total_seconds()!=60 and not cur.get('resumed_from_no_trade_gap'))):
+                diff_reason=cur.get('gap_reason') or 'MISSING_MINUTE'
             else:
                 inv_idx=stored_count-usable_count-1
                 if 0<=inv_idx<stored_count:
@@ -258,7 +308,7 @@ class PatternDetector(Detector):
                         diff_reason=inv_bar['gap_reason']
                     elif inv_bar.get('first_second',0)>self.cfg.stale_seconds:
                         diff_reason='FIRST_TRADE_AFTER_5S_COVERAGE_UNKNOWN'
-                    elif inv_idx+1<stored_count and (history[inv_idx+1]['time']-inv_bar['time']).total_seconds()!=60:
+                    elif inv_idx+1<stored_count and (history[inv_idx+1]['time']-inv_bar['time']).total_seconds()!=60 and not inv_bar.get('pure_no_trade_gap_after_seconds'):
                         diff_reason='MISSING_MINUTE'
                     else:
                         diff_reason='PARTIAL_SUBSCRIPTION_START'
