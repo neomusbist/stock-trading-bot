@@ -670,7 +670,7 @@ class PatternDetector(Detector):
                     setups.append({'pattern':'A','breakout':level,'support':support,
                                    'projection':floor_tick(level+2.5*(level-base_low)),
                                    'entry_basis':'TREND_BREAKOUT_BASE'})
-        elif self.a.structural_breakout_enabled:
+        if not any(s and s.get('pattern')=='A' for s in setups) and self.a.structural_breakout_enabled:
             # The existing continuation path used to be unreachable below an
             # old session high. Require real received rising bars; references
             # can bound their local range, never manufacture signal warmup.
@@ -683,7 +683,7 @@ class PatternDetector(Detector):
                 count=min(len(references),12)  # same existing pattern horizon
                 base=complete_sequence(references,t.time,count,require_recent=True) if count>=3 else []
                 if base:
-                    local_high=max(b['high'] for b in base)
+                    local_high=max(max(b['high'] for b in base), max(b['high'] for b in bars[-3:]))
                     support=min(b['low'] for b in bars[-min(len(bars),4):])
                     if t.price>local_high and support<local_high:
                         setups.append({'pattern':'A','breakout':local_high,'support':support,
@@ -813,13 +813,13 @@ class PatternDetector(Detector):
                             setups['A']={'pattern':'A','breakout':level,'support':support,
                                          'projection':floor_tick(level+2.5*(level-base_low)),
                                          'entry_basis':'TREND_BREAKOUT_BASE'}
-                elif self.a.structural_breakout_enabled and cont_ok is True:
+                if 'A' not in setups and self.a.structural_breakout_enabled and cont_ok is True:
                     from automation.trade_quality import complete_sequence
                     references=self.price_context.reference_bars(t.symbol,t.time,venue)
                     count=min(len(references),12)
                     base=complete_sequence(references,t.time,count,require_recent=True) if count>=3 else []
                     if base:
-                        local_high=max(b['high'] for b in base)
+                        local_high=max(max(b['high'] for b in base), max(b['high'] for b in bars[-3:]))
                         support=min(b['low'] for b in bars[-min(len(bars),4):])
                         if t.price>local_high and support<local_high:
                             setups['A']={'pattern':'A','breakout':local_high,'support':support,
@@ -1124,6 +1124,11 @@ class PatternDetector(Detector):
                 # not manufacture reward by raising the pattern's prior target.
                 target=min(target,breakout_evidence['target_ceiling'])
                 if resistance is not None and resistance>limit:target=min(target,resistance)
+            # A still-unbroken, already observed session high is overhead even
+            # when the trigger is a smaller local base. Do not invent extra room.
+            known_high=(self.after_prior_high if after_supported(t.time) else self.prior_high).get(t.symbol)
+            if known_high is not None and known_high>limit:
+                target=min(target,known_high)
         box_evidence=None;box_pass=None
         if setup['pattern']=='C' and self.a.fresh_box_basis_enabled and self.a.confirmed_invalidation_enabled:
             from automation.structural_box import structural_box

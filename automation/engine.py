@@ -549,8 +549,12 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
         b_structure=self.a.structural_pullback_enabled and signal.get('pattern')=='B'
         a_structure=self.a.structural_breakout_enabled and signal.get('pattern')=='A'
         if b_structure or a_structure:
-            planned_buffer=(signal['evaluation_gates']['pullback_structure']['values']['buffer_amount'] if b_structure
-                            else signal['evaluation_gates']['breakout_structure']['values']['buffer'])
+            key='pullback_structure' if b_structure else 'breakout_structure'
+            proof=signal.get('evaluation_gates',{}).get(key,{}).get('values',{})
+            if not isinstance(proof,dict):return 'ENTRY_STRUCTURE_BUFFER_UNKNOWN'
+            planned_buffer=proof.get('buffer_amount') if b_structure else proof.get('buffer',proof.get('buffer_amount'))
+            if type(planned_buffer) not in (int,float) or not math.isfinite(planned_buffer) or planned_buffer<0:
+                return 'ENTRY_STRUCTURE_BUFFER_UNKNOWN'
             if tick.ask-tick.bid>planned_buffer:
                 return 'PULLBACK_STRUCTURE_SPREAD_CHANGED'
             if provider:

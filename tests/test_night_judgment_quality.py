@@ -38,9 +38,23 @@ class SustainedLocalRiseTests(unittest.TestCase):
     def test_current_structure_can_form_A_below_an_older_session_high(self):
         a=self.trial()
         self.assertTrue(a['candidate_generated'])
-        self.assertTrue(a['entry_ready'])
+        # The independent three-bar base now triggers first. The former
+        # fixture's 1.16 net RR does not justify an order at the 1.5 floor.
+        self.assertEqual(a['setup_geometry']['entry_basis'],'TREND_BREAKOUT_BASE')
+        self.assertEqual(a['setup_geometry']['breakout'],10025)
+        self.assertFalse(a['entry_ready'])
+        self.assertEqual(a['gates']['risk_reward']['result'],'FAIL')
+        self.assertLess(a['gates']['risk_reward']['values']['net_rr'],1.5)
+
+    def test_continuation_is_admitted_only_when_cost_inclusive_rr_passes(self):
+        rows=copy.deepcopy(CONTINUING)
+        # Complete bar with a wider independently represented base; the
+        # unmodified earlier fixture remains the economic rejection control.
+        rows[-3]['low']=9800
+        a=self.trial(rows=rows)
+        self.assertTrue(a['entry_ready'],a['failed_reasons'])
         self.assertEqual(a['gates']['acceleration']['values']['mode'],'CONFIRMED_CONTINUATION')
-        self.assertEqual(a['setup_geometry']['breakout'],10030)
+        self.assertGreaterEqual(a['gates']['risk_reward']['values']['net_rr'],1.5)
 
     def test_near_known_overhead_keeps_local_rise_blocked(self):
         rows=copy.deepcopy(CONTINUING);rows[2].update(high=10060,close=9980)
@@ -65,7 +79,10 @@ class SustainedLocalRiseTests(unittest.TestCase):
 
     def test_flag_off_preserves_the_original_session_high_boundary(self):
         d=self.detector(auto=replace(AUTO,structural_breakout_enabled=False))
-        self.assertFalse(self.trial(d=d)['candidate_generated'])
+        a=self.trial(d=d)
+        self.assertNotEqual(a['setup_geometry'].get('entry_basis'),'LOCAL_CONFIRMED_CONTINUATION')
+        self.assertFalse(a['entry_ready'])
+        self.assertEqual(a['gates']['acceleration']['result'],'FAIL')
 
     def test_weak_rebound_volume_flat_lows_and_partial_bar_cannot_form_local_A(self):
         for kind in ('volume','low','partial'):
@@ -73,7 +90,9 @@ class SustainedLocalRiseTests(unittest.TestCase):
             if kind=='volume':rows[-1]['volume']=50
             elif kind=='low':rows[-1]['low']=rows[-2]['low']
             else:rows[-1]['time']=AT
-            self.assertFalse(self.trial(rows=rows)['candidate_generated'])
+            a=self.trial(rows=rows)
+            self.assertNotEqual((a['setup_geometry'] or {}).get('entry_basis'),'LOCAL_CONFIRMED_CONTINUATION')
+            self.assertFalse(a['entry_ready'])
 
     def test_reference_history_alone_cannot_manufacture_received_signal_bars(self):
         d=self.detector()
@@ -81,11 +100,15 @@ class SustainedLocalRiseTests(unittest.TestCase):
 
     def test_lower_rebound_below_the_recent_range_ceiling_stays_blocked(self):
         rows=copy.deepcopy(CONTINUING);rows[-10]['high']=10100
-        self.assertFalse(self.trial(rows=rows)['candidate_generated'])
+        a=self.trial(rows=rows)
+        self.assertNotEqual((a['setup_geometry'] or {}).get('entry_basis'),'LOCAL_CONFIRMED_CONTINUATION')
+        self.assertFalse(a['entry_ready'])
 
     def test_no_local_continuation_if_reference_was_received_later(self):
         d=self.detector();d.price_context.rows['999990']['history_received_at']=(AT+timedelta(seconds=1)).isoformat()
-        self.assertFalse(self.trial(d=d)['candidate_generated'])
+        a=self.trial(d=d)
+        self.assertNotEqual((a['setup_geometry'] or {}).get('entry_basis'),'LOCAL_CONFIRMED_CONTINUATION')
+        self.assertFalse(a['entry_ready'])
 
     def test_future_reference_is_not_a_past_local_breakout_or_target(self):
         d=self.detector();before=self.trial(d=d)
@@ -96,16 +119,20 @@ class SustainedLocalRiseTests(unittest.TestCase):
         after=AT.replace(hour=16,minute=20)
         rows=copy.deepcopy(CONTINUING)
         for b in rows:b.update(time=b['time']+(after-AT),venue='SOR')
+        rows[-3]['low']=9800
         auto=replace(AUTO,after_momentum_failure_enabled=True)
         d=PatternDetector(CFG,auto,COSTS)
         for b in rows:d.price_context.record('999990',b,after)
         d.after_prior_high['999990']=11000
         t=Tick('999990',after,10040,100,1000,10040,10030,venue='SOR')
-        watch={**self.watch(),'venue':'SOR'};common=self.common();common['acceleration']['result']='PASS'
+        watch={**self.watch(),'venue':'SOR'};common=self.common()
         a=d.setup_trials(t,watch,common,_bars=rows)[0]
-        self.assertTrue(a['entry_ready']);self.assertEqual(a['gates']['acceleration']['values']['mode'],'CONFIRMED_CONTINUATION')
-        sig={**a['setup_geometry'],'session':'AFTER','venue':'SOR','limit':10040,'stop':9850,
-             'target':10330,'invalidation_policy':a['gates']['breakout_structure']['values'],'evaluation_gates':a['gates']}
+        self.assertTrue(a['entry_ready'],a['failed_reasons'])
+        self.assertEqual(a['gates']['acceleration']['values']['mode'],'CONFIRMED_CONTINUATION')
+        sig={**a['setup_geometry'],'session':'AFTER','venue':'SOR','limit':10040,
+             'stop':a['gates']['invalidation']['values']['stop'],
+             'target':a['gates']['risk_reward']['values']['target'],
+             'invalidation_policy':a['gates']['breakout_structure']['values'],'evaluation_gates':a['gates']}
         self.assertFalse(build_plan(CFG,auto,sig)['after_failed_rebound'])
 
 
@@ -120,10 +147,12 @@ class LocalRiseReceiverTests(unittest.TestCase):
         self.d.day_high[wire.SYM]=11000
         finish=self.clock.replace(hour=10,minute=30,second=0,microsecond=0)
         cumulative=0
-        for i,b in enumerate(CONTINUING):
-            scale=1 if i<len(CONTINUING)-2 else i-len(CONTINUING)+3
+        rows=copy.deepcopy(CONTINUING)
+        rows[-3]['low']=9800  # independent valid-bar control with room after actual costs
+        for i,b in enumerate(rows):
+            scale=1 if i<len(rows)-2 else i-len(rows)+3
             for sec in range(60):
-                at=finish-timedelta(minutes=len(CONTINUING)-i)+timedelta(seconds=sec)
+                at=finish-timedelta(minutes=len(rows)-i)+timedelta(seconds=sec)
                 price=(b['open'],b['high'],b['low'],b['close'])[min(sec,3)]
                 volume=1000*scale;cumulative+=volume
                 self.assertTrue(self.d.ingest(Tick(wire.SYM,at,price,volume,cumulative,price,price-10),at))
@@ -139,14 +168,14 @@ class LocalRiseReceiverTests(unittest.TestCase):
         t=self.observed();self.send(self.frame(t),{wire.SYM:self.watch})
         buys=[o for o in self.e.s['orders'].values() if o['side']=='BUY']
         self.assertEqual(len(buys),1);o=buys[0]
-        self.assertEqual(o['signal']['entry_basis'],'LOCAL_CONFIRMED_CONTINUATION')
+        self.assertEqual(o['signal']['entry_basis'],'TREND_BREAKOUT_BASE')
         self.assertEqual(o['signal']['evaluation_gates']['acceleration']['values']['mode'],'CONFIRMED_CONTINUATION')
         self.assertLess(o['signal']['breakout'],11000)
         self.assertEqual(o['status'],'ACCEPTED');self.assertEqual(len(self.broker.orders),1)
         self.assertGreater(o['qty'],0);self.assertLess(o['signal']['stop'],o['limit'])
         self.assertEqual(o['signal']['approved_cap_krw'],81300)
         self.assertLessEqual(o['qty']*o['signal']['efficiency']['risk_per_share'],o['signal']['account_risk_budget_krw'])
-        self.assertEqual(o['signal']['invalidation_policy']['reason'],'CONFIRMED_RANGE_BASE')
+        self.assertEqual(o['signal']['invalidation_policy']['reason'],'CONFIRMED_TREND_BREAKOUT_BASE')
         self.e.cumulative_fill(o,o['qty'],o['qty']*o['limit'])
         p=self.e.s['positions'][wire.SYM]
         self.assertEqual(p['initial_r'],p['avg']-p['initial_stop'])
@@ -172,6 +201,16 @@ class LocalRiseReceiverTests(unittest.TestCase):
         signal=self.d.signal(t,self.watch);self.assertIsNotNone(signal)
         self.clock+=timedelta(seconds=self.cfg.stale_seconds+1)
         self.assertIsNone(self.e.enter(signal,t));self.assertEqual(self.broker.orders,[])
+
+    def test_a_structure_buffer_missing_or_invalid_never_reaches_broker(self):
+        t=self.observed();self.assertTrue(self.d.ingest(t,t.time))
+        signal=self.d.signal(t,self.watch);self.assertIsNotNone(signal)
+        for invalid in (None,-1,float('nan'),'10'):
+            bad=copy.deepcopy(signal)
+            values=bad['evaluation_gates']['breakout_structure']['values']
+            values.pop('buffer',None);values['buffer_amount']=invalid
+            self.assertIsNotNone(self.e.entry_market_reason(bad,1,t))
+        self.assertEqual(self.broker.orders,[])
 
 
 class DayLineageTests(unittest.TestCase):
