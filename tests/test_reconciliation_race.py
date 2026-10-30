@@ -27,7 +27,6 @@ class ReconciliationRaceTests(unittest.TestCase):
         self.engine.connected = True
         self.engine.account_ok = True
         self.engine.market = '3'
-        self.engine.last_account = 1000000.0 # large monotonic time to avoid timeout in unit test
         self.engine.s['cash'] = 20000.0
         self.engine.available_cash = 20000.0
         self.engine.s['day'] = START.date().isoformat()
@@ -35,6 +34,10 @@ class ReconciliationRaceTests(unittest.TestCase):
         self.engine.s['automation']['cash'] = 20000.0
         self.engine.s['automation']['existing'] = {}
         self.engine.market_status = {'069540': {'pass': True}}
+        # Use the engine's normal reconciliation to establish a fresh synthetic
+        # account snapshot; an arbitrary monotonic value eventually becomes stale.
+        self.engine.reconcile({'cash':20000,'equity':20000,'holdings':{},'orders':[]})
+        self.assertTrue(self.engine.capital_account_valid())
 
     def create_position(self, sym='069540', qty=2, price=4960.0, limit=4965, stop=4905):
         sig = {'symbol': sym, 'stop': stop, 'limit': limit, 'ownership': 'BOT', 'pattern': 'A',
