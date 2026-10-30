@@ -371,6 +371,13 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
             'efficiency':gate(signal.get('efficiency',{}).get('decision')=='TRADE',efficiency=signal.get('efficiency'))}
 
     def entry_market_reason(self,signal,quantity,fallback=None,phase='PRE_INTENT'):
+        c2_verified=False
+        if signal.get('research_strategy')=='C2':
+            if not self.research_paper_allowed(signal):return 'C2_SEALED_PAPER_REQUIRED'
+            from research.c2_proof import verify_c2_proof
+            proof_tick=fallback or getattr(self,'entry_tick',None)
+            if proof_tick is None or not verify_c2_proof(signal,proof_tick,self.c,self.a):return 'C2_STRUCTURE_PROOF_INVALID'
+            c2_verified=True
         if signal.get('entry_basis') in {'CONFIRMED_BREAKOUT_RETEST','CONFIRMED_SUPPORT_RECLAIM'}:
             pair=signal.get('evaluation_gates',{}).get('reclaim_tick',{});v=pair.get('values',{})
             try:
@@ -438,7 +445,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
                         or (signal['target']-signal['limit'])/(signal['limit']-signal['stop'])<self.c.min_reward_risk):
                     return 'PULLBACK_STRUCTURE_PROOF_MISSING_OR_INVALID'
             except (KeyError,TypeError,ValueError,ZeroDivisionError):return 'PULLBACK_STRUCTURE_PROOF_MISSING_OR_INVALID'
-        if self.a.fresh_box_basis_enabled and signal.get('pattern')=='C':
+        if self.a.fresh_box_basis_enabled and signal.get('pattern')=='C' and not c2_verified:
             if self.a.confirmed_invalidation_enabled:
                 from automation.structural_box import structural_box
                 try:
@@ -461,7 +468,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
                 if passed is not True or proof!={'result':'PASS','values':{'enabled':True,**evidence}}:
                     return 'BOX_ORIGIN_PROOF_MISSING_OR_INVALID'
             except (KeyError,TypeError,ValueError):return 'BOX_ORIGIN_PROOF_MISSING_OR_INVALID'
-        if self.a.confirmed_box_direction and signal.get('pattern')=='C':
+        if self.a.confirmed_box_direction and signal.get('pattern')=='C' and not c2_verified:
             from automation.trade_quality import box_direction
             try:
                 passed,evidence=box_direction(signal.get('decision_bar_snapshot'),datetime.fromisoformat(signal['time']),self.a.box_min_bars)

@@ -25,7 +25,7 @@ class C2Replay(FullPathReplay):
         self.profile['requested_strategy']='C2';self.profile['transport_pattern']='C'
         self.profile['hypothesis']='PREBREAK_OVERHEAD_BOX_RETEST_RECLAIM'
         self.profile_sha256=hashlib.sha256(json.dumps(self.profile,sort_keys=True).encode()).hexdigest()
-        for name in ('c2_retest.py','c2_validation.py','c2_exits.py','observed_paper.py'):
+        for name in ('c2_retest.py','c2_validation.py','c2_proof.py','c2_exits.py','observed_paper.py'):
             self.source_sha256['research/'+name]=hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
 
     def step(self,frame,**kwargs):

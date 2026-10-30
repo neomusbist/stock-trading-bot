@@ -70,7 +70,7 @@ class C2Detector(PatternDetector):
             top=top,low=low,base_start=base[0]['time'],base_end=base[-1]['time'],
             known_at=asof,target=target,target_evidence={**deepcopy(peak),'known_by':asof.isoformat(),'known_watch_ceiling':ceiling,
                 'source_bars':[{**b,'time':b['time'].isoformat()} for b in proof]},
-            noise=max(b['high']-b['low'] for b in base),last_bar=base[-1]['time'],bars=deepcopy(base))
+            noise=max(b['high']-b['low'] for b in base),last_bar=base[-1]['time'],bars=deepcopy(base),post_break_bars=[])
         if len(self.episode_summary)>=256:return None,'C2_EPISODE_BUDGET_UNKNOWN'
         self.episode_summary[box['id']]=dict(symbol=t.symbol,box_known_at=asof.isoformat(),
             top=top,low=low,target=target,target_evidence=deepcopy(box['target_evidence']),
@@ -110,7 +110,7 @@ class C2Detector(PatternDetector):
                 b.update(state='INVALID',finished_at=t.time);reasons.append('C2_KNOWN_REWARD_ALREADY_EXHAUSTED')
             elif b['state']=='ARMED':
                 if t.price>b['top']:
-                    b.update(state='WAIT_RETEST',break_at=t.time,break_receipt=tick_source_identity(t),
+                    b.update(state='WAIT_RETEST',break_at=t.time,break_price=t.price,break_receipt=tick_source_identity(t),
                         break_minute=t.time.replace(second=0,microsecond=0))
                     soft=floor_tick(b['low']-tick_size(b['low']))
                     b['breakout_economics']=entry_economics(t.ask,soft,floor_tick(soft-b['noise']),b['target'],self.costs,self.cfg.min_reward_risk)
@@ -120,6 +120,7 @@ class C2Detector(PatternDetector):
                 for bar in bars:
                     if bar['time']<=max(b['last_bar'],b['break_minute']):continue
                     b['last_bar']=bar['time'];b['noise']=max(b['noise'],bar['high']-bar['low'])
+                    b['post_break_bars'].append(deepcopy(bar))
                     if bar['close']<b['top']:
                         b.update(state='INVALID',finished_at=bar['time']+timedelta(minutes=1));reasons.append('C2_BREAK_FAILED_COMPLETED_CLOSE');break
                     step=tick_size(b['top'])
@@ -181,7 +182,13 @@ class C2Detector(PatternDetector):
         gates={**gates,'pattern':gate(True,setup='C2'),'breakout':gate(True,breakout=b['trigger']),
             'risk_reward':trial['gates']['risk_reward'],'liquidity':gate(True,window_turnover=amount,min_turnover=self.cfg.min_bc_window_turnover),
             'acceleration':{**gates['acceleration'],'required':False,'scope':'OBSERVATION_ONLY'}}
-        return dict(symbol=t.symbol,time=t.time.isoformat(),pattern='C',research_strategy='C2',paper_only=True,
+        def serialized_bar(bar):
+            return {**bar,'time':bar['time'].isoformat()}
+        proof=dict(base=[serialized_bar(x) for x in b['bars']],known_at=b['known_at'].isoformat(),
+            break_at=b['break_at'].isoformat(),break_price=b['break_price'],break_receipt=deepcopy(b['break_receipt']),
+            post_break_bars=[serialized_bar(x) for x in b['post_break_bars']],
+            confirmed_at=b['confirmed_at'].isoformat(),target_evidence=deepcopy(b['target_evidence']))
+        return dict(symbol=t.symbol,time=t.time.isoformat(),pattern='C',research_strategy='C2',paper_only=True,c2_structure_proof=proof,
             limit=t.ask,stop=b['emergency'],emergency=b['emergency'],support=b['structural'],target=target,
             breakout=b['trigger'],breakout_level=b['trigger'],projection=b['target'],
             target_basis='PREBREAK_CONFIRMED_OVERHEAD_NOT_BOX_MULTIPLE',target_evidence=deepcopy(b['target_evidence']),
