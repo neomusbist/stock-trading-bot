@@ -86,6 +86,12 @@ class ReviewedBufferRecoveryTests(unittest.TestCase):
             with self.subTest(change=change),self.assertRaisesRegex(ValueError,'NON_FLAT'):
                 self.run_recovery(state={**self.state,**change})
 
+    def test_audit_write_failure_restores_original_halt(self):
+        with patch('automation.recovery.append_jsonl',side_effect=OSError('synthetic audit failure')):
+            with self.assertRaises(OSError):self.run_recovery()
+        saved=json.loads(self.path.read_text(encoding='utf8'))
+        self.assertEqual(saved,self.state)
+
     def test_wrong_broker_identity_pending_holdings_and_stale_rejected(self):
         for change in ({'account_identity':'other'},{'orders':[{'id':'x'}]},
                        {'holdings':{'005930':{'qty':3}}},
