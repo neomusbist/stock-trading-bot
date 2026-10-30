@@ -637,7 +637,7 @@ class OperatorService:
                 raise ValueError('처리 중인 미체결 주문이 남아 있습니다. 체결 또는 취소 확인 후 다시 시도하세요.')
             policy.command('RESET_KILL',confirmation=confirmation)
         return {'verdict':'RESET','mode':'STOP','note':'비상정지(KILL) 해제 완료: STOP 상태 전환 (LIVE 미승인 / 주문 전송 차단 OFF)'}
-    def recover_halt(self,confirmed,reason='EXPLICIT_USER_RECOVERY'):
+    def recover_halt(self,confirmed,reason='EXPLICIT_USER_RECOVERY',buffer_confirmation=None):
         if confirmed is not True:raise ValueError('EXPLICIT_HALT_RECOVERY_REQUIRED')
         if self.running():raise ValueError('STOP_RUNNER_BEFORE_RECOVERY')
         with self.idle(),ProcessLock(self.root/'runtime/control.lock'):
@@ -652,7 +652,8 @@ class OperatorService:
             if self.settings()!=baseline or read_json(folder/'state.json')!=state:
                 raise ValueError('RECOVERY_STATE_CHANGED')
             from automation.recovery import recover_reviewed_halt
-            recover_reviewed_halt(folder/'state.json',state,snapshot,self.clock(),reason)
+            recover_reviewed_halt(folder/'state.json',state,snapshot,self.clock(),reason,
+                                  buffer_confirmation=buffer_confirmation)
             return {'verdict':'RECOVERED','note':'실계좌 flat 대조 완료. 승인/위험예산은 보존하며 LIVE를 시작하지 않습니다.'}
 
     def arm_safe(self,confirmed):
