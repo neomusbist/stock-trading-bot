@@ -409,9 +409,18 @@ class TradeReviewCapture:
                 failures=tr.get('failures') or []
                 obs_gap=bool(any('UNKNOWN' in str(r) or 'UNAVAILABLE' in str(r) or 'GAP' in str(r) for r in failures)
                              or gates.get('warmup',{}).get('result')!='PASS')
+                rej_reason = failures[0] if failures else None
                 self.core_decisions.record({
                     'event':'CORE_DECISION_DIAGNOSTIC','source':'OPPORTUNITY_SAMPLE',
                     'symbol':symbol,'timestamp':iso(asof),
+                    'evaluation_time':iso(asof),
+                    'trade_time':iso(getattr(t,'time',None)),
+                    'trade_price':getattr(t,'price',None),
+                    'trade_volume':getattr(t,'volume',None),
+                    'best_bid':getattr(t,'bid',None),
+                    'best_ask':getattr(t,'ask',None),
+                    'p_max':st.get('maximum_entry'),
+                    'candidate_rejection_reason':rej_reason,
                     'setup':'A2' if st.get('entry_basis')=='CONFIRMED_BREAKOUT_RETEST' else tr.get('setup'),
                     'entry_basis':st.get('entry_basis'),
                     'decision':'READY' if tr.get('ready') else 'NO_BUY',
@@ -456,9 +465,26 @@ class TradeReviewCapture:
             obs_gap=bool((row and row.get('coverage_gap'))
                          or any(v.get('result')=='UNKNOWN' for v in gates.values() if isinstance(v,dict))
                          or (isinstance(reason,str) and ('UNKNOWN' in reason or 'UNAVAILABLE' in reason or 'STALE' in reason)))
+            tick = getattr(engine, 'entry_tick', None) or extra.get('tick')
+            band = econ.get('entry_price_band') or {}
+            p_max = econ.get('p_max') or band.get('p_max') or sig.get('max_chase_price')
+            trade_px = getattr(tick, 'price', None) if tick else None
+            trade_vol = getattr(tick, 'volume', None) if tick else None
+            trade_ts = iso(getattr(tick, 'time', None)) if tick and hasattr(tick, 'time') else None
+            best_bid = getattr(tick, 'bid', None) if tick else None
+            best_ask = getattr(tick, 'ask', None) if tick else None
+
             self.core_decisions.record({
                 'event':'CORE_DECISION_DIAGNOSTIC','source':'ENTRY_DECISION',
                 'symbol':symbol,'timestamp':iso(engine.clock()),
+                'evaluation_time':iso(engine.clock()),
+                'trade_time':trade_ts,
+                'trade_price':trade_px,
+                'trade_volume':trade_vol,
+                'best_bid':best_bid,
+                'best_ask':best_ask,
+                'p_max':p_max,
+                'candidate_rejection_reason':reason if decision != 'BUY' else None,
                 'setup':setup_name,'entry_basis':sig.get('entry_basis'),
                 'decision':decision,'primary_reason_code':reason,
                 'entry_price':entry_px,'structural_stop':s_stop,'emergency_stop':e_stop,

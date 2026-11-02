@@ -451,6 +451,8 @@ class ActualAccountFeasibilityAndBoundedDiagnosticsTests(unittest.TestCase):
                     self.assertEqual(r["risk_quantity"], 5)
                     self.assertEqual(r["quantity"], 5)
                     self.assertEqual(r["primary_reason_code"], "ENTRY_INTENT_ACCEPTED")
+                    self.assertIn("evaluation_time", r)
+                    self.assertIn("candidate_rejection_reason", r)
                     self.assertFalse(r["observation_gap"])
 
                     # Now simulate free space dropping below 5.0 GiB (e.g. 4.2 GiB) -> safely pauses & increments omitted
