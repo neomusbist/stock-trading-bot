@@ -130,8 +130,22 @@ def structural_breakout(raw,asof,setup,cfg,entry,bid,ask,auto=None,decision_bars
     structural_stop=floor_tick(support-buffer)
     noise=max(statistics.median(b['high']-b['low'] for b in rows[-15:]),spread,tick_size(entry))
     hard_stop=floor_tick(structural_stop-noise)
-    projection=breakout+2*(breakout-support)
+    projection_1x=breakout+2*(breakout-support)
+    projection_2x=floor_tick(breakout+4*(breakout-support))
     peak=confirmed_overhead(rows,asof,breakout)
+    paper_align=bool(auto is not None and getattr(auto,'setup_a_paper_rr_alignment_enabled',False) and not getattr(cfg,'live_mode',False))
+    target_mode=getattr(auto,'setup_a_target_mode','PROJECTION_2X') if paper_align else 'PROJECTION_1X'
+    base_range_pct=(breakout-support)/support if support>0 else float('inf')
+    base_gross_rr_1x=(projection_1x-entry)/(entry-structural_stop) if entry>structural_stop else 0.0
+    min_base_rr=getattr(auto,'setup_a_min_base_gross_rr',1.40) if auto is not None else 1.40
+    max_base_range=getattr(auto,'setup_a_max_base_range',0.025) if auto is not None else 0.025
+    expansion_guard_pass=bool(0<base_range_pct<=max_base_range and base_gross_rr_1x>=min_base_rr)
+    if paper_align and expansion_guard_pass and target_mode=='PROJECTION_2X':
+        projection=projection_2x
+    elif paper_align and expansion_guard_pass and target_mode=='CONFIRMED_RESISTANCE':
+        projection=peak['price'] if (peak and peak.get('price',0)>entry) else projection_2x
+    else:
+        projection=projection_1x
     ceiling=min(projection,peak['price']) if peak else projection
     # A locally confirmed new rise does not erase an earlier observed session
     # high merely because that high is outside the bounded reference history.
@@ -149,6 +163,9 @@ def structural_breakout(raw,asof,setup,cfg,entry,bid,ask,auto=None,decision_bars
         known_prior_session_high=known_high if known_high_valid else None,
         session_high_ceiling_applied=capped_by_session_high,
         original_micro_support=setup['support'],spread=spread)
+    if paper_align:
+        evidence.update(projection_1x=projection_1x,projection_2x=projection_2x,target_mode=target_mode,
+            base_range_pct=base_range_pct,base_gross_rr_1x=base_gross_rr_1x,expansion_guard_pass=expansion_guard_pass)
     rising=rows[-1]['close']>base[touch]['close'] and support<breakout<entry
     valid=bool(confirm and rising and 0<hard_stop<structural_stop<entry and ceiling>entry)
     return valid,{**evidence,'reason':'CONFIRMED_RANGE_BASE' if valid else 'UNCONFIRMED_OR_BROKEN_RANGE_BASE'}

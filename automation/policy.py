@@ -65,6 +65,11 @@ class AutomationConfig:
     pullback_expansion_target_enabled: bool = False  # opt-in 50% expansion target beyond peak for Setup B  # R6 FAST live momentum entry integration
     resistance_breakout_expansion_enabled: bool = False  # Setup D: resistance breakout expansion (PAPER-only)
     support_rebound_reclaim_enabled: bool = False  # Setup E: confirmed support rebound entry (PAPER-only)
+    setup_a_paper_rr_alignment_enabled: bool = False  # Setup A target/stop/RR structure fix (DEV/PAPER-only)
+    setup_a_target_mode: str = 'PROJECTION_2X'  # 'PROJECTION_1X' | 'PROJECTION_2X' | 'CONFIRMED_RESISTANCE' (DEV/PAPER-only)
+    setup_a_rr_stop_basis: str = 'EMERGENCY_STOP'  # 'EMERGENCY_STOP' | 'STRUCTURAL_STOP' for RR evaluation; position sizing always uses EMERGENCY_STOP
+    setup_a_min_base_gross_rr: float = 1.40  # minimum 1x structural gross RR required before target expansion
+    setup_a_max_base_range: float = 0.025  # maximum base range (breakout-support)/support allowed for target expansion
     setup_e_min_rise: float = 0.012  # minimum impulse rise fraction (1.2%)
     setup_e_min_retrace: float = 0.15  # minimum retrace fraction (15%)
     setup_e_max_retrace: float = 0.75  # maximum retrace fraction (75%)
@@ -110,7 +115,7 @@ class AutomationConfig:
         for k,v in asdict(self).items():
             if k in ('daily_risk_override_day','daily_risk_override_budget_krw'): continue
             if k=='max_consecutive_losses' and v is None: continue
-            if k in ('setup_e_reclaim_mode','new_entry_cutoff','force_flatten_start','after_prep_start','after_market_start','after_entry_cutoff','after_force_flatten_start','after_market_close'): continue
+            if k in ('setup_e_reclaim_mode','setup_a_target_mode','setup_a_rr_stop_basis','new_entry_cutoff','force_flatten_start','after_prep_start','after_market_start','after_entry_cutoff','after_force_flatten_start','after_market_close'): continue
             if isinstance(v,bool): continue
             if not isinstance(v,(int,float)) or not math.isfinite(v) or v<0:
                 raise ValueError(f'{k}: 유효한 0 이상 숫자 필요')
@@ -119,8 +124,12 @@ class AutomationConfig:
             if type(getattr(self,k)) is not int or getattr(self,k)<=0: raise ValueError(f'{k}: 양의 정수 필요')
         if type(self.ALLOW_OVERNIGHT) is not bool or type(self.costs_confirmed) is not bool or type(self.replacement_enabled) is not bool or type(self.entry_context_enabled) is not bool or type(self.stable_position_book_confirmation) is not bool:
             raise ValueError('불리언 설정 오류')
-        if any(type(getattr(self,k)) is not bool for k in ('confirmed_box_direction','confirmed_structure_protection','fresh_box_basis_enabled','setup_aware_watch_priority','structural_pullback_enabled','structural_breakout_enabled','intraday_context_enabled','confirmed_invalidation_enabled','after_momentum_failure_enabled','exit_plan_reward_guard_enabled','fast_momentum_enabled','pullback_expansion_target_enabled','resistance_breakout_expansion_enabled','support_rebound_reclaim_enabled')):
+        if any(type(getattr(self,k)) is not bool for k in ('confirmed_box_direction','confirmed_structure_protection','fresh_box_basis_enabled','setup_aware_watch_priority','structural_pullback_enabled','structural_breakout_enabled','intraday_context_enabled','confirmed_invalidation_enabled','after_momentum_failure_enabled','exit_plan_reward_guard_enabled','fast_momentum_enabled','pullback_expansion_target_enabled','resistance_breakout_expansion_enabled','support_rebound_reclaim_enabled','setup_a_paper_rr_alignment_enabled')):
             raise ValueError('불리언 설정 오류')
+        if self.setup_a_target_mode not in ('PROJECTION_1X','PROJECTION_2X','CONFIRMED_RESISTANCE'):
+            raise ValueError('setup_a_target_mode 설정 오류')
+        if self.setup_a_rr_stop_basis not in ('EMERGENCY_STOP','STRUCTURAL_STOP'):
+            raise ValueError('setup_a_rr_stop_basis 설정 오류')
         if any(type(getattr(self,k)) is not bool for k in ('a_short_reference_enabled','a_sustained_turnover_enabled','b_sustained_turnover_enabled','a_breakout_retest_entry_enabled','b_support_reclaim_entry_enabled','early_surge_priority_enabled','single_source_eligibility_fix_enabled','abc_quote_retry_enabled','timeline_async_save_enabled')):
             raise ValueError('불리언 설정 오류')
         if self.a_breakout_retest_entry_enabled and not (self.structural_breakout_enabled and self.confirmed_invalidation_enabled):

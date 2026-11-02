@@ -700,8 +700,10 @@ class PatternDetector(Detector):
             # Only the independently timestamped next ceiling may replace it.
             resistance=setup.get('confirmed_overhead')
         # A의 구조적 돌파 기준을 고정하고, 다른 상단 저항은 현재 호가로 지우지 않는다.
+        paper_align=bool(setup['pattern']=='A' and getattr(self.a,'setup_a_paper_rr_alignment_enabled',False) and not getattr(self.cfg,'live_mode',False))
+        cleared_level=limit if (paper_align and limit is not None) else setup.get('breakout',0)
         if (setup['pattern']=='A' and resistance is not None
-                and resistance<=setup.get('breakout',0) and t.price>setup.get('breakout',0)):
+                and resistance<=cleared_level and t.price>setup.get('breakout',0)):
             resistance=None
         if setup['pattern']=='C' and resistance is not None and t.price>resistance:resistance=None
         return min(resistance,setup['projection']) if resistance is not None else setup['projection']
@@ -889,8 +891,10 @@ class PatternDetector(Detector):
                         # Use the existing fee/tax/slippage model once, rather
                         # than approving a gross-RR-only alternative entry.
                         score=price_gates.get('economic',{}).get('values',{}).get('score',{})
+                        econ_vals=price_gates.get('risk_reward',{}).get('values',{}).get('economics') or {}
                         reward=score.get('reward_after_cost');risk=score.get('risk_per_share')
-                        net_rr=reward/risk if isinstance(reward,(int,float)) and isinstance(risk,(int,float)) and risk>0 else None
+                        net_rr=(econ_vals.get('net_rr') if econ_vals.get('net_rr') is not None
+                                else reward/risk if isinstance(reward,(int,float)) and isinstance(risk,(int,float)) and risk>0 else None)
                         cost_pass=net_rr is not None and net_rr>=self.cfg.min_reward_risk
                         trial_gates['continuation_cost_reward_risk']=gate(cost_pass,
                             calculated_net_rr=net_rr,required_rr=self.cfg.min_reward_risk,
@@ -1120,10 +1124,20 @@ class PatternDetector(Detector):
             breakout_pass,breakout_evidence=structural_breakout(self.price_context.reference_bars(t.symbol,t.time,venue),t.time,setup,c,limit,t.bid,t.ask,auto=self.a,decision_bars=bars)
             if breakout_evidence.get('emergency_stop') is not None:stop=breakout_evidence['emergency_stop']
             if breakout_evidence.get('target_ceiling') is not None:
-                # A wider invalidation basis can reduce position size, but must
-                # not manufacture reward by raising the pattern's prior target.
-                target=min(target,breakout_evidence['target_ceiling'])
-                if resistance is not None and resistance>limit:target=min(target,resistance)
+                paper_align=bool(getattr(self.a,'setup_a_paper_rr_alignment_enabled',False) and not getattr(c,'live_mode',False))
+                if paper_align and breakout_pass is True:
+                    # Align target with the confirmed range base ceiling (already capped by
+                    # nearest_confirmed_peak and known_prior_session_high) instead of clamping
+                    # it to an unaligned 2-bar micro_support projection.
+                    target=breakout_evidence['target_ceiling']
+                    if peak and peak['price']>limit:target=min(target,peak['price'])
+                    cleared_res=(None if (resistance is not None and resistance<=limit and t.price>setup.get('breakout',0)) else resistance)
+                    if cleared_res is not None and cleared_res>limit:target=min(target,cleared_res)
+                else:
+                    # A wider invalidation basis can reduce position size, but must
+                    # not manufacture reward by raising the pattern's prior target.
+                    target=min(target,breakout_evidence['target_ceiling'])
+                    if resistance is not None and resistance>limit:target=min(target,resistance)
             # A still-unbroken, already observed session high is overhead even
             # when the trigger is a smaller local base. Do not invent extra room.
             known_high=(self.after_prior_high if after_supported(t.time) else self.prior_high).get(t.symbol)
@@ -1156,7 +1170,8 @@ class PatternDetector(Detector):
         horizon=getattr(self.a,'horizon_'+('b' if setup['pattern']=='E' else 'a' if setup['pattern']=='D' else setup['pattern'].lower())+'_minutes')
         score=efficiency(limit,stop,target,min(1.,0.4+0.1*len(watch.get('source_details',{}))),horizon,self.costs,self.a.min_efficiency_score,economics=economics)
         cost_risk=score.get('risk_per_share');cost_reward=score.get('reward_after_cost')
-        net_rr=(cost_reward/cost_risk if isinstance(cost_risk,(int,float)) and cost_risk>0
+        net_rr=(economics.get('net_rr') if economics is not None and economics.get('net_rr') is not None
+                else cost_reward/cost_risk if isinstance(cost_risk,(int,float)) and cost_risk>0
                 and isinstance(cost_reward,(int,float)) else None)
         invalidation_pass=bool(distance is not None and 0<stop<limit and c.min_stop_fraction<=distance<=c.max_stop_fraction)
         structure_sized=(breakout_pass is True or structural_pass is True and self.a.confirmed_invalidation_enabled or box_pass is True)

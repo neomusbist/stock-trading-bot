@@ -38,8 +38,11 @@ def reason_code(reason,position):
     if isinstance(reason,str) and reason.endswith(' 신규 실주문 금지'): return 'MODE_'+reason.split()[0]+'_NO_NEW_ENTRY'
     return reason
 
+from datetime import datetime, date
+
 def _safe_walk(item,memo):
     if item is None or type(item) in (str,int,bool):return item
+    if isinstance(item,(datetime,date)):return item.isoformat()
     if isinstance(item,float):return item if math.isfinite(item) else 'NON_FINITE:'+repr(item)
     if isinstance(item,(dict,tuple,list)):
         key=id(item)

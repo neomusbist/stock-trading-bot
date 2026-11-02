@@ -317,6 +317,8 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
         if self.policy.mode!='LIVE': return self.policy.mode+' 신규 실주문 금지'
         if not self.policy.state.get('live_authorized') and sess=='REGULAR': return 'LIVE 명시 승인 누락'
         if not self.c.live_mode and not self.shadow: return 'live_mode=false'
+        if getattr(self.a,'setup_a_paper_rr_alignment_enabled',False) and self.c.live_mode and not self.shadow:
+            return 'SETUP_A_PAPER_RR_ALIGNMENT_LIVE_FORBIDDEN'
         if not self.a.costs_confirmed: return '거래비용 설정 미확인'
         if self.a.max_consecutive_losses is not None and self.s['automation']['consecutive_losses']>=self.a.max_consecutive_losses: return '연속손실 한도'
         last=self.s['automation']['last_exit'].get(symbol)
@@ -408,11 +410,14 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
                 quote=signal['evaluation_gates']['spread']['values']
                 passed,evidence=structural_breakout(signal.get('reference_bar_snapshot'),stamp,signal,self.c,signal['limit'],quote['bid'],quote['ask'],auto=self.a,decision_bars=signal.get('decision_bar_snapshot'))
                 proof=signal['evaluation_gates'].get('breakout_structure')
+                paper_align=bool(getattr(self.a,'setup_a_paper_rr_alignment_enabled',False) and not self.c.live_mode)
+                allowed_proj=max(signal['projection'],evidence['target_ceiling']) if paper_align else signal['projection']
+                rr_stop=(evidence['structural_stop'] if (paper_align and getattr(self.a,'setup_a_rr_stop_basis','EMERGENCY_STOP')=='STRUCTURAL_STOP') else signal['stop'])
                 if (passed is not True or proof!={'result':'PASS','values':{'enabled':True,**evidence}}
                         or signal.get('invalidation_policy')!={'enabled':True,**evidence}
                         or signal['stop']!=evidence['emergency_stop'] or signal['target']>evidence['target_ceiling']
-                        or signal['target']>signal['projection']
-                        or (signal['target']-signal['limit'])/(signal['limit']-signal['stop'])<self.c.min_reward_risk):
+                        or signal['target']>allowed_proj
+                        or (signal['target']-signal['limit'])/(signal['limit']-rr_stop)<self.c.min_reward_risk):
                     return 'BREAKOUT_STRUCTURE_PROOF_MISSING_OR_INVALID'
                 acceleration=signal['evaluation_gates'].get('acceleration',{})
                 if signal.get('entry_basis')=='CONFIRMED_BREAKOUT_RETEST' and (acceleration.get('result')!='PASS'
@@ -483,8 +488,11 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
                     or values.get('asof')!=signal.get('time') or values.get('target')!=signal.get('target')):
                 return 'ENTRY_CONTEXT_PROOF_MISSING_OR_INVALID'
             try:
-                rr=(signal['target']-signal['limit'])/(signal['limit']-signal['stop'])
-                if not math.isfinite(rr) or signal['stop']>=signal['limit'] or rr<self.c.min_reward_risk:
+                paper_align=bool(signal.get('pattern')=='A' and getattr(self.a,'setup_a_paper_rr_alignment_enabled',False) and not self.c.live_mode)
+                s_stop=(signal.get('invalidation_policy') or {}).get('structural_stop',signal['stop'])
+                rr_stop=(s_stop if (paper_align and getattr(self.a,'setup_a_rr_stop_basis','EMERGENCY_STOP')=='STRUCTURAL_STOP') else signal['stop'])
+                rr=(signal['target']-signal['limit'])/(signal['limit']-rr_stop)
+                if not math.isfinite(rr) or rr_stop>=signal['limit'] or rr<self.c.min_reward_risk:
                     return 'ENTRY_CONTEXT_RR_CHANGED'
                 peak=values.get('nearest_confirmed_peak')
                 if peak:

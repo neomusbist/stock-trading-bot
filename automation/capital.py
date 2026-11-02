@@ -105,8 +105,28 @@ def signal_economics(cfg,auto,signal,*,entry=None,filled=False,actual_entry_fee_
     structure=policy.get('structural_stop',signal.get('stop')) if policy.get('enabled',True) else signal.get('stop')
     emergency=policy.get('emergency_stop',signal.get('emergency',signal.get('stop'))) if use_policy else signal.get('emergency',signal.get('stop'))
     costs=Costs(auto.commission_buy,auto.commission_sell,auto.sell_tax,cfg.entry_slippage_fraction,cfg.exit_slippage_fraction)
-    return entry_economics(entry,structure,emergency,signal.get('target'),costs,cfg.min_reward_risk,
-                           filled=filled,actual_entry_fee_per_share=actual_entry_fee_per_share)
+    econ=entry_economics(entry,structure,emergency,signal.get('target'),costs,cfg.min_reward_risk,
+                         filled=filled,actual_entry_fee_per_share=actual_entry_fee_per_share)
+    paper_align=bool(signal.get('pattern')=='A' and getattr(auto,'setup_a_paper_rr_alignment_enabled',False) and not getattr(cfg,'live_mode',False))
+    if paper_align and econ.get('status')=='KNOWN':
+        planned=entry_economics(entry,structure,structure,signal.get('target'),costs,cfg.min_reward_risk,
+                                filled=filled,actual_entry_fee_per_share=actual_entry_fee_per_share)
+        econ['planned_exit_risk_per_share']=planned.get('risk_per_share')
+        econ['structural_gross_rr']=planned.get('gross_rr')
+        econ['structural_net_rr']=planned.get('net_rr')
+        econ['structural_max_entry_price']=planned.get('max_entry_price')
+        econ['rr_stop_basis']=getattr(auto,'setup_a_rr_stop_basis','EMERGENCY_STOP')
+        if econ['rr_stop_basis']=='STRUCTURAL_STOP' and planned.get('status')=='KNOWN':
+            # Keep emergency_stop risk_per_share for 2% account / 4% daily sizing,
+            # while evaluating RR gate on the planned candle-close structural_stop.
+            econ['emergency_net_rr']=econ['net_rr']
+            econ['emergency_gross_rr']=econ['gross_rr']
+            econ['emergency_max_entry_price']=econ['max_entry_price']
+            econ['net_rr']=planned['net_rr']
+            econ['gross_rr']=planned['gross_rr']
+            econ['max_entry_price']=planned['max_entry_price']
+            econ['rr_pass']=planned['rr_pass']
+    return econ
 
 
 def viable_entry_zone(economics,trigger_price=None,max_chase=None,is_recovery=False):
