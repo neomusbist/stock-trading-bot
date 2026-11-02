@@ -71,7 +71,8 @@ def structural_pullback(raw, asof, setup, cfg, entry, bid, ask,close_policy=Fals
     reference=context.snapshot('proof',SimpleNamespace(time=asof),setup['breakout'])['nearest_confirmed_peak']
     peak_time = seq[peak_i]['time']
     peak_iso = peak_time.isoformat() if hasattr(peak_time, 'isoformat') else str(peak_time)
-    overhead_peaks = [p for p in context.rows['proof']['peaks'] if p['price'] > entry and (p['price'] > peak or str(p['time']) <= peak_iso)]
+    impulse_start_iso = impulse[0]['time'].isoformat() if hasattr(impulse[0]['time'], 'isoformat') else str(impulse[0]['time'])
+    overhead_peaks = [p for p in context.rows['proof']['peaks'] if p['price'] > entry and (p['price'] > peak or str(p['time']) < impulse_start_iso)]
     nearest_overhead = min(overhead_peaks, key=lambda p: p['price']) if overhead_peaks else None
     overhead_ceiling = nearest_overhead['price'] if nearest_overhead else None
     if auto and getattr(auto, 'pullback_expansion_target_enabled', False):

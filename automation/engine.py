@@ -800,8 +800,15 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
         if symbol in HARD_LOCKS: return False
         if side=='BUY' and signal and not self.research_paper_allowed(signal): return False
         if side=='BUY' and signal and (signal.get('setup_variant') in ('A2',) or signal.get('shadow_only') or signal.get('use_limit_lifecycle')):
-            # Block real broker new buy transmission for A2/SHADOW/limit lifecycle per user mandate (SHADOW/PAPER only)
-            return False
+            if signal.get('shadow_only'):
+                return False
+            # Setup A2 / modified B live trading requires explicit authorization switches on both policy and engine config
+            if signal.get('setup_variant') in ('A2',):
+                if not (getattr(self.a, 'enable_a2_live', False) and getattr(self.c, 'enable_a2_live', False)):
+                    return False
+            if signal.get('pattern') == 'B' and signal.get('setup_variant') in ('MOD_B', 'B2'):
+                if not (getattr(self.a, 'enable_modb_live', False) and getattr(self.c, 'enable_modb_live', False)):
+                    return False
         if side=='BUY':
             try:
                 from automation.storage_governor import check_disk_safety_gate
@@ -1460,7 +1467,8 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
             'SELL' if requested and allowed else 'HOLD',p.get('exit_reason') if requested else 'PROTECTION_INTACT',gates,position=p,price=price)
 
     def cancel(self,o):
-        if not o.get('id') or (o.get('signal') or {}).get('shadow_only') or (o.get('signal') or {}).get('use_limit_lifecycle'):
+        is_shadow = not o.get('id') or str(o.get('id','')).startswith('SHADOW-') or (o.get('signal') or {}).get('shadow_only')
+        if is_shadow:
             if o['status'] in ('FILLED', 'CANCELED', 'REJECTED'):
                 return
             o['status']='CANCELED'; self.canceled_entry(o); self.save()

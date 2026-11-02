@@ -65,6 +65,8 @@ class Config:
     after_a_min_gain: float = 0.003
     after_a_liquidity_mode: str = 'depth'
     after_default_venue: str = 'SOR'
+    enable_a2_live: bool = False
+    enable_modb_live: bool = False
 
     def validate(self):
         if type(self.live_mode) is not bool or type(self.after_enabled) is not bool:
