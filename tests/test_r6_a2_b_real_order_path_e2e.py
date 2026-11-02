@@ -72,7 +72,7 @@ class A2BRealOrderPathE2ETests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def _create_engine(self, enable_a2_live=False):
+    def _create_engine(self, enable_a2_live=False, enable_modb_live=False):
         cfg = Config(
             live_mode=True,
             risk_fraction=0.02,
@@ -82,6 +82,7 @@ class A2BRealOrderPathE2ETests(unittest.TestCase):
             paper_cash=70420.8,
             account_equity=70420.8,
             enable_a2_live=enable_a2_live,
+            enable_modb_live=enable_modb_live,
         )
         auto = AutomationConfig(
             AUTO_TRADING_CAP_KRW=81300,
@@ -92,6 +93,7 @@ class A2BRealOrderPathE2ETests(unittest.TestCase):
             a2_breakout_retest_enabled=True,
             b_support_reclaim_entry_enabled=True,
             enable_a2_live=enable_a2_live,
+            enable_modb_live=enable_modb_live,
             force_flatten_start="15:10:00",
         )
 
@@ -243,6 +245,39 @@ class A2BRealOrderPathE2ETests(unittest.TestCase):
         o = engine.enter(sig, tick)
         self.assertIsNone(o, "Order must be None because max concurrent positions is 1")
         self.assertEqual(len(broker.orders), 0, "Broker must not receive any orders")
+
+    def _prepare_b_signal_and_tick(self, engine):
+        from dataclasses import replace
+        engine.a = replace(engine.a, structural_pullback_enabled=False)
+        engine.source_qualification['200350'] = {'source_count': 3, 'timestamp': AT.isoformat()}
+        engine.market_status['200350'] = {'pass': True, 'checked_at': AT.isoformat()}
+        sig = {
+            'pattern': 'B', 'setup_variant': 'MOD_B', 'symbol': '200350', 'limit': 3310, 'stop': 3225, 'structural_stop': 3260, 'target': 3530,
+            'time': AT.isoformat(), 'market_state': '3', 'net_reward_risk': 2.1, 'breakout': 3300,
+            'efficiency': {'decision': 'TRADE', 'score': 1.5},
+        }
+        tick = Tick("200350", AT, 3310, 100, 10000, 3310, 3300)
+        return sig, tick
+
+    def test_default_live_mode_routes_b_to_shadow_without_broker_submit(self):
+        """By default (enable_modb_live=False), B signals create SHADOW orders and NEVER call broker.submit."""
+        engine, broker, cfg, auto = self._create_engine(enable_modb_live=False)
+        sig, tick = self._prepare_b_signal_and_tick(engine)
+        o = engine.enter(sig, tick)
+        self.assertIsNotNone(o)
+        self.assertTrue(o['id'].startswith('SHADOW-'))
+        self.assertEqual(o['execution'], 'SHADOW')
+        self.assertEqual(len(broker.orders), 0, "Broker must receive 0 real orders when enable_modb_live is False")
+
+    def test_authorized_live_mode_submits_real_broker_limit_buy_for_b(self):
+        """When explicitly authorized (enable_modb_live=True), B signal submits REAL broker limit order."""
+        engine, broker, cfg, auto = self._create_engine(enable_modb_live=True)
+        sig, tick = self._prepare_b_signal_and_tick(engine)
+        o = engine.enter(sig, tick)
+        self.assertIsNotNone(o)
+        self.assertEqual(o['execution'], 'REAL')
+        self.assertEqual(len(broker.orders), 1, "Broker must receive exactly 1 real order for authorized B")
+        self.assertEqual(broker.orders[0]['symbol'], '200350')
 
 
 if __name__ == '__main__':

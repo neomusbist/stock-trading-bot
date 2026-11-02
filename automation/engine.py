@@ -743,7 +743,10 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
         self.entry_tick=tick
         self.s['automation']['strategy']='ENTER'
         self.entry_intent=signal
-        if signal.get('setup_variant') in ('A2',) or signal.get('use_limit_lifecycle') or signal.get('shadow_only'):
+        if (signal.get('setup_variant') in ('A2', 'MOD_B', 'B2', 'MTF', 'MTF_3M_1M')
+                or signal.get('pattern') in ('MTF',)
+                or signal.get('use_limit_lifecycle')
+                or signal.get('shadow_only')):
             signal['use_limit_lifecycle'] = True
         try:
             o=super().enter(signal,tick,count_signal=False)
@@ -805,17 +808,22 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
     def live_order_allowed(self,side,symbol,qty,limit,signal):
         if symbol in HARD_LOCKS: return False
         if side=='BUY' and signal and not self.research_paper_allowed(signal): return False
-        if side=='BUY' and signal and (signal.get('setup_variant') in ('A2',) or signal.get('shadow_only') or signal.get('use_limit_lifecycle')):
+        if side=='BUY' and signal and (
+            signal.get('setup_variant') in ('A2', 'MOD_B', 'B2', 'MTF', 'MTF_3M_1M')
+            or signal.get('pattern') in ('MTF',)
+            or signal.get('shadow_only')
+            or signal.get('use_limit_lifecycle')
+        ):
             if signal.get('shadow_only'):
                 return False
-            # Setup A2 / modified B live trading requires explicit authorization switches on both policy and engine config
+            # Setup A2 / modified B / MTF live trading requires explicit authorization switches on both policy and engine config
             if signal.get('setup_variant') in ('A2',):
                 if not (getattr(self.a, 'enable_a2_live', False) and getattr(self.c, 'enable_a2_live', False)):
                     return False
-            if signal.get('pattern') == 'B' and signal.get('setup_variant') in ('MOD_B', 'B2'):
+            if signal.get('setup_variant') in ('MOD_B', 'B2') or (signal.get('pattern') == 'B' and signal.get('setup_variant') in ('MOD_B', 'B2')):
                 if not (getattr(self.a, 'enable_modb_live', False) and getattr(self.c, 'enable_modb_live', False)):
                     return False
-            if signal.get('pattern') in ('MTF', 'A3') or signal.get('setup_variant') in ('MTF', 'A3'):
+            if signal.get('pattern') in ('MTF', 'A3') or signal.get('setup_variant') in ('MTF', 'MTF_3M_1M', 'A3'):
                 if not (getattr(self.a, 'enable_mtf_live', False) and getattr(self.c, 'enable_mtf_live', False)):
                     return False
         if side=='BUY':
