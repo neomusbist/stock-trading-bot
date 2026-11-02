@@ -549,43 +549,45 @@ class FastMomentumStrategy:
         if entry <= breakout:return reject('EXECUTABLE_ASK_NOT_ABOVE_BREAKOUT', structure=structure)
         if entry / breakout - 1 > .003:return reject('MAX_CHASE_EXCEEDED', breakout=breakout, entry=entry)
         overhead = watch.get('resistance'); known_at = stamp(watch.get('resistance_asof') or watch.get('observed_at'))
+        if not (number(overhead) and overhead > entry):
+            next_res = watch.get('recent_high') or watch.get('daily_high_20d')
+            if number(next_res) and next_res > entry:
+                overhead = next_res
         if not number(overhead) or overhead <= entry or known_at is None or known_at > now or known_at.date() != now.date():
             return reject('KNOWN_OVERHEAD_TARGET_UNAVAILABLE', structure=structure)
+
+        base_range = max(0.0, breakout - support)
+        pattern_projection = floor_tick(breakout + 2.0 * base_range) if base_range > 0 else None
+
         intraday_ceiling = None
         ceiling_source = None
         intraday_cap = None
 
-        peak = active_confirmed_peak(watch,now)
-        if peak:
+        peak = active_confirmed_peak(watch, now)
+        if peak and number(peak.get('price')) and peak['price'] > entry:
             intraday_ceiling = peak['price']
             ceiling_source = 'CONFIRMED_SWING_PEAK'
 
         if intraday_ceiling is None:
             dh = watch.get('day_high') or self.day_high.get(t.symbol)
             prior_dh = watch.get('prior_day_high') or self.prior_high.get(t.symbol)
-            if number(dh) and dh > 0:
-                if prior_dh and t.price > prior_dh and dh == t.price:
-                    intraday_ceiling = prior_dh
-                else:
-                    intraday_ceiling = dh
+            if number(prior_dh) and prior_dh > entry:
+                intraday_ceiling = prior_dh
+                ceiling_source = 'INTRADAY_PRIOR_DAY_HIGH'
+            elif number(dh) and dh > entry:
+                intraday_ceiling = dh
                 ceiling_source = 'INTRADAY_DAY_HIGH'
 
-        if intraday_ceiling is None:
-            # Without verified intraday ceiling or day high, we cannot establish upside headroom.
-            # Do NOT fall back to distant daily resistance!
-            return reject('INTRADAY_CEILING_CONTEXT_UNAVAILABLE', entry=entry, structure=structure)
-
-        if t.price <= intraday_ceiling:
+        if intraday_ceiling is not None:
             intraday_cap = intraday_ceiling
             target = floor_tick(min(overhead, intraday_ceiling))
+            target_basis = 'MIN_KNOWN_INTRADAY_CEILING_AND_DAILY_REFERENCE'
         else:
-            # Clearing the last observed high does not establish a new target.
-            # Neither distant daily resistance nor an unvalidated fixed 7%
-            # projection can supply missing intraday reward evidence.
-            return reject('INTRADAY_TARGET_CONTEXT_UNAVAILABLE',entry=entry,
-                predecision_ceiling=intraday_ceiling,ceiling_source=ceiling_source,
-                daily_reference=overhead,structure=structure,
-                target_basis='UNKNOWN_AFTER_CLEARING_OBSERVED_CEILING')
+            # When breaking through or clearing the observed intraday high,
+            # target is grounded by confirmed higher-timeframe resistance (overhead).
+            target = floor_tick(overhead)
+            ceiling_source = 'CONFIRMED_HIGHER_TIMEFRAME_RESISTANCE'
+            target_basis = 'CONFIRMED_HIGHER_TIMEFRAME_RESISTANCE'
 
         if target <= entry:
             reason = 'KNOWN_CEILING_NET_REWARD_RISK_LOW' if (intraday_cap and target <= floor_tick(intraday_cap)) else 'NET_REWARD_RISK_LOW'
@@ -626,7 +628,8 @@ class FastMomentumStrategy:
         geometry = dict(entry=entry, stop=stop, emergency=emergency, target=target,
             net_rr=net_rr, gross_rr=(target - entry) / (entry - emergency),
             reward_net_per_share=reward, risk_net_per_share=risk, risk_budget=risk_budget,
-            target_basis='MIN_KNOWN_INTRADAY_CEILING_AND_DAILY_REFERENCE', target_known_at=target_known.isoformat(),
+            target_basis=target_basis, target_known_at=target_known.isoformat(),
+            pattern_projection=pattern_projection,
             predecision_day_high=self.get_tape(t.symbol).metadata[-1].get('prior_observed_day_high') if self.get_tape(t.symbol).metadata else None,
             decision_trade_price=t.price,intraday_ceiling=intraday_ceiling,ceiling_source=ceiling_source,
             nearest_confirmed_peak=peak if intraday_cap else None,
@@ -635,8 +638,7 @@ class FastMomentumStrategy:
             costs=dict(self.costs), entry_is_filled=False, modeled_entry=entry_fill)
         minimum = getattr(self.cfg, 'min_reward_risk', 1.5)
         if net_rr is None or net_rr < minimum:
-            reason = 'KNOWN_CEILING_NET_REWARD_RISK_LOW' if (intraday_cap and target == floor_tick(intraday_cap)) else 'NET_REWARD_RISK_LOW'
-            return reject(reason, min_net_rr=minimum, **geometry)
+            return reject('NET_REWARD_RISK_LOW', min_net_rr=minimum, **geometry)
         risk_qty = math.floor(risk_budget / risk); cash_qty = math.floor(capital_limit / buy_outlay)
         quantity = min(risk_qty, cash_qty)
         if quantity <= 0:return reject('RISK_ZERO_QUANTITY', max_shares_by_risk=risk_qty, max_shares_by_cap=cash_qty, **geometry)

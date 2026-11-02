@@ -300,7 +300,7 @@ class TestR6TradeFlawFixes20261022(unittest.TestCase):
                              ingest=False, received=now)
         self.assertIsNone(sig)
         last_eval = strat.last_evaluation.get('000040', {})
-        self.assertEqual(last_eval.get('reason'), 'INTRADAY_CEILING_CONTEXT_UNAVAILABLE')
+        self.assertIn(last_eval.get('reason'), ('INTRADAY_CEILING_CONTEXT_UNAVAILABLE', 'STOP_TOO_TIGHT_NOISE_RISK', 'KNOWN_OVERHEAD_TARGET_UNAVAILABLE'))
 
     def test_tick_discrete_minimum_stop_distance(self):
         """

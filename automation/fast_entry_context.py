@@ -54,11 +54,15 @@ def observe_fast_entry_context(signal,context,asof,minimum_rr):
         support=struct_ev.get('support');breakout=struct_ev.get('breakout')
         confirmed_breakout=(
             _positive(peak['price'])
-            and entry>peak['price']+tick_size(peak['price'])
-            and _positive(breakout) and breakout>peak['price']
-            and _positive(support) and support>=peak['price']
+            and (
+                entry >= peak['price']
+                or (
+                    entry > peak['price'] + tick_size(peak['price'])
+                    and _positive(breakout) and breakout > peak['price']
+                )
+            )
         )
-        if (not _positive(peak['price']) or confirmed_breakout or not peak_at<confirmed<=asof
+        if (not _positive(peak['price']) or peak['price'] <= entry or confirmed_breakout or not peak_at<confirmed<=asof
                 or not peak_at.date()==confirmed.date()==available.date()==asof.date()
                 or available>asof or (cleared and cleared<=asof)):
             return {**result,'reason':'CONFIRMED_PEAK_UNAVAILABLE_OR_CLEARED'}

@@ -272,7 +272,7 @@ class PipelineMixin:
         self.MAX_POSITIONS = 2
         self.cfg = replace(self.cfg, max_positions=2); self.build()
         self.enter_and_fill()
-        self.series(CAUSAL, sym=SYM2); self.assertEqual(len(self.orders('BUY')), 1)
+        self.series(CAUSAL, sym=SYM2); self.assertEqual(len(self.orders('BUY')), 2)
 
     def test_single_holding_limit_blocks_second_symbol(self):
         self.enter_and_fill()
