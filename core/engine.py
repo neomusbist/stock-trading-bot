@@ -217,11 +217,12 @@ class Engine:
                     o['id']=self.broker.submit(side,symbol,qty,limit)
                 if not o['id']: raise AmbiguousOrder('실제 주문번호 없음: 자동 재전송 금지')
             else:
-                if self.c.live_mode or (signal or {}).get('policy')=='TEST_CAPITAL_RELEASE':
+                shadow=(signal or {}).get('shadow_only') or (signal or {}).get('use_limit_lifecycle')
+                if (self.c.live_mode and not shadow) or (signal or {}).get('policy')=='TEST_CAPITAL_RELEASE':
                     raise Rejected('ORDER_BOUNDARY_BLOCKED: 실제 주문 허가 없음')
-                o['id']='PAPER-'+local
-            if not o['id'].startswith('PAPER-'): self.mark_broker_submit(o)
-            o['execution']='PAPER' if o['id'].startswith('PAPER-') else 'REAL'
+                o['id']=('SHADOW-' if shadow else 'PAPER-')+local
+            if not o['id'].startswith('PAPER-') and not o['id'].startswith('SHADOW-'): self.mark_broker_submit(o)
+            o['execution']='SHADOW' if o['id'].startswith('SHADOW-') else ('PAPER' if o['id'].startswith('PAPER-') else 'REAL')
             o['status']='ACCEPTED'; self.save(); self.event('ORDER_ACCEPTED',local=local,side=side,symbol=symbol,qty=qty,execution=o['execution'],order_id=o['id'])
         except Rejected as e:
             o['status']='REJECTED'; o['execution']='BLOCKED' if str(e).startswith('ORDER_BOUNDARY_BLOCKED') else 'BROKER_REJECTED'
@@ -262,7 +263,7 @@ class Engine:
             self.event('SIGNAL_BLOCKED',symbol=sym,reason='수량 0 / 계좌 위험 한도'); self.diagnostic('internal_reject_count'); return None
         self.event('ENTRY_CANDIDATE',**signal,qty=qty)
         o=self.submit('BUY',sym,qty,signal['limit'],signal)
-        if o and not c.live_mode and o['status']=='ACCEPTED':
+        if o and not c.live_mode and o['status']=='ACCEPTED' and not signal.get('use_limit_lifecycle'):
             # 가격 상한 안에서 불리한 체결을 가정한다. 실제 체결 보장은 아니다.
             self.cumulative_fill(o,qty,qty*signal['limit'])
         return o

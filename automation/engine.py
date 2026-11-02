@@ -35,6 +35,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
         self.books={}; self.external_open_orders=[]; self.external_qty_mismatch=set()
         self.names={'005930':'삼성전자','017900':'광전자','052260':'현대바이오랜드','267320':'나인테크'}; self.market_status={}
         self.decisions=DecisionLog(self)
+        self.active_limit_lifecycles={}
         from automation.fast_momentum import FastMomentumStrategy
         self.fast_strategy=FastMomentumStrategy(cfg,auto,self.costs)
         # 설정 변경은 잔고/미체결이 없는 때만 허용. 변경 이력을 보존한다.
@@ -736,8 +737,24 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
         self.entry_tick=tick
         self.s['automation']['strategy']='ENTER'
         self.entry_intent=signal
+        if signal.get('setup_variant') in ('A2',) or signal.get('use_limit_lifecycle') or signal.get('shadow_only'):
+            signal['use_limit_lifecycle'] = True
         try:
             o=super().enter(signal,tick,count_signal=False)
+            if o and o.get('status') == 'ACCEPTED' and signal.get('use_limit_lifecycle'):
+                from automation.entry_lifecycle import LimitBuyOrder
+                s_stop = (signal.get('invalidation_policy') or {}).get('structural_stop', signal.get('stop', 0.0))
+                l_order = LimitBuyOrder(
+                    symbol=tick.symbol,
+                    limit=signal['limit'],
+                    qty=qty,
+                    submitted_at=self.clock(),
+                    timeout_seconds=getattr(self.a, 'limit_order_timeout_seconds', 120),
+                    structural_stop=s_stop
+                )
+                if not hasattr(self, 'active_limit_lifecycles'):
+                    self.active_limit_lifecycles = {}
+                self.active_limit_lifecycles[o['local']] = l_order
             failed=[k for k,v in gates.items() if v['result']=='FAIL' and v.get('required',True)]
             self.decisions.emit('ENTRY_EVAL',tick.symbol,'BUY' if o and o['status'] in {'ACCEPTED','FILLED'} else 'NO_BUY',
                 'ENTRY_INTENT_ACCEPTED' if o and o['status'] in {'ACCEPTED','FILLED'} else (gates['risk_quantity']['values']['reason_code'] if failed and failed[0]=='risk_quantity' else failed[0] if failed else 'ORDER_NOT_ACCEPTED'),
@@ -782,6 +799,9 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
     def live_order_allowed(self,side,symbol,qty,limit,signal):
         if symbol in HARD_LOCKS: return False
         if side=='BUY' and signal and not self.research_paper_allowed(signal): return False
+        if side=='BUY' and signal and (signal.get('setup_variant') in ('A2',) or signal.get('shadow_only') or signal.get('use_limit_lifecycle')):
+            # Block real broker new buy transmission for A2/SHADOW/limit lifecycle per user mandate (SHADOW/PAPER only)
+            return False
         if side=='BUY':
             try:
                 from automation.storage_governor import check_disk_safety_gate
@@ -1319,6 +1339,15 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
     def timer(self,prices=None):
         self.prices=prices or self.prices
         t_str=self.clock().strftime('%H:%M:%S')
+        if hasattr(self, 'active_limit_lifecycles') and self.active_limit_lifecycles:
+            now_dt = self.clock()
+            for local_id, l_order in list(self.active_limit_lifecycles.items()):
+                if (now_dt - l_order.submitted_at).total_seconds() > l_order.timeout_seconds:
+                    l_order.expire(now_dt)
+                    o = self.s['orders'].get(local_id)
+                    if o and o['status'] in ('ACCEPTED', 'PARTIAL'):
+                        self.cancel(o)
+                    self.active_limit_lifecycles.pop(local_id, None)
         if not self.is_supported_now():
             if t_str>='20:00:00' and not self.a.ALLOW_OVERNIGHT:
                 bot_positions={sym:p['qty'] for sym,p in self.s['positions'].items() if p.get('ownership')=='BOT' and p.get('qty',0)>0}
@@ -1339,6 +1368,29 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
         for sym,p in self.s['positions'].items(): self.position_eval(sym,p)
 
     def on_tick(self,t,completed_low=None):
+        if hasattr(self, 'active_limit_lifecycles') and self.active_limit_lifecycles:
+            for local_id, l_order in list(self.active_limit_lifecycles.items()):
+                if l_order.symbol != t.symbol:
+                    continue
+                o = self.s['orders'].get(local_id)
+                if not o or o['status'] not in ('ACCEPTED', 'PARTIAL'):
+                    self.active_limit_lifecycles.pop(local_id, None)
+                    continue
+                if t.bid and t.ask:
+                    l_order.on_quote(t.time, t.bid, t.ask)
+                if l_order.state == 'CANCELLED_INVALIDATED_SUPPORT_LOST':
+                    self.cancel(o)
+                    self.active_limit_lifecycles.pop(local_id, None)
+                    continue
+                prev_filled = l_order.filled
+                l_order.on_trade(t.time, t.price, t.volume)
+                delta_fill = l_order.filled - prev_filled
+                if delta_fill > 0:
+                    self.cumulative_fill(o, l_order.filled, l_order.notional)
+                if l_order.state in ('FILLED', 'CANCELLED_INVALIDATED_SUPPORT_LOST', 'CANCELLED_TIMEOUT', 'PARTIAL_TIMEOUT'):
+                    if l_order.state in ('CANCELLED_TIMEOUT', 'PARTIAL_TIMEOUT') and o['status'] in ('ACCEPTED', 'PARTIAL'):
+                        self.cancel(o)
+                    self.active_limit_lifecycles.pop(local_id, None)
         self.observe_protection_tick(t)
         self.names.setdefault(t.symbol,None)
         previous=self.s['positions'].get(t.symbol,{}).get('stop')
@@ -1408,6 +1460,12 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
             'SELL' if requested and allowed else 'HOLD',p.get('exit_reason') if requested else 'PROTECTION_INTACT',gates,position=p,price=price)
 
     def cancel(self,o):
+        if not o.get('id') or (o.get('signal') or {}).get('shadow_only') or (o.get('signal') or {}).get('use_limit_lifecycle'):
+            if o['status'] in ('FILLED', 'CANCELED', 'REJECTED'):
+                return
+            o['status']='CANCELED'; self.canceled_entry(o); self.save()
+            self.event('CANCEL_SENT',local=o['local'],shadow=True)
+            return
         if not self.c.live_mode and (o.get('signal') or {}).get('policy')=='TEST_CAPITAL_RELEASE':
             if not o.get('manual_cancel_required'):
                 o['manual_cancel_required']=True; self.save()
