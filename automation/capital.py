@@ -157,3 +157,101 @@ def entry_quantity(economics,cash_budget,risk_budget):
     rq=int(Decimal(str(risk_budget))/Decimal(str(unit))) if valid and _finite(unit) and unit>0 else 0
     return dict(quantity=max(0,min(cq,rq)),capital_quantity=max(0,cq),risk_quantity=max(0,rq))
 
+
+def feasible_entry_price_band(target, structural_stop, emergency_stop, costs, minimum_rr=1.5,
+                              p_min=None, p_max_ceiling=None, *, filled=False):
+    """Calculates the exact admissible price band [P_min, P_max] such that Net RR >= minimum_rr.
+    """
+    from core.util import floor_tick, tick_size
+    D = lambda x: Decimal(str(x))
+    values = (target, structural_stop, emergency_stop, minimum_rr)
+    rates = (costs.buy, costs.sell, costs.tax, costs.entry_slippage, costs.exit_slippage)
+    if (any(not _finite(x) or x <= 0 for x in values)
+            or any(not _finite(x) or not 0 <= x < 1 for x in rates)
+            or costs.sell + costs.tax + costs.exit_slippage >= 1
+            or not emergency_stop <= structural_stop < target):
+        return {'status': 'UNKNOWN', 'band_exists': False, 'reason': 'INVALID_INPUT'}
+
+    t, s, h, r = map(D, values)
+    buy, sell, tax, entry_slip, exit_slip = map(D, rates)
+
+    exit_factor = Decimal(1) - sell - tax - exit_slip
+    entry_factor = Decimal(1) + buy + (Decimal(0) if filled else entry_slip)
+
+    # Emergency stop basis
+    max_raw_e = (t + r * h) * exit_factor / ((Decimal(1) + r) * entry_factor)
+    max_e = floor_tick(float(max_raw_e))
+    while D(max_e) > max_raw_e:
+        max_e = floor_tick(max_e - tick_size(max_e - 1))
+
+    # Structural stop basis
+    max_raw_s = (t + r * s) * exit_factor / ((Decimal(1) + r) * entry_factor)
+    max_s = floor_tick(float(max_raw_s))
+    while D(max_s) > max_raw_s:
+        max_s = floor_tick(max_s - tick_size(max_s - 1))
+
+    p_floor = structural_stop if p_min is None else p_min
+    if p_max_ceiling is not None and _finite(p_max_ceiling) and p_max_ceiling > 0:
+        max_e = min(max_e, floor_tick(float(p_max_ceiling)))
+        max_s = min(max_s, floor_tick(float(p_max_ceiling)))
+
+    band_exists = (p_floor <= max_e)
+    band_width_pct = float((max_e - p_floor) / p_floor) if p_floor > 0 else 0.0
+    friction_pct = float(buy + sell + tax + entry_slip + exit_slip)
+
+    return {
+        'status': 'KNOWN',
+        'p_min': float(p_floor),
+        'p_max': float(max_e),
+        'p_max_unrounded': float(max_raw_e),
+        'structural_p_max': float(max_s),
+        'structural_p_max_unrounded': float(max_raw_s),
+        'band_exists': band_exists,
+        'band_width_pct': band_width_pct,
+        'friction_pct': friction_pct,
+        'target': float(target),
+        'structural_stop': float(structural_stop),
+        'emergency_stop': float(emergency_stop),
+        'minimum_rr': float(minimum_rr),
+    }
+
+
+def economics_first_entry_eval(target, structural_stop, emergency_stop, costs, minimum_rr,
+                               market_ask, cash_budget, risk_budget, p_min=None, p_max_ceiling=None):
+    """Evaluates whether an incoming market quote satisfies the feasible entry band and risk budget.
+    """
+    band = feasible_entry_price_band(target, structural_stop, emergency_stop, costs,
+                                     minimum_rr, p_min=p_min, p_max_ceiling=p_max_ceiling)
+    if band.get('status') != 'KNOWN':
+        return {'status': 'UNKNOWN', 'eligible': False, 'reason': band.get('reason', 'UNKNOWN_BAND'), 'band': band}
+
+    if not band['band_exists']:
+        return {'status': 'KNOWN', 'eligible': False, 'reason': 'FEASIBLE_BAND_EMPTY', 'band': band}
+
+    if market_ask < band['p_min']:
+        return {'status': 'KNOWN', 'eligible': False, 'reason': 'ASK_BELOW_MIN_SUPPORT', 'band': band}
+
+    if market_ask > band['p_max']:
+        return {'status': 'KNOWN', 'eligible': False, 'reason': 'ASK_ABOVE_MAX_ENTRY', 'band': band}
+
+    econ = entry_economics(market_ask, structural_stop, emergency_stop, target, costs, minimum_rr)
+    if econ.get('status') != 'KNOWN' or not econ.get('rr_pass'):
+        return {'status': 'KNOWN', 'eligible': False, 'reason': 'RR_REJECTED_AFTER_DISCRETION', 'band': band, 'economics': econ}
+
+    sized = entry_quantity(econ, cash_budget, risk_budget)
+    if sized['quantity'] < 1:
+        reason = 'PRICE_EXCEEDS_CASH' if sized['capital_quantity'] == 0 else 'RISK_BUDGET_ZERO_QTY'
+        return {'status': 'KNOWN', 'eligible': False, 'reason': reason, 'band': band, 'economics': econ, 'sizing': sized}
+
+    return {
+        'status': 'KNOWN',
+        'eligible': True,
+        'reason': 'ELIGIBLE_IN_BAND',
+        'band': band,
+        'economics': econ,
+        'sizing': sized,
+        'entry_price': market_ask,
+        'quantity': sized['quantity'],
+    }
+
+
