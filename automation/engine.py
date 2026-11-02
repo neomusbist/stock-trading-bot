@@ -362,12 +362,18 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
         return max(0,min(self.available_cash,self.s['cash'],self.a.capital_limit-exposure,
                          self.risk_equity()*self.c.max_position_fraction)-reserved)
 
+    def effective_max_positions(self):
+        if getattr(self.a, 'max_positions', None) is not None:
+            return self.a.max_positions
+        return self.c.max_positions
+
     def entry_gates(self,signal,tick):
         sym=tick.symbol; buys=self.active_orders(side='BUY'); equity=self.risk_equity()
         reserved=self.pending_buy_reservation(buys)
         used=self.risk_used(buys)
         remaining=self.daily_risk_budget(equity)-self.s['daily_loss']-used
         sizing=self.quantity_details(signal,equity,self.s['cash']-reserved,remaining); qty=sizing['quantity']
+        effective_max_pos = self.effective_max_positions()
         reason=self.new_entry_reason(sym)
         breakout=signal.get('evaluation_gates',{}).get('breakout',{}).get('values',{}).get('breakout')
         timing=tick_freshness(tick,self.clock(),self.c.stale_seconds)
@@ -379,7 +385,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
             'session':gate(self.entry_window(),time=self.clock().strftime('%H:%M:%S'),cutoff=getattr(self.a,'after_entry_cutoff','19:45:00') if self.current_session()=='AFTER' else self.a.new_entry_cutoff,market=self.market),
             'connection_account':gate(self.connected and self.account_ok and not self.s['halt'] and (not self.c.live_mode or time.monotonic()-self.last_account<=self.c.reconcile_seconds*3),connected=self.connected,account_ok=self.account_ok,halt=self.s['halt'],account_age=time.monotonic()-self.last_account),
             'tick':gate(tick.regular and timing['fresh'],lag=timing['exchange_age_seconds'],regular=tick.regular,stale_limit=self.c.stale_seconds,timing=timing),
-            'repeat_slots':gate(not self.entry_failure(sym) and not self.active_orders(sym) and sym not in self.s['positions'] and sym not in self.s['excluded'] and (self.c.max_entries_per_symbol is None or self.s['entries'].get(sym,0)<self.c.max_entries_per_symbol) and self.entry_slots_available() and len(set(self.s['positions'])|{o['symbol'] for o in buys})<(1 if (signal or {}).get('pattern')=='FAST' else self.c.max_positions),entries=self.s['entries'].get(sym,0),symbol_entry_limit=self.c.max_entries_per_symbol,consecutive_losses=self.s['automation']['consecutive_losses'],consecutive_loss_limit=self.a.max_consecutive_losses,daily_entries=sum(self.s['entries'].values()),daily_entry_limit=self.c.max_entries_per_day,daily_entry_limit_enabled=self.c.max_entries_per_day is not None,daily_entry_limit_pass=self.entry_slots_available(),reserved_entry_slots=self.pending_entry_lifecycles(),entry_count_basis=self.s.get('entry_count_basis'),failure_latch=self.entry_failure(sym),slots=len(set(self.s['positions'])|{o['symbol'] for o in buys})),
+            'repeat_slots':gate(not self.entry_failure(sym) and not self.active_orders(sym) and sym not in self.s['positions'] and sym not in self.s['excluded'] and (self.c.max_entries_per_symbol is None or self.s['entries'].get(sym,0)<self.c.max_entries_per_symbol) and self.entry_slots_available() and len(set(self.s['positions'])|{o['symbol'] for o in buys})<effective_max_pos,entries=self.s['entries'].get(sym,0),symbol_entry_limit=self.c.max_entries_per_symbol,consecutive_losses=self.s['automation']['consecutive_losses'],consecutive_loss_limit=self.a.max_consecutive_losses,daily_entries=sum(self.s['entries'].values()),daily_entry_limit=self.c.max_entries_per_day,daily_entry_limit_enabled=self.c.max_entries_per_day is not None,daily_entry_limit_pass=self.entry_slots_available(),reserved_entry_slots=self.pending_entry_lifecycles(),entry_count_basis=self.s.get('entry_count_basis'),failure_latch=self.entry_failure(sym),slots=len(set(self.s['positions'])|{o['symbol'] for o in buys})),
             'risk_quantity':gate(qty>0,**sizing,equity=equity,remaining_risk=remaining,reserved_cash=reserved,book_cash=self.s['cash'],actual_cash=self.available_cash,entry=signal['limit'],stop=signal['stop'],risk_fraction=self.c.risk_fraction,max_daily_loss_fraction=self.c.max_daily_loss_fraction,allowed_risk_krw=equity*self.c.risk_fraction,remaining_daily_risk_krw=max(0,remaining)),
             'efficiency':gate(signal.get('efficiency',{}).get('decision')=='TRADE',efficiency=signal.get('efficiency'))}
 
@@ -809,6 +815,9 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
             if signal.get('pattern') == 'B' and signal.get('setup_variant') in ('MOD_B', 'B2'):
                 if not (getattr(self.a, 'enable_modb_live', False) and getattr(self.c, 'enable_modb_live', False)):
                     return False
+            if signal.get('pattern') in ('MTF', 'A3') or signal.get('setup_variant') in ('MTF', 'A3'):
+                if not (getattr(self.a, 'enable_mtf_live', False) and getattr(self.c, 'enable_mtf_live', False)):
+                    return False
         if side=='BUY':
             try:
                 from automation.storage_governor import check_disk_safety_gate
@@ -919,7 +928,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
             remaining=self.daily_risk_budget()-self.s['daily_loss']-used
             if qty>self.quantity(signal,self.risk_equity(),available,remaining): raise Rejected('주문 경계에서 위험 수량 재검증 실패')
             bot_positions={s for s,p in self.s['positions'].items() if p.get('ownership','BOT')=='BOT'}
-            max_pos = 1 if (intents[0].get('signal') or {}).get('pattern') == 'FAST' else self.c.max_positions
+            max_pos = self.effective_max_positions()
             if len(bot_positions|{o['symbol'] for o in self.active_orders(side='BUY')})>max_pos: raise Rejected('동시 포지션 초과')
         else:
             p=self.s['positions'].get(sym)

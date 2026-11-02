@@ -870,18 +870,23 @@ class PatternDetector(Detector):
         if _setups is None and getattr(self.a,'support_rebound_reclaim_enabled',False):
             candidate=self.support_rebound(bars,t,watch)
             if candidate:setups['E']=candidate
+        if _setups is None and getattr(self.a,'mtf_entry_enabled',False):
+            from automation.multi_timeframe import MultiTimeframeStrategy
+            mtf_strat=MultiTimeframeStrategy(self.cfg,self.a,self.costs)
+            candidate=mtf_strat.evaluate(bars,t,watch)
+            if candidate:setups['MTF']=candidate
         trials=[]
-        names=('A','B','C')+ (('D',) if getattr(self.a,'resistance_breakout_expansion_enabled',False) else ()) + (('E',) if getattr(self.a,'support_rebound_reclaim_enabled',False) else ())
+        names=('A','B','C')+ (('D',) if getattr(self.a,'resistance_breakout_expansion_enabled',False) else ()) + (('E',) if getattr(self.a,'support_rebound_reclaim_enabled',False) else ()) + (('MTF',) if getattr(self.a,'mtf_entry_enabled',False) else ())
         for name in names:
             if _only is not None and name!=_only:continue
             setup=setups.get(name)
-            required=3 if name=='E' else 2 if name in ('A','D') else 4 if name=='B' else self.a.box_min_bars
+            required=8 if name=='MTF' else 3 if name=='E' else 2 if name in ('A','D') else 4 if name=='B' else self.a.box_min_bars
             why=[]
             if not supported(t.time) and not is_after:why.append('OUT_OF_SUPPORTED_SESSION')
             if not setup:
                 why.append('INSUFFICIENT_USABLE_BARS' if len(bars)<required else
                            'PRIOR_HIGH_NOT_BROKEN' if name=='A' else
-                           b_reason if name=='B' else 'SUPPORT_REBOUND_NOT_CONFIRMED' if name=='E' else 'D_BREAKOUT_OR_OVERHEAD_UNKNOWN' if name=='D' else 'BOX_NOT_FORMED')
+                           b_reason if name=='B' else 'SUPPORT_REBOUND_NOT_CONFIRMED' if name=='E' else 'D_BREAKOUT_OR_OVERHEAD_UNKNOWN' if name=='D' else 'MTF_STRUCTURE_NOT_CONFIRMED' if name=='MTF' else 'BOX_NOT_FORMED')
             price_gates=self.setup_gates(t,watch,setup,bars=bars) if setup else {}
             # Market-status authorization remains at the unchanged engine/order boundary.
             common={k:gates[k] for k in ('warmup','spread','structure')}
@@ -1189,7 +1194,7 @@ class PatternDetector(Detector):
         rr=(target-limit)/(limit-stop) if limit>stop else None
         gross_rr=rr;rr_basis='GROSS_PRICE_DISTANCE'
         economics=None;entry_zone=None
-        if setup['pattern'] in {'A','B','C','D','E'}:
+        if setup['pattern'] in {'A','B','C','D','E','MTF'}:
             from automation.capital import signal_economics,viable_entry_zone
             proof={'A':breakout_evidence,'B':structural,'C':box_evidence}.get(setup['pattern'])
             valuation_signal=dict(pattern=setup['pattern'],limit=limit,stop=stop,target=target)
@@ -1201,14 +1206,14 @@ class PatternDetector(Detector):
             entry_zone=viable_entry_zone(economics,breakout,c.max_chase,is_recovery=is_recovery)
             entry_zone['structure_confirmed']=(breakout_pass is True if setup['pattern']=='A' and self.a.structural_breakout_enabled
                 else structural_pass is True if setup['pattern']=='B' and self.a.structural_pullback_enabled else True)
-        horizon=getattr(self.a,'horizon_'+('b' if setup['pattern']=='E' else 'a' if setup['pattern']=='D' else setup['pattern'].lower())+'_minutes')
+        horizon=getattr(self.a,'horizon_'+('b' if setup['pattern'] in ('E','MTF') else 'a' if setup['pattern']=='D' else setup['pattern'].lower())+'_minutes', 15)
         score=efficiency(limit,stop,target,min(1.,0.4+0.1*len(watch.get('source_details',{}))),horizon,self.costs,self.a.min_efficiency_score,economics=economics)
         cost_risk=score.get('risk_per_share');cost_reward=score.get('reward_after_cost')
         net_rr=(economics.get('net_rr') if economics is not None and economics.get('net_rr') is not None
                 else cost_reward/cost_risk if isinstance(cost_risk,(int,float)) and cost_risk>0
                 and isinstance(cost_reward,(int,float)) else None)
         invalidation_pass=bool(distance is not None and 0<stop<limit and c.min_stop_fraction<=distance<=c.max_stop_fraction)
-        structure_sized=(breakout_pass is True or structural_pass is True and self.a.confirmed_invalidation_enabled or box_pass is True)
+        structure_sized=(breakout_pass is True or structural_pass is True and self.a.confirmed_invalidation_enabled or box_pass is True or setup['pattern']=='MTF')
         if structure_sized:
             # Price distance is not account risk. The unchanged final risk gate
             # sizes from the emergency stop or refuses even a single share.
@@ -1234,7 +1239,7 @@ class PatternDetector(Detector):
                     invalidation_pass=False
         peak_val = setup.get('peak', float('inf'))
         b_over_peak = (setup['pattern'] == 'B' and limit >= peak_val)
-        if setup['pattern'] == 'B' and setup.get('entry_basis') == 'SUPPORT_RECOVERY':
+        if setup['pattern'] in ('B', 'MTF') and setup.get('entry_basis') in ('SUPPORT_RECOVERY', 'CONFIRMED_MTF_SUPPORT_RECLAIM'):
             breakout_pass = (t.price >= breakout and not b_over_peak)
             breakout_reason = ('PEAK_ALREADY_REACHED' if b_over_peak else
                                'RECOVERY_TRIGGER_NOT_REACHED' if t.price < breakout else None)
@@ -1251,7 +1256,7 @@ class PatternDetector(Detector):
                 **({'upper_bound_basis':'ACCOUNT_RISK_AND_INTEGER_QUANTITY'} if structure_sized else {})),
             'risk_reward':gate(economics['rr_pass'] if economics is not None else None if rr is None else rr>=c.min_reward_risk,calculated_rr=rr,required_rr=c.min_reward_risk,target=target,
                 rr_basis=rr_basis,gross_rr=gross_rr,net_rr=net_rr,
-                **({'economics':economics,'entry_zone':entry_zone,'target_inputs':dict(pattern_projection=setup['projection'],
+                **({'economics':economics,'entry_zone':entry_zone,'target_inputs':dict(pattern_projection=setup.get('projection', target),
                     original_target=original_target,radar_resistance=resistance,structural_ceiling=(proof or {}).get('target_ceiling'),
                     confirmed_overhead=(proof or {}).get('nearest_confirmed_peak'),b_peak=setup.get('peak'),
                     b_peak_cap_enabled=setup['pattern']=='B' and not self.a.pullback_expansion_target_enabled)} if economics is not None else {})),

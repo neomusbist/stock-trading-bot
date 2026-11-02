@@ -65,6 +65,9 @@ class AutomationConfig:
     b_chase_filter_enabled: bool = False  # Setup B: reject late rebound entry > support + 0.55*(peak - support)
     b_min_target_room_enabled: bool = False  # Setup B: minimum target room (ceiling - entry)/entry >= 1.5%
     enable_modb_live: bool = False  # Explicit authorization switch for modified Setup B real broker orders
+    max_positions: int | None = None  # Configurable max concurrent positions override (defaults to Config.max_positions)
+    mtf_entry_enabled: bool = False  # Multi-timeframe (3-5m structure + 1m trigger) entry strategy
+    enable_mtf_live: bool = False  # Explicit authorization switch for multi-timeframe strategy real broker orders
     early_surge_priority_enabled: bool = False  # research ranking, never extra subscription capacity
     single_source_eligibility_fix_enabled: bool = True
     abc_quote_retry_enabled: bool = True
@@ -121,11 +124,13 @@ class AutomationConfig:
                 raise ValueError('일일 위험예산 예외 한도는 승인자본 이내 양수여야 합니다.')
         for k,v in asdict(self).items():
             if k in ('daily_risk_override_day','daily_risk_override_budget_krw'): continue
-            if k=='max_consecutive_losses' and v is None: continue
+            if k in ('max_consecutive_losses','max_positions') and v is None: continue
             if k in ('setup_e_reclaim_mode','setup_a_target_mode','setup_a_rr_stop_basis','new_entry_cutoff','force_flatten_start','after_prep_start','after_market_start','after_entry_cutoff','after_force_flatten_start','after_market_close'): continue
             if isinstance(v,bool): continue
             if not isinstance(v,(int,float)) or not math.isfinite(v) or v<0:
                 raise ValueError(f'{k}: 유효한 0 이상 숫자 필요')
+        if self.max_positions is not None and (type(self.max_positions) is not int or self.max_positions <= 0):
+            raise ValueError('max_positions: 양의 정수 필요')
         for k in ('decision_snapshot_seconds','scan_seconds','rank_decay_cycles','max_scan_charts','min_source_count','cooldown_seconds','max_consecutive_losses','box_min_bars','empirical_min_trades','horizon_a_minutes','horizon_b_minutes','horizon_c_minutes'):
             if k=='max_consecutive_losses' and getattr(self,k) is None: continue
             if type(getattr(self,k)) is not int or getattr(self,k)<=0: raise ValueError(f'{k}: 양의 정수 필요')
