@@ -6,55 +6,112 @@ from automation.trade_quality import complete_sequence
 from automation.entry_context_audit import confirmed_overhead
 
 
-def breakout_retest_setup(raw,asof,cfg):
-    """A completed breakout -> held retest -> completed reaction reclaim.
+def breakout_retest_setup(raw,asof,cfg,auto=None):
+    """A completed breakout -> held retest -> completed reaction reclaim (A / A2).
 
     Geometry and the original range projection are fixed BEFORE economics.
     Receiver-built signal bars own this proof; REST references cannot create
     a retest, observation warmup or a new trigger.
     """
     size=min(len(raw or ()),12)
-    bars=complete_sequence(raw,asof,size,require_recent=True) if size>=6 else []
+    bars=complete_sequence(raw,asof,size,require_recent=True) if size>=5 else []
     if not bars or any(b.get('observation_source') in {'REST','REST_REFERENCE','REFERENCE'} for b in bars):return None
     if any(type(b.get('volume')) not in (int,float) or not math.isfinite(b['volume']) or b['volume']<=0 for b in bars):return None
     choices=[]
-    for i in range(1,len(bars)-4):
-        left,peak,right=bars[i-1:i+2];level=peak['high']
-        if not (level>=max(left['high'],right['high']) and level>min(left['high'],right['high'])):continue
-        # The three bars defining this confirmed peak are a fixed original
-        # range. A bounded history rolling forward must not silently change
-        # its support/projection while retaining the same old anchor time.
-        base=bars[i-1:i+2];support=min(b['low'] for b in base)
-        if support>=level:continue
-        crossed=next((j for j in range(i+2,len(bars)-2) if bars[j]['close']>level),None)
-        if crossed is None:continue
-        impulse=bars[crossed];previous=bars[max(0,crossed-3):crossed]
-        if impulse['close']/impulse['open']-1<cfg.min_price_gain or impulse['volume']<sum(b['volume'] for b in previous)/len(previous):continue
-        for j in range(crossed+1,len(bars)-1):
-            retest=bars[j]
-            # A completed loss of the old ceiling retires this role-reversal
-            # claim. Do not recast that failure as a higher support later.
-            if any(b['low']<level or b['close']<level for b in bars[crossed+1:]):continue
-            recovered=next((b for b in bars[j+1:] if b['low']>retest['low'] and b['close']>retest['high']),None)
-            if recovered is None or retest['low']>=retest['high'] or retest['high']>=impulse['high']:continue
-            if any(b['low']<retest['low'] for b in bars[j+1:]):continue
-            choices.append(dict(pattern='A',breakout=retest['high'],support=retest['low'],
-                projection=level+2*(level-support),entry_basis='CONFIRMED_BREAKOUT_RETEST',
-                old_ceiling=level,original_range_support=support,range_anchor_at=peak['time'].isoformat(),
-                breakout_bar_at=impulse['time'].isoformat(),breakout_close=impulse['close'],
-                breakout_volume=impulse['volume'],base_volume_mean=sum(b['volume'] for b in previous)/len(previous),
-                retest_bar_at=retest['time'].isoformat(),recovery_bar_at=recovered['time'].isoformat(),
-                confirmation_closed_at=(recovered['time']+timedelta(minutes=1)).isoformat(),
-                projection_confirmed_bar_closed_at=(impulse['time']+timedelta(minutes=1)).isoformat(),
-                decision_basis_sha256=hashlib.sha256(json.dumps([[b['time'].isoformat()]+[b[k] for k in ('open','high','low','close','volume')] for b in bars],separators=(',',':')).encode()).hexdigest()))
-    return max(choices,key=lambda x:(x['retest_bar_at'],x['range_anchor_at'])) if choices else None
+    if len(bars)>=6:
+        for i in range(1,len(bars)-4):
+            left,peak,right=bars[i-1:i+2];level=peak['high']
+            if not (level>=max(left['high'],right['high']) and level>min(left['high'],right['high'])):continue
+            # The three bars defining this confirmed peak are a fixed original
+            # range. A bounded history rolling forward must not silently change
+            # its support/projection while retaining the same old anchor time.
+            base=bars[i-1:i+2];support=min(b['low'] for b in base)
+            if support>=level:continue
+            crossed=next((j for j in range(i+2,len(bars)-2) if bars[j]['close']>level),None)
+            if crossed is None:continue
+            impulse=bars[crossed];previous=bars[max(0,crossed-3):crossed]
+            if impulse['close']/impulse['open']-1<cfg.min_price_gain or impulse['volume']<sum(b['volume'] for b in previous)/len(previous):continue
+            for j in range(crossed+1,len(bars)-1):
+                retest=bars[j]
+                # A completed loss of the old ceiling retires this role-reversal
+                # claim. Do not recast that failure as a higher support later.
+                if any(b['low']<level or b['close']<level for b in bars[crossed+1:]):continue
+                recovered=next((b for b in bars[j+1:] if b['low']>retest['low'] and b['close']>retest['high']),None)
+                if recovered is None or retest['low']>=retest['high'] or retest['high']>=impulse['high']:continue
+                if any(b['low']<retest['low'] for b in bars[j+1:]):continue
+                choices.append(dict(pattern='A',breakout=retest['high'],support=retest['low'],
+                    projection=level+2*(level-support),entry_basis='CONFIRMED_BREAKOUT_RETEST',
+                    old_ceiling=level,original_range_support=support,range_anchor_at=peak['time'].isoformat(),
+                    breakout_bar_at=impulse['time'].isoformat(),breakout_close=impulse['close'],
+                    breakout_volume=impulse['volume'],base_volume_mean=sum(b['volume'] for b in previous)/len(previous),
+                    retest_bar_at=retest['time'].isoformat(),recovery_bar_at=recovered['time'].isoformat(),
+                    confirmation_closed_at=(recovered['time']+timedelta(minutes=1)).isoformat(),
+                    projection_confirmed_bar_closed_at=(impulse['time']+timedelta(minutes=1)).isoformat(),
+                    decision_basis_sha256=hashlib.sha256(json.dumps([[b['time'].isoformat()]+[b[k] for k in ('open','high','low','close','volume')] for b in bars],separators=(',',':')).encode()).hexdigest()))
+    if choices:
+        return max(choices,key=lambda x:(x['retest_bar_at'],x['range_anchor_at']))
+    if auto is not None and not getattr(auto,'a2_breakout_retest_enabled',False):
+        return None
+    # Setup A2: Confirmed prior high breakout -> first pullback/retest holding support zone -> recovery reclaim.
+    # Never reinterpret a failed breakout (closing below broken ceiling or dropping into old range) as support.
+    a2_choices=[]
+    digest=hashlib.sha256(json.dumps([[b['time'].isoformat()]+[b[k] for k in ('open','high','low','close','volume')] for b in bars],separators=(',',':')).encode()).hexdigest()
+    for crossed in range(2,len(bars)-2):
+        base=bars[max(0,crossed-4):crossed]
+        if len(base)<2:continue
+        level=max(b['high'] for b in base)
+        support=min(b['low'] for b in base)
+        if support<=0 or level<=support or (level-support)/support>0.045:continue
+        if any(b['close']>level for b in base):continue
+        anchor=max((b for b in base if b['high']==level),key=lambda b:b['time'])
+        impulse=bars[crossed]
+        base_vol=sum(b['volume'] for b in base)/len(base)
+        impulse_gain=impulse['close']/impulse['open']-1 if impulse['open']>0 else 0
+        range_expansion=(impulse['high']-support)/support
+        if (impulse['close']<=level or impulse['high']<=level or impulse['close']<=impulse['open']
+                or (impulse_gain<cfg.min_price_gain and range_expansion<max(cfg.min_price_gain*1.5,0.008))
+                or impulse['volume']<base_vol*0.8):
+            continue
+        post=bars[crossed+1:]
+        if not 2<=len(post)<=5:continue
+        # Breakout support zone: low may test within structural_buffer of broken ceiling `level`,
+        # must remain strictly above midpoint of prior range, and NO bar may close below `level`.
+        support_floor=max(floor_tick(level*(1-cfg.structural_buffer)),floor_tick(support+0.55*(level-support)))
+        if any(b['low']<support_floor or b['close']<level for b in post):
+            continue
+        retest_low=min(b['low'] for b in post[:-1])
+        j=max(idx for idx,b in enumerate(post[:-1]) if b['low']==retest_low)
+        retest=post[j]
+        if retest['low']>=retest['high'] or retest['low']>level+(impulse['high']-level)*0.5:
+            continue
+        if any(b['low']<retest['low'] for b in post[j+1:]):
+            continue
+        retest_trigger=retest['high'] if retest['high']<impulse['high'] else max(level,retest['open'],retest['close'])
+        if retest_trigger>=impulse['high'] or retest_trigger<=retest['low']:
+            continue
+        recovered=next((b for b in post[j+1:] if b['low']>retest['low'] and b['close']>=b['open'] and b['close']>retest_trigger),None)
+        if recovered is None:
+            continue
+        measured_span=max(level-support,impulse['high']-support)
+        projection=floor_tick(level+2*measured_span)
+        a2_choices.append(dict(pattern='A',setup_variant='A2',breakout=retest_trigger,support=retest['low'],
+            projection=projection,entry_basis='CONFIRMED_BREAKOUT_RETEST',
+            old_ceiling=level,original_range_support=support,range_anchor_at=anchor['time'].isoformat(),
+            breakout_bar_at=impulse['time'].isoformat(),breakout_close=impulse['close'],
+            breakout_volume=impulse['volume'],base_volume_mean=base_vol,
+            retest_bar_at=retest['time'].isoformat(),recovery_bar_at=recovered['time'].isoformat(),
+            confirmation_closed_at=(recovered['time']+timedelta(minutes=1)).isoformat(),
+            projection_confirmed_bar_closed_at=(impulse['time']+timedelta(minutes=1)).isoformat(),
+            decision_basis_sha256=digest))
+    return max(a2_choices,key=lambda x:(x['retest_bar_at'],x['range_anchor_at'])) if a2_choices else None
 
 
 def _retest_proof(raw,decision_bars,asof,setup,cfg,entry,bid,ask,auto):
     evidence={'asof':asof.isoformat(),'policy':'CONFIRMED_BREAKOUT_RETEST_A',
         'scope':'RECEIVED_COMPLETE_RETEST_WITH_KNOWN_OVERHEAD','earlier_history':'UNKNOWN'}
-    derived=breakout_retest_setup(decision_bars,asof,cfg)
-    if not getattr(auto,'a_breakout_retest_entry_enabled',False) or derived is None:
+    retest_enabled=bool(getattr(auto,'a_breakout_retest_entry_enabled',False) or getattr(auto,'a2_breakout_retest_enabled',False))
+    derived=breakout_retest_setup(decision_bars,asof,cfg,auto=auto)
+    if not retest_enabled or derived is None:
         return False,{**evidence,'reason':'BREAKOUT_RETEST_PROOF_UNAVAILABLE'}
     if any(setup.get(k)!=v for k,v in derived.items()):return False,{**evidence,'reason':'BREAKOUT_RETEST_GEOMETRY_MISMATCH'}
     if any(type(x) not in (int,float) or not math.isfinite(x) or x<=0 for x in (entry,bid,ask)) or bid>ask:

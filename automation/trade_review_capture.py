@@ -50,14 +50,98 @@ def sampled_reward_ratio(values):
     return None,'UNKNOWN'
 
 
+class BoundedCoreDecisionLog:
+    """Separate bounded-capacity diagnostic path for core entry/rejection decisions.
+
+    Preserves compact core decision records even when the main 32 GiB high-volume
+    tape is paused, without disabling the 32 GiB limit on TradeReviewCapture.
+    If free disk space drops below its own safety floor (default 5.0 GiB) or its
+    bounded byte cap (default 4 MiB) is reached, it safely stops writing and
+    counts omitted records without raising any exception or triggering HALT.
+    """
+    def __init__(self, folder, *, clock=None, max_file_bytes=4*1024*1024,
+                 min_free_bytes=5*1024**3, dedup_seconds=15.):
+        self.folder=Path(folder)
+        self.clock=clock or (lambda:datetime.now().astimezone())
+        self.max_file_bytes=max_file_bytes
+        self.min_free_bytes=min_free_bytes
+        self.dedup_seconds=dedup_seconds
+        self.path=self.folder/'core-decisions-bounded.jsonl'
+        self.lock=threading.Lock()
+        self.written=0
+        self.omitted=0
+        self.errors=0
+        self.last_error=''
+        self.blocked=False
+        self.block_reason=None
+        self.last_sig={}
+        try:
+            self.bytes_written=self.path.stat().st_size if self.path.exists() else 0
+        except OSError:
+            self.bytes_written=0
+
+    def record(self, row, symbol=None, force=False):
+        try:
+            with self.lock:
+                now_dt=self.clock()
+                now_ts=now_dt.timestamp() if hasattr(now_dt,'timestamp') else time.time()
+                sig_key=(symbol,row.get('setup'),row.get('decision'),row.get('primary_reason_code'),
+                         row.get('entry_price'),row.get('structural_stop'),row.get('emergency_stop'),
+                         row.get('target'),row.get('quantity'),row.get('observation_gap'))
+                prev=self.last_sig.get(symbol) if symbol else None
+                if not force and row.get('decision')!='BUY' and prev and prev[0]==sig_key and (now_ts-prev[1])<self.dedup_seconds:
+                    return True
+                payload=(json.dumps(row,ensure_ascii=False,default=iso,allow_nan=False,separators=(',',':'))+'\n').encode('utf-8')
+                size=len(payload)
+                if self.max_file_bytes and self.bytes_written+size>self.max_file_bytes:
+                    self.blocked=True;self.block_reason='DIAGNOSTIC_BYTE_CAP_REACHED';self.omitted+=1;return False
+                if self.min_free_bytes:
+                    free_bytes=shutil.disk_usage(self.folder).free
+                    if free_bytes-size<self.min_free_bytes:
+                        self.blocked=True;self.block_reason='DIAGNOSTIC_FREE_SPACE_BELOW_SAFETY_LIMIT';self.omitted+=1;return False
+                for attempt in range(3):
+                    try:
+                        with self.path.open('ab') as out:
+                            out.write(payload)
+                        break
+                    except PermissionError as perm_err:
+                        if attempt<2 and getattr(perm_err,'winerror',None) in (5,32):
+                            time.sleep(0.003*(attempt+1));continue
+                        raise
+                self.written+=1
+                self.bytes_written+=size
+                self.blocked=False
+                self.block_reason=None
+                if symbol:
+                    self.last_sig[symbol]=(sig_key,now_ts)
+                return True
+        except Exception as error:
+            self.errors+=1
+            self.omitted+=1
+            self.last_error=type(error).__name__
+            self.blocked=True
+            self.block_reason=f'DIAGNOSTIC_IO_ERROR:{self.last_error}'
+            return False
+
+    def stats(self):
+        with self.lock:
+            return {'path':str(self.path.name),'written_rows':self.written,'omitted_rows':self.omitted,
+                    'write_errors':self.errors,'last_error':self.last_error,'blocked':self.blocked,
+                    'block_reason':self.block_reason,'bytes_written':self.bytes_written,
+                    'max_file_bytes':self.max_file_bytes,'min_free_bytes':self.min_free_bytes}
+
+
 class TradeReviewCapture:
     def __init__(self, folder, *, ring_seconds=45., ring_rows=256,
                  ring_bytes=1024*1024, queue_rows=4096, queue_bytes=4*1024*1024,
                  file_bytes=32*1024*1024, day_bytes=4*1024**3,
                  total_bytes=12*1024**3, min_free_bytes=32*1024**3,
+                 diagnostic_max_bytes=4*1024*1024, diagnostic_min_free_bytes=5*1024**3,
                  continuous_watch=True, clock=None, start=True):
         self.folder=Path(folder);self.folder.mkdir(parents=True,exist_ok=True)
         self.clock=clock or (lambda:datetime.now().astimezone())
+        self.core_decisions=BoundedCoreDecisionLog(self.folder,clock=self.clock,
+            max_file_bytes=diagnostic_max_bytes,min_free_bytes=diagnostic_min_free_bytes)
         self.ring_seconds=ring_seconds;self.ring_rows=ring_rows;self.ring_limit=ring_bytes
         self.queue_rows=queue_rows;self.queue_limit=queue_bytes
         self.file_limit=file_bytes;self.day_limit=day_bytes;self.total_limit=total_bytes
@@ -318,6 +402,28 @@ class TradeReviewCapture:
             'trials':trials,'fast':{k:fast.get(k) for k in ('time','status','reason','regime','quote_evidence')},
             'sampling_interval_seconds':interval,'coverage':'SAMPLED_NOT_ALL_OPPORTUNITIES',
             'orders_enabled':False,'actual_order_permission':False},symbol,force=True)
+        try:
+            for tr in trials:
+                if not tr.get('formed'):continue
+                st=tr.get('entry_stage') or {}
+                failures=tr.get('failures') or []
+                obs_gap=bool(any('UNKNOWN' in str(r) or 'UNAVAILABLE' in str(r) or 'GAP' in str(r) for r in failures)
+                             or gates.get('warmup',{}).get('result')!='PASS')
+                self.core_decisions.record({
+                    'event':'CORE_DECISION_DIAGNOSTIC','source':'OPPORTUNITY_SAMPLE',
+                    'symbol':symbol,'timestamp':iso(asof),
+                    'setup':'A2' if st.get('entry_basis')=='CONFIRMED_BREAKOUT_RETEST' else tr.get('setup'),
+                    'entry_basis':st.get('entry_basis'),
+                    'decision':'READY' if tr.get('ready') else 'NO_BUY',
+                    'primary_reason_code':failures[0] if failures else ('READY' if tr.get('ready') else 'REJECT'),
+                    'entry_price':tr.get('entry'),'structural_stop':st.get('structural_stop',tr.get('stop')),
+                    'emergency_stop':st.get('emergency_stop',tr.get('stop')),'target':tr.get('target'),
+                    'gross_rr':None,'net_rr':tr.get('rr'),
+                    'capital_quantity':None,'risk_quantity':None,'quantity':None,
+                    'observation_gap':obs_gap,'failed_reasons':failures[:4]
+                },symbol=symbol)
+        except Exception:
+            pass
 
     def bind_entry_context(self,t,watch,detector,at):
         """Memory only. The caller's actual input, not a diagnostic re-evaluation."""
@@ -331,6 +437,36 @@ class TradeReviewCapture:
             with self.lock:row=self.entry_evidence.row(engine,symbol,decision,reason,gates,signal,extra)
             # Do not consume the queue capacity reserved for held positions.
             if row is not None:self._record(row,symbol)
+            sig=signal or {};gates=gates or {};extra=extra or {}
+            rq=gates.get('risk_quantity',{}).get('values',{})
+            econ=sig.get('entry_economics') or rq.get('entry_economics') or gates.get('risk_reward',{}).get('values',{}).get('economics') or {}
+            pol=sig.get('invalidation_policy') or {}
+            rr_vals=gates.get('risk_reward',{}).get('values',{})
+            setup_name='A2' if sig.get('setup_variant')=='A2' or sig.get('entry_basis')=='CONFIRMED_BREAKOUT_RETEST' else sig.get('pattern')
+            entry_px=sig.get('limit',econ.get('entry_price',rq.get('entry')))
+            s_stop=econ.get('structural_stop',pol.get('structural_stop',rq.get('structural_stop',sig.get('stop'))))
+            e_stop=econ.get('emergency_stop',pol.get('emergency_stop',rq.get('emergency_stop',sig.get('stop'))))
+            target_px=sig.get('target',econ.get('target',rr_vals.get('target')))
+            gross_rr=econ.get('gross_rr',rr_vals.get('gross_rr'))
+            net_rr=econ.get('net_rr',rr_vals.get('net_rr',rr_vals.get('calculated_rr')))
+            cap_qty=rq.get('capital_quantity')
+            risk_qty=rq.get('risk_quantity')
+            final_qty=rq.get('quantity',extra.get('quantity'))
+            zero_reason=rq.get('reason_code') if final_qty==0 else None
+            obs_gap=bool((row and row.get('coverage_gap'))
+                         or any(v.get('result')=='UNKNOWN' for v in gates.values() if isinstance(v,dict))
+                         or (isinstance(reason,str) and ('UNKNOWN' in reason or 'UNAVAILABLE' in reason or 'STALE' in reason)))
+            self.core_decisions.record({
+                'event':'CORE_DECISION_DIAGNOSTIC','source':'ENTRY_DECISION',
+                'symbol':symbol,'timestamp':iso(engine.clock()),
+                'setup':setup_name,'entry_basis':sig.get('entry_basis'),
+                'decision':decision,'primary_reason_code':reason,
+                'entry_price':entry_px,'structural_stop':s_stop,'emergency_stop':e_stop,
+                'target':target_px,'gross_rr':gross_rr,'net_rr':net_rr,
+                'capital_quantity':cap_qty,'risk_quantity':risk_qty,'quantity':final_qty,
+                'zero_quantity_reason':zero_reason,'zero_quantity_detail':rq.get('zero_quantity_detail'),
+                'observation_gap':obs_gap
+            },symbol=symbol,force=(decision=='BUY'))
         except Exception as error:
             self.errors+=1;self.last_error=type(error).__name__
 
@@ -455,6 +591,7 @@ class TradeReviewCapture:
                 'rejected_buffers':self.rejected_buffers,'rejected_buffer_bytes':self.rejected_buffer_bytes,
                 'rejected_buffer_skips':self.rejected_buffer_skips,
                 'entry_evidence':dict(self.entry_evidence.counts),
+                'core_decision_diagnostics':self.core_decisions.stats(),
                 'continuous_watch':self.continuous_watch,'storage_block_reason':self.storage_block_reason,
                 'limits':{'file_bytes':self.file_limit,'day_bytes':self.day_limit,'total_bytes':self.total_limit,'min_free_bytes':self.min_free_bytes},
                 'coverage':'UNKNOWN_IF_LOSS_OR_GAP_OR_PARTIAL_BUFFER','orders_enabled':False,

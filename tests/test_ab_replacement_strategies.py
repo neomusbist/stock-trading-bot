@@ -308,8 +308,10 @@ class TestABReplacementStrategies(unittest.TestCase):
         (a) an intra-bar price breakout tick immediately triggers signal emission, and
         (b) a new quote tightening ask/spread into the viable zone immediately triggers signal emission.
         """
-        auto = replace(self.auto, structural_pullback_enabled=True, confirmed_invalidation_enabled=True)
-        det = PatternDetector(self.cfg, auto, self.costs)
+        auto = replace(self.auto, structural_pullback_enabled=True, confirmed_invalidation_enabled=True,
+                       commission_buy=0.0, commission_sell=0.0, sell_tax=0.0)
+        cfg = replace(self.cfg, entry_slippage_fraction=0.0, exit_slippage_fraction=0.0)
+        det = PatternDetector(cfg, auto, Costs(0, 0, 0, 0, 0))
         det.continuous_observation = True
         sym = '999990'
         base_time = datetime(2026, 10, 26, 9, 0, 0, tzinfo=KST)

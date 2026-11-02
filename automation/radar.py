@@ -128,7 +128,15 @@ class DynamicRadar:
         # Explicit zero/unknown budgets must not fall back to the larger cap.
         budget=self.capital_context.get('entry_budget',
             self.capital_context.get('effective_auto_cap',self.available_capital))
+        allowed_risk=self.capital_context.get('allowed_risk_krw')
+        min_stop_frac=getattr(self.cfg,'min_stop_fraction',0.004)
+        min_unit_risk=(price*(min_stop_frac+self.a.commission_buy+self.a.commission_sell+self.a.sell_tax
+                              +getattr(self.cfg,'entry_slippage_fraction',0.002)+getattr(self.cfg,'exit_slippage_fraction',0.003))
+                       if price and price>0 else None)
+        risk_ok=(min_unit_risk<=allowed_risk if (min_unit_risk is not None and type(allowed_risk) in (int,float) and allowed_risk>0) else True)
         x['affordability']={'budget':budget,'one_share_cost':price*(1+self.a.commission_buy) if price else None,
+                            'allowed_risk_krw':allowed_risk,'estimated_min_one_share_risk':min_unit_risk,
+                            'min_risk_affordable':risk_ok,
                             'entry_eligible':False if self.a.capital_limit==0 else None,
                             'reason_code':'OBSERVATION_ONLY_ZERO_CAP' if self.a.capital_limit==0 else None}
         if self.a.capital_limit==0: return True
@@ -137,8 +145,12 @@ class DynamicRadar:
             x['affordability'].update(entry_eligible=None,reason_code='ACCOUNT_CAPITAL_UNAVAILABLE')
             return False
         if budget is None: return True
-        ok=price is not None and price>0 and price*(1+self.a.commission_buy)<=budget
-        x['affordability'].update(entry_eligible=ok,reason_code='ONE_SHARE_AFFORDABLE' if ok else 'ONE_SHARE_UNAFFORDABLE')
+        cash_ok=price is not None and price>0 and price*(1+self.a.commission_buy)<=budget
+        enforce_risk=bool(self.capital_context.get('enforce_risk_affordability',False))
+        ok=cash_ok and (risk_ok if enforce_risk else True)
+        reason=('ONE_SHARE_UNAFFORDABLE' if not cash_ok else
+                'RISK_BUDGET_ZERO_QTY' if (enforce_risk and not risk_ok) else 'ONE_SHARE_AFFORDABLE')
+        x['affordability'].update(entry_eligible=ok,reason_code=reason)
         return ok
 
     def update(self,items,evaluate,stamp,progress=None):

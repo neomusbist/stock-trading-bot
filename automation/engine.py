@@ -223,9 +223,18 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
                 'INVALID_PLANNED_QUANTITY' if not planned_valid else 'STRATEGY_ZERO_QUANTITY' if planned==0 else
                 'CAP_EXHAUSTED' if amount<=0 else 'ONE_SHARE_UNAFFORDABLE' if cash_qty==0 else
                 'RISK_BUDGET_ZERO_QTY' if risk_qty==0 else 'QUANTITY_AVAILABLE')
+        one_share_cost=economics.get('one_share_cash') if economics else entry*(1+self.a.commission_buy)
+        structural_stop=economics.get('structural_stop') if economics else (policy.get('structural_stop') or signal.get('stop'))
+        emergency_stop=economics.get('emergency_stop') if economics else stop
+        zero_detail=(None if qty>0 else
+                     f"ONE_SHARE_UNAFFORDABLE: one_share_cost={one_share_cost:.2f} > entry_budget={amount:.2f}" if reason=='ONE_SHARE_UNAFFORDABLE' else
+                     f"RISK_BUDGET_ZERO_QTY: risk_per_share={unit:.2f} > risk_budget={risk_budget:.2f} (emergency_stop={emergency_stop})" if reason=='RISK_BUDGET_ZERO_QTY' else
+                     reason)
         return {'quantity':qty,'reason_code':reason,'capital_quantity':cash_qty,'risk_quantity':risk_qty,
+                'one_share_cash_affordable':bool(cash_qty>=1),'one_share_risk_affordable':bool(risk_qty>=1),
+                'zero_quantity_detail':zero_detail,'structural_stop':structural_stop,'emergency_stop':emergency_stop,
                 'effective_auto_cap':self.auto_available_capital(),'entry_budget':amount,
-                'risk_budget':risk_budget,'risk_per_share':unit,'one_share_cost':economics.get('one_share_cash') if economics else entry*(1+self.a.commission_buy),
+                'risk_budget':risk_budget,'risk_per_share':unit,'one_share_cost':one_share_cost,
                 **({'entry_economics':economics} if economics else {}),
                 'account_fresh':fresh,'strategy_quantity':planned if planned_valid else None}
 
@@ -336,7 +345,8 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
         equity=self.risk_equity()
         used=self.risk_used()
         return {'actual_orderable_cash':self.available_cash,'approved_cap':self.a.capital_limit,
-                'risk_equity':equity,'risk_remaining':max(0,self.daily_risk_budget(equity)-self.s['daily_loss']-used),
+                'risk_equity':equity,'allowed_risk_krw':equity*self.c.risk_fraction,
+                'risk_remaining':max(0,self.daily_risk_budget(equity)-self.s['daily_loss']-used),
                 'daily_risk_budget_krw':self.daily_risk_budget(equity),
                 'daily_risk_override_day':self.a.daily_risk_override_day,
                 'daily_risk_override_active':self.a.daily_risk_override_day==self.clock().date().isoformat(),
@@ -397,7 +407,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
                 return 'CRITICAL_LOW_DISK_SPACE'
         except Exception:
             return 'CRITICAL_LOW_DISK_SPACE'
-        if self.a.exit_plan_reward_guard_enabled or signal.get('pattern') in {'A','B','C','D','E','E2'}:
+        if (self.a.exit_plan_reward_guard_enabled or signal.get('pattern') in {'A','B','C','D','E','E2'}) and hasattr(self, 'c') and all(signal.get(k) is not None for k in ('limit', 'stop', 'target')):
             from automation.exit_plan import build_plan
             signal['exit_plan']=build_plan(self.c,self.a,signal,quantity=quantity)
             if not signal['exit_plan']['reward_guard_pass']:return 'EXIT_PLAN_REWARD_UNKNOWN_OR_LOW'

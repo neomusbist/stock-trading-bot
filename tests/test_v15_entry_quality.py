@@ -83,7 +83,10 @@ class DetectorIntegrationTests(unittest.TestCase):
         from automation.engine import AutonomousEngine
         fixture=fixtures.SetupReachabilityTests('runTest');fixture.setUp()
         try:
-            detector,tick,watch=fixture.build('C');detector.a=replace(detector.a,fresh_box_basis_enabled=True)
+            detector,tick,watch=fixture.build('C')
+            detector.cfg=replace(detector.cfg,entry_slippage_fraction=0,exit_slippage_fraction=0)
+            detector.a=replace(detector.a,fresh_box_basis_enabled=True,commission_buy=0,commission_sell=0,sell_tax=0)
+            fixture.e.c=detector.cfg;fixture.e.a=detector.a
             detector.ingest(tick,tick.time);signal=detector.signal(tick,watch)
             self.assertIsNotNone(signal);self.assertEqual(signal['evaluation_gates']['box_origin']['result'],'PASS')
             fixture.e.a=detector.a

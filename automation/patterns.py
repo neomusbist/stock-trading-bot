@@ -407,11 +407,44 @@ class PatternDetector(Detector):
                     if peak < ma and seq[-1]['close'] < ma:
                         return None, 'DOWNTREND_REBOUND_NOT_PULLBACK', evidence
         impulse_volume=sum(b['volume'] for b in impulse)/len(impulse)
-        pull_volume=sum(b['volume'] for b in pull)/len(pull)
+        touch = max(i for i, b in enumerate(pull) if b['low'] == low)
+        pullback_phase = pull[:touch+1]
+        recovery_phase = pull[touch+1:]
+        pullback_phase_volume = sum(b['volume'] for b in pullback_phase) / len(pullback_phase)
+        recovery_phase_volume = sum(b['volume'] for b in recovery_phase) / len(recovery_phase) if recovery_phase else None
+        all_pull_volume = sum(b['volume'] for b in pull) / len(pull)
+        valid_recovery_phase = bool(
+            recovery_phase
+            and all(b['low'] >= low for b in recovery_phase)
+            and any(b['low'] > low for b in recovery_phase)
+            and recovery_phase[-1]['close'] >= recovery_phase[-1]['open']
+            and recovery_phase[-1]['close'] >= max(pull[touch]['open'], pull[touch]['close'])
+            and not any(
+                b['close'] < b['open'] and b['volume'] > impulse_volume * self.a.pullback_volume_ratio
+                for b in recovery_phase
+            )
+        )
+        pull_volume = pullback_phase_volume if valid_recovery_phase else all_pull_volume
+        evidence.update(
+            impulse_volume=impulse_volume,
+            pullback_phase_volume=pullback_phase_volume,
+            recovery_phase_volume=recovery_phase_volume,
+            all_post_peak_volume=all_pull_volume,
+            pullback_phase_bars=len(pullback_phase),
+            recovery_phase_bars=len(recovery_phase),
+            volume_basis='SEPARATED_PULLBACK_AND_RECOVERY' if valid_recovery_phase else 'UNSEPARATED_POST_PEAK',
+        )
         if impulse_volume<=0 or pull_volume>impulse_volume*self.a.pullback_volume_ratio:return None,'PULLBACK_VOLUME_FAIL',evidence
         if low<=base:return None,'PULLBACK_INVALIDATION_FAIL',evidence
-        touch = max(i for i, b in enumerate(pull) if b['low'] == low)
-        recovery_pivot = max(low, pull[-1]['open'])
+        last_pull = pull[-1]
+        upper_wick = last_pull['high'] - max(last_pull['open'], last_pull['close'])
+        body = abs(last_pull['close'] - last_pull['open'])
+        if upper_wick > body:
+            breakout = max(b['high'] for b in pull)
+            return {'pattern':'B','breakout':breakout,'peak':peak,'support':low,'projection':peak+rise,
+                    'pullback_volume_ratio':pull_volume/impulse_volume,'retrace':retrace,
+                    **evidence},None,evidence
+        recovery_pivot = max(low, last_pull['open'])
         breakout = recovery_pivot
         return {'pattern':'B','breakout':breakout,'peak':peak,'support':low,'projection':peak+rise,
                 'pullback_volume_ratio':pull_volume/impulse_volume,'retrace':retrace,
@@ -943,18 +976,19 @@ class PatternDetector(Detector):
                 'price_action':{'condition':'CONTROLLED_PULLBACK' if name=='B' else 'INTRADAY_BOX' if name=='C' else 'SUPPORT_REBOUND' if name=='E' else 'PRIOR_HIGH_BREAKOUT',
                     'formed':bool(setup),'breakout':price_gates.get('breakout',gate(False,reason='GEOMETRY_ABSENT'))},
                 'virtual_entry':virtual.get('entry'),'virtual_invalidation':virtual.get('stop')})
-        if _revision and len(bars)>=2 and (self.a.a_breakout_retest_entry_enabled or self.a.b_support_reclaim_entry_enabled):
+        a_retest_enabled=bool(self.a.a_breakout_retest_entry_enabled or getattr(self.a,'a2_breakout_retest_enabled',False))
+        if _revision and len(bars)>=2 and (a_retest_enabled or self.a.b_support_reclaim_entry_enabled):
             # Geometry is immutable within one closed-bar prefix; quote/cost
             # gates are always recomputed. One cache per observed symbol.
-            key=(t.time.replace(second=0,microsecond=0),self.a.a_breakout_retest_entry_enabled,self.a.b_support_reclaim_entry_enabled,
+            key=(t.time.replace(second=0,microsecond=0),self.a.a_breakout_retest_entry_enabled,getattr(self.a,'a2_breakout_retest_enabled',False),self.a.b_support_reclaim_entry_enabled,
                  len(bars),bars[0]['time'],bars[-1]['time'],bars[-1]['close'],bars[-1]['high'],bars[-1]['low'],bars[-1]['volume'],bars[-1].get('gap_reason'))
             cached=self._entry_geometry_cache.get(t.symbol)
             if cached is None or cached[0]!=key:
                 from automation.structural_breakout import breakout_retest_setup
                 from automation.structural_pullback import support_reclaim_setup
                 revised={}
-                if self.a.a_breakout_retest_entry_enabled and self.a.structural_breakout_enabled:
-                    revised['A']=breakout_retest_setup(bars,t.time,self.cfg)
+                if a_retest_enabled and self.a.structural_breakout_enabled:
+                    revised['A']=breakout_retest_setup(bars,t.time,self.cfg,auto=self.a)
                 if self.a.b_support_reclaim_entry_enabled and self.a.structural_pullback_enabled:
                     revised['B']=support_reclaim_setup(bars,t.time,setups.get('B'))
                 self._entry_geometry_cache[t.symbol]=(key,revised)

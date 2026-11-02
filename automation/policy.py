@@ -57,6 +57,7 @@ class AutomationConfig:
     a_sustained_turnover_enabled: bool = False  # research: actual 60-second accepted turnover
     b_sustained_turnover_enabled: bool = False  # research: actual 60-second accepted turnover
     a_breakout_retest_entry_enabled: bool = False  # research A: completed breakout, held retest and reclaim
+    a2_breakout_retest_enabled: bool = False  # Setup A2: confirmed high breakout -> first pullback/retest -> support hold -> re-advance entry
     b_support_reclaim_entry_enabled: bool = False  # research B: confirm the floor without chasing the recovery wick
     early_surge_priority_enabled: bool = False  # research ranking, never extra subscription capacity
     single_source_eligibility_fix_enabled: bool = True
@@ -130,9 +131,9 @@ class AutomationConfig:
             raise ValueError('setup_a_target_mode 설정 오류')
         if self.setup_a_rr_stop_basis not in ('EMERGENCY_STOP','STRUCTURAL_STOP'):
             raise ValueError('setup_a_rr_stop_basis 설정 오류')
-        if any(type(getattr(self,k)) is not bool for k in ('a_short_reference_enabled','a_sustained_turnover_enabled','b_sustained_turnover_enabled','a_breakout_retest_entry_enabled','b_support_reclaim_entry_enabled','early_surge_priority_enabled','single_source_eligibility_fix_enabled','abc_quote_retry_enabled','timeline_async_save_enabled')):
+        if any(type(getattr(self,k)) is not bool for k in ('a_short_reference_enabled','a_sustained_turnover_enabled','b_sustained_turnover_enabled','a_breakout_retest_entry_enabled','a2_breakout_retest_enabled','b_support_reclaim_entry_enabled','early_surge_priority_enabled','single_source_eligibility_fix_enabled','abc_quote_retry_enabled','timeline_async_save_enabled')):
             raise ValueError('불리언 설정 오류')
-        if self.a_breakout_retest_entry_enabled and not (self.structural_breakout_enabled and self.confirmed_invalidation_enabled):
+        if (self.a_breakout_retest_entry_enabled or self.a2_breakout_retest_enabled) and not (self.structural_breakout_enabled and self.confirmed_invalidation_enabled):
             raise ValueError('A 재확인 진입은 구조 검증과 확정 무효화 정책이 필요합니다')
         if self.b_support_reclaim_entry_enabled and not (self.structural_pullback_enabled and self.confirmed_invalidation_enabled):
             raise ValueError('B 지지 회복 진입은 구조 검증과 확정 무효화 정책이 필요합니다')
