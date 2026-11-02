@@ -58,7 +58,11 @@ class AutomationConfig:
     b_sustained_turnover_enabled: bool = False  # research: actual 60-second accepted turnover
     a_breakout_retest_entry_enabled: bool = False  # research A: completed breakout, held retest and reclaim
     a2_breakout_retest_enabled: bool = False  # Setup A2: confirmed high breakout -> first pullback/retest -> support hold -> re-advance entry
+    a2_chase_filter_enabled: bool = False  # Setup A2: reject late chasing entry > level + 0.50*(impulse_high - level)
+    a2_min_target_room_enabled: bool = False  # Setup A2: minimum target room (ceiling - entry)/entry >= 1.5%
     b_support_reclaim_entry_enabled: bool = False  # research B: confirm the floor without chasing the recovery wick
+    b_chase_filter_enabled: bool = False  # Setup B: reject late rebound entry > support + 0.55*(peak - support)
+    b_min_target_room_enabled: bool = False  # Setup B: minimum target room (ceiling - entry)/entry >= 1.5%
     early_surge_priority_enabled: bool = False  # research ranking, never extra subscription capacity
     single_source_eligibility_fix_enabled: bool = True
     abc_quote_retry_enabled: bool = True

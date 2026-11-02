@@ -97,6 +97,7 @@ def breakout_retest_setup(raw,asof,cfg,auto=None):
         a2_choices.append(dict(pattern='A',setup_variant='A2',breakout=retest_trigger,support=retest['low'],
             projection=projection,entry_basis='CONFIRMED_BREAKOUT_RETEST',
             old_ceiling=level,original_range_support=support,range_anchor_at=anchor['time'].isoformat(),
+            impulse_high=impulse['high'],
             breakout_bar_at=impulse['time'].isoformat(),breakout_close=impulse['close'],
             breakout_volume=impulse['volume'],base_volume_mean=base_vol,
             retest_bar_at=retest['time'].isoformat(),recovery_bar_at=recovered['time'].isoformat(),
@@ -126,16 +127,30 @@ def _retest_proof(raw,decision_bars,asof,setup,cfg,entry,bid,ask,auto):
     # Retain the same reference-noise estimator; no RR-driven tightening.
     noise=max(statistics.median(b['high']-b['low'] for b in rows[-15:]),spread,tick_size(entry))
     emergency=floor_tick(structural-noise)
-    peak=confirmed_overhead(rows,asof,derived['breakout']);ceiling=min(derived['projection'],peak['price']) if peak else derived['projection']
+    anchor_iso=derived.get('range_anchor_at')
+    if anchor_iso:
+        prior_rows=[b for b in rows if (b['time'].isoformat() if hasattr(b['time'],'isoformat') else str(b['time']))<anchor_iso]
+    else:
+        prior_rows=rows
+    peak=confirmed_overhead(prior_rows,asof,derived['breakout']) if prior_rows else None
+    ceiling=min(derived['projection'],peak['price']) if peak else derived['projection']
     prior=setup.get('prior_session_high');prior_valid=type(prior) in (int,float) and math.isfinite(prior) and prior>derived['breakout']
     if prior_valid:ceiling=min(ceiling,prior)
+    imp_high=derived.get('impulse_high')
+    old_ceil=derived.get('old_ceiling')
+    if auto and getattr(auto,'a2_chase_filter_enabled',False) and imp_high is not None and old_ceil is not None and imp_high>old_ceil:
+        if entry>old_ceil+0.50*(imp_high-old_ceil):
+            return False,{**evidence,'reason':'ENTRY_CHASING_LATE','entry':entry,'old_ceiling':old_ceil,'impulse_high':imp_high}
+    if auto and getattr(auto,'a2_min_target_room_enabled',False):
+        if ceiling<=entry or (ceiling-entry)/entry<0.015:
+            return False,{**evidence,'reason':'TARGET_STRUCTURALLY_NARROW','entry':entry,'target_ceiling':ceiling}
     digest=hashlib.sha256(json.dumps([[b['time'].isoformat()]+[b[k] for k in ('open','high','low','close')]+[b.get('volume')] for b in rows],separators=(',',':')).encode()).hexdigest()
     evidence.update(reference_sha256=digest,known_bars=len(rows),support=support,structural_stop=structural,
         emergency_stop=emergency,noise_band=noise,buffer=buffer,spread=spread,projection=derived['projection'],
         target_ceiling=ceiling,nearest_confirmed_peak=peak,known_prior_session_high=prior if prior_valid else None,
         original_micro_support=support,confirmation_bar=derived['recovery_bar_at'],entry_basis=derived['entry_basis'],
-        role_reversal={k:derived[k] for k in ('old_ceiling','original_range_support','range_anchor_at','breakout_bar_at','retest_bar_at','recovery_bar_at','projection_confirmed_bar_closed_at','confirmation_closed_at','decision_basis_sha256')})
-    passed=bool(0<emergency<structural<entry and entry>derived['breakout'] and ceiling>entry)
+        role_reversal={k:derived[k] for k in ('old_ceiling','original_range_support','range_anchor_at','breakout_bar_at','retest_bar_at','recovery_bar_at','projection_confirmed_bar_closed_at','confirmation_closed_at','decision_basis_sha256') if k in derived})
+    passed=bool(0<emergency<structural<entry and entry>=derived['breakout'] and ceiling>entry)
     return passed,{**evidence,'reason':'CONFIRMED_BREAKOUT_RETEST' if passed else 'RETEST_ENTRY_OR_KNOWN_CEILING_INVALID'}
 
 

@@ -123,4 +123,9 @@ def structural_pullback(raw, asof, setup, cfg, entry, bid, ask,close_policy=Fals
     evidence.update(noise_guard_basis='CONFIRMED_CLOSE_WITH_SEPARATE_EMERGENCY' if reclaim_close_policy else 'STRUCTURAL_PRICE_DISTANCE',
                     noise_guard_risk_distance=entry-risk_stop)
     if entry-risk_stop<=noise:return False,{**evidence,'reason':'PULLBACK_RISK_WITHIN_OBSERVED_NOISE'}
+    if auto and getattr(auto,'b_chase_filter_enabled',False) and peak>support and entry>support+0.55*(peak-support):
+        return False,{**evidence,'reason':'ENTRY_CHASING_LATE','entry':entry,'support':support,'peak':peak}
+    if auto and getattr(auto,'b_min_target_room_enabled',False):
+        if ceiling<=entry or (ceiling-entry)/entry<0.015:
+            return False,{**evidence,'reason':'TARGET_STRUCTURALLY_NARROW','entry':entry,'target_ceiling':ceiling}
     return True,{**evidence,'reason':'CONFIRMED_SUPPORT_RECOVERY' if is_support_recovery else 'CONFIRMED_PULLBACK_SUPPORT'}
