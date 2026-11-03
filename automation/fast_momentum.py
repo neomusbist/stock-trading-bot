@@ -173,13 +173,14 @@ class MicroTape:
         self.rejections = Counter()
         self.last_rejection = None
         self.last_cumulative = None
+        self._last_tick_direction = 0
         self.day = None
         self.symbol = None
         self.reset_reason = None
 
     def reset(self, reason='EXPLICIT_GAP'):
         self.ticks.clear(); self.metadata.clear()
-        self.last_cumulative = None; self.day = None; self.symbol = None
+        self.last_cumulative = None; self._last_tick_direction = 0; self.day = None; self.symbol = None
         self.reset_reason = reason
 
     def _reject(self, reason):
@@ -217,7 +218,17 @@ class MicroTape:
         fingerprint = (at, price, volume, bid, ask, cumulative)
         if self.metadata and self.metadata[-1]['fingerprint'] == fingerprint:return self._reject('DUPLICATE_TRADE')
         previous = self.ticks[-1][1] if self.ticks else None
-        direction = None if previous is None else 1 if price > previous else -1 if price < previous else 0
+        if previous is None:
+            direction = None
+            self._last_tick_direction = 0
+        elif price > previous:
+            direction = 1
+            self._last_tick_direction = 1
+        elif price < previous:
+            direction = -1
+            self._last_tick_direction = -1
+        else:
+            direction = self._last_tick_direction
         self.ticks.append((at, price, volume, direction, bid, ask))
         self.metadata.append(dict(received_at=stamp(received_at),received_monotonic=received_monotonic,
             book_time=stamp(getattr(t, 'book_time', None)),
@@ -253,12 +264,12 @@ class MicroTape:
             volume = sum(r[2] for r in rows); turnover = sum(r[1] * r[2] for r in rows)
             result.update({f'ticks_{seconds}': len(rows), f'volume_{seconds}': volume, f'turnover_{seconds}': turnover})
             if seconds in (30, 60):
-                # First print has unknown direction. Subsequent neutral prints
-                # remain in the denominator and count as neither buying nor selling.
-                comparable = sum(r[2] for r in rows if r[3] is not None)
+                # Direction uses Lee-Ready tick test with zero-tick inheritance.
+                # Uptick dominance is measured against directional trade volume (up / (up + down)).
                 up = sum(r[2] for r in rows if r[3] == 1); down = sum(r[2] for r in rows if r[3] == -1)
-                result.update({f'uptick_ratio_{seconds}': up / comparable if comparable else 0.,
-                    f'downtick_ratio_{seconds}': down / comparable if comparable else 0.,
+                directional = up + down
+                result.update({f'uptick_ratio_{seconds}': up / directional if directional else 0.,
+                    f'downtick_ratio_{seconds}': down / directional if directional else 0.,
                     f'neutral_volume_{seconds}': sum(r[2] for r in rows if r[3] == 0),
                     f'p_min_{seconds}': min((r[1] for r in rows), default=eligible[-1][0][1]),
                     f'p_max_{seconds}': max((r[1] for r in rows), default=eligible[-1][0][1])})
@@ -495,12 +506,16 @@ class FastMomentumStrategy:
         return 'OFF_SESSION'
 
     def classify_regime(self, t, m, phase, watch, asof=None):
-        spread = m.get('spread'); maximum = .004 if phase == 'OPENING_EARLY' else .0035
+        spread = m.get('spread')
+        is_opening = phase in ('OPENING_EARLY', 'OPENING_BUILD')
+        maximum = max(getattr(self.cfg, 'max_spread', 0.004), 0.004 if is_opening else 0.0035)
         if spread is None:return 'C', 'EXECUTABLE_QUOTE_UNKNOWN', {}
-        if spread > maximum:return 'C', 'FALSE_BREAKOUT_WIDE_SPREAD', {'spread': spread, 'max_spread': maximum}
-        minimum = 4 if phase == 'OPENING_EARLY' else 6
+        step = tick_size(t.price)
+        if (t.ask - t.bid > step) and spread > maximum:
+            return 'C', 'FALSE_BREAKOUT_WIDE_SPREAD', {'spread': spread, 'max_spread': maximum, 'tick_size': step}
+        minimum = 4 if is_opening else 6
         if m.get('ticks_10', 0) < minimum:return 'C', 'FALSE_BREAKOUT_INSUFFICIENT_TICK_VELOCITY', {'min_ticks': minimum}
-        turnover = 3000000. if phase == 'OPENING_EARLY' else 5000000.
+        turnover = 3000000. if is_opening else 5000000.
         if m.get('turnover_10', 0) < turnover:return 'C', 'FALSE_BREAKOUT_INSUFFICIENT_TURNOVER', {'min_turnover': turnover}
         reference = watch.get('reference_price') or watch.get('first_raw_price')
         if number(reference) and reference > 0 and t.price < reference * .985 and m['p_max_60'] < reference * .990:
@@ -512,12 +527,12 @@ class FastMomentumStrategy:
         ref_high=max(observed) if observed else None
         if ref_high and ref_high > 0 and t.price < ref_high * .975:
             return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'peak_price': ref_high, 'drawdown': 1 - t.price / ref_high}
-        extension = t.price / m['p_min_60'] - 1; limit = .022 if phase == 'OPENING_EARLY' else .020
+        extension = t.price / m['p_min_60'] - 1; limit = .035 if is_opening else .025
         if extension > limit:return 'B', 'EXTENDED_IMPULSE_CHASE_OVEREXTENDED', {'extension': extension}
         if m['uptick_ratio_30'] < .55:return 'B', 'EXTENDED_IMPULSE_MOMENTUM_EXHAUSTION', {'uptick_ratio_30': m['uptick_ratio_30']}
-        if m['uptick_ratio_30'] < (.62 if phase == 'OPENING_EARLY' else .65):
+        if m['uptick_ratio_30'] < (.62 if is_opening else .65):
             return 'C', 'INSUFFICIENT_UPTICK_DOMINANCE', {'uptick_ratio_30': m['uptick_ratio_30']}
-        if t.price < m['p_max_30'] - tick_size(t.price):return 'C', 'MICRO_BREAKOUT_NOT_AT_PEAK', {}
+        if t.price < m['p_max_30'] - step:return 'C', 'MICRO_BREAKOUT_NOT_AT_PEAK', {}
         return 'A', 'EARLY_MOMENTUM_FLOW_PROXY', {}
 
     def _quote(self, t, now, quantity=1, side='BOTH'):
@@ -547,7 +562,8 @@ class FastMomentumStrategy:
         entry = t.ask; breakout = structure['breakout']; support = structure['support']
         if t.price <= breakout:return reject('PREDECISION_REACTION_HIGH_NOT_BROKEN', structure=structure)
         if entry <= breakout:return reject('EXECUTABLE_ASK_NOT_ABOVE_BREAKOUT', structure=structure)
-        if entry / breakout - 1 > .003:return reject('MAX_CHASE_EXCEEDED', breakout=breakout, entry=entry)
+        max_chase = getattr(self.cfg, 'max_chase', .005)
+        if entry / breakout - 1 > max_chase:return reject('MAX_CHASE_EXCEEDED', breakout=breakout, entry=entry, max_chase=max_chase)
         overhead = watch.get('resistance'); known_at = stamp(watch.get('resistance_asof') or watch.get('observed_at'))
         if not (number(overhead) and overhead > entry):
             next_res = watch.get('recent_high') or watch.get('daily_high_20d')
@@ -676,11 +692,13 @@ class FastMomentumStrategy:
             self._note(t, 'UNKNOWN' if 'UNKNOWN' in geometry['reason'] or 'UNAVAILABLE' in geometry['reason'] else 'REJECT', geometry['reason'], geometry=geometry,metrics=note_metrics,decision_at=now)
             return None
         actual_order = bool(live_authorized)
+        max_chase = getattr(self.cfg, 'max_chase', .005)
         signal = FastSignal(symbol=t.symbol, name=watch.get('name', t.symbol), limit=geometry['entry'],
             stop=geometry['stop'], emergency=geometry['emergency'], target=geometry['target'], quantity=geometry['quantity'],
             net_reward_risk=geometry['net_rr'], gross_reward_risk=geometry['gross_rr'], reward_net_per_share=geometry['reward_net_per_share'],
             risk_net_per_share=geometry['risk_net_per_share'], regime='A', phase=phase, created_at=now,
-            max_chase_price=geometry['structural_evidence']['breakout'] * 1.003,
+            max_chase_fraction=max_chase,
+            max_chase_price=geometry['structural_evidence']['breakout'] * (1 + max_chase),
             extra=dict(metrics=m, geometry=geometry,
                        actual_order_permission=actual_order,
                        SHADOW_ONLY=not actual_order,
