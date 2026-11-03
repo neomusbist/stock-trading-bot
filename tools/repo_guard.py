@@ -5,69 +5,13 @@ import re
 import subprocess
 from pathlib import Path
 
-ROOT_FILES={'main.py','candidate_builder.py','control.py','supervisor.py','operator_console.py','operator_service.py',
+ROOT_FILES={'AGENTS.md','VERSION_HISTORY.md','VERSION_POLICY.md','VERSION_INDEX.json','BRANCH_HISTORY.md','main.py','candidate_builder.py','control.py','supervisor.py','operator_console.py','operator_service.py',
     'operator_ui_service.py','operator_gui.py','gui_launch.py','gui_menu.cmd','GUI_GUIDE.md',
     'operator_runner.py','operator_process.py','local_diagnostics.py','run.bat','test.bat','operator_menu.cmd',
     '.gitignore','.gitattributes','.env.example','config.example.json','automation.example.json','requirements.txt',
-    'README.md','AUDIT_REPORT.md','TEST_REPORT.md','NEXT_SESSION_CHECK.md','운영요약.md','사용자_시운전_가이드.txt','DEPLOYMENT_LAYOUT.md','observation.example.json','REPOSITORY_GUIDE.md','SECURITY.md','THIRD_PARTY_NOTICES.md','SOURCE_MANIFEST.json','V1.3_HANDOFF_20261007.md','V1.2_설계감사_구현명세.md','TEST_AUDIT_REPORT.md','STORAGE_AUDIT_REPORT.md','HANDOFF.md','cleanup_audit_trail.json','GUI_PERFORMANCE_REPORT.md','HANDOFF_TRADE_QUALITY_20261013.md'}
-TOOLS={'repo_guard.py','live_overlay.py','setup_local.py','export_source.py','session_audit.py','offline_benchmark.py','offline_regression.py','night_profile.py','verify_fault_injection.py','benchmark_gui_performance.py','trade_quality_replay.py','trade_quality_v15_replay.py','exit_policy_replay.py'}
-TOOLS.add('measure_runtime_budget.py')  # Reviewed read-only OS sampler; generated process evidence stays private.
-TOOLS.add('benchmark_all_strategies.py')  # Offline evidence audit and typed PAPER replay only.
-TOOLS.add('observe_paper.py')  # Read-only source tail; no broker connection or LIVE writes.
-TOOLS.add('c2_paper_follow.py')  # Bounded no-network C2 PAPER journal follower.
-TOOLS.add('c2_paper.py')  # Offline sealed PAPER experiment, never a LIVE activation.
-TOOLS.update({'reproduce_89_signals.py','full_universe_backtest.py','account_level_replay.py',
-              'eval_1019_theoretical.py','build_1019_bars.py','run_all_replays.py'})
-CAUSAL_RESEARCH_FILES={
-    'audit/r6_unified_20261029/RESULTS.md',
-    'audit/r6_unified_20261029/ABC_SAFETY.patch',
-    'research/paper_funnel.py',
-    *('audit/r6_protection_20261029/'+n for n in ('RESULTS.md','RUNBOOK.md','SAFETY_CONTRACT.json','MEASURED_SUMMARY.json','OVERLAY_MANIFEST.json')),
-    *('research/'+n for n in ('c2_retest.py','c2_validation.py','c2_exits.py')),
-    *('audit/r6_c2_observe_20261028/'+n for n in ('RESULTS.md','RUNBOOK.md','MEASURED_SUMMARY.json','STRATEGY_CONTRACT.json','OVERLAY_MANIFEST.json')),
-    'audit/kt00018_20261028/RESULTS.md',
-    'audit/kt00018_20261028/CALL_PATHS.json',
-    'audit/kt00018_20261028/DEPLOYMENT_RECEIPT.json',
-    'research/strict_benchmark.py',
-    'research/observed_paper.py',
-    'audit/r6_oct27_paper_evidence/RESULTS.md',
-    'audit/r6_oct27_paper_evidence/RUNBOOK.md',
-    'audit/r6_oct27_paper_evidence/MEASURED_SUMMARY.json',
-    'audit/r6_oct27_paper_evidence/OVERLAY_MANIFEST.json',
-    'audit/r6_oct27_benchmark_fidelity/RESULTS.md',
-    'audit/r6_oct27_benchmark_fidelity/LEGACY_CLAIMS.csv',
-    'audit/r6_oct27_benchmark_fidelity/EVIDENCE_SUMMARY.json',
-    'research/ab_replacement_strategies.py','audit/r6_oct26_ab_replacement/RESULTS.md','audit/r6_oct26_ab_replacement/CASES.csv',
-    'research/recovery_stress.py','audit/r6_oct26_recovery_stress/RESULTS.md','audit/r6_oct26_recovery_stress/CASES.csv',
-    'research/recovery_noise.py','audit/r6_oct24_recovery_noise/RESULTS.md','audit/r6_oct24_recovery_noise/CASES.csv',
-    'research/initial_structure.py','research/support_recovery.py','research/initial_structure_replay.py',
-    'audit/r6_oct24_initial_structure/RESULTS.md','audit/r6_oct24_initial_structure/CASES.csv',
-    'research/ab_feasibility.py',
-    'research/session_validation.py','audit/r6_oct26_night/READINESS_AND_REPLAY.md',
-    'research/causal_data.py','research/causal_account.py','research/causal_replay.py',
-    'research/causal_strategy_adapters.py',
-    'research/retest_strategy.py','research/evidence_collector.py',
-    'audit/r6_causal_validation_20261020/RESULTS.md',
-    'audit/r6_causal_validation_20261020/REPRODUCE.md',
-    'audit/r6_causal_validation_20261020/HANDOFF_TO_AG.md',
-    'audit/r6_causal_validation_20261020/RESULTS.json'}
-R6_REPAIR_FILES={
-    'HANDOFF_TO_ANTIGRAVITY.md',
-    *('audit/r6_work_repair_20261014/'+name for name in (
-        'FINAL_REPORT.md','BUG_FIXES.md','SYMBOL_DATA_AUDIT.csv','TRADE_LEDGER.csv',
-        'SLIPPAGE_SENSITIVITY.csv','ENTRY_LATENCY.csv','READINESS_RESULTS.md',
-        'SHADOW_RUNBOOK.md','TEST_RESULTS.md','REPRODUCE.md','SHADOW_REPAIR.md',
-        'REPLAY_RESULTS.json','DATA_IDENTITY_RESULTS.json','BASE_COMMIT_MAP.json',
-        'TEST_RESULTS.json','replay.py','symbol_audit.py'))}
-REVIEWED_DEPENDENCY_FILES={
-    'vendor/websocket/_utils.py',
-    'licenses/websocket-client-1.9.0-LICENSE.txt',
-}
-
+    'README.md','AUDIT_REPORT.md','TEST_REPORT.md','NEXT_SESSION_CHECK.md','운영요약.md','사용자_시운전_가이드.txt','DEPLOYMENT_LAYOUT.md','observation.example.json','REPOSITORY_GUIDE.md','SECURITY.md','THIRD_PARTY_NOTICES.md','SOURCE_MANIFEST.json','V1.3_HANDOFF_20261007.md','V1.2_설계감사_구현명세.md'}
+TOOLS={'validate_versions.py','repo_guard.py','setup_local.py','export_source.py','session_audit.py','offline_benchmark.py','offline_regression.py'}
 def allowed(name):
-    if name.replace('\\','/') in REVIEWED_DEPENDENCY_FILES:return True
-    if name.replace('\\','/') in CAUSAL_RESEARCH_FILES:return True
-    if name.replace('\\','/') in R6_REPAIR_FILES:return True
     p=Path(name); parts=p.parts
     if len(parts)==1: return name in ROOT_FILES
     if any(x.startswith('.') or x=='__pycache__' for x in parts): return False
