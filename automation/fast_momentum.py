@@ -263,7 +263,7 @@ class MicroTape:
             rows = [r for r, _ in eligible if r[0] >= cutoff]
             volume = sum(r[2] for r in rows); turnover = sum(r[1] * r[2] for r in rows)
             result.update({f'ticks_{seconds}': len(rows), f'volume_{seconds}': volume, f'turnover_{seconds}': turnover})
-            if seconds in (30, 60):
+            if seconds in (10, 30, 60):
                 # Direction uses Lee-Ready tick test with zero-tick inheritance.
                 # Uptick dominance is measured against directional trade volume (up / (up + down)).
                 up = sum(r[2] for r in rows if r[3] == 1); down = sum(r[2] for r in rows if r[3] == -1)
@@ -513,27 +513,42 @@ class FastMomentumStrategy:
         step = tick_size(t.price)
         if (t.ask - t.bid > step) and spread > maximum:
             return 'C', 'FALSE_BREAKOUT_WIDE_SPREAD', {'spread': spread, 'max_spread': maximum, 'tick_size': step}
-        minimum = 4 if is_opening else 6
+        minimum = 3 if is_opening else 3
         if m.get('ticks_10', 0) < minimum:return 'C', 'FALSE_BREAKOUT_INSUFFICIENT_TICK_VELOCITY', {'min_ticks': minimum}
-        turnover = 3000000. if is_opening else 5000000.
+        turnover = 500000. if is_opening else 800000.
         if m.get('turnover_10', 0) < turnover:return 'C', 'FALSE_BREAKOUT_INSUFFICIENT_TURNOVER', {'min_turnover': turnover}
         reference = watch.get('reference_price') or watch.get('first_raw_price')
         if number(reference) and reference > 0 and t.price < reference * .985 and m['p_max_60'] < reference * .990:
             return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'reference': reference}
-        # An overhead resistance is a target constraint, not evidence that
-        # this observed tape fell from that price. Retain the drawdown rule
-        # against actual received highs, separately from reference resistance.
-        observed=[v for v in (m.get('p_max_60'),self.day_high.get(t.symbol)) if number(v)]
-        ref_high=max(observed) if observed else None
-        if ref_high and ref_high > 0 and t.price < ref_high * .975:
+        # Drawdown check: sharp falling knife in the last 60 seconds of tape
+        ref_high = m.get('p_max_60')
+        if ref_high and ref_high > 0 and t.price < ref_high * .970:
             return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'peak_price': ref_high, 'drawdown': 1 - t.price / ref_high}
-        extension = t.price / m['p_min_60'] - 1; limit = .035 if is_opening else .025
+        extension = t.price / m['p_min_60'] - 1; limit = .035 if is_opening else .028
         if extension > limit:return 'B', 'EXTENDED_IMPULSE_CHASE_OVEREXTENDED', {'extension': extension}
-        if m['uptick_ratio_30'] < .55:return 'B', 'EXTENDED_IMPULSE_MOMENTUM_EXHAUSTION', {'uptick_ratio_30': m['uptick_ratio_30']}
-        if m['uptick_ratio_30'] < (.62 if is_opening else .65):
+
+        # --- ROUTE B: FIRST PULLBACK SUPPORT RECOVERY ---
+        # Prior impulse rise >= 1.2% in 60s, healthy pullback to higher low, and price recovering
+        impulse_rise = m['p_max_60'] / m['p_min_60'] - 1
+        pullback_depth = 1.0 - m['p_min_30'] / m['p_max_60']
+        if (impulse_rise >= 0.012 and 0.005 <= pullback_depth <= 0.028 and m['p_min_30'] > m['p_min_60']
+                and t.price >= m['p_min_30'] + step and (t.price >= m.get('vwap_30', t.price) or m.get('uptick_ratio_10', 0.5) >= 0.45)
+                and t.ask <= m['p_max_60']):
+            return 'A', 'PULLBACK_SUPPORT_RECOVERY', {'entry_mode': 'PULLBACK_RECOVERY', 'support': m['p_min_30'], 'peak': m['p_max_60']}
+
+        # --- ROUTE A: EARLY COMPRESSION BREAKOUT ---
+        # Base compression <= 2.2% in 30s, breaking out at or above base high
+        base_range = (m['p_max_30'] - m['p_min_30']) / m['p_min_30']
+        if base_range <= 0.022 and t.price >= m['p_max_30'] - step:
+            if m.get('uptick_ratio_30', 0) >= 0.50 or m.get('uptick_ratio_10', 0.5) >= 0.50:
+                return 'A', 'EARLY_MOMENTUM_FLOW_PROXY', {'entry_mode': 'EARLY_BREAKOUT', 'support': m['p_min_30'], 'breakout': m['p_max_30']}
+
+        # Fallback standard checks
+        if m['uptick_ratio_30'] < .50:return 'B', 'EXTENDED_IMPULSE_MOMENTUM_EXHAUSTION', {'uptick_ratio_30': m['uptick_ratio_30']}
+        if m['uptick_ratio_30'] < (.58 if is_opening else .60):
             return 'C', 'INSUFFICIENT_UPTICK_DOMINANCE', {'uptick_ratio_30': m['uptick_ratio_30']}
         if t.price < m['p_max_30'] - step:return 'C', 'MICRO_BREAKOUT_NOT_AT_PEAK', {}
-        return 'A', 'EARLY_MOMENTUM_FLOW_PROXY', {}
+        return 'A', 'EARLY_MOMENTUM_FLOW_PROXY', {'entry_mode': 'SWING_BREAKOUT'}
 
     def _quote(self, t, now, quantity=1, side='BOTH'):
         at = stamp(getattr(t, 'time', None)); book = stamp(getattr(t, 'book_time', None)); age = getattr(self.cfg, 'stale_seconds', 5)
@@ -549,7 +564,7 @@ class FastMomentumStrategy:
             return 'FULL_QUANTITY_DEPTH_INSUFFICIENT'
         return None
 
-    def calculate_invalidation_and_target(self, t, m, watch, capital_limit=81300., risk_budget=1626., asof=None):
+    def calculate_invalidation_and_target(self, t, m, watch, capital_limit=81300., risk_budget=1626., asof=None, entry_mode=None, regime_details=None):
         reject = lambda reason, **extra: dict(**{'pass': False}, reason=reason, **extra)
         now = stamp(asof) if asof is not None else stamp(t.time)
         if now is None:return reject('DECISION_TIME_UNKNOWN')
@@ -557,8 +572,64 @@ class FastMomentumStrategy:
             return reject('AVAILABLE_CAPITAL_OR_RISK_UNKNOWN')
         reason = self._quote(t, now)
         if reason:return reject(reason)
+
         structure = self.get_tape(t.symbol).structure(now)
-        if not structure['pass']:return reject(structure['reason'], structure=structure)
+        if not structure['pass']:
+            if entry_mode == 'PULLBACK_RECOVERY' and regime_details and regime_details.get('support'):
+                support = regime_details['support']
+                peak = regime_details.get('peak', m.get('p_max_60'))
+                structure = {'pass': True, 'support': support, 'breakout': peak, 'basis': 'PULLBACK_SUPPORT_RECOVERY'}
+            else:
+                return reject(structure['reason'], structure=structure)
+
+        min_fraction = getattr(self.auto, 'min_stop_distance_fraction', None) or getattr(self.cfg, 'min_stop_distance_fraction', .012)
+        min_stop_distance_fraction = float(min_fraction)
+        step = tick_size(t.ask)
+        required_stop_ticks = max(1, round((t.ask * min_stop_distance_fraction) / step))
+        min_stop_distance_krw = required_stop_ticks * step
+
+        # --- ROUTE B: PULLBACK RECOVERY GEOMETRY ---
+        if (entry_mode == 'PULLBACK_RECOVERY' or t.ask < structure['breakout']) and t.price >= structure['support'] + step and t.ask < structure['breakout']:
+            support = structure['support']
+            breakout = structure['breakout']
+            entry = t.ask
+            overhead = watch.get('resistance') or watch.get('recent_high') or watch.get('daily_high_20d')
+            if number(overhead) and overhead > breakout:
+                target = floor_tick(min(overhead, breakout + 2.0 * max(step, breakout - support)))
+            else:
+                target = floor_tick(breakout)
+            if target <= entry:
+                target = floor_tick(entry + 2.0 * max(step, entry - support))
+            buffer = max(step, t.ask - t.bid, support * getattr(self.cfg, 'structural_buffer', .001))
+            stop = floor_tick(support - buffer)
+            if entry - stop < min_stop_distance_krw:
+                stop = floor_tick(entry - min_stop_distance_krw)
+            noise = max(step * 2, t.ask - t.bid)
+            emergency = floor_tick(stop - noise)
+            if not 0 < emergency < stop < entry < target:
+                return reject('INVALID_STRUCTURAL_PRICE_GEOMETRY')
+            entry_fill = entry * (1 + self.costs['entry_slippage'])
+            buy_outlay = entry_fill * (1 + self.costs['buy'])
+            sell_multiplier = (1 - self.costs['exit_slippage']) * (1 - self.costs['sell'] - self.costs['tax'])
+            reward = target * sell_multiplier - buy_outlay
+            risk = buy_outlay - emergency * sell_multiplier
+            net_rr = reward / risk if risk > 0 else None
+            minimum = getattr(self.cfg, 'min_reward_risk', 1.5)
+            if net_rr is None or net_rr < minimum:
+                return reject('NET_REWARD_RISK_LOW', min_net_rr=minimum, net_rr=net_rr)
+            risk_qty = math.floor(risk_budget / risk); cash_qty = math.floor(capital_limit / buy_outlay)
+            quantity = min(risk_qty, cash_qty)
+            if quantity <= 0:
+                return reject('RISK_ZERO_QUANTITY', max_shares_by_risk=risk_qty, max_shares_by_cap=cash_qty)
+            reason = self._quote(t, now, quantity)
+            if reason:return reject(reason, quantity=quantity)
+            struct_ev = {'pass': True, 'breakout': breakout, 'support': support, 'basis': 'PULLBACK_SUPPORT_RECOVERY'}
+            return dict(**{'pass': True}, entry=entry, stop=stop, emergency=emergency, target=target,
+                        net_rr=net_rr, gross_rr=(target-entry)/(entry-emergency),
+                        reward_net_per_share=reward, risk_net_per_share=risk, risk_budget=risk_budget,
+                        target_basis='PULLBACK_RECOVERY_SWING_PEAK', target_known_at=now.isoformat(),
+                        quantity=quantity, structural_evidence=struct_ev, entry_mode='PULLBACK_RECOVERY',
+                        costs=dict(self.costs), modeled_entry=entry_fill)
         entry = t.ask; breakout = structure['breakout']; support = structure['support']
         if t.price <= breakout:return reject('PREDECISION_REACTION_HIGH_NOT_BROKEN', structure=structure)
         if entry <= breakout:return reject('EXECUTABLE_ASK_NOT_ABOVE_BREAKOUT', structure=structure)
@@ -687,7 +758,7 @@ class FastMomentumStrategy:
             self._note(t, 'REJECT', 'OFF_SESSION',metrics=note_metrics,decision_at=now); return None
         regime, reason, details = self.classify_regime(t, m, phase, watch, asof=now)
         if regime != 'A':self._note(t, 'REJECT', reason, regime=regime, details=details,metrics=note_metrics,decision_at=now); return None
-        geometry = self.calculate_invalidation_and_target(t, m, watch, capital_limit, risk_budget, asof=now)
+        geometry = self.calculate_invalidation_and_target(t, m, watch, capital_limit, risk_budget, asof=now, entry_mode=details.get('entry_mode'), regime_details=details)
         if not geometry.get('pass'):
             self._note(t, 'UNKNOWN' if 'UNKNOWN' in geometry['reason'] or 'UNAVAILABLE' in geometry['reason'] else 'REJECT', geometry['reason'], geometry=geometry,metrics=note_metrics,decision_at=now)
             return None
