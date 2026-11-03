@@ -234,15 +234,20 @@ class HumanConsole:
     diagnostic={'ENTRY_EVAL','SHADOW_EVAL','POSITION_EVAL','EXIT_EVAL','RAW_CANDIDATES','BOOK_DEPTH_OBSERVED','CANDIDATE_CYCLE_SUMMARY','RADAR_UPDATED','CANDIDATE_LATENCY','ACCOUNT_LATENCY','OBSERVATION_RELEASED','OBSERVATION_REJOINED','SHADOW_CAPACITY','NO_TRADE'}
     def __init__(self):self.last={}
     def emit(self,row,stamp):
-        kind=row['event']
-        if kind not in self.diagnostic or row.get('signal_detected') or row.get('decision') in {'BUY','SELL'}:
-            print(json.dumps(row,ensure_ascii=False));return
-        signature=(row.get('state'),row.get('decision'),row.get('primary_reason_code') or row.get('reason'),row.get('protection'),row.get('quantity'),
-            tuple((k,v.get('result')) for k,v in (row.get('gates') or {}).items()),
-            tuple((t.get('setup'),tuple(t.get('failed_reasons') or [])) for t in row.get('setup_trials') or []),row.get('data_action'))
-        key=(kind,row.get('symbol'));prior=self.last.get(key)
-        if prior and prior[0]==signature and 0<=stamp-prior[1]<10:return
-        self.last[key]=(signature,stamp)
-        concise={k:row[k] for k in ('time','event','symbol','name','decision','primary_reason_code','reason','current_price','entry_price','invalidation','protection','quantity','data_action') if row.get(k) is not None}
-        concise['full_record']='events.jsonl (rotated records: archive/)'
-        print(json.dumps(concise,ensure_ascii=False))
+        try:
+            kind=row['event']
+            if kind not in self.diagnostic or row.get('signal_detected') or row.get('decision') in {'BUY','SELL'}:
+                try: print(json.dumps(row,ensure_ascii=False))
+                except (OSError, UnicodeError): pass
+                return
+            signature=(row.get('state'),row.get('decision'),row.get('primary_reason_code') or row.get('reason'),row.get('protection'),row.get('quantity'),
+                tuple((k,v.get('result')) for k,v in (row.get('gates') or {}).items()),
+                tuple((t.get('setup'),tuple(t.get('failed_reasons') or [])) for t in row.get('setup_trials') or []),row.get('data_action'))
+            key=(kind,row.get('symbol'));prior=self.last.get(key)
+            if prior and prior[0]==signature and 0<=stamp-prior[1]<10:return
+            self.last[key]=(signature,stamp)
+            concise={k:row[k] for k in ('time','event','symbol','name','decision','primary_reason_code','reason','current_price','entry_price','invalidation','protection','quantity','data_action') if row.get(k) is not None}
+            concise['full_record']='events.jsonl (rotated records: archive/)'
+            try: print(json.dumps(concise,ensure_ascii=False))
+            except (OSError, UnicodeError): pass
+        except Exception: pass

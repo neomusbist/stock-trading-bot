@@ -65,7 +65,7 @@ def recover_reviewed_halt(path,state,snapshot,stamp,reason,buffer_confirmation=N
     review=None
     if h==BUFFER_HALT and buffer_confirmation is not None:
         review=verify_buffer_incident(path,state,buffer_confirmation)
-    if not (review is not None or h in REVIEWABLE or h == DATA_EXIT_HALT or h in EXTERNAL_ORDER_HALTS or 'TypeError' in h or 'AttributeError' in h or 'PermissionError' in h):
+    if not (review is not None or h in REVIEWABLE or h == DATA_EXIT_HALT or h in EXTERNAL_ORDER_HALTS or 'TypeError' in h or 'AttributeError' in h or 'PermissionError' in h or 'OSError' in h):
         raise ValueError('HALT_REASON_REQUIRES_SEPARATE_REVIEW')
     if state.get('positions') or any(o['status'] not in TERMINAL for o in state['orders'].values()):
         raise ValueError('NON_FLAT_ORDER_LEDGER')
