@@ -97,5 +97,38 @@ class DongjinLateChasePreventionTests(unittest.TestCase):
         pc.merge_history('005290', bars, datetime(2026, 11, 3, 14, 20, 42, tzinfo=KST), 'KRX', session_high=39250.0)
         self.assertEqual(pc.day_high('005290'), 39250.0)
 
+    def test_no_synthetic_2r_target_fabricated_on_breakout(self):
+        # When breaking out without confirmed overhead resistance, do NOT fabricate 2R target
+        prices = [37000, 37300, 37600, 37900, 38100, 37500, 37650, 37800, 37950, 38100, 38150]
+        from datetime import timedelta
+        for i, p in enumerate(prices):
+            t = Tick(
+                symbol='005290', time=BASE_TIME + timedelta(seconds=i), price=float(p),
+                volume=1000, cumulative=100000 + i * 1000,
+                ask=float(p), bid=float(p - 50), regular=True, ask_qty=1000, bid_qty=1000,
+                depth_available=True, book_time=BASE_TIME + timedelta(seconds=i), depth_source='0D'
+            )
+            self.strategy.ingest_tick(t, t.time)
+
+        last_t = Tick(
+            symbol='005290', time=BASE_TIME + timedelta(seconds=len(prices)), price=38150.0,
+            volume=1000, cumulative=100000 + len(prices) * 1000,
+            ask=38150.0, bid=38100.0, regular=True, ask_qty=1000, bid_qty=1000,
+            depth_available=True, book_time=BASE_TIME + timedelta(seconds=len(prices)), depth_source='0D'
+        )
+        m = self.strategy.get_tape('005290').metrics(last_t.time)
+        # watch has NO known resistance or recent_high
+        watch = {
+            'code': '005290', 'name': '동진쎄미켐', 'status': 'WATCH',
+            'resistance': None, 'recent_high': None, 'daily_high_20d': None,
+        }
+        geo = self.strategy.calculate_invalidation_and_target(
+            last_t, m, watch, capital_limit=81300.0, risk_budget=1626.0, asof=last_t.time,
+            entry_mode='EARLY_BREAKOUT', regime_details={'entry_mode': 'EARLY_BREAKOUT'}
+        )
+        # Must reject with KNOWN_OVERHEAD_TARGET_UNAVAILABLE, NOT synthesize 2R target
+        self.assertFalse(geo['pass'])
+        self.assertEqual(geo['reason'], 'KNOWN_OVERHEAD_TARGET_UNAVAILABLE')
+
 if __name__ == '__main__':
     unittest.main()

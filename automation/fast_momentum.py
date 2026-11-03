@@ -649,9 +649,6 @@ class FastMomentumStrategy:
         if not number(overhead) or overhead <= entry or known_at is None or known_at > now or known_at.date() != now.date():
             return reject('KNOWN_OVERHEAD_TARGET_UNAVAILABLE', structure=structure)
 
-        base_range = max(0.0, breakout - support)
-        pattern_projection = floor_tick(breakout + 2.0 * base_range) if base_range > 0 else None
-
         intraday_ceiling = None
         ceiling_source = None
         intraday_cap = None
@@ -677,17 +674,9 @@ class FastMomentumStrategy:
             target = floor_tick(min(overhead, intraday_ceiling))
             target_basis = 'MIN_KNOWN_INTRADAY_CEILING_AND_DAILY_REFERENCE'
         else:
-            # When breaking through or clearing the observed intraday high,
-            # use the conservative 2R base projection if overhead came from distant unconfirmed daily_high_20d
-            has_explicit_resistance = number(watch.get('resistance')) and watch.get('resistance') > entry
-            if not has_explicit_resistance and pattern_projection and pattern_projection > entry and pattern_projection < overhead:
-                target = pattern_projection
-                ceiling_source = 'CONSERVATIVE_MEASURED_MOVE_PROJECTION'
-                target_basis = 'CONSERVATIVE_MEASURED_MOVE_PROJECTION'
-            else:
-                target = floor_tick(overhead)
-                ceiling_source = 'CONFIRMED_HIGHER_TIMEFRAME_RESISTANCE'
-                target_basis = 'CONFIRMED_HIGHER_TIMEFRAME_RESISTANCE'
+            target = floor_tick(overhead)
+            ceiling_source = 'CONFIRMED_HIGHER_TIMEFRAME_RESISTANCE'
+            target_basis = 'CONFIRMED_HIGHER_TIMEFRAME_RESISTANCE'
 
         if target <= entry:
             reason = 'KNOWN_CEILING_NET_REWARD_RISK_LOW' if (intraday_cap and target <= floor_tick(intraday_cap)) else 'NET_REWARD_RISK_LOW'
@@ -729,7 +718,7 @@ class FastMomentumStrategy:
             net_rr=net_rr, gross_rr=(target - entry) / (entry - emergency),
             reward_net_per_share=reward, risk_net_per_share=risk, risk_budget=risk_budget,
             target_basis=target_basis, target_known_at=target_known.isoformat(),
-            pattern_projection=pattern_projection,
+            pattern_projection=None,
             predecision_day_high=self.get_tape(t.symbol).metadata[-1].get('prior_observed_day_high') if self.get_tape(t.symbol).metadata else None,
             decision_trade_price=t.price,intraday_ceiling=intraday_ceiling,ceiling_source=ceiling_source,
             nearest_confirmed_peak=peak if intraday_cap else None,

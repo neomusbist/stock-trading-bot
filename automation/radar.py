@@ -20,7 +20,7 @@ FIELDS=('flu_rt','cntr_str','now_trde_qty','pred_trde_qty','exp_cntr_qty','trde_
 def early_surge_bonus(sources):
     row=sources.get('ka10023',{});values=row.get('values',{})
     gain=values.get('flu_rt');surge=values.get('sdnin_rt');rank=row.get('observed_rank')
-    return 10.5 if (type(gain) in (int,float) and .5<=gain<=6.5 and
+    return 10.5 if (type(gain) in (int,float) and -12.0<=gain<=15.0 and
         ((type(surge) in (int,float) and surge>=50) or (type(rank) is int and 1<=rank<=15))) else 0.
 
 def observation_structure(bars,price,cfg,day):
@@ -119,7 +119,7 @@ class DynamicRadar:
         self.capital_context={}
         self.momentum={}
         self.affordability_ms=0.
-        self.fallback_source1=fallback_source1 or getattr(auto,'watch_fallback_source1',False)
+        self.fallback_source1=fallback_source1 or getattr(auto,'watch_fallback_source1',False) or getattr(auto,'fallback_source1',False)
 
     def affordable(self,x):
         price=x.get('reference_price')
@@ -296,7 +296,10 @@ class RadarWorker:
                 first=row.get('first_raw_at') or row.get('discovery_context',{}).get('first_raw_at')
                 recent=0<=(now()-date_time.fromisoformat(first)).total_seconds()<=4*self.a.scan_seconds
             except (TypeError,ValueError):recent=False
-            rising_rank=any(type(d.get('values',{}).get('flu_rt')) in (float,int) and d['values']['flu_rt']>0 for d in row['source_details'].values())
+            rising_rank=any((type(d.get('values',{}).get('flu_rt')) in (float,int) and d['values']['flu_rt']>0) or
+                            (type(d.get('values',{}).get('sdnin_rt')) in (float,int) and d['values']['sdnin_rt']>=10.0) or
+                            (type(d.get('values',{}).get('base_comp_chgr')) in (float,int) and d['values']['base_comp_chgr']>0)
+                            for d in row['source_details'].values())
             multi_source=len(row.get('source_details',{}))>=2
             mom=getattr(self.radar,'momentum',{}).get(sym,{})
             shadow_ready=bool(mom.get('fast_signal_ready') or mom.get('tier') in (0,1,2))
