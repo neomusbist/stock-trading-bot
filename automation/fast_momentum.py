@@ -595,11 +595,11 @@ class FastMomentumStrategy:
             entry = t.ask
             overhead = watch.get('resistance') or watch.get('recent_high') or watch.get('daily_high_20d')
             if number(overhead) and overhead > breakout:
-                target = floor_tick(min(overhead, breakout + 2.0 * max(step, breakout - support)))
+                target = floor_tick(overhead)
             else:
                 target = floor_tick(breakout)
             if target <= entry:
-                target = floor_tick(entry + 2.0 * max(step, entry - support))
+                return reject('TARGET_BELOW_OR_AT_ENTRY', entry=entry, target=target)
             buffer = max(step, t.ask - t.bid, support * getattr(self.cfg, 'structural_buffer', .001))
             stop = floor_tick(support - buffer)
             if entry - stop < min_stop_distance_krw:
