@@ -79,7 +79,7 @@ class PriceContext:
         while len(self.rows)>self.limit:self.rows.popitem(last=False)
         return True
 
-    def merge_history(self,symbol,bars,received,venue):
+    def merge_history(self,symbol,bars,received,venue,session_high=None):
         """REST references do not populate Detector.history, buffers or observation_start."""
         if self.day!=received.date():self.rows.clear();self.day=received.date()
         prior=self.rows.get(symbol)
@@ -91,11 +91,17 @@ class PriceContext:
         for stamp in sorted(merged):self.record(symbol,merged[stamp],received)
         if symbol in self.rows:
             self.rows[symbol].update(context_venue=venue,history_received_at=received.isoformat())
+            if session_high is not None:
+                self.rows[symbol]['session_high']=session_high
 
     def day_high(self,symbol):
         row=self.rows.get(symbol)
-        if not row or not row.get('bars'):return None
-        return max((b['high'] for b in row['bars'] if b.get('high') is not None),default=None)
+        if not row:return None
+        bar_high=max((b['high'] for b in row.get('bars',[]) if b.get('high') is not None),default=None)
+        sess_high=row.get('session_high')
+        if sess_high is not None and bar_high is not None:
+            return max(sess_high,bar_high)
+        return sess_high if sess_high is not None else bar_high
 
     def reference_bars(self,symbol,asof,venue=None):
         row=self.rows.get(symbol) if self.day==asof.date() else None

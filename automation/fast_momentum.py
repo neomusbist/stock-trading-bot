@@ -593,13 +593,19 @@ class FastMomentumStrategy:
             support = structure['support']
             breakout = structure['breakout']
             entry = t.ask
-            overhead = watch.get('resistance') or watch.get('recent_high') or watch.get('daily_high_20d')
-            if number(overhead) and overhead > breakout:
+            # In pullback recovery below the swing peak, the swing peak (breakout) is the primary overhead ceiling.
+            # Do NOT leap over the unconfirmed swing peak to an unconfirmed 20-day daily high!
+            overhead = watch.get('resistance') or watch.get('recent_high')
+            if number(overhead) and entry < overhead < breakout:
                 target = floor_tick(overhead)
             else:
                 target = floor_tick(breakout)
             if target <= entry:
                 return reject('TARGET_BELOW_OR_AT_ENTRY', entry=entry, target=target)
+            min_headroom = max(0.012, min_stop_distance_fraction * 1.5)
+            if (target - entry) / entry < min_headroom:
+                return reject('INSUFFICIENT_ROOM_TO_RESISTANCE', entry=entry, target=target,
+                              room_pct=(target - entry) / entry, min_headroom=min_headroom)
             buffer = max(step, t.ask - t.bid, support * getattr(self.cfg, 'structural_buffer', .001))
             stop = floor_tick(support - buffer)
             if entry - stop < min_stop_distance_krw:
@@ -665,16 +671,23 @@ class FastMomentumStrategy:
                 intraday_ceiling = dh
                 ceiling_source = 'INTRADAY_DAY_HIGH'
 
+        min_headroom = max(0.012, min_stop_distance_fraction * 1.5)
         if intraday_ceiling is not None:
             intraday_cap = intraday_ceiling
             target = floor_tick(min(overhead, intraday_ceiling))
             target_basis = 'MIN_KNOWN_INTRADAY_CEILING_AND_DAILY_REFERENCE'
         else:
             # When breaking through or clearing the observed intraday high,
-            # target is grounded by confirmed higher-timeframe resistance (overhead).
-            target = floor_tick(overhead)
-            ceiling_source = 'CONFIRMED_HIGHER_TIMEFRAME_RESISTANCE'
-            target_basis = 'CONFIRMED_HIGHER_TIMEFRAME_RESISTANCE'
+            # use the conservative 2R base projection if overhead came from distant unconfirmed daily_high_20d
+            has_explicit_resistance = number(watch.get('resistance')) and watch.get('resistance') > entry
+            if not has_explicit_resistance and pattern_projection and pattern_projection > entry and pattern_projection < overhead:
+                target = pattern_projection
+                ceiling_source = 'CONSERVATIVE_MEASURED_MOVE_PROJECTION'
+                target_basis = 'CONSERVATIVE_MEASURED_MOVE_PROJECTION'
+            else:
+                target = floor_tick(overhead)
+                ceiling_source = 'CONFIRMED_HIGHER_TIMEFRAME_RESISTANCE'
+                target_basis = 'CONFIRMED_HIGHER_TIMEFRAME_RESISTANCE'
 
         if target <= entry:
             reason = 'KNOWN_CEILING_NET_REWARD_RISK_LOW' if (intraday_cap and target <= floor_tick(intraday_cap)) else 'NET_REWARD_RISK_LOW'

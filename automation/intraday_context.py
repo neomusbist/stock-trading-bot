@@ -54,8 +54,18 @@ class IntradayContextWorker:
         data=self.rest.query('ka10080',{'stk_cd':symbol+suffix,'tic_scope':'1','upd_stkpc_tp':'1'},path='/api/dostk/chart')
         received=self.clock()
         bars=parse_minutes(data,received,venue,symbol)
+        raw_rows=data.get('stk_min_pole_chart_qry') or []
+        today_str=received.strftime('%Y%m%d')
+        highs=[]
+        for r in raw_rows:
+            if str(r.get('cntr_tm','')).startswith(today_str):
+                try:
+                    h=number(r.get('high_pric'))
+                    if h>0:highs.append(h)
+                except Exception:pass
+        session_high=max(highs,default=None)
         return {'symbol':symbol,'venue':venue,'received_at':received.isoformat(),
-                'bars':bars,'source':'REST_REFERENCE',**({'error':'REFERENCE_NO_HISTORY'} if not bars else {})}
+                'bars':bars,'session_high':session_high,'source':'REST_REFERENCE',**({'error':'REFERENCE_NO_HISTORY'} if not bars else {})}
 
     def run(self):
         while not self.stop.is_set():

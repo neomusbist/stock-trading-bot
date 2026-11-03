@@ -599,7 +599,7 @@ def drain_intraday_context(engine,detector,shadow,worker,targets,venue,asof,chec
             for target in (detector,shadow_detector):
                 if target is None:continue
                 with target._state_lock:
-                    target.price_context.merge_history(sym,packet['bars'],received,venue)
+                    target.price_context.merge_history(sym,packet['bars'],received,venue,session_high=packet.get('session_high'))
                     row=target.price_context.rows.get(sym)
                     if row:
                         # PriceContext.record intentionally keeps only structural
