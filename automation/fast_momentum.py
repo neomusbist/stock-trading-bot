@@ -520,12 +520,34 @@ class FastMomentumStrategy:
         reference = watch.get('reference_price') or watch.get('first_raw_price')
         if number(reference) and reference > 0 and t.price < reference * .985 and m['p_max_60'] < reference * .990:
             return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'reference': reference}
+        # Session high / raw price drawdown check: stock in deep intraday decline
+        first_raw = watch.get('first_raw_price')
+        if number(first_raw) and first_raw > 0 and t.price < first_raw * 0.94:
+            return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'first_raw_price': first_raw, 'drawdown': 1 - t.price / first_raw}
+        day_h = watch.get('day_high')
+        if number(day_h) and day_h > 0 and t.price < day_h * 0.93:
+            return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'day_high': day_h, 'drawdown': 1 - t.price / day_h}
         # Drawdown check: sharp falling knife in the last 60 seconds of tape
         ref_high = m.get('p_max_60')
         if ref_high and ref_high > 0 and t.price < ref_high * .970:
             return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'peak_price': ref_high, 'drawdown': 1 - t.price / ref_high}
         extension = t.price / m['p_min_60'] - 1; limit = .035 if is_opening else .028
         if extension > limit:return 'B', 'EXTENDED_IMPULSE_CHASE_OVEREXTENDED', {'extension': extension}
+
+        # Check for Buying Climax / Volume Blow-off into highs:
+        # A sharp volume explosion in the final 10s at the high of an extended run indicates exhaustion / dump into liquidity.
+        turnover_10 = m.get('turnover_10', 0)
+        volume_10 = m.get('volume_10', 0)
+        volume_30 = m.get('volume_30', 0)
+        if turnover_10 >= 20000000. and volume_30 > 0:
+            vol_ratio_10 = volume_10 / volume_30
+            ext_60 = m.get('p_max_60', t.price) / m.get('p_min_60', t.price) - 1.0
+            if vol_ratio_10 >= 0.60 and t.price >= m.get('p_max_30', t.price) - step and ext_60 >= 0.015:
+                return 'B', 'BUYING_CLIMAX_VOLUME_EXHAUSTION', {
+                    'turnover_10': turnover_10,
+                    'volume_10_share': vol_ratio_10,
+                    'extension_60': ext_60
+                }
 
         # --- ROUTE B: FIRST PULLBACK SUPPORT RECOVERY ---
         # Prior impulse rise >= 1.2% in 60s, healthy pullback to higher low, and price recovering
@@ -538,8 +560,10 @@ class FastMomentumStrategy:
 
         # --- ROUTE A: EARLY COMPRESSION BREAKOUT ---
         # Base compression <= 2.2% in 30s, breaking out at or above base high
+        # Broader 60s window must also not be already overextended (ext_60 <= 0.022)
         base_range = (m['p_max_30'] - m['p_min_30']) / m['p_min_30']
-        if base_range <= 0.022 and t.price >= m['p_max_30'] - step:
+        ext_60 = (m['p_max_60'] - m['p_min_60']) / m['p_min_60']
+        if base_range <= 0.022 and ext_60 <= 0.022 and t.price >= m['p_max_30'] - step:
             if m.get('uptick_ratio_30', 0) >= 0.50 or m.get('uptick_ratio_10', 0.5) >= 0.50:
                 return 'A', 'EARLY_MOMENTUM_FLOW_PROXY', {'entry_mode': 'EARLY_BREAKOUT', 'support': m['p_min_30'], 'breakout': m['p_max_30']}
 
@@ -696,17 +720,29 @@ class FastMomentumStrategy:
         intraday_cap = None
 
         peak = active_confirmed_peak(watch, now)
-        if peak and number(peak.get('price')) and peak['price'] > entry:
-            intraday_ceiling = peak['price']
-            ceiling_source = 'CONFIRMED_SWING_PEAK'
+        if peak and number(peak.get('price')):
+            peak_price = peak['price']
+            if entry <= peak_price:
+                room = (peak_price - entry) / entry
+                if room < min_headroom:
+                    return reject('KNOWN_CEILING_NET_REWARD_RISK_LOW',
+                                  entry=entry, target=peak_price, room_pct=room,
+                                  min_headroom=min_headroom, nearest_confirmed_peak=peak,
+                                  intraday_cap=peak_price, ceiling_source='CONFIRMED_SWING_PEAK',
+                                  structure=structure)
+                intraday_ceiling = peak_price
+                ceiling_source = 'CONFIRMED_SWING_PEAK'
+            else:
+                # entry > peak_price: requires structural confirmation that peak was broken and held as support
+                confirmed_peak_support = (support >= peak_price - buffer and breakout > peak_price)
+                if not confirmed_peak_support:
+                    return reject('UNCONFIRMED_PEAK_BREAKOUT_HEADROOM_EXHAUSTED',
+                                  entry=entry, peak=peak_price, support=support,
+                                  min_required_support=peak_price - buffer, structure=structure)
 
         if intraday_ceiling is None:
             dh = watch.get('day_high') or self.day_high.get(t.symbol)
-            prior_dh = watch.get('prior_day_high') or self.prior_high.get(t.symbol)
-            if number(prior_dh) and prior_dh > entry:
-                intraday_ceiling = prior_dh
-                ceiling_source = 'INTRADAY_PRIOR_DAY_HIGH'
-            elif number(dh) and dh > entry:
+            if number(dh) and dh > entry:
                 intraday_ceiling = dh
                 ceiling_source = 'INTRADAY_DAY_HIGH'
 
