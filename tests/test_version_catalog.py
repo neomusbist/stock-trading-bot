@@ -28,7 +28,7 @@ class VersionCatalogTests(unittest.TestCase):
     def test_order_comes_from_explicit_registry_even_when_input_is_reversed(self):
         self.data['versions'].reverse()
         self.assertEqual([r['version'] for r in ordered_versions(self.data)],
-            ['v1.0','v1.1','v1.2','v1.3','v1.4','v1.5','v1.6','v1.7'])
+            ['v1.0','v1.1','v1.2','v1.3','v1.4','v1.5','v1.6','v1.7','v1.71'])
 
 
 if __name__=='__main__':unittest.main()

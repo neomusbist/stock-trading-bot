@@ -1,13 +1,13 @@
 {
   "schema": 1,
   "ordering": "EXPLICIT_ORDER_NOT_FLOAT_OR_STRING_SORT",
-  "current_release": "v1.7",
-  "next_patch": "v1.71",
+  "current_release": "v1.71",
+  "next_patch": "v1.72",
   "next_major": "v1.8",
-  "current_development": "v1.71",
+  "current_development": "v1.72",
   "development_status": "RELEASED",
   "development_branch": "research/r6-setup-a-rr-structure-20261102",
-  "development_sha": "781de402fbe78918fe7ff58306d5349c0fa8cc4b",
+  "development_sha": "68545c4541fc449fced1890ff703f8198971f024",
   "main_baseline_before_docs": "1bbb215e8c2cd4ab7f3c474d4d6e6555194cd507",
   "main_runtime_alignment": "PENDING_SEPARATE_APPROVAL_MAIN_CODE_NOT_CHANGED",
   "versions": [
@@ -111,6 +111,19 @@
       "deployment": "LIVE_CONFIRMED_20261103_154408",
       "status": "RELEASED",
       "runtime_source_fingerprint": "ab1548c2c22c82d534559c7edbe856b2147eb49927cb0ad4fc491b0fffc107a9"
+    },
+    {
+      "version": "v1.71",
+      "order": 8,
+      "sha": "68545c4541fc449fced1890ff703f8198971f024",
+      "source_date": "2026-11-04",
+      "summary": "미래산업·지니언스 실거래 결함 수정(저항선 무시 방지, 매수가-고점 일치 오류 교정, 5분 추세 문맥 연계, 순RR 게이트 복원) 안정성 패치",
+      "prerelease": false,
+      "legacy_build": "V1.6-risk2-daily4-fast-live-r6-integrated-20261020",
+      "release_url": "https://github.com/neomusbist/stock-trading-bot/releases/tag/v1.71",
+      "deployment": "LIVE_CONFIRMED_20261104",
+      "status": "RELEASED",
+      "runtime_source_fingerprint": "4a7a2bf984d86e6b69b207d34ebe76dd4b6a778bc9232345765d3194faf25fb2"
     }
   ]
 }
