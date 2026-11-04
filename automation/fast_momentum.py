@@ -520,13 +520,10 @@ class FastMomentumStrategy:
         reference = watch.get('reference_price') or watch.get('first_raw_price')
         if number(reference) and reference > 0 and t.price < reference * .985 and m['p_max_60'] < reference * .990:
             return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'reference': reference}
-        # Session high / raw price drawdown check: stock in deep intraday decline
-        first_raw = watch.get('first_raw_price')
-        if number(first_raw) and first_raw > 0 and t.price < first_raw * 0.94:
-            return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'first_raw_price': first_raw, 'drawdown': 1 - t.price / first_raw}
-        day_h = watch.get('day_high')
-        if number(day_h) and day_h > 0 and t.price < day_h * 0.93:
-            return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'day_high': day_h, 'drawdown': 1 - t.price / day_h}
+        # Multi-minute context: check completed trend if available, without assuming missing history
+        trend_5m = watch.get('trend_5m') or (watch.get('fast_context_snapshot') or {}).get('trend_5m')
+        if isinstance(trend_5m, dict) and trend_5m.get('status') == 'DOWN' and not trend_5m.get('higher_lows', False):
+            return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'trend_5m': trend_5m}
         # Drawdown check: sharp falling knife in the last 60 seconds of tape
         ref_high = m.get('p_max_60')
         if ref_high and ref_high > 0 and t.price < ref_high * .970:
@@ -534,19 +531,20 @@ class FastMomentumStrategy:
         extension = t.price / m['p_min_60'] - 1; limit = .035 if is_opening else .028
         if extension > limit:return 'B', 'EXTENDED_IMPULSE_CHASE_OVEREXTENDED', {'extension': extension}
 
-        # Check for Buying Climax / Volume Blow-off into highs:
-        # A sharp volume explosion in the final 10s at the high of an extended run indicates exhaustion / dump into liquidity.
+        # Observable volume exhaustion vs breakout:
+        # High volume is not inherently a defect. It is only an exhaustion when accompanied by observable
+        # price failure / rejection at the high (e.g. price dropping off 10s high or failing uptick dominance).
         turnover_10 = m.get('turnover_10', 0)
         volume_10 = m.get('volume_10', 0)
         volume_30 = m.get('volume_30', 0)
         if turnover_10 >= 20000000. and volume_30 > 0:
             vol_ratio_10 = volume_10 / volume_30
-            ext_60 = m.get('p_max_60', t.price) / m.get('p_min_60', t.price) - 1.0
-            if vol_ratio_10 >= 0.60 and t.price >= m.get('p_max_30', t.price) - step and ext_60 >= 0.015:
+            if vol_ratio_10 >= 0.60 and (t.price < m.get('p_max_10', t.price) - step or m.get('uptick_ratio_10', 0.5) < 0.40):
                 return 'B', 'BUYING_CLIMAX_VOLUME_EXHAUSTION', {
                     'turnover_10': turnover_10,
                     'volume_10_share': vol_ratio_10,
-                    'extension_60': ext_60
+                    'p_max_10': m.get('p_max_10', t.price),
+                    'price': t.price
                 }
 
         # --- ROUTE B: FIRST PULLBACK SUPPORT RECOVERY ---
@@ -560,10 +558,8 @@ class FastMomentumStrategy:
 
         # --- ROUTE A: EARLY COMPRESSION BREAKOUT ---
         # Base compression <= 2.2% in 30s, breaking out at or above base high
-        # Broader 60s window must also not be already overextended (ext_60 <= 0.022)
         base_range = (m['p_max_30'] - m['p_min_30']) / m['p_min_30']
-        ext_60 = (m['p_max_60'] - m['p_min_60']) / m['p_min_60']
-        if base_range <= 0.022 and ext_60 <= 0.022 and t.price >= m['p_max_30'] - step:
+        if base_range <= 0.022 and t.price >= m['p_max_30'] - step:
             if m.get('uptick_ratio_30', 0) >= 0.50 or m.get('uptick_ratio_10', 0.5) >= 0.50:
                 return 'A', 'EARLY_MOMENTUM_FLOW_PROXY', {'entry_mode': 'EARLY_BREAKOUT', 'support': m['p_min_30'], 'breakout': m['p_max_30']}
 
