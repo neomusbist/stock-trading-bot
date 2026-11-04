@@ -595,6 +595,13 @@ class FastMomentumStrategy:
             entry = t.ask
             # In pullback recovery below the swing peak, the swing peak (breakout) is the primary overhead ceiling.
             # Do NOT leap over the unconfirmed swing peak to an unconfirmed 20-day daily high!
+            buffer = max(step, t.ask - t.bid, support * getattr(self.cfg, 'structural_buffer', .001))
+            primary_res = watch.get('resistance')
+            if number(primary_res) and primary_res <= entry:
+                if support < primary_res - buffer:
+                    return reject('UNCONFIRMED_RESISTANCE_BREAKOUT_HEADROOM_EXHAUSTED',
+                                  entry=entry, resistance=primary_res, support=support,
+                                  min_required_support=primary_res - buffer, structure=structure)
             overhead = watch.get('resistance') or watch.get('recent_high')
             if number(overhead) and entry < overhead < breakout:
                 target = floor_tick(overhead)
@@ -606,7 +613,6 @@ class FastMomentumStrategy:
             if (target - entry) / entry < min_headroom:
                 return reject('INSUFFICIENT_ROOM_TO_RESISTANCE', entry=entry, target=target,
                               room_pct=(target - entry) / entry, min_headroom=min_headroom)
-            buffer = max(step, t.ask - t.bid, support * getattr(self.cfg, 'structural_buffer', .001))
             stop = floor_tick(support - buffer)
             if entry - stop < min_stop_distance_krw:
                 stop = floor_tick(entry - min_stop_distance_krw)
@@ -641,11 +647,47 @@ class FastMomentumStrategy:
         if entry <= breakout:return reject('EXECUTABLE_ASK_NOT_ABOVE_BREAKOUT', structure=structure)
         max_chase = getattr(self.cfg, 'max_chase', .005)
         if entry / breakout - 1 > max_chase:return reject('MAX_CHASE_EXCEEDED', breakout=breakout, entry=entry, max_chase=max_chase)
-        overhead = watch.get('resistance'); known_at = stamp(watch.get('resistance_asof') or watch.get('observed_at'))
-        if not (number(overhead) and overhead > entry):
-            next_res = watch.get('recent_high') or watch.get('daily_high_20d')
-            if number(next_res) and next_res > entry:
-                overhead = next_res
+        min_headroom = max(0.012, min_stop_distance_fraction * 1.5)
+        pullback_depth = max(0., breakout - support)
+        min_pullback_room = min(max(0., support - structure['origin'] - tick_size(support)), tick_size(support)) if pullback_depth <= tick_size(support) else 0.
+        buffer = max(tick_size(support), t.ask - t.bid, support * getattr(self.cfg, 'structural_buffer', .001)) + min_pullback_room
+
+        primary_res = watch.get('resistance')
+        known_at = stamp(watch.get('resistance_asof') or watch.get('observed_at'))
+        if number(primary_res):
+            if entry < primary_res:
+                room = (primary_res - entry) / entry
+                if room < min_headroom:
+                    return reject('INSUFFICIENT_ROOM_TO_RESISTANCE', entry=entry, target=primary_res,
+                                  room_pct=room, min_headroom=min_headroom, structure=structure)
+                overhead = primary_res
+            else:
+                # entry >= primary_res: require structural confirmation that primary resistance was broken and supported
+                # A simple 1-tick poke or unconfirmed impulse with support below primary_res is NOT a confirmed breakout.
+                confirmed_breakout_support = (support >= primary_res - buffer and breakout > primary_res)
+                if not confirmed_breakout_support:
+                    return reject('UNCONFIRMED_RESISTANCE_BREAKOUT_HEADROOM_EXHAUSTED',
+                                  entry=entry, resistance=primary_res, support=support,
+                                  min_required_support=primary_res - buffer, structure=structure)
+                next_res = watch.get('recent_high') or watch.get('daily_high_20d')
+                if number(next_res) and next_res > entry:
+                    next_room = (next_res - entry) / entry
+                    if next_room < min_headroom:
+                        return reject('INSUFFICIENT_ROOM_TO_NEXT_RESISTANCE', entry=entry, target=next_res,
+                                      room_pct=next_room, min_headroom=min_headroom, structure=structure)
+                    overhead = next_res
+                else:
+                    return reject('NO_VALID_NEXT_RESISTANCE_ABOVE_BREAKOUT',
+                                  entry=entry, broken_resistance=primary_res, structure=structure)
+        else:
+            overhead = watch.get('recent_high') or watch.get('daily_high_20d')
+            if not (number(overhead) and overhead > entry):
+                return reject('KNOWN_OVERHEAD_TARGET_UNAVAILABLE', structure=structure)
+            room = (overhead - entry) / entry
+            if room < min_headroom:
+                return reject('INSUFFICIENT_ROOM_TO_RESISTANCE', entry=entry, target=overhead,
+                              room_pct=room, min_headroom=min_headroom, structure=structure)
+
         if not number(overhead) or overhead <= entry or known_at is None or known_at > now or known_at.date() != now.date():
             return reject('KNOWN_OVERHEAD_TARGET_UNAVAILABLE', structure=structure)
 
@@ -668,7 +710,6 @@ class FastMomentumStrategy:
                 intraday_ceiling = dh
                 ceiling_source = 'INTRADAY_DAY_HIGH'
 
-        min_headroom = max(0.012, min_stop_distance_fraction * 1.5)
         if intraday_ceiling is not None:
             intraday_cap = intraday_ceiling
             target = floor_tick(min(overhead, intraday_ceiling))
@@ -678,14 +719,13 @@ class FastMomentumStrategy:
             ceiling_source = 'CONFIRMED_HIGHER_TIMEFRAME_RESISTANCE'
             target_basis = 'CONFIRMED_HIGHER_TIMEFRAME_RESISTANCE'
 
-        if target <= entry:
-            reason = 'KNOWN_CEILING_NET_REWARD_RISK_LOW' if (intraday_cap and target <= floor_tick(intraday_cap)) else 'NET_REWARD_RISK_LOW'
-            return reject(reason, entry=entry, target=target, nearest_confirmed_peak=peak if intraday_cap else None, intraday_cap=intraday_cap, ceiling_source=ceiling_source, structure=structure)
+        if target <= entry or (target - entry) / entry < min_headroom:
+            reason = 'KNOWN_CEILING_NET_REWARD_RISK_LOW' if (intraday_cap and target <= floor_tick(intraday_cap)) else 'INSUFFICIENT_ROOM_TO_RESISTANCE'
+            return reject(reason, entry=entry, target=target, room_pct=(target - entry) / entry,
+                          min_headroom=min_headroom, nearest_confirmed_peak=peak if intraday_cap else None,
+                          intraday_cap=intraday_cap, ceiling_source=ceiling_source, structure=structure)
         # Never move a structural line to a fixed percentage or solve a target
         # backwards from desired RR. Size from the separately derived hard line.
-        pullback_depth = max(0., breakout - support)
-        min_pullback_room = min(max(0., support - structure['origin'] - tick_size(support)), tick_size(support)) if pullback_depth <= tick_size(support) else 0.
-        buffer = max(tick_size(support), t.ask - t.bid, support * getattr(self.cfg, 'structural_buffer', .001)) + min_pullback_room
         stop = floor_tick(support - buffer)
         noise = max(structure['observed_noise'], t.ask - t.bid, 2 * tick_size(support))
         emergency = floor_tick(stop - noise)

@@ -387,7 +387,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
             'tick':gate(tick.regular and timing['fresh'],lag=timing['exchange_age_seconds'],regular=tick.regular,stale_limit=self.c.stale_seconds,timing=timing),
             'repeat_slots':gate(not self.entry_failure(sym) and not self.active_orders(sym) and sym not in self.s['positions'] and sym not in self.s['excluded'] and (self.c.max_entries_per_symbol is None or self.s['entries'].get(sym,0)<self.c.max_entries_per_symbol) and self.entry_slots_available() and len(set(self.s['positions'])|{o['symbol'] for o in buys})<effective_max_pos,entries=self.s['entries'].get(sym,0),symbol_entry_limit=self.c.max_entries_per_symbol,consecutive_losses=self.s['automation']['consecutive_losses'],consecutive_loss_limit=self.a.max_consecutive_losses,daily_entries=sum(self.s['entries'].values()),daily_entry_limit=self.c.max_entries_per_day,daily_entry_limit_enabled=self.c.max_entries_per_day is not None,daily_entry_limit_pass=self.entry_slots_available(),reserved_entry_slots=self.pending_entry_lifecycles(),entry_count_basis=self.s.get('entry_count_basis'),failure_latch=self.entry_failure(sym),slots=len(set(self.s['positions'])|{o['symbol'] for o in buys})),
             'risk_quantity':gate(qty>0,**sizing,equity=equity,remaining_risk=remaining,reserved_cash=reserved,book_cash=self.s['cash'],actual_cash=self.available_cash,entry=signal['limit'],stop=signal['stop'],risk_fraction=self.c.risk_fraction,max_daily_loss_fraction=self.c.max_daily_loss_fraction,allowed_risk_krw=equity*self.c.risk_fraction,remaining_daily_risk_krw=max(0,remaining)),
-            'efficiency':gate(signal.get('efficiency',{}).get('decision')=='TRADE',efficiency=signal.get('efficiency'))}
+            'efficiency':gate(signal.get('efficiency',{}).get('decision')=='TRADE' and (signal.get('net_reward_risk') or 0) >= getattr(self.c, 'min_reward_risk', 1.5),efficiency=signal.get('efficiency'),net_rr=signal.get('net_reward_risk'),min_required=getattr(self.c, 'min_reward_risk', 1.5))}
 
     def entry_market_reason(self,signal,quantity,fallback=None,phase='PRE_INTENT'):
         c2_verified=False
@@ -414,7 +414,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
                 return 'CRITICAL_LOW_DISK_SPACE'
         except Exception:
             return 'CRITICAL_LOW_DISK_SPACE'
-        if (self.a.exit_plan_reward_guard_enabled or signal.get('pattern') in {'A','B','C','D','E','E2'}) and hasattr(self, 'c') and all(signal.get(k) is not None for k in ('limit', 'stop', 'target')):
+        if (self.a.exit_plan_reward_guard_enabled or signal.get('pattern') in {'A','B','C','D','E','E2','FAST'}) and hasattr(self, 'c') and all(signal.get(k) is not None for k in ('limit', 'stop', 'target')):
             from automation.exit_plan import build_plan
             signal['exit_plan']=build_plan(self.c,self.a,signal,quantity=quantity)
             if not signal['exit_plan']['reward_guard_pass']:return 'EXIT_PLAN_REWARD_UNKNOWN_OR_LOW'
