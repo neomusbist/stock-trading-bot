@@ -148,6 +148,54 @@ class TestClassicsRiskSizer(unittest.TestCase):
         self.assertEqual(reason, 'RISK_ZERO_QUANTITY')
         self.assertEqual(data['quantity'], 0)
 
+    def test_daily_risk_budget_exhausted_rejects_new_trade(self):
+        bars = [
+            make_mock_bar("09:01:00", 10000, 10050, 9950, 10000, 5000),
+            make_mock_bar("09:02:00", 10000, 10060, 9960, 10020, 6000),
+        ]
+        economics = {
+            'risk_net_per_share': 330.0,
+            'buy_outlay': 10010.0
+        }
+        # When daily risk budget is exhausted (0 or negative)
+        passed, reason, data = self.sizer.evaluate_stop_and_size(
+            entry=10000,
+            structural_stop=9700,
+            bars=bars,
+            equity=10000000,
+            capital_limit=5000000,
+            economics=economics,
+            remaining_daily_risk=0.0
+        )
+        self.assertFalse(passed)
+        self.assertEqual(reason, 'DAILY_RISK_BUDGET_EXHAUSTED')
+        self.assertEqual(data['quantity'], 0)
+
+    def test_daily_risk_budget_restricts_shares(self):
+        bars = [
+            make_mock_bar("09:01:00", 10000, 10050, 9950, 10000, 5000),
+            make_mock_bar("09:02:00", 10000, 10060, 9960, 10020, 6000),
+        ]
+        economics = {
+            'risk_net_per_share': 330.0,
+            'buy_outlay': 10010.0
+        }
+        # Remaining daily risk is only 660 KRW (enough for floor(660 / 330) = 2 shares)
+        # Even though 2% equity risk is 200,000 KRW (606 shares)
+        passed, reason, data = self.sizer.evaluate_stop_and_size(
+            entry=10000,
+            structural_stop=9700,
+            bars=bars,
+            equity=10000000,
+            capital_limit=5000000,
+            economics=economics,
+            remaining_daily_risk=660.0
+        )
+        self.assertTrue(passed)
+        self.assertEqual(reason, 'PASS')
+        self.assertEqual(data['quantity'], 2)
+        self.assertEqual(data['shares_by_risk'], 2)
+
 
 class TestClassicsBreakoutStrategy(unittest.TestCase):
     def setUp(self):

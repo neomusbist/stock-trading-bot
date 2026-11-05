@@ -169,7 +169,8 @@ class ClassicsRiskSizer:
         bars: List[Dict[str, Any]],
         equity: float,
         capital_limit: float,
-        economics: Dict[str, Any]
+        economics: Dict[str, Any],
+        remaining_daily_risk: Optional[float] = None
     ) -> Tuple[bool, str, Dict[str, Any]]:
         step = tick_size(entry)
         atr = self.calculate_atr(bars)
@@ -194,8 +195,18 @@ class ClassicsRiskSizer:
         if risk_net <= 0 or buy_outlay <= 0:
             return False, 'INVALID_COST_VALUATION', {'risk_net': risk_net, 'buy_outlay': buy_outlay}
 
-        # 2% Risk Budget
+        # 2% Risk Budget, strictly capped by remaining daily risk
         risk_budget = equity * self.risk_fraction
+        if remaining_daily_risk is not None:
+            if remaining_daily_risk <= 0:
+                return False, 'DAILY_RISK_BUDGET_EXHAUSTED', {
+                    'quantity': 0,
+                    'remaining_daily_risk': remaining_daily_risk,
+                    'risk_budget': 0.0,
+                    'capital_limit': capital_limit
+                }
+            risk_budget = min(risk_budget, remaining_daily_risk)
+
         shares_by_risk = math.floor(risk_budget / risk_net)
         shares_by_cap = math.floor(capital_limit / buy_outlay)
 
@@ -207,7 +218,8 @@ class ClassicsRiskSizer:
                 'shares_by_risk': shares_by_risk,
                 'shares_by_cap': shares_by_cap,
                 'risk_budget': risk_budget,
-                'capital_limit': capital_limit
+                'capital_limit': capital_limit,
+                'remaining_daily_risk': remaining_daily_risk
             }
 
         return True, 'PASS', {
@@ -455,7 +467,8 @@ class ClassicsStrategyEngine:
         bars: List[Dict[str, Any]],
         watch: Optional[Dict[str, Any]] = None,
         equity: Optional[float] = None,
-        capital_limit: Optional[float] = None
+        capital_limit: Optional[float] = None,
+        remaining_daily_risk: Optional[float] = None
     ) -> Tuple[Optional[Dict[str, Any]], str, Dict[str, Any]]:
         eq = equity if equity is not None else self.equity
         cap = capital_limit if capital_limit is not None else self.capital_limit
@@ -510,7 +523,8 @@ class ClassicsStrategyEngine:
             bars=bars,
             equity=eq,
             capital_limit=cap,
-            economics=econ_data
+            economics=econ_data,
+            remaining_daily_risk=remaining_daily_risk
         )
         if not size_pass:
             return None, size_reason, {**chosen_setup, **econ_data, **size_data}

@@ -120,6 +120,19 @@ class RealisticPosition:
         self.cash_recovered = 0.0
         self.net_pnl = 0.0
         self.return_pct = 0.0
+        self.verification_tier = signal.get('verification_tier', 'Tier-1')
+
+    @property
+    def potential_risk(self) -> float:
+        """Potential loss in KRW if stop is triggered, including fees and slippage."""
+        if self.is_closed:
+            return 0.0
+        exit_slip = DEFAULT_COSTS.get('exit_slippage', 0.0005)
+        sell_fee = DEFAULT_COSTS.get('sell', 0.00015)
+        tax = DEFAULT_COSTS.get('tax', 0.0018)
+        exit_fill = self.stop * (1.0 - exit_slip)
+        net_proceeds = self.quantity * exit_fill * (1.0 - sell_fee - tax)
+        return max(0.0, self.cash_spent - net_proceeds)
 
     def update_tick(self, bid: float, ask: float, price: float, current_time: datetime) -> Optional[Tuple[float, str]]:
         if self.is_closed:
@@ -274,8 +287,10 @@ def run_realistic_replay(
                 if dt.strftime('%H:%M:%S') >= '15:05:00':
                     continue
 
-                # Check daily risk limit
-                if daily_loss_accumulated >= daily_risk_limit:
+                # Check daily risk limit (including risk_used of currently active positions)
+                active_risk = sum(p.potential_risk for p in active_positions.values())
+                remaining_risk = max(0.0, daily_risk_limit - daily_loss_accumulated - active_risk)
+                if remaining_risk <= 0:
                     continue
 
                 # Must have quotes, not already held, concurrent positions < 2
@@ -305,13 +320,14 @@ def run_realistic_replay(
                             bars=bars,
                             watch={'name': sym},
                             equity=equity,
-                            capital_limit=cash  # Strictly bounded by currently available cash!
+                            capital_limit=cash,  # Strictly bounded by currently available cash!
+                            remaining_daily_risk=remaining_risk
                         )
 
                         if sig is None:
                             continue
 
-                        # Sizing verification under real cash constraint
+                        # Sizing verification under real cash constraint and remaining risk
                         raw_qty = sig['quantity']
                         quoted_ask = float(ask)
                         entry_slip = DEFAULT_COSTS.get('entry_slippage', 0.0005)
@@ -321,9 +337,10 @@ def run_realistic_replay(
 
                         # Maximum integer shares affordable with remaining cash
                         max_affordable_shares = math.floor(cash / cost_per_share)
-                        # Maximum shares affordable by 2% risk rule
+                        # Maximum shares affordable by 2% trade risk and remaining daily risk
                         risk_per_share = data.get('risk_net_per_share', cost_per_share - sig['stop'])
-                        max_risk_shares = math.floor(max_risk_per_trade / risk_per_share) if risk_per_share > 0 else 0
+                        effective_risk_budget = min(max_risk_per_trade, remaining_risk)
+                        max_risk_shares = math.floor(effective_risk_budget / risk_per_share) if risk_per_share > 0 else 0
 
                         actual_qty = min(raw_qty, max_affordable_shares, max_risk_shares)
 
@@ -349,6 +366,15 @@ def run_realistic_replay(
                         cash_spent = actual_qty * cost_per_share
                         cash -= cash_spent
 
+                        # Determine Verification Tier based on quote depth
+                        if depth_avail and ask_qty is not None and ask_qty >= actual_qty:
+                            v_tier = 'Tier-1 (Raw Depth Verified)'
+                        elif depth_avail and ask_qty is not None:
+                            v_tier = 'Tier-2 (Partial Depth)'
+                        else:
+                            v_tier = 'Tier-3 (Raw Depth Unverified - Book Mismatch or Unavailable)'
+                        sig['verification_tier'] = v_tier
+
                         pos = RealisticPosition(
                             signal=sig,
                             entry_time=dt,
@@ -358,9 +384,9 @@ def run_realistic_replay(
                         )
                         active_positions[sym] = pos
                         positions.append(pos)
-                        print(f"    [REAL BUY EXECUTED] {dt.strftime('%H:%M:%S')} {sym} ({sig['strategy']}): "
+                        print(f"    [REAL BUY EXECUTED] {dt.strftime('%H:%M:%S')} {sym} ({sig['strategy']}) [{v_tier}]: "
                               f"QuotedAsk={quoted_ask:,} FillAsk={fill_ask:,.1f} Stop={sig['stop']:,} Target={sig['target']:,} "
-                              f"Qty={actual_qty}주 Spent={cash_spent:,.0f} KRW (Remaining Cash={cash:,.0f} KRW)")
+                              f"Qty={actual_qty}주 Spent={cash_spent:,.0f} KRW (Remaining Cash={cash:,.0f} KRW, Remaining Risk={remaining_risk:,.0f} KRW)")
 
     # Close any remaining open positions at the end of data (mark-to-market using last known bid/price)
     for active_sym, active_pos in list(active_positions.items()):
@@ -425,7 +451,8 @@ def run_realistic_replay(
                 'return_pct': p.return_pct * 100.0,
                 'exit_reason': p.exit_reason,
                 'mfe': p.mfe_price,
-                'mae': p.mae_price
+                'mae': p.mae_price,
+                'verification_tier': p.verification_tier
             }
             for p in positions
         ],
