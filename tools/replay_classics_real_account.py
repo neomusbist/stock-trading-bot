@@ -39,6 +39,25 @@ def parse_iso(ts_str: str) -> Optional[datetime]:
         return None
 
 
+def executable_quote(tick, symbol, at, quantity, side):
+    """Return same-symbol sized L1 only when its receipt time is known and fresh."""
+    if tick.get('symbol') != symbol or tick.get('depth_available') is not True:
+        return None
+    book_at = parse_iso(tick.get('book_received_at'))
+    try:
+        price = float(tick.get(side) or 0)
+        depth = int(tick.get(side + '_qty') or 0)
+        age = (at - book_at).total_seconds() if book_at else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if age is None or not 0 <= age <= 5 or price <= 0 or depth < quantity:
+        return None
+    return price
+
+def executable_bid(tick, symbol, at, quantity):
+    return executable_quote(tick, symbol, at, quantity, 'bid')
+
+
 class CandleAggregator:
     """Aggregates real-time ticks into completed 1-minute bars."""
 
@@ -142,8 +161,8 @@ class RealisticPosition:
         self.mae_price = min(self.mae_price, price, bid)
 
         # Target Check (executed against Ask/Trade reaching target)
-        if price >= self.target or bid >= self.target:
-            return self.target, 'TARGET_REACHED'
+        if bid >= self.target:
+            return bid, 'TARGET_REACHED'
 
         # Elder Trailing Stop Update
         trailing = ClassicsRiskSizer.calculate_trailing_stop(self.fill_ask, self.stop, self.mfe_price, DEFAULT_COSTS)
@@ -201,6 +220,10 @@ def run_realistic_replay(
     last_known_prices: Dict[str, float] = {}
     last_known_bids: Dict[str, float] = {}
     last_timestamp: Optional[datetime] = None
+    last_receipt: Optional[datetime] = None
+    last_exchange_by_symbol: Dict[str, datetime] = {}
+    skipped_unordered_or_missing_receipt = 0
+    skipped_out_of_order_exchange = 0
 
     total_ticks = 0
     signals_evaluated = 0
@@ -242,6 +265,28 @@ def run_realistic_replay(
                 if not sym or price is None or dt is None:
                     continue
 
+                receipt = parse_iso(tick.get('receiver_at') or tick.get('received'))
+                try:
+                    invalid_receipt = receipt is None or (last_receipt is not None and receipt < last_receipt)
+                except TypeError:
+                    invalid_receipt = True
+                if invalid_receipt:
+                    skipped_unordered_or_missing_receipt += 1
+                    continue
+                last_receipt = receipt
+                exchange_dt = dt
+                previous_exchange = last_exchange_by_symbol.get(sym)
+                try:
+                    if exchange_dt > receipt or (previous_exchange is not None and exchange_dt < previous_exchange):
+                        skipped_out_of_order_exchange += 1
+                        continue
+                except TypeError:
+                    skipped_out_of_order_exchange += 1
+                    continue
+                last_exchange_by_symbol[sym] = exchange_dt
+                # Decisions cannot occur before the local receiver saw the event.
+                dt = receipt
+
                 total_ticks += 1
                 last_timestamp = dt
                 last_known_prices[sym] = float(price)
@@ -253,7 +298,9 @@ def run_realistic_replay(
                 # 1. Update Existing Active Positions
                 if sym in active_positions:
                     pos = active_positions[sym]
-                    exit_res = pos.update_tick(bid=float(bid or price), ask=float(ask or price), price=float(price), current_time=dt)
+                    receipt = parse_iso(tick.get('receiver_at') or tick.get('received'))
+                    eligible_bid = executable_bid(tick, sym, receipt, pos.quantity) if receipt else None
+                    exit_res = pos.update_tick(bid=eligible_bid, ask=float(ask or price), price=float(price), current_time=dt) if eligible_bid is not None else None
                     if exit_res is not None:
                         exit_price, exit_reason = exit_res
                         # Check depth on exit if available
@@ -271,8 +318,11 @@ def run_realistic_replay(
                 # 2. Check 15:10 Force Flatten Cutoff
                 if dt.strftime('%H:%M:%S') >= '15:10:00':
                     for active_sym, active_pos in list(active_positions.items()):
-                        exit_p = last_known_bids.get(active_sym, last_known_prices.get(active_sym, active_pos.fill_ask))
-                        rec = active_pos.close(exit_p, 'FORCE_FLATTEN_1510', dt)
+                        receipt = parse_iso(tick.get('receiver_at') or tick.get('received'))
+                        exit_bid = executable_bid(tick, active_sym, receipt, active_pos.quantity) if receipt else None
+                        if exit_bid is None:
+                            continue
+                        rec = active_pos.close(exit_bid, 'FORCE_FLATTEN_1510', dt)
                         cash += rec
                         pnl = active_pos.net_pnl
                         if pnl < 0:
@@ -349,6 +399,11 @@ def run_realistic_replay(
                         if depth_avail and ask_qty is not None and ask_qty < actual_qty:
                             actual_qty = int(ask_qty)
 
+                        if actual_qty > 0 and executable_quote(tick, sym, receipt, actual_qty, 'ask') is None:
+                            rejected_signals.append({'time': receipt.isoformat(), 'symbol': sym,
+                                                     'reason': 'UNKNOWN_FRESH_ASK_DEPTH'})
+                            continue
+
                         if actual_qty <= 0:
                             reject_reason = 'INSUFFICIENT_CASH' if max_affordable_shares <= 0 else 'RISK_BUDGET_EXCEEDED'
                             rejected_signals.append({
@@ -385,35 +440,25 @@ def run_realistic_replay(
                         )
                         active_positions[sym] = pos
                         positions.append(pos)
-                        print(f"    [REAL BUY EXECUTED] {dt.strftime('%H:%M:%S')} {sym} ({sig['strategy']}) [{v_tier}]: "
+                        print(f"    [SIMULATED BUY] {dt.strftime('%H:%M:%S')} {sym} ({sig['strategy']}) [{v_tier}]: "
                               f"QuotedAsk={quoted_ask:,} FillAsk={fill_ask:,.1f} Stop={sig['stop']:,} Target={sig['target']:,} "
                               f"Qty={actual_qty}주 Spent={cash_spent:,.0f} KRW (Remaining Cash={cash:,.0f} KRW, Remaining Risk={remaining_risk:,.0f} KRW)")
 
-    # Close any remaining open positions at the end of data (mark-to-market using last known bid/price)
-    for active_sym, active_pos in list(active_positions.items()):
-        exit_p = last_known_bids.get(active_sym, last_known_prices.get(active_sym, active_pos.fill_ask))
-        rec = active_pos.close(exit_p, 'END_OF_DATA_MARK_TO_MARKET', last_timestamp or datetime.now())
-        cash += rec
-        pnl = active_pos.net_pnl
-        if pnl < 0:
-            daily_loss_accumulated += abs(pnl)
-        print(f"    [END OF DATA CLOSE] {last_timestamp.strftime('%H:%M:%S') if last_timestamp else ''} {active_sym}: "
-              f"Exit={exit_p:,} Return={active_pos.return_pct*100:+.2f}% "
-              f"Net PnL={pnl:+,.0f} KRW (Cash Now={cash:,.0f} KRW)")
-        del active_positions[active_sym]
+    # An open position without an executable quote remains UNKNOWN, not a fill.
 
     # Final Summary Calculation
-    total_trades = len(positions)
-    win_trades = [p for p in positions if p.net_pnl > 0]
-    loss_trades = [p for p in positions if p.net_pnl <= 0]
+    closed_positions = [p for p in positions if p.is_closed]
+    total_trades = len(closed_positions)
+    win_trades = [p for p in closed_positions if p.net_pnl > 0]
+    loss_trades = [p for p in closed_positions if p.net_pnl <= 0]
 
     win_rate = (len(win_trades) / total_trades) if total_trades > 0 else 0.0
-    total_net_pnl = sum(p.net_pnl for p in positions)
+    total_net_pnl = sum(p.net_pnl for p in closed_positions)
     gross_profits = sum(p.net_pnl for p in win_trades)
     gross_losses = abs(sum(p.net_pnl for p in loss_trades))
     profit_factor = (gross_profits / gross_losses) if gross_losses > 0 else (99.0 if gross_profits > 0 else 0.0)
     avg_pnl = (total_net_pnl / total_trades) if total_trades > 0 else 0.0
-    max_loss = min([p.net_pnl for p in positions], default=0.0)
+    max_loss = min([p.net_pnl for p in closed_positions], default=0.0)
 
     summary = {
         'scenario': scenario_label,
@@ -426,10 +471,15 @@ def run_realistic_replay(
         'signals_evaluated': signals_evaluated,
         'rejected_signals_count': len(rejected_signals),
         'total_trades': total_trades,
+        'open_positions_unknown': len(active_positions),
+        'execution_performance': 'UNKNOWN',
+        'skipped_unordered_or_missing_receipt': skipped_unordered_or_missing_receipt,
+        'skipped_out_of_order_exchange': skipped_out_of_order_exchange,
         'win_trades': len(win_trades),
         'loss_trades': len(loss_trades),
         'win_rate_pct': win_rate * 100.0,
-        'total_net_pnl_krw': total_net_pnl,
+        'total_net_pnl_krw': None if active_positions or skipped_unordered_or_missing_receipt or skipped_out_of_order_exchange else total_net_pnl,
+        'observed_closed_simulated_pnl_krw': total_net_pnl,
         'profit_factor': profit_factor,
         'average_pnl_krw': avg_pnl,
         'max_loss_krw': max_loss,
@@ -448,8 +498,8 @@ def run_realistic_replay(
                 'quantity': p.quantity,
                 'cash_spent': p.cash_spent,
                 'cash_recovered': p.cash_recovered,
-                'net_pnl': p.net_pnl,
-                'return_pct': p.return_pct * 100.0,
+                'net_pnl': p.net_pnl if p.is_closed else None,
+                'return_pct': p.return_pct * 100.0 if p.is_closed else None,
                 'exit_reason': p.exit_reason,
                 'mfe': p.mfe_price,
                 'mae': p.mae_price,
@@ -463,7 +513,7 @@ def run_realistic_replay(
     print("\n--- SUMMARY FOR SCENARIO:", scenario_label, "---")
     print(f"Total Trades: {total_trades}")
     print(f"Win Rate: {summary['win_rate_pct']:.1f}% ({len(win_trades)}W / {len(loss_trades)}L)")
-    print(f"Total Net PnL: {total_net_pnl:+,.0f} KRW")
+    print(f"Observed closed simulated PnL: {total_net_pnl:+,.0f} KRW; overall performance: UNKNOWN")
     print(f"Profit Factor: {profit_factor:.2f}")
     print(f"Average PnL: {avg_pnl:+,.0f} KRW | Max Loss: {max_loss:,.0f} KRW")
     print(f"Final Cash: {cash:,.0f} KRW (Net change: {cash - initial_cash:+,.0f} KRW)")
