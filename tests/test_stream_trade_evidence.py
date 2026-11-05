@@ -33,6 +33,7 @@ class StreamingTradeEvidenceTests(unittest.TestCase):
             prints.write_text(''.join(json.dumps(r)+'\n' for r in rows),encoding='utf8')
             r=analyze(state,[],'290690','2026-11-05',[prints]);d=r['trades'][0]['post_exit_observed']
             self.assertEqual((d['60']['count'],d['60']['max']),(1,3630))
+            self.assertEqual(d['60']['max_record_interval_seconds'],26)
             self.assertEqual((d['180']['count'],d['180']['max']),(2,3670))
             self.assertEqual(d['180']['coverage'],'UNKNOWN')
 

@@ -63,7 +63,8 @@ def analyze(state_path, event_paths, symbol, date, print_paths=()):
     horizons=(60,180,300,600)
     for trade in trades:
         trade['post_exit_observed']={str(h):{'count':0,'min':None,'max':None,'last':None,
-            'last_received_at':None,'coverage':'UNKNOWN'} for h in horizons}
+            'last_received_at':None,'first_received_at':None,'max_record_interval_seconds':None,
+            'out_of_order':False,'coverage':'UNKNOWN'} for h in horizons}
     for path in map(Path,print_paths):
         before=path.stat();digest=hashlib.sha256();bad=0
         with path.open('rb') as f:
@@ -85,7 +86,12 @@ def analyze(state_path, event_paths, symbol, date, print_paths=()):
                         bucket=trade['post_exit_observed'][str(horizon)];bucket['count']+=1
                         bucket['min']=price if bucket['min'] is None else min(bucket['min'],price)
                         bucket['max']=price if bucket['max'] is None else max(bucket['max'],price)
-                        if bucket['last_received_at'] is None or received>parse_time(bucket['last_received_at']):
+                        previous=parse_time(bucket['last_received_at'])
+                        if previous is not None and received<previous:bucket['out_of_order']=True
+                        if bucket['first_received_at'] is None:bucket['first_received_at']=received.isoformat()
+                        if previous is None or received>=previous:
+                            interval=(received-(previous or closed)).total_seconds()
+                            bucket['max_record_interval_seconds']=max(bucket['max_record_interval_seconds'] or 0,interval)
                             bucket['last']=price;bucket['last_received_at']=received.isoformat()
         after=path.stat()
         if (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):raise ValueError('PRINT_SOURCE_CHANGED_DURING_READ')
@@ -93,7 +99,8 @@ def analyze(state_path, event_paths, symbol, date, print_paths=()):
                         'bytes':before.st_size,'matching_malformed_lines':bad})
     return {'symbol':symbol,'date':date,'state_sha256':hashlib.sha256(raw_state).hexdigest(),
             'sources':sources,'trades':trades,'recorded_events':events,'events_omitted':events_omitted,
-            'independent_opportunities':'UNKNOWN','execution_and_expectancy':'UNKNOWN_WITHOUT_COMPLETE_RECEIPT_AND_QUOTE_COVERAGE'}
+            'independent_opportunities':'UNKNOWN','record_interval_interpretation':'NO_INFERENCE_OF_PACKET_LOSS_OR_NO_TRADES',
+            'execution_and_expectancy':'UNKNOWN_WITHOUT_COMPLETE_RECEIPT_AND_QUOTE_COVERAGE'}
 
 
 def main():
