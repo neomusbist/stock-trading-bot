@@ -33,7 +33,7 @@ def main():
                   'automation/observation_worker.py', 'automation/patterns.py',
                   'automation/focus_selection.py', 'automation/position_health.py',
                   'automation/trade_review_capture.py', 'automation/lightweight_decisions.py',
-                  'operator_service.py'})
+                  'operator_service.py', 'core/broker.py'})
     commit = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True, encoding='utf-8').strip()
     manifest = {'release_id': 'TEST-ONLY-' + commit[:12], 'commit': commit,
                 'build_id': BUILD_ID,
