@@ -23,6 +23,10 @@ DEFAULT_TARGET = Path(r"C:\Users\MJS\Desktop\주식자동매매")
 # 배포 대상 파일 목록 (개발본 -> 운영본)
 DEPLOY_FILES = [
     'automation/fast_momentum.py',
+    'automation/radar.py',
+    'automation/runner.py',
+    'automation/storage_governor.py',
+    'automation/trade_review_capture.py',
     'automation/engine.py',
     'automation/exit_plan.py',
     'automation/release_integrity.py',
