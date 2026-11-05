@@ -73,7 +73,7 @@ def analyze(state_path, event_paths, symbol, date, print_paths=()):
                 try:row=json.loads(line)
                 except (ValueError,UnicodeDecodeError):bad+=1;continue
                 if row.get('event')!='TRADE' or row.get('symbol')!=symbol:continue
-                received=parse_time(row.get('received_at'));price=row.get('price')
+                received=parse_time(row.get('received_at') or row.get('receiver_at'));price=row.get('price')
                 if not received or type(price) not in (int,float) or not 0<price<float('inf'):continue
                 for trade in trades:
                     closed=parse_time(trade.get('closed_recorded'))
