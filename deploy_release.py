@@ -165,6 +165,8 @@ def perform_deploy(src_dir, target_dir, backup_root=None):
             'commit': deploy_commit,
             'deployed_at': datetime.now().astimezone().isoformat(),
             'backup_dir': str(backup_dir),
+            'release_id': f'V171-INTEGRATED-FAST-RADAR-RECORDER-{deploy_commit}',
+            'base_release_id': existing_manifest.get('release_id', 'V171-FAST-EXIT-DESCRIPTION-bb2c1edc1f23'),
             'files': manifest_files
         }
         with open(identity_path, 'w', encoding='utf-8') as f:
