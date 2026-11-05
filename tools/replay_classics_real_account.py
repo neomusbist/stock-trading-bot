@@ -271,7 +271,8 @@ def run_realistic_replay(
                 # 2. Check 15:10 Force Flatten Cutoff
                 if dt.strftime('%H:%M:%S') >= '15:10:00':
                     for active_sym, active_pos in list(active_positions.items()):
-                        rec = active_pos.close(float(bid or price), 'FORCE_FLATTEN_1510', dt)
+                        exit_p = last_known_bids.get(active_sym, last_known_prices.get(active_sym, active_pos.fill_ask))
+                        rec = active_pos.close(exit_p, 'FORCE_FLATTEN_1510', dt)
                         cash += rec
                         pnl = active_pos.net_pnl
                         if pnl < 0:

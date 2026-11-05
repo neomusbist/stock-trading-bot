@@ -135,13 +135,13 @@ class ClassicsRiskSizer:
         breakeven_price = floor_tick(entry * (1.0 + total_cost_pct + 0.001))  # Cover cost + 0.1% buffer
         new_stop = current_stop
 
-        # Breakeven lock when price reaches +1.5%
-        if current_high >= entry * 1.015:
+        # Breakeven lock when price reaches +2.0%
+        if current_high >= entry * 1.020:
             new_stop = max(new_stop, breakeven_price)
 
-        # Trailing profit lock when price reaches +2.0%
-        if current_high >= entry * 1.020:
-            trailing_level = floor_tick(current_high * 0.990)
+        # Trailing profit lock when price reaches +3.0%: trail 1.5% below peak
+        if current_high >= entry * 1.030:
+            trailing_level = floor_tick(current_high * 0.985)
             new_stop = max(new_stop, trailing_level)
 
         return new_stop
@@ -373,6 +373,23 @@ class ClassicsRoleReversalStrategy:
         base_low = min(b['low'] for b in seq[:half])
         # Structural stop: placed below the broken resistance R and pullback low with noise buffer (Elder & Murphy)
         stop = floor_tick(min(pullback_low - step, r_level * (1.0 - 0.015), base_low))
+        emergency = floor_tick(stop - step)
+
+        # Anti-chase / Timing Gate (Jack Schwager & John J. Murphy):
+        # A valid pullback entry must be taken near support. If price has already rebounded
+        # > 70% back toward the peak, the entry is chasing directly into overhead resistance.
+        rebound_range = peak_price - pullback_low
+        if rebound_range > 0:
+            rebound_progress = (price - pullback_low) / rebound_range
+            if rebound_progress > 0.70:
+                return False, 'PULLBACK_REBOUND_ALREADY_EXTENDED', {
+                    'price': price,
+                    'pullback_low': pullback_low,
+                    'peak_price': peak_price,
+                    'rebound_progress': rebound_progress,
+                    'max_rebound_progress': 0.70
+                }
+
         target = floor_tick(max(peak_price + 2.0 * (peak_price - r_level), price + 2.0 * (price - stop)))
 
         if watch and is_valid_number(watch.get('resistance')) and watch['resistance'] > price:
@@ -385,7 +402,7 @@ class ClassicsRoleReversalStrategy:
             'pullback_low': pullback_low,
             'support': pullback_low,
             'stop': stop,
-            'emergency': floor_tick(stop - step),
+            'emergency': emergency,
             'target': target,
             'entry': ask
         }
