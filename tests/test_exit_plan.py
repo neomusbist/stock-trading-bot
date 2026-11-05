@@ -39,6 +39,20 @@ def bars(values, end=AT):
 
 
 class ExitPlanPureTests(unittest.TestCase):
+    def test_fast_explanation_matches_tick_based_exit_not_completed_candle(self):
+        sig={'pattern':'FAST','session':'REGULAR','limit':3655,'stop':3610,'emergency':3600,'target':3870,
+             'invalidation_policy':{'enabled':True,'policy_name':'FAST_MICRO_STRUCTURE',
+                                    'structural_stop':3610,'emergency_stop':3600,'noise_band':10}}
+        p=position();p.update(pattern='FAST',avg=3655,qty=16,high=3675,low=3610,initial_stop=3610,stop=3610,
+                              initial_r=45,signal=sig,last_trade_price=3620,
+                              last_quote={'time':AT.isoformat(),'bid':3615,'ask':3620})
+        p['exit_plan']=build_plan(CFG,AUTO,sig,3655,16,True)
+        state=state_for_position(CFG,AUTO,p,AT)
+        self.assertIn('두 체결',p['exit_plan']['exit_conditions'][0])
+        self.assertIn('두 체결',state['next_exit'])
+        self.assertNotIn('완성봉',state['next_exit'])
+        self.assertNotIn('완성봉',state['hold_reason'])
+
     def test_target_is_not_resting_sell_or_automatic_take_profit(self):
         p=position();plan=p['exit_plan']
         self.assertFalse(plan['resting_target_order']);self.assertEqual(plan['profit_policy'],'AE3')

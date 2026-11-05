@@ -89,7 +89,8 @@ def build_plan(cfg, auto, signal, entry=None, quantity=None, filled=False):
     burst = (auto.after_momentum_failure_enabled and auto.confirmed_invalidation_enabled
              and bool(policy) and session == 'AFTER' and setup == 'A'
              and signal.get('evaluation_gates', {}).get('acceleration', {}).get('values', {}).get('mode') != 'CONFIRMED_CONTINUATION')
-    conditions = ['완성봉 종가의 구조선 이탈' if auto.confirmed_invalidation_enabled and policy else '신선한 체결가의 보호선 이탈',
+    conditions = [('서로 다른 시각의 두 체결 및 신선한 매수호가가 구조선 이하' if setup == 'FAST' else
+                   '완성봉 종가의 구조선 이탈' if auto.confirmed_invalidation_enabled and policy else '신선한 체결가의 보호선 이탈'),
                   '신선한 호가·체결의 비상선 이탈', '실제 전역 데이터 장애 확인', 'STOP_FLAT/KILL 청산 요청']
     if burst: conditions.append('AFTER 급등 후 낮은 반등 및 3개 확정봉 하락 실패')
     deadline = (auto.after_force_flatten_start if session == 'AFTER' else auto.force_flatten_start) if not auto.ALLOW_OVERNIGHT else None
@@ -239,6 +240,8 @@ def state_for_position(cfg, auto, position, asof, pending=0, order_allowed=False
         trend, hold = '판단 불가', '신선한 호가·체결 대기; 기존 보호 규칙 유지'
     elif failed.get('reason') == 'AFTER_BURST_FAILED_REBOUND':
         trend, hold = '실패 확정', 'AFTER 반등 실패 확인'
+    elif plan.get('setup') == 'FAST':
+        trend, hold = '단기 체결 구조 관찰', 'FAST 체결·호가 기준 구조선 및 비상선 감시'
     elif not bar_fresh:
         trend, hold = '판단 불가', '확정봉 구조 판단 대기; 비상선 보호 유지'
     elif (current if current is not None else bid) < position['high']:
@@ -249,7 +252,8 @@ def state_for_position(cfg, auto, position, asof, pending=0, order_allowed=False
     # Modeled allowance, not a guaranteed fill or a hard cap in a gap.
     risk_line = lines['emergency'] if lines['close_based'] else lines['active_structure']
     remaining_risk = max(0., position['avg']-risk_line+position['avg']*auto.commission_buy+risk_line*(auto.commission_sell+auto.sell_tax+cfg.exit_slippage_fraction))*position['qty']
-    next_exit = ((f"완성봉 종가 ≤ {lines['active_structure']:,.0f}원 / 신선한 호가·체결 ≤ 비상선 {lines['emergency']:,.0f}원" if lines['close_based'] else
+    next_exit = ((f"서로 다른 시각의 두 체결 및 신선한 매수호가 ≤ 구조선 {lines['active_structure']:,.0f}원 / 신선한 매수호가 ≤ 비상선 {lines['emergency']:,.0f}원" if plan.get('setup') == 'FAST' else
+                  f"완성봉 종가 ≤ {lines['active_structure']:,.0f}원 / 신선한 호가·체결 ≤ 비상선 {lines['emergency']:,.0f}원" if lines['close_based'] else
                   f"신선한 체결가 ≤ 보호선 {lines['active_structure']:,.0f}원 / 호가 ≤ 비상선 {lines['emergency']:,.0f}원"))
     if plan['after_failed_rebound']: next_exit += ' / AFTER 낮은 반등 이후 3개 확정봉 실패'
     if plan['flatten_at']: next_exit += f" / {plan['flatten_at']} 당일 청산"
