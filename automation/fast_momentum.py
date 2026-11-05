@@ -315,7 +315,7 @@ class MicroTape:
             peak_i=peaks[i];peak=turns[peak_i]
             if peak_i == 0:continue
             origin=turns[origins[peak_i]]
-            if low[1]<=origin[1] or suffix[peak_i+1]<low[1]:continue
+            if low[1]<origin[1] or suffix[peak_i+1]<low[1]:continue
             noise = median([abs(b[1] - a[1]) for a, b in zip(turns, turns[1:])])
             res = {**evidence, 'pass': True, 'support': low[1], 'support_at': low[0].isoformat(),
                 'confirmation_at': right[0].isoformat(), 'breakout': peak[1], 'breakout_at': peak[0].isoformat(),
@@ -598,7 +598,24 @@ class FastMomentumStrategy:
             if entry_mode == 'PULLBACK_RECOVERY' and regime_details and regime_details.get('support'):
                 support = regime_details['support']
                 peak = regime_details.get('peak', m.get('p_max_60'))
-                structure = {'pass': True, 'support': support, 'breakout': peak, 'basis': 'PULLBACK_SUPPORT_RECOVERY'}
+                structure = {'pass': True, 'support': support, 'breakout': peak, 'basis': 'PULLBACK_SUPPORT_RECOVERY', 'origin': support}
+            elif entry_mode == 'EARLY_BREAKOUT' and regime_details and regime_details.get('support'):
+                tape = self.get_tape(t.symbol)
+                rows = [r for r, _ in tape._observed_rows(now)]
+                if rows:
+                    rows = rows[:-1]
+                turns = []
+                for row in rows:
+                    if not turns or row[1] != turns[-1][1]:
+                        turns.append(row)
+                is_monotonic = len(turns) >= 2 and all(b[1] > a[1] for a, b in zip(turns, turns[1:]))
+                support = regime_details['support']
+                breakout = regime_details.get('breakout', m.get('p_max_30'))
+                if not is_monotonic and len(turns) >= 3 and support > 0 and breakout > support:
+                    noise = median([abs(b[1] - a[1]) for a, b in zip(turns, turns[1:])]) if len(turns) >= 2 else tick_size(t.price)
+                    structure = {'pass': True, 'support': support, 'breakout': breakout, 'basis': 'EARLY_COMPRESSION_BASE', 'origin': support, 'observed_noise': noise}
+                else:
+                    return reject(structure['reason'], structure=structure)
             else:
                 return reject(structure['reason'], structure=structure)
 
