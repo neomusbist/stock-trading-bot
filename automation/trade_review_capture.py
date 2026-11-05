@@ -134,13 +134,18 @@ class BoundedCoreDecisionLog:
 class TradeReviewCapture:
     def __init__(self, folder, *, ring_seconds=45., ring_rows=256,
                  ring_bytes=1024*1024, queue_rows=4096, queue_bytes=4*1024*1024,
-                 file_bytes=32*1024*1024, day_bytes=4*1024**3,
+                 file_bytes=32*1024*1024, day_bytes=100*1024**2,
                  total_bytes=12*1024**3, min_free_bytes=32*1024**3,
                  diagnostic_max_bytes=4*1024*1024, diagnostic_min_free_bytes=5*1024**3,
-                 continuous_watch=True, clock=None, start=True):
+                 continuous_watch=False, clock=None, start=True, diagnostic_async=True):
         self.folder=Path(folder);self.folder.mkdir(parents=True,exist_ok=True)
         self.clock=clock or (lambda:datetime.now().astimezone())
-        self.core_decisions=BoundedCoreDecisionLog(self.folder,clock=self.clock,
+        if diagnostic_async:
+            from automation.lightweight_decisions import AsyncDailyDecisionLog
+            diagnostic_class=AsyncDailyDecisionLog
+        else:
+            diagnostic_class=BoundedCoreDecisionLog
+        self.core_decisions=diagnostic_class(self.folder,clock=self.clock,
             max_file_bytes=diagnostic_max_bytes,min_free_bytes=diagnostic_min_free_bytes)
         self.ring_seconds=ring_seconds;self.ring_rows=ring_rows;self.ring_limit=ring_bytes
         self.queue_rows=queue_rows;self.queue_limit=queue_bytes
@@ -165,7 +170,8 @@ class TradeReviewCapture:
                       'coverage':'STARTS_NOW_NO_RESTORED_TICKS_OR_BARS',
                       'detail_sampling_seconds':{'opening_before_0930':15,'otherwise':60},
                       'samples_establish_exact_first_onset':False,
-                      'continuous_scope':'WATCH_AND_HELD_ONLY_WITHIN_EXISTING_BUDGETS',
+                      'continuous_scope':('WATCH_AND_HELD_ONLY_WITHIN_EXISTING_BUDGETS' if self.continuous_watch
+                                          else 'HELD_AND_PROMOTED_WATCH_IN_MEMORY_RING_ONLY'),
                       'orders_enabled':False}, force=True)
         self.thread=threading.Thread(target=self._run,name='trade-review-writer',daemon=True) if start else None
         if self.thread:self.thread.start()
@@ -631,7 +637,9 @@ class TradeReviewCapture:
         with self.lock:
             return {'session':self.session,'written_rows':self.written,'queue_rows':len(self.pending),
                 'queue_bytes':self.pending_size,'ring_bytes':self.ring_size,
-                'ring_rows':sum(len(r) for r in self.rings.values()),'capture_losses':self.losses,
+                'ring_rows':sum(len(r) for r in self.rings.values()),'ring_evictions':self.ring_evictions,
+                'watch_capture_mode':'CONTINUOUS' if self.continuous_watch else 'MEMORY_RING_ONLY',
+                'capture_losses':self.losses,
                 'capture_loss_intervals':list(self.loss_intervals),
                 'write_errors':self.errors,'last_error':self.last_error,'storage_blocked':self.storage_blocked,
                 'rejected_buffers':self.rejected_buffers,'rejected_buffer_bytes':self.rejected_buffer_bytes,
@@ -703,6 +711,8 @@ class TradeReviewCapture:
             try:ok=self.flush()
             except Exception as error:
                 self.errors+=1;self.last_error=type(error).__name__;ok=False
+            if hasattr(self.core_decisions,'flush'):
+                self.core_decisions.flush()
             self.write_status()
             if not ok:self.stop.wait(1.)
 
@@ -724,5 +734,8 @@ class TradeReviewCapture:
         if self.thread:self.thread.join(timeout=2.)
         # Shutdown may leave a pending bounded buffer; never delay protection.
         if self.thread and self.thread.is_alive():return False
-        try:return self.flush()
+        try:
+            result=self.flush()
+            if hasattr(self.core_decisions,'flush'):self.core_decisions.flush()
+            return result
         finally:self.write_status(force=True)

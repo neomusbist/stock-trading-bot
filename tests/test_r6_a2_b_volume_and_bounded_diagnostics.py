@@ -432,8 +432,9 @@ class ActualAccountFeasibilityAndBoundedDiagnosticsTests(unittest.TestCase):
                         },
                     }
                     cap.decision_evidence(self.e, "047770", "BUY", "ENTRY_INTENT_ACCEPTED", gates, sig, {"quantity": 5})
+                    cap.core_decisions.flush()
 
-                    diag_path = folder / "core-decisions-bounded.jsonl"
+                    diag_path = folder / ("core-decisions-" + AT.strftime("%Y%m%d") + ".jsonl")
                     self.assertTrue(diag_path.exists())
                     rows = [json.loads(line) for line in diag_path.read_text(encoding="utf-8").splitlines() if line.strip()]
                     self.assertEqual(len(rows), 1)
@@ -459,6 +460,7 @@ class ActualAccountFeasibilityAndBoundedDiagnosticsTests(unittest.TestCase):
                     usage_4gib = SimpleNamespace(total=500 * 1024**3, used=495 * 1024**3, free=int(4.2 * 1024**3))
                     with patch("automation.trade_review_capture.shutil.disk_usage", return_value=usage_4gib):
                         cap.decision_evidence(self.e, "014830", "NO_BUY", "RISK_BUDGET_ZERO_QTY", gates, sig, {"quantity": 0})
+                        cap.core_decisions.flush()
                         st = cap.stats()["core_decision_diagnostics"]
                         self.assertTrue(st["blocked"])
                         self.assertEqual(st["block_reason"], "DIAGNOSTIC_FREE_SPACE_BELOW_SAFETY_LIMIT")

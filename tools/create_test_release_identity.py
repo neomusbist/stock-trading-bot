@@ -31,7 +31,9 @@ def main():
     files = set(CRITICAL_RUNTIME_FILES) | {v['file'] for v in MANDATORY_PATCH_SIGNATURES.values()}
     files.update({'automation/decisions.py', 'automation/release_integrity.py',
                   'automation/observation_worker.py', 'automation/patterns.py',
-                  'automation/focus_selection.py', 'automation/position_health.py'})
+                  'automation/focus_selection.py', 'automation/position_health.py',
+                  'automation/trade_review_capture.py', 'automation/lightweight_decisions.py',
+                  'operator_service.py'})
     commit = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True, encoding='utf-8').strip()
     manifest = {'release_id': 'TEST-ONLY-' + commit[:12], 'commit': commit,
                 'build_id': BUILD_ID,

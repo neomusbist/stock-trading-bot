@@ -65,7 +65,7 @@ class AfterMarketTests(unittest.TestCase):
     def signal(self, sym=SYM, entry=10000, stop=9800, pattern='A'):
         from automation.allocation import efficiency
         return {
-            'symbol': sym, 'limit': entry, 'stop': stop, 'pattern': pattern,
+            'symbol': sym, 'limit': entry, 'stop': stop, 'target': 10500, 'pattern': pattern,
             'time': self.clock.isoformat(),
             'efficiency': efficiency(entry, stop, 10500, 0.8, 30, self.e.costs),
             'source_count': 2, 'actual_order_permission': True,
@@ -79,6 +79,13 @@ class AfterMarketTests(unittest.TestCase):
     # =========================================================================
     # Section A: Session boundaries
     # =========================================================================
+
+    def test_after_missing_target_remains_blocked(self):
+        signal = self.signal()
+        del signal['target']
+        self.e.last_account = time.monotonic()
+        self.assertIsNone(self.e.enter(signal, self.tick()))
+        self.assertEqual(self.b.orders, [])
 
     def test_a1_before_1600_buy_blocked(self):
         """15:59:00 (16:00 이전) 신규 매수는 차단된다."""
