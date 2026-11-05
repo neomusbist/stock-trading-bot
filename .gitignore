@@ -214,3 +214,4 @@ operator_*approval*.json
 
 !/TRADING_CLASSICS_INDEX.md
 !/tools/replay_classics_backtest.py
+!/tools/replay_classics_real_account.py
