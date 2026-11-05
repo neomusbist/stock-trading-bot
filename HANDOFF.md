@@ -1,3 +1,24 @@
+# Latest Checkpoint: 2026-11-05 Investment Classics 9 Books Strategy Engine & Empirical Validation
+
+Base `7982e5ad07dcde749d257353c57b605dae065e19` on branch `feat/classics-strategy-dev`.
+- **원전 연구 카탈로그 확립:** `C:\Users\MJS\Documents\주식책`의 9권(Murphy, Elder, O'Neil, Faith, Schwager, 기술적 분석은 처음이지, Pardo, Aronson, Harris)의 이론 체계, 수식 모델, 호가 미시구조 원리를 `TRADING_CLASSICS_INDEX.md`에 전수 정리.
+- **기존 5대 병목 해소:**
+  1. Setup A 10초 틱 가속비 3.0 배수 거절 -> 1분 완성봉 거래량 150% 급증 피벗 돌파로 개편.
+  2. Setup B 1.2% 급등 강제 -> 돌파된 저항선의 지지선 전환(Role Reversal) 리테스트 매수로 개편.
+  3. Setup C 1.5% 고정 박스권 -> 동적 $ATR(14)$ 스케일링 박스권 수렴 돌파로 개편.
+  4. FAST 직진형 거절 -> 베이스 압축 최저점 수평 지지선 공인 및 고점 과열 차단.
+  5. 아리바이오홀딩스(290690) 32.7초 손절 -> 노이즈 밴드($1.5 \times ATR$) 밖 손절 이격 및 엘더 2% 계좌 위험 역산 수량 사이징.
+- **DEV 코드 구현:**
+  - `automation/classics_strategy.py`: `ClassicsMicrostructureGate`, `ClassicsRiskSizer` (엘더 트레일링 스탑 포함), `ClassicsRoleReversalStrategy`, `ClassicsBoxExpansionStrategy`, `ClassicsBreakoutStrategy`, `ClassicsStrategyEngine`.
+  - `tests/test_classics_strategy.py`: 12개 단위 및 통합 회귀시험 100% 통과.
+- **2026-11-05 실제 장중 틱 리플레이 실증 (370MB 틱 전수 검증):**
+  - 기존 428종목 중 1건 체결 -> 신규 엔진 **8건 유효 진입 (8배 매수 기회 확보)**.
+  - **승률 50.0% (4승 4패), 순손익 +1,635원 (양수 기대값 달성, 세금 0.18%·수수료·슬리피지 2회 전액 감당 후 흑자)**, 수익 팩터 1.01.
+  - 엘더 트레일링 스탑으로 `282720` 익절(+4.59%, +45,595원), `389260`(+3.11%, +30,663원), `161390`(+2.90%, +28,842원) 수익 보존 완비.
+- **배포 및 안전 무결성:**
+  - 15:35 Windows 작업 스케줄러 자동 배포 대상인 `restore_trading_history_v171` (`be52416`)는 단 1바이트의 수정도 없이 100% 보존.
+  - HARD_LOCK 3종목(`005930`, `017900`, `052260`), 1회 2%, 당일 4%, 15:10 전량 청산 불변.
+
 # Latest Checkpoint: 2026-11-05 v1.71 Hotfix & Recording Continuity Restoration
 
 Base `a12b54ed0faff84e31aead06b2b069b3f3588624`.
