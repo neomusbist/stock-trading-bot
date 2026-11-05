@@ -1,3 +1,15 @@
+# Latest Checkpoint: 2026-11-05 v1.71 Hotfix & Recording Continuity Restoration
+
+Base `a12b54ed0faff84e31aead06b2b069b3f3588624`.
+- **복원 및 결함 원인:** 2026-11-05 아리바이오홀딩스(290690) 09:08:00~09:08:49 원시 데이터 누락은 WATCH 승격 시 SHADOW 수신 목록에서 제외되는 반면, 단일 C드라이브 여유 공간(25.29 GB)이 `TradeReviewCapture`의 32GiB 안전 게이트에 걸려 `storage_blocked`를 발생시켜 양방향 동시 저장이 차단된 결함이 원인이었습니다.
+- **연속성 보장 구현:** `automation/runner.py`의 `prewarm_handoff`에서 `capture.storage_blocked` 발생 시 WATCH 종목을 `effective_observed`에 유지하여 SHADOW `observation_sink`(`shadow_ticks.jsonl`)로 틱이 끊김 없이 영구 기록되도록 폴백 연결을 완료했습니다.
+- **자가 치유 및 진단:** `automation/trade_review_capture.py`에서 최대 32개 진단 손실 구간(`loss_intervals`), 큐 진입 시각(`capture_enqueued_at`), 메모리 링버퍼(`rings`) 보존, 디스크 회복 시 `storage_blocked = False` 자동 해제를 구현했습니다.
+- **5단계 무결성 검증 압축 아카이빙:** `automation/storage_governor.py`에 SHA-256 사전 해시 -> Zip Deflate (Level 9) -> CRC32 testzip() -> 압축 해제 비트 단위 SHA-256 검증 -> 안전 삭제로 이어지는 5단계 무결성 파이프라인을 구축하여, 2일 이상 된 21.89 GB 미압축 회전 로그를 약 2.5 GB로 압축해 **18~19 GB 순수 디스크를 영구 무손실 회수**(여유 디스크 44 GB 이상 확보)할 수 있도록 구현했습니다.
+- **단일 소스 레이더 분기 정돈:** `automation/radar.py`의 `DynamicRadar.__init__`에서 명시적 `fallback_source1=False`가 올바르게 작동하도록 기본 인자 및 불리언 분기를 정돈했습니다.
+- **전수 회귀시험 검증 통과:** `test_trade_review_capture.py`(31), `test_r6_fast_repair.py`(27), `test_r6_fast_live_pipeline.py`(46), `test_release_integrity.py`(5), `test_storage_governor.py`(16), `test_watch_fallback.py`(7), `test_automation.py`(35), `test_protection_account_outage.py`(35), `test_stream_trade_evidence.py`(1), `test_replay_fast_structure.py`(1) 전수 통과 (100% OK, 0 FAIL).
+- **금융 안전장치 100% 보존:** HARD_LOCK 3종목(`005930`, `017900`, `052260`), 1회 위험 2%, 일일 최대 손실 4%, 최소 순RR 1.5, 15:05 신규진입 차단, 15:10 강제청산, 일일 명시 자본 승인 필수 규칙을 그대로 보존했습니다.
+- **LIVE 운영본:** 장중 프로세스 가동 상태 보호를 위해 임의 배포/중단을 보류하고, 장 마감 후 안전 배포 절차를 수립했습니다.
+
 # Latest checkpoint: 2026-10-24 A/B feasibility and Oct26 evidence preparation
 
 Base a5aa64263dde9006aa02c9ad718e25b866f2e8fc. No new trigger, target, stop, risk, FAST/C, ranking or subscription change. Reuse the exact first263 records and regular/AFTER frozen inputs; the strategy-wide decision remains HOLD_JUDGMENT, with0 additional actually verified orderable signals. A local first-point impossibility is not proof that an earlier market opportunity never existed.

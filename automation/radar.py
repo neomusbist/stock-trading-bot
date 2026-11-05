@@ -113,13 +113,16 @@ def collect(rest):
     return rows[:settings.max_raw_symbols]
 
 class DynamicRadar:
-    def __init__(self,cfg,auto,policy,fallback_source1=False):
+    def __init__(self,cfg,auto,policy,fallback_source1=None):
         self.cfg=cfg; self.a=auto; self.policy=policy; self.previous={}; self.missing={}; self.weak={}; self.watch={}; self.day=None
         self.available_capital=None
         self.capital_context={}
         self.momentum={}
         self.affordability_ms=0.
-        self.fallback_source1=fallback_source1 or getattr(auto,'watch_fallback_source1',False) or getattr(auto,'fallback_source1',False)
+        if fallback_source1 is not None:
+            self.fallback_source1=bool(fallback_source1)
+        else:
+            self.fallback_source1=bool(getattr(auto,'watch_fallback_source1',False))
 
     def affordable(self,x):
         price=x.get('reference_price')

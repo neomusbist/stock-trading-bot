@@ -13,6 +13,7 @@
 | [v1.6](https://github.com/neomusbist/stock-trading-bot/releases/tag/v1.6) | 2026-10-20 | v1.6 이전 운영 기준 (FAST 기초 통합) | [`eac9bc5`](https://github.com/neomusbist/stock-trading-bot/commit/eac9bc5880d25902d0d9f695ffdaabcac9632a16) | 이전 LIVE 기준 · 정식 Release |
 | [v1.7](https://github.com/neomusbist/stock-trading-bot/releases/tag/v1.7) | 2026-11-03 | 11월 3일 첫 실거래(3건 매수·청산) 검증 완료, 이중 진입 경로(돌파 및 눌림목 반등), 구조적 가격기하 순RR, 호가·스프레드 판정 정상화 | [`781de40`](https://github.com/neomusbist/stock-trading-bot/commit/781de402fbe78918fe7ff58306d5349c0fa8cc4b) | 이전 LIVE 운영 릴리스 |
 | [v1.71](https://github.com/neomusbist/stock-trading-bot/releases/tag/v1.71) | 2026-11-04 | 11월 4일 미래산업·지니언스 실거래 결함 수정(저항선 무시 방지, 매수가-고점 일치 오류 교정, 5분 추세 문맥 연계, 순RR 게이트 복원) 안정성 패치 | [`68545c4`](https://github.com/neomusbist/stock-trading-bot/commit/68545c4541fc449fced1890ff703f8198971f024) | 현재 LIVE · 공식 운영 릴리스 / Latest |
+| v1.71-hotfix | 2026-11-05 | 11월 5일 아리바이오홀딩스(290690) 원시 틱 기록 공백 결함 해결(WATCH 승격 시 SHADOW 관측 폴백 연속성 보장, 5단계 무결성 검증 18GB 로그 안전 압축 아카이빙) | DEV 검증 완료 | 운영본 배포 준비 완료 (`HANDOFF_V171_RESTORE_20261105.md`) |
 
 ## 최초 버전부터 확인한 근거
 

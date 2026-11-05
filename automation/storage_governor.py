@@ -7,11 +7,13 @@ Tier A (Protected): Ledgers, state.json, trade reviews, private incident/replay 
 Tier B (Bounded Retention): SHADOW ticks, radar history, shadow events with date & sequence preservation.
 Tier C (Aggressive Purge): Whitelisted console output, debug logs, temp caches.
 """
+import hashlib
 import json
 import logging
 import os
 import shutil
 import time
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -237,6 +239,149 @@ def truncate_console_log(log_path: Path, max_bytes: int = MAX_CONSOLE_LOG_BYTES,
         return 0
 
 
+def compress_file_with_verification(src_path: Path) -> Tuple[bool, int, str]:
+    """
+    Compress a single file into a .zip archive using a 5-stage fail-safe verification pipeline:
+    1. Read and compute SHA-256 of src_path.
+    2. Write to a temporary .zip.tmp archive using ZIP_DEFLATED (level 9).
+    3. Verify zip archive CRC32 with testzip().
+    4. Read back decompressed content from zip, verify SHA-256 matches original exactly.
+    5. Atomically replace .zip.tmp -> .zip and unlink src_path.
+
+    Returns (success, bytes_freed, message).
+    """
+    if not src_path.exists() or not src_path.is_file():
+        return False, 0, f"Source file does not exist: {src_path}"
+
+    orig_size = src_path.stat().st_size
+    if orig_size == 0:
+        return False, 0, f"Source file is empty, skipping compression: {src_path}"
+
+    zip_final = src_path.with_name(src_path.name + '.zip')
+    if zip_final.exists():
+        return False, 0, f"Target zip already exists: {zip_final}"
+
+    zip_tmp = src_path.with_name(src_path.name + '.zip.tmp')
+    try:
+        # Step 1: Compute SHA-256 hash of source
+        h = hashlib.sha256()
+        with open(src_path, 'rb') as f:
+            while chunk := f.read(1024 * 1024):
+                h.update(chunk)
+        expected_sha256 = h.hexdigest()
+
+        # Step 2: Write compressed archive
+        with zipfile.ZipFile(zip_tmp, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+            zf.write(src_path, arcname=src_path.name)
+
+        # Step 3: Test zip CRC32
+        with zipfile.ZipFile(zip_tmp, 'r') as zf:
+            corrupt = zf.testzip()
+            if corrupt is not None:
+                raise ValueError(f"Zip CRC32 check failed on member {corrupt}")
+
+        # Step 4: Decompress and verify bit-for-bit SHA-256
+        with zipfile.ZipFile(zip_tmp, 'r') as zf:
+            with zf.open(src_path.name, 'r') as member:
+                h_verify = hashlib.sha256()
+                while chunk := member.read(1024 * 1024):
+                    h_verify.update(chunk)
+                actual_sha256 = h_verify.hexdigest()
+                if actual_sha256 != expected_sha256:
+                    raise ValueError(f"SHA-256 mismatch: expected {expected_sha256}, got {actual_sha256}")
+
+        # Step 5: Commit archive and safe remove source
+        zip_tmp.replace(zip_final)
+        compressed_size = zip_final.stat().st_size
+        bytes_freed = orig_size - compressed_size
+        src_path.unlink()
+        return True, max(0, bytes_freed), f"Compressed {src_path.name} -> {zip_final.name} ({orig_size / 1024**2:.2f} MB -> {compressed_size / 1024**2:.2f} MB, saved {bytes_freed / 1024**2:.2f} MB)"
+
+    except Exception as e:
+        if zip_tmp.exists():
+            try:
+                zip_tmp.unlink()
+            except OSError:
+                pass
+        logger.error(f"Failed to safely compress {src_path}: {e}")
+        return False, 0, f"Error compressing {src_path.name}: {e}"
+
+
+def compress_historical_archives(runtime_dir: Path, min_age_days: int = 2) -> Tuple[int, int, List[str]]:
+    """
+    Compress inactive historical archives older than min_age_days without any data loss.
+    Targets rotated files in:
+      - runtime/archive/
+      - runtime/automation-production/archive/
+      - runtime/automation-production/trade-review/
+    NEVER touches active files:
+      - state.json, events.jsonl, heartbeat.json, operator_account.json, policy.json
+      - active unrotated shadow_ticks.jsonl
+      - trade-review file for today's session
+      - any file modified within min_age_days
+      - any file already ending in .zip or .gz
+    Returns (files_compressed, bytes_freed, action_logs).
+    """
+    if not runtime_dir.exists():
+        return 0, 0, []
+
+    files_compressed = 0
+    total_freed = 0
+    action_logs = []
+    now_ts = time.time()
+    min_age_sec = min_age_days * 86400
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    today_compact = datetime.now().strftime('%Y%m%d')
+
+    ACTIVE_NAMES = {
+        'state.json', 'events.jsonl', 'heartbeat.json', 'operator_account.json',
+        'session_settings.json', 'policy.json', 'RELEASE_IDENTITY.json',
+        'shadow_ticks.jsonl', 'operator_console.txt'
+    }
+
+    target_dirs = [
+        runtime_dir / 'archive',
+        runtime_dir / 'automation-production' / 'archive',
+        runtime_dir / 'automation-production' / 'trade-review',
+    ]
+
+    for d in target_dirs:
+        if not d.exists() or not d.is_dir():
+            continue
+
+        candidates = []
+        for f in d.iterdir():
+            if not f.is_file():
+                continue
+            name = f.name.lower()
+            if name.endswith('.zip') or name.endswith('.gz') or name.endswith('.tmp'):
+                continue
+            if name in ACTIVE_NAMES:
+                continue
+            if 'trade-review' in d.parts:
+                if today_str in name or today_compact in name:
+                    continue
+
+            try:
+                stat = f.stat()
+                age_sec = now_ts - stat.st_mtime
+                if age_sec >= min_age_sec:
+                    candidates.append((stat.st_mtime, f))
+            except OSError:
+                continue
+
+        candidates.sort(key=lambda x: x[0])
+
+        for _, f in candidates:
+            success, freed, msg = compress_file_with_verification(f)
+            if success:
+                files_compressed += 1
+                total_freed += freed
+                action_logs.append(msg)
+
+    return files_compressed, total_freed, action_logs
+
+
 def check_disk_safety_gate(root_path: Path) -> Dict:
     """
     Evaluates actionable disk safety.
@@ -283,7 +428,15 @@ def run_storage_governance(root_path: Path, emergency_mode: bool = False) -> Dic
     disk_status = check_disk_safety_gate(root)
     effective_emergency = emergency_mode or disk_status['disk_emergency']
 
-    # 1. Prune runtime/archive and runtime/automation-production/archive
+    # 1. Compress historical archives older than 2 days (or 1 day in emergency)
+    files_compressed, comp_freed, comp_logs = compress_historical_archives(
+        runtime,
+        min_age_days=1 if effective_emergency else 2
+    )
+    total_freed += comp_freed
+    all_actions.extend(comp_logs)
+
+    # 2. Prune runtime/archive and runtime/automation-production/archive
     for arch in [runtime / 'archive', runtime / 'automation-production/archive']:
         if arch.exists():
             n, b, logs = prune_archive_dir(
@@ -295,7 +448,7 @@ def run_storage_governance(root_path: Path, emergency_mode: bool = False) -> Dic
             total_freed += b
             all_actions.extend(logs)
 
-    # 2. Prune shadow_ticks rotations (Tier B)
+    # 3. Prune shadow_ticks rotations (Tier B)
     n, b, logs = prune_shadow_ticks(
         runtime,
         max_rotations=2 if effective_emergency else MAX_SHADOW_TICK_ROTATIONS,
@@ -305,7 +458,7 @@ def run_storage_governance(root_path: Path, emergency_mode: bool = False) -> Dic
     total_freed += b
     all_actions.extend(logs)
 
-    # 3. Truncate console log (Tier C)
+    # 4. Truncate console log (Tier C)
     console_log = runtime / 'operator_console.txt'
     if console_log.exists():
         b = truncate_console_log(
@@ -328,7 +481,23 @@ def run_storage_governance(root_path: Path, emergency_mode: bool = False) -> Dic
         'order_blocked': final_disk_status['order_blocked'],
         'order_block_reason': final_disk_status['order_block_reason'],
         'files_removed': total_removed,
+        'files_compressed': files_compressed,
         'bytes_freed': total_freed,
+        'bytes_compressed_freed': comp_freed,
         'mb_freed': round(total_freed / (1024 ** 2), 2),
         'actions': all_actions
     }
+
+
+if __name__ == '__main__':
+    import argparse
+    import sys
+    parser = argparse.ArgumentParser(description="Run tiered storage governance and safe compression.")
+    parser.add_argument('root', nargs='?', default='.', help="Root directory containing runtime/ (default: .)")
+    parser.add_argument('--emergency', action='store_true', help="Force emergency mode (aggressive compression & pruning)")
+    args = parser.parse_args()
+
+    root_dir = Path(args.root).resolve()
+    print(f"Running Storage Governor on: {root_dir}")
+    res = run_storage_governance(root_dir, emergency_mode=args.emergency)
+    print(json.dumps(res, indent=2, ensure_ascii=False))

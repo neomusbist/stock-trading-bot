@@ -4,11 +4,12 @@ from dataclasses import replace
 from datetime import datetime,timedelta
 import io
 import json
+import queue
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 from automation.trade_review_capture import TradeReviewCapture
 from automation.engine import AutonomousEngine
@@ -105,6 +106,31 @@ class CaptureTests(unittest.TestCase):
         self.assertEqual(c.stats()['storage_block_reason'],'CAPTURE_FREE_SPACE_RESERVE')
         self.assertEqual(before,{p.name:p.read_bytes() for p in self.root.glob('trade-review-*.jsonl')})
 
+    def test_storage_gap_is_reported_and_recovery_does_not_reset_losses(self):
+        c=self.capture(continuous_watch=True,min_free_bytes=1000)
+        c.set_scope(['033160'],{},AT);c.tick(tick(),AT)
+        with patch('automation.trade_review_capture.shutil.disk_usage',return_value=SimpleNamespace(free=1000)):
+            self.assertFalse(c.flush())
+        before=c.stats();self.assertGreater(before['capture_losses'],0)
+        gap=before['capture_loss_intervals'][-1]
+        self.assertEqual(gap['reason'],'CAPTURE_FREE_SPACE_RESERVE')
+        self.assertEqual(gap['feed_loss'],'UNKNOWN');self.assertTrue(gap['open'])
+        c.tick(tick(),AT)
+        with patch('automation.trade_review_capture.shutil.disk_usage',return_value=SimpleNamespace(free=1000000)):
+            self.assertTrue(c.flush())
+        after=c.stats();self.assertEqual(after['capture_losses'],before['capture_losses'])
+        self.assertFalse(after['storage_blocked']);self.assertFalse(after['capture_loss_intervals'][-1]['open'])
+        row=next(r for r in self.rows() if r['event']=='TRADE')
+        self.assertEqual(row['capture_enqueued_at'],AT.isoformat())
+
+    def test_queue_loss_does_not_claim_websocket_loss(self):
+        c=self.capture(continuous_watch=True,queue_rows=4,queue_bytes=100000)
+        c.set_scope(['033160'],{},AT)
+        for _ in range(20):c.tick(tick(),AT)
+        gap=c.stats()['capture_loss_intervals'][-1]
+        self.assertEqual(gap['reason'],'CAPTURE_RESERVED_CAPACITY')
+        self.assertEqual(gap['feed_loss'],'UNKNOWN')
+
     def test_reference_capture_retains_available_prefix_without_future_or_warmup_claims(self):
         c=self.capture()
         bar={'time':AT.replace(second=0)-timedelta(minutes=1),'open':100,'high':102,'low':99,'close':101,'volume':50}
@@ -129,6 +155,39 @@ class CaptureTests(unittest.TestCase):
         c.flush();self.assertEqual(len([r for r in self.rows() if r['event']=='TRADE']),1)
         line=next(r for r in self.rows() if r['event']=='POSITION_LINES')
         self.assertEqual((line['stop'],line['emergency'],line['protection_stop']),(16840,16830,17070))
+
+    def test_shadow_watch_continuity_fallback_when_storage_blocked(self):
+        from automation.runner import prewarm_handoff
+        c=self.capture(continuous_watch=True,min_free_bytes=1000)
+        c.storage_blocked=True
+        mock_engine=SimpleNamespace(trade_review=c,s={'positions':{},'automation':{'existing':[]}},
+                                    active_orders=lambda:[],clock=lambda:AT)
+        mock_detector=Mock()
+        mock_feed=SimpleNamespace(
+            observation_symbols=frozenset(),
+            observation_drops=0,
+            observation_q=queue.Queue(maxsize=10),
+            _opportunity_pending={},
+            _opportunity_triggers={},
+            _opportunity_evaluated={},
+            subscription_lock=None,
+            overflow=SimpleNamespace(is_set=lambda:False),
+            transport_failed=False,
+            configure_observation=Mock(),
+        )
+
+        # 1. When storage_blocked is True, prewarm_handoff includes WATCH/priority in effective_observed
+        prewarm_handoff(mock_engine,mock_detector,mock_feed,observed={'005930'},real_symbols={'033160'},prior_priority=[],drops=0,sink=Mock())
+        self.assertTrue(mock_feed.configure_observation.called)
+        args=mock_feed.configure_observation.call_args[0]
+        self.assertIn('033160',args[1])
+
+        # 2. When storage_blocked is False, WATCH symbol is not in observed, preventing duplicate tape writes
+        c.storage_blocked=False
+        mock_feed.configure_observation.reset_mock()
+        prewarm_handoff(mock_engine,mock_detector,mock_feed,observed={'005930'},real_symbols={'033160'},prior_priority={'033160'},drops=0,sink=Mock())
+        args2=mock_feed.configure_observation.call_args[0]
+        self.assertNotIn('033160',args2[1])
 
     def test_memory_limits_and_drop_evidence(self):
         c=self.capture(ring_rows=4,ring_bytes=1800,queue_rows=3,queue_bytes=1800)
@@ -180,7 +239,7 @@ class CaptureTests(unittest.TestCase):
 
     def test_restart_creates_new_capture_session_without_restoring_prices(self):
         c=self.capture();c.flush();first=c.session
-        other=TradeReviewCapture(self.root,start=False,clock=lambda:AT);self.addCleanup(other.close)
+        other=TradeReviewCapture(self.root,start=False,clock=lambda:AT,min_free_bytes=0);self.addCleanup(other.close)
         other.flush();self.assertNotEqual(first,other.session)
         self.assertEqual(other.rings,{})
         self.assertEqual(len([r for r in self.rows() if r['event']=='CAPTURE_STARTED']),2)
@@ -320,7 +379,7 @@ class CapturedFastPipelineTests(unittest.TestCase):
         from automation.entry_timing import ObservationTimeline
         case=FastPipelineProductionLikeFlagsTests(methodName='runTest')
         case.setUp();self.addCleanup(case.doCleanups)
-        capture=TradeReviewCapture(case.root/'capture',start=False,clock=lambda:case.clock[0])
+        capture=TradeReviewCapture(case.root/'capture',start=False,clock=lambda:case.clock[0],min_free_bytes=0)
         self.addCleanup(capture.close)
         case.e.trade_review=capture
         case.e.observation_timeline=ObservationTimeline(case.root/'timeline.json')

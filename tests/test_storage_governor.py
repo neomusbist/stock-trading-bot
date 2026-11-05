@@ -302,5 +302,83 @@ class TieredStorageGovernorTests(unittest.TestCase):
         self.assertGreater(len(fixture['ticks']), 60)
 
 
+    def test_compress_file_with_verification_roundtrip_integrity(self):
+        """Verifies 5-stage fail-safe compression roundtrip and bit-for-bit extraction."""
+        from automation.storage_governor import compress_file_with_verification
+        import zipfile
+        test_file = self.runtime / 'events.jsonl.1'
+        original_data = b'{"time":"2026-11-01T09:00:00","event":"TEST_ROW"}\n' * 500
+        test_file.write_bytes(original_data)
+
+        success, freed, msg = compress_file_with_verification(test_file)
+        self.assertTrue(success)
+        self.assertGreater(freed, 0)
+        self.assertFalse(test_file.exists(), "Original uncompressed file should be removed after verified compression")
+
+        zip_file = self.runtime / 'events.jsonl.1.zip'
+        self.assertTrue(zip_file.exists())
+
+        # Verify content from zip matches original byte-for-byte
+        with zipfile.ZipFile(zip_file, 'r') as zf:
+            extracted = zf.read('events.jsonl.1')
+            self.assertEqual(extracted, original_data)
+
+    def test_compress_failure_preserves_source_file(self):
+        """If compression or verification fails, original source file is strictly preserved."""
+        from automation.storage_governor import compress_file_with_verification
+        test_file = self.runtime / 'events.jsonl.2'
+        original_data = b'CRITICAL UNTOUCHABLE DATA'
+        test_file.write_bytes(original_data)
+
+        # Patch zipfile.ZipFile.testzip to simulate corruption
+        with patch('zipfile.ZipFile.testzip', return_value='corrupted_member'):
+            success, freed, msg = compress_file_with_verification(test_file)
+            self.assertFalse(success)
+            self.assertEqual(freed, 0)
+            self.assertTrue(test_file.exists(), "Source file MUST NOT be deleted when verification fails!")
+            self.assertEqual(test_file.read_bytes(), original_data)
+            # Ensure no orphan tmp zip is left behind
+            tmp_zip = self.runtime / 'events.jsonl.2.zip.tmp'
+            self.assertFalse(tmp_zip.exists())
+
+    def test_compress_historical_archives_protects_active_and_recent(self):
+        """Active files and files younger than min_age_days are NEVER compressed."""
+        from automation.storage_governor import compress_historical_archives
+        archive = self.runtime / 'archive'
+        archive.mkdir(parents=True, exist_ok=True)
+        trade_review = self.runtime / 'automation-production' / 'trade-review'
+        trade_review.mkdir(parents=True, exist_ok=True)
+
+        now_ts = time.time()
+        # Active file in archive: events.jsonl
+        active_events = archive / 'events.jsonl'
+        active_events.write_text('active events', encoding='utf-8')
+        os.utime(active_events, (now_ts - 5 * 86400, now_ts - 5 * 86400))
+
+        # Recent rotated file (< 2 days old)
+        recent_rotation = archive / 'events.jsonl.recent'
+        recent_rotation.write_text('recent rotation', encoding='utf-8')
+        os.utime(recent_rotation, (now_ts - 3600, now_ts - 3600))
+
+        # Old rotated file (> 2 days old)
+        old_rotation = archive / 'events.jsonl.old'
+        old_rotation.write_text('old rotated ledger ' * 100, encoding='utf-8')
+        os.utime(old_rotation, (now_ts - 4 * 86400, now_ts - 4 * 86400))
+
+        # Old trade review file (> 2 days old)
+        old_review = trade_review / 'trade-review-2026-10-15.jsonl'
+        old_review.write_text('old trade review ' * 100, encoding='utf-8')
+        os.utime(old_review, (now_ts - 10 * 86400, now_ts - 10 * 86400))
+
+        n_comp, b_freed, logs = compress_historical_archives(self.runtime, min_age_days=2)
+        self.assertEqual(n_comp, 2, "Only the 2 old rotated files should be compressed")
+        self.assertTrue(active_events.exists(), "Active events.jsonl MUST NOT be compressed!")
+        self.assertTrue(recent_rotation.exists(), "Recent rotation (< 2 days) MUST NOT be compressed!")
+        self.assertFalse(old_rotation.exists(), "Old rotation should be compressed and removed")
+        self.assertTrue((archive / 'events.jsonl.old.zip').exists())
+        self.assertFalse(old_review.exists(), "Old trade review should be compressed and removed")
+        self.assertTrue((trade_review / 'trade-review-2026-10-15.jsonl.zip').exists())
+
+
 if __name__ == '__main__':
     unittest.main()
