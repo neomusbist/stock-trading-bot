@@ -27,12 +27,26 @@ class AsyncDailyDecisionLog:
         self.pending_bytes = 0
         self.last_sig = OrderedDict()
         self.damaged_paths = set()
+        self.omission_intervals = deque(maxlen=32)
         self.written = self.omitted = self.errors = 0
         self.blocked = False
         self.block_reason = None
         self.last_error = ''
         self.bytes_written = 0
         self.day = None
+
+    def _omit_locked(self, reason, count=1):
+        at = self.clock().isoformat()
+        self.omitted += count
+        self.blocked, self.block_reason = True, reason
+        if self.omission_intervals and self.omission_intervals[-1]['reason'] == reason and self.omission_intervals[-1]['open']:
+            interval = self.omission_intervals[-1]
+            interval['last_detected_at'] = at
+            interval['rows'] += count
+        else:
+            self.omission_intervals.append({'reason': reason, 'first_detected_at': at,
+                                            'last_detected_at': at, 'rows': count, 'open': True,
+                                            'upstream_feed_loss': 'UNKNOWN'})
 
     def record(self, row, symbol=None, force=False):
         try:
@@ -49,9 +63,7 @@ class AsyncDailyDecisionLog:
                         and 0 <= stamp.timestamp() - previous[1] < self.dedup_seconds):
                     return True
                 if len(self.pending) >= self.max_queue_rows or self.pending_bytes + len(payload) > self.max_queue_bytes:
-                    self.omitted += 1
-                    self.blocked = True
-                    self.block_reason = 'DIAGNOSTIC_QUEUE_LIMIT'
+                    self._omit_locked('DIAGNOSTIC_QUEUE_LIMIT')
                     return False
                 self.pending.append((day, payload))
                 self.pending_bytes += len(payload)
@@ -64,8 +76,28 @@ class AsyncDailyDecisionLog:
         except Exception as error:
             with self.lock:
                 self.errors += 1
-                self.omitted += 1
                 self.last_error = type(error).__name__
+                self._omit_locked('DIAGNOSTIC_ENCODE_ERROR')
+            return False
+
+    def enqueue_encoded(self, payload):
+        """Enqueue an already-frozen JSONL evidence row without producer I/O."""
+        try:
+            day = self.clock().strftime('%Y%m%d')
+            with self.lock:
+                if (not isinstance(payload, bytes) or len(payload) > 32768 or
+                        len(self.pending) >= self.max_queue_rows or
+                        self.pending_bytes + len(payload) > self.max_queue_bytes):
+                    self._omit_locked('DIAGNOSTIC_QUEUE_LIMIT')
+                    return False
+                self.pending.append((day, payload))
+                self.pending_bytes += len(payload)
+                return True
+        except Exception as error:
+            with self.lock:
+                self.errors += 1
+                self.last_error = type(error).__name__
+                self._omit_locked('DIAGNOSTIC_ENQUEUE_ERROR')
             return False
 
     def flush(self):
@@ -81,12 +113,19 @@ class AsyncDailyDecisionLog:
             except OSError as error:
                 with self.lock:
                     self.errors += 1
-                    self.omitted += len(batch)
-                    self.blocked = True
                     self.last_error = type(error).__name__
-                    self.block_reason = 'DIAGNOSTIC_BUDGET_UNKNOWN'
+                    self._omit_locked('DIAGNOSTIC_BUDGET_UNKNOWN',len(batch))
                 return
+            groups = []
             for day, payload in batch:
+                if groups and groups[-1][0] == day and groups[-1][2] + len(payload) <= 65536:
+                    groups[-1][1].append(payload)
+                    groups[-1][2] += len(payload)
+                else:
+                    groups.append([day, [payload], len(payload)])
+            for day, rows, _ in groups:
+                payload = b''.join(rows)
+                row_count = len(rows)
                 path = self.folder / (self.file_prefix + '-' + day + '.jsonl')
                 try:
                     current = path.stat().st_size if path.exists() else 0
@@ -101,8 +140,7 @@ class AsyncDailyDecisionLog:
                         reason = 'DIAGNOSTIC_FREE_SPACE_BELOW_SAFETY_LIMIT'
                     if reason:
                         with self.lock:
-                            self.omitted += 1
-                            self.blocked, self.block_reason = True, reason
+                            self._omit_locked(reason,row_count)
                         continue
                     try:
                         with path.open('ab') as out:
@@ -117,25 +155,26 @@ class AsyncDailyDecisionLog:
                             self.damaged_paths.add(path)
                         raise
                     with self.lock:
-                        self.written += 1
+                        self.written += row_count
                         total += len(payload)
                         self.total_bytes = total
                         self.bytes_written = current + len(payload)
                         self.day = day
                         self.blocked, self.block_reason = False, None
+                        for interval in self.omission_intervals:
+                            interval['open'] = False
                 except Exception as error:
                     with self.lock:
                         self.errors += 1
-                        self.omitted += 1
-                        self.blocked = True
                         self.last_error = type(error).__name__
-                        self.block_reason = 'DIAGNOSTIC_IO_ERROR:' + self.last_error
+                        self._omit_locked('DIAGNOSTIC_IO_ERROR:' + self.last_error,row_count)
 
     def stats(self):
         with self.lock:
             return {'path': self.file_prefix + '-YYYYMMDD.jsonl', 'day': self.day,
                     'written_rows': self.written, 'omitted_rows': self.omitted,
                     'write_errors': self.errors, 'last_error': self.last_error,
+                    'omission_intervals': list(self.omission_intervals),
                     'blocked': self.blocked, 'block_reason': self.block_reason,
                     'bytes_written': self.bytes_written, 'max_file_bytes': self.max_file_bytes,
                     'total_bytes': self.total_bytes, 'max_total_bytes': self.max_total_bytes,
@@ -159,7 +198,7 @@ class SampledResearchLog(AsyncDailyDecisionLog):
     def record(self, row, symbol=None, force=False):
         if not symbol:
             with self.lock:
-                self.omitted += 1
+                self._omit_locked('RESEARCH_SYMBOL_UNKNOWN')
             return False
         stamp = self.clock().timestamp()
         key = (symbol, row.get('event'))

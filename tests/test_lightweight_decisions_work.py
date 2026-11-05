@@ -43,6 +43,9 @@ class LightweightDecisionTests(unittest.TestCase):
         self.assertEqual(d.stats()['queue_rows'], 1)
         self.assertEqual(d.stats()['omitted_rows'], 1)
         self.assertEqual(d.stats()['block_reason'], 'DIAGNOSTIC_QUEUE_LIMIT')
+        gap = d.stats()['omission_intervals'][0]
+        self.assertEqual(gap['first_detected_at'], AT.isoformat())
+        self.assertEqual(gap['upstream_feed_loss'], 'UNKNOWN')
 
     def test_slow_disk_writer_does_not_hold_producer_lock(self):
         d = self.make()
@@ -68,6 +71,20 @@ class LightweightDecisionTests(unittest.TestCase):
             self.assertFalse(writer.is_alive())
         d.flush()
         self.assertEqual(d.stats()['written_rows'], 2)
+
+    def test_writer_batches_small_rows_without_losing_counts(self):
+        d = self.make()
+        for n in range(100):
+            self.assertTrue(d.record({'decision': 'BUY', 'n': n}))
+        original = Path.open
+        writes = []
+        def count_open(path, *args, **kwargs):
+            if args and args[0] == 'ab':writes.append(path)
+            return original(path, *args, **kwargs)
+        with patch.object(Path, 'open', count_open):d.flush()
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(d.stats()['written_rows'], 100)
+        self.assertEqual(len((self.root/'core-decisions-20261105.jsonl').read_text(encoding='utf8').splitlines()), 100)
 
     def test_daily_cap_persists_across_restart_and_rotates_without_deletion(self):
         d = self.make(max_file_bytes=40)
@@ -110,9 +127,41 @@ class LightweightDecisionTests(unittest.TestCase):
         cap = TradeReviewCapture(self.root, clock=lambda: self.time, start=False, min_free_bytes=0)
         try:
             self.assertFalse(cap.continuous_watch)
-            self.assertEqual(cap.day_limit, 100*1024**2)
+            self.assertEqual(cap.day_limit, 32*1024**2)
+            self.assertEqual(cap.priority_tape.max_file_bytes, 64*1024**2)
+            self.assertEqual(cap.core_decisions.max_file_bytes, 4*1024**2)
             self.assertEqual(cap.stats()['watch_capture_mode'], 'MEMORY_RING_ONLY')
             self.assertIn('ring_evictions', cap.stats())
+        finally:
+            cap.close()
+
+    def test_priority_tape_retains_real_preentry_and_held_events_when_bulk_blocked(self):
+        from tests.test_trade_review_capture import tick
+        symbol = '033160'
+        cap = TradeReviewCapture(self.root, clock=lambda: self.time, start=False,
+                                 min_free_bytes=32*1024**3, diagnostic_min_free_bytes=5*1024**3)
+        try:
+            with patch('shutil.disk_usage', return_value=SimpleNamespace(free=29*1024**3)):
+                cap.set_scope([symbol], {}, AT)
+                cap.tick(tick(symbol, AT), AT, AT)
+                cap.book(symbol, {'time': AT.isoformat(), 'best_bid': 16900, 'best_ask': 16910,
+                                  'bid_qty': 30, 'ask_qty': 20, 'depth_available': True}, AT)
+                cap.promote(symbol, AT)
+                cap.set_scope([symbol], {symbol: {'opened': AT.isoformat(), 'avg': 16910, 'qty': 4}}, AT)
+                cap.tick(tick(symbol, AT + timedelta(seconds=1)), AT + timedelta(seconds=1), AT + timedelta(seconds=1))
+                self.assertFalse(cap.flush())
+                cap.priority_tape.flush()
+            path = self.root/'trade-priority-20261105.jsonl'
+            rows = [json.loads(line) for line in path.read_text(encoding='utf8').splitlines()]
+            self.assertGreaterEqual(sum(row.get('event') == 'TRADE' for row in rows), 2)
+            self.assertTrue(any(row.get('event') == 'BOOK' for row in rows))
+            self.assertTrue(any(row.get('event') == 'PREENTRY_BUFFER' and 'PARTIAL' in row['coverage'] for row in rows))
+            trade = next(row for row in rows if row.get('event') == 'TRADE')
+            self.assertEqual(trade['symbol'], symbol)
+            self.assertIn('exchange_at', trade);self.assertIn('received_at', trade)
+            self.assertIn('capture_sequence', trade);self.assertIn('capture_enqueued_at', trade)
+            self.assertFalse(cap.stats()['priority_trade_evidence']['critical_ledger'])
+            self.assertEqual(cap.stats()['priority_trade_evidence']['omitted_rows'], 0)
         finally:
             cap.close()
 

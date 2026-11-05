@@ -134,7 +134,7 @@ class BoundedCoreDecisionLog:
 class TradeReviewCapture:
     def __init__(self, folder, *, ring_seconds=45., ring_rows=256,
                  ring_bytes=1024*1024, queue_rows=4096, queue_bytes=4*1024*1024,
-                 file_bytes=32*1024*1024, day_bytes=100*1024**2,
+                 file_bytes=32*1024*1024, day_bytes=32*1024**2,
                  total_bytes=12*1024**3, min_free_bytes=32*1024**3,
                  diagnostic_max_bytes=4*1024*1024, diagnostic_min_free_bytes=5*1024**3,
                  continuous_watch=False, clock=None, start=True, diagnostic_async=True):
@@ -147,6 +147,11 @@ class TradeReviewCapture:
             diagnostic_class=BoundedCoreDecisionLog
         self.core_decisions=diagnostic_class(self.folder,clock=self.clock,
             max_file_bytes=diagnostic_max_bytes,min_free_bytes=diagnostic_min_free_bytes)
+        from automation.lightweight_decisions import AsyncDailyDecisionLog
+        self.priority_tape=AsyncDailyDecisionLog(self.folder,clock=self.clock,
+            file_prefix='trade-priority',max_file_bytes=64*1024**2,
+            max_total_bytes=3*1024**3,min_free_bytes=diagnostic_min_free_bytes,
+            max_queue_rows=4096,max_queue_bytes=4*1024*1024)
         self.ring_seconds=ring_seconds;self.ring_rows=ring_rows;self.ring_limit=ring_bytes
         self.queue_rows=queue_rows;self.queue_limit=queue_bytes
         self.file_limit=file_bytes;self.day_limit=day_bytes;self.total_limit=total_bytes
@@ -205,6 +210,7 @@ class TradeReviewCapture:
                 if not force and not active and symbol not in self.watch:return
                 data=self._encode(row)
                 if active or force:
+                    self.priority_tape.enqueue_encoded(data)
                     self._queue(data);return
                 if self.continuous_watch and symbol in self.watch:
                     # Maintain in-memory ring for WATCH symbols so recent price geometry is always preserved
@@ -287,7 +293,7 @@ class TradeReviewCapture:
                 'coverage':'BOUNDED_PARTIAL_RING_NOT_A_COMPLETENESS_PROOF',
                 'ring_evictions_total':self.ring_evictions},symbol,force=True)
             for _,data in ring:
-                self.ring_size-=len(data);self._queue(data)
+                self.ring_size-=len(data);self.priority_tape.enqueue_encoded(data);self._queue(data)
 
     def decision_tape(self,symbol,at,snapshot):
         """Persist bounded FAST evidence even when promotion beat WATCH scope.
@@ -646,6 +652,9 @@ class TradeReviewCapture:
                 'rejected_buffer_skips':self.rejected_buffer_skips,
                 'entry_evidence':dict(self.entry_evidence.counts),
                 'core_decision_diagnostics':self.core_decisions.stats(),
+                'priority_trade_evidence':{**self.priority_tape.stats(),
+                    'coverage':'BOUNDED_PREENTRY_RING_AND_HELD_ONLY_UNKNOWN_IF_DROPS',
+                    'critical_ledger':False},
                 'continuous_watch':self.continuous_watch,'storage_block_reason':self.storage_block_reason,
                 'limits':{'file_bytes':self.file_limit,'day_bytes':self.day_limit,'total_bytes':self.total_limit,'min_free_bytes':self.min_free_bytes},
                 'coverage':'UNKNOWN_IF_LOSS_OR_GAP_OR_PARTIAL_BUFFER','orders_enabled':False,
@@ -713,6 +722,7 @@ class TradeReviewCapture:
                 self.errors+=1;self.last_error=type(error).__name__;ok=False
             if hasattr(self.core_decisions,'flush'):
                 self.core_decisions.flush()
+            self.priority_tape.flush()
             self.write_status()
             if not ok:self.stop.wait(1.)
 
@@ -737,5 +747,6 @@ class TradeReviewCapture:
         try:
             result=self.flush()
             if hasattr(self.core_decisions,'flush'):self.core_decisions.flush()
+            self.priority_tape.flush()
             return result
         finally:self.write_status(force=True)
