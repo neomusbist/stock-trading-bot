@@ -38,6 +38,9 @@ class AutomationConfig:
     max_consecutive_losses: int | None = 3  # null: 연속 손실 횟수 제한 없음. 일일 위험예산은 별도 유지.
     daily_risk_override_day: str | None = None
     daily_risk_override_budget_krw: float | None = None
+    focus_persistence_enabled: bool = True  # Focus persistence: retain completed bars & observation history across rank drops; bounded memory cap
+    max_persistent_symbols: int = 120  # Maximum observed symbols retained in memory governor
+    max_persistent_bars: int = 60  # Maximum completed bars retained per symbol
     entry_context_enabled: bool = False  # separately approved strategy experiment
     stable_position_book_confirmation: bool = False  # opt-in read-only cross-check for quiet standing books
     fresh_box_basis_enabled: bool = False  # opt-in independent C base experiment

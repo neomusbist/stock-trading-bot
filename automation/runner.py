@@ -316,8 +316,13 @@ class SubscriptionState:
         for sym in list(self.detached-desired):
             if self.gap_expired(detector,sym,stamp,limit_seconds=grace_seconds):
                 gap=(stamp-self.detached_at[sym]).total_seconds()
-                detector.forget(sym); self.detached.discard(sym);self.detached_at.pop(sym,None)
-                engine.event('OBSERVATION_RELEASED',symbol=sym,data_action='RESET_STALE_GAP',
+                if not getattr(getattr(detector, 'a', None), 'focus_persistence_enabled', True):
+                    detector.forget(sym)
+                elif hasattr(detector, 'evict_if_over_capacity'):
+                    detector.evict_if_over_capacity(sym, protected=desired)
+                self.detached.discard(sym);self.detached_at.pop(sym,None)
+                engine.event('OBSERVATION_RELEASED',symbol=sym,
+                             data_action='RETAIN_FOCUS_PERSISTENCE' if getattr(getattr(detector, 'a', None), 'focus_persistence_enabled', True) else 'RESET_STALE_GAP',
                              subscription_gap_seconds=gap,stored_completed_bars=len(detector.history.get(sym,[])))
         if desired==self.symbols:
             if feed.refresh_exchange() is not True:return False
@@ -340,16 +345,20 @@ class SubscriptionState:
             engine.event('OBSERVATION_RELEASED',symbol=sym,data_action='RETAIN_UNTIL_STALE_GAP',
                 stored_completed_bars=len(detector.history.get(sym,[])))
         for sym in added:
-            had_data=sym in detector.last
+            had_data=sym in detector.last or bool(detector.history.get(sym))
             fresh=detector.observation_fresh(sym,stamp)
             expired=had_data and self.gap_expired(detector,sym,stamp,limit_seconds=grace_seconds)
             since=self.detached_at.get(sym)
             gap=(stamp-since).total_seconds() if since else 0.0
-            if expired:detector.forget(sym)
-            elif hasattr(detector,'preload_from_context'):detector.preload_from_context(sym,stamp)
+            if expired:
+                if not getattr(getattr(detector, 'a', None), 'focus_persistence_enabled', True):
+                    detector.forget(sym)
+                elif hasattr(detector, 'touch_symbol'):
+                    detector.touch_symbol(sym, stamp)
+            if hasattr(detector,'preload_from_context'):detector.preload_from_context(sym,stamp)
             self.detached.discard(sym);self.detached_at.pop(sym,None);self.waiting[sym]=stamp
             engine.event('OBSERVATION_REJOINED',symbol=sym,
-                data_action='RESET_STALE_GAP' if expired else 'RETAIN_FRESH' if fresh else 'RETAIN_OBSERVATION' if had_data else 'NO_DATA',
+                data_action='RESET_STALE_GAP' if (expired and not getattr(getattr(detector, 'a', None), 'focus_persistence_enabled', True)) else 'RETAIN_FRESH' if fresh else 'RETAIN_OBSERVATION' if had_data else 'NO_DATA',
                 subscription_gap_seconds=gap,stored_completed_bars=len(detector.history.get(sym,[])),
                 fresh_regular_tick_required=True)
         feed.update_symbols(sorted(desired))

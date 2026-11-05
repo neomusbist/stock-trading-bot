@@ -33,7 +33,7 @@ def make_evaluation_view(row):
 
 class ShadowObserver:
  def __init__(self,cfg,auto,costs,emit,risk=None,limit=32):
-  self.cfg=cfg;self.auto=auto;self.detector=PatternDetector(cfg,auto,costs);self.fast_strategy=FastMomentumStrategy(cfg,auto,costs);self.detector.fast_strategy=self.fast_strategy;self.emit=emit;self.risk=risk;self.limit=limit;self.rows={};self.first={};self.last_log={};self.previous={}
+  self.cfg=cfg;self.auto=auto;self.detector=PatternDetector(cfg,auto,costs);self.detector.continuous_observation=True;self.fast_strategy=FastMomentumStrategy(cfg,auto,costs);self.detector.fast_strategy=self.fast_strategy;self.emit=emit;self.risk=risk;self.limit=limit;self.rows={};self.first={};self.last_log={};self.previous={}
   self.capital={};self.epoch=None;self.eval_seconds=2;self.selected_at={};self.latest={};self.detached=set()
   self.last_tier={};self.observation_seq=0;self.detached_at={};self.last_evaluated={}
  def reset_stream(self,reason,symbol=None,stamp=None):
@@ -91,19 +91,27 @@ class ShadowObserver:
    return (tier_rank,0 if held else 1,-effective_score,tie_rank,sym)
   eligible.sort(key=priority)
   selected={r['code']:r for r in eligible[:self.limit]}
+  gap_limit = residence_seconds if getattr(self.auto, 'focus_persistence_enabled', True) else self.cfg.stale_seconds
   for sym in list(self.detached-set(selected)):
    since=self.detached_at.get(sym,stamp)
-   if (stamp-since).total_seconds()>self.cfg.stale_seconds and not self.detector.observation_fresh(sym,stamp):
-    self.reset_stream('UNSUBSCRIBED_STALE_GAP',symbol=sym);self.detached.discard(sym);self.detached_at.pop(sym,None)
-    self.event('SHADOW_DATA_RESET',stamp,symbol=sym,data_action='RESET_STALE_GAP',observation_gap_seconds=(stamp-since).total_seconds())
+   if (stamp-since).total_seconds()>gap_limit and not self.detector.observation_fresh(sym,stamp):
+    if not getattr(self.auto, 'focus_persistence_enabled', True):
+     self.reset_stream('UNSUBSCRIBED_STALE_GAP',symbol=sym)
+     self.event('SHADOW_DATA_RESET',stamp,symbol=sym,data_action='RESET_STALE_GAP',observation_gap_seconds=(stamp-since).total_seconds())
+    elif hasattr(self.detector, 'evict_if_over_capacity'):
+     self.detector.evict_if_over_capacity(sym, protected=selected.keys())
+    self.detached.discard(sym);self.detached_at.pop(sym,None)
   for row in eligible[self.limit:]:self.event('SHADOW_CAPACITY',stamp,symbol=row['code'],reason='DIAGNOSTIC_LIMIT',limit=self.limit)
   for sym,row in selected.items():
    if sym in self.detached:
     since=self.detached_at.get(sym,stamp);last=self.detector.last.get(sym)
-    expired=bool(last and last.time.date()!=stamp.date()) or ((stamp-since).total_seconds()>self.cfg.stale_seconds and not self.detector.observation_fresh(sym,stamp))
+    expired=bool(last and last.time.date()!=stamp.date()) or ((stamp-since).total_seconds()>gap_limit and not self.detector.observation_fresh(sym,stamp))
     if expired:
-     self.reset_stream('REJOIN_STALE_GAP',symbol=sym)
-     self.event('SHADOW_DATA_RESET',stamp,symbol=sym,data_action='RESET_STALE_GAP',observation_gap_seconds=(stamp-since).total_seconds())
+     if not getattr(self.auto, 'focus_persistence_enabled', True):
+      self.reset_stream('REJOIN_STALE_GAP',symbol=sym)
+      self.event('SHADOW_DATA_RESET',stamp,symbol=sym,data_action='RESET_STALE_GAP',observation_gap_seconds=(stamp-since).total_seconds())
+     elif last and last.time.date()!=stamp.date():
+      self.reset_stream('DAY_ROLLOVER',symbol=sym)
     self.detached.discard(sym);self.detached_at.pop(sym,None)
    self.selected_at.setdefault(sym,stamp)
    prior=self.previous.get(sym);first_start=self.first[sym].setdefault('first_shadow_at',stamp.isoformat())
@@ -137,7 +145,7 @@ class ShadowObserver:
        received=transport_received or received,processed=received,execution_fresh=execution_fresh)
   self.first[t.symbol].setdefault('first_tick_at',received.isoformat())
   if not execution_fresh or not coverage_complete:return
-  if reset and not self.detector.continuous_observation:self.event('SHADOW_DATA_RESET',received,symbol=t.symbol,reason='STALE_TICK_GAP',gap_seconds=(t.time-old.time).total_seconds())
+  if reset and not self.detector.continuous_observation and not getattr(self.auto, 'focus_persistence_enabled', True):self.event('SHADOW_DATA_RESET',received,symbol=t.symbol,reason='STALE_TICK_GAP',gap_seconds=(t.time-old.time).total_seconds())
   evaluated=self.last_evaluated.get(t.symbol)
   if evaluated and (received-evaluated).total_seconds()<self.eval_seconds:return
   self.last_evaluated[t.symbol]=received

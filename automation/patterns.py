@@ -36,6 +36,9 @@ class PatternDetector(Detector):
         self._entry_geometry_cache={}
         self._bar_structure_cache={}
         self._setup_gates_cache={}
+        self._symbol_access={}
+        self.max_persistent_symbols=getattr(auto, 'max_persistent_symbols', 120)
+        self.max_persistent_bars=getattr(auto, 'max_persistent_bars', 60)
         self._state_lock=RLock()
         self.price_context=PriceContext(bar_limit=120 if auto.intraday_context_enabled or auto.structural_breakout_enabled else 30)
 
@@ -52,6 +55,31 @@ class PatternDetector(Detector):
         self._entry_geometry_cache.clear()
         self._bar_structure_cache.clear()
         self._setup_gates_cache.clear()
+        self._symbol_access.clear()
+
+    def touch_symbol(self, symbol, stamp=None):
+        if symbol:
+            self._symbol_access[symbol] = stamp or (self.last.get(symbol).time if symbol in self.last else datetime.now())
+
+    def evict_if_over_capacity(self, symbol=None, protected=None):
+        """Bounded memory governor: evict oldest unobserved symbols when exceeding capacity."""
+        max_symbols = getattr(self.a, 'max_persistent_symbols', 120)
+        from automation.policy import HARD_LOCKS, BREAKEVEN_EXITS, TEST_RELEASE_SYMBOL
+        protected_set = set(HARD_LOCKS) | set(BREAKEVEN_EXITS)
+        if TEST_RELEASE_SYMBOL:
+            protected_set.add(TEST_RELEASE_SYMBOL)
+        if protected:
+            protected_set.update(protected)
+        symbols = list(self.history.keys())
+        if len(symbols) <= max_symbols:
+            return None
+        evictable = [s for s in symbols if s not in protected_set]
+        if not evictable:
+            return None
+        evictable.sort(key=lambda s: self._symbol_access.get(s, datetime.min))
+        oldest = evictable[0]
+        self.forget(oldest)
+        return oldest
 
     @observation_locked
     def clear_no_trade_chain(self,symbol=None):
@@ -112,20 +140,20 @@ class PatternDetector(Detector):
 
         old=self.last.get(t.symbol)
 
-        if not super().ingest(t,received,preserve_observation=self.continuous_observation): return False
+        if not super().ingest(t,received,preserve_observation=self.continuous_observation or getattr(self.a, 'focus_persistence_enabled', True)): return False
 
         if resuming:
-
             gap['pending']=False
-
             self.observation_start[t.symbol]=t.time
 
-        if old and (t.time-old.time).total_seconds()>self.cfg.stale_seconds and not self.continuous_observation:
+        self.touch_symbol(t.symbol, t.time)
+        if len(self.history) > self.max_persistent_symbols:
+            self.evict_if_over_capacity(t.symbol)
 
-            self.history.pop(t.symbol,None); self.current.pop(t.symbol,None)
-
+        if old and (t.time-old.time).total_seconds()>self.cfg.stale_seconds and not self.continuous_observation and not getattr(self.a, 'focus_persistence_enabled', True):
+            self.history.pop(t.symbol,None)
+            self.current.pop(t.symbol,None)
             self.last_gap_reason[t.symbol]='DISCONNECT_GAP'
-
             self.observation_start.pop(t.symbol,None)
 
         previous_session=self.observation_session.get(t.symbol)
@@ -178,7 +206,9 @@ class PatternDetector(Detector):
 
                 self.price_context.record(t.symbol,{**b,'venue':getattr(self.cfg,'after_default_venue','SOR') if b['time'].strftime('%H:%M:%S')>=self.a.after_prep_start else 'KRX'},t.time,self.cfg.stale_seconds)
 
-                self.history.setdefault(t.symbol,deque(maxlen=30)).append(b)
+                self.history.setdefault(t.symbol,deque(maxlen=self.max_persistent_bars)).append(b)
+                if len(self.history) > self.max_persistent_symbols:
+                    self.evict_if_over_capacity(t.symbol)
 
             else:
 
@@ -236,7 +266,9 @@ class PatternDetector(Detector):
 
                     self.price_context.record(t.symbol,{**b,'venue':getattr(self.cfg,'after_default_venue','SOR') if b['time'].strftime('%H:%M:%S')>=self.a.after_prep_start else 'KRX'},t.time,self.cfg.stale_seconds)
 
-                    self.history.setdefault(t.symbol,deque(maxlen=30)).append(b)
+                    self.history.setdefault(t.symbol,deque(maxlen=self.max_persistent_bars)).append(b)
+                    if len(self.history) > self.max_persistent_symbols:
+                        self.evict_if_over_capacity(t.symbol)
 
                 else:
 
@@ -244,11 +276,13 @@ class PatternDetector(Detector):
 
                     self.last_gap_reason[t.symbol] = gap_type or 'MISSING_MINUTE'
 
-                    if self.continuous_observation:
+                    if self.continuous_observation or getattr(self.a, 'focus_persistence_enabled', True):
 
                         self.price_context.record(t.symbol,{**b,'venue':getattr(self.cfg,'after_default_venue','SOR') if b['time'].strftime('%H:%M:%S')>=self.a.after_prep_start else 'KRX'},t.time,self.cfg.stale_seconds)
 
-                        self.history.setdefault(t.symbol,deque(maxlen=30)).append(b)
+                        self.history.setdefault(t.symbol,deque(maxlen=self.max_persistent_bars)).append(b)
+                        if len(self.history) > self.max_persistent_symbols:
+                            self.evict_if_over_capacity(t.symbol)
 
                     else:
 
@@ -467,29 +501,46 @@ class PatternDetector(Detector):
 
             if (cur.get('gap_reason') is not None or cur.get('coverage_resumed_at')):
 
-                return []
-
-            gap_to_last = (cur['time'] - bars[-1]['time']).total_seconds()
-
-            if gap_to_last == 60:
-
-                pass
-
-            elif cur.get('resumed_from_no_trade_gap') or bars[-1].get('pure_no_trade_gap_after_seconds'):
-
-                if gap_to_last > 900:
+                if not getattr(self.a, 'focus_persistence_enabled', True):
 
                     return []
 
             else:
 
-                return []
+                gap_to_last = (cur['time'] - bars[-1]['time']).total_seconds()
+
+                if gap_to_last == 60:
+
+                    pass
+
+                elif cur.get('resumed_from_no_trade_gap') or bars[-1].get('pure_no_trade_gap_after_seconds'):
+
+                    if gap_to_last > 900:
+
+                        return []
+
+                elif getattr(self.a, 'focus_persistence_enabled', True):
+
+                    if gap_to_last > 900:
+
+                        return []
+
+                else:
+
+                    return []
 
         valid=[]
 
         for bar in reversed(bars):
 
-            if bar.get('gap_reason') is not None or bar.get('first_second',0)>self.cfg.stale_seconds:break
+            if bar.get('gap_reason') is not None:
+                if not getattr(self.a, 'focus_persistence_enabled', True):
+                    break
+                continue
+            if bar.get('first_second',0)>self.cfg.stale_seconds:
+                if not getattr(self.a, 'focus_persistence_enabled', True):
+                    break
+                continue
 
             if after_only and bar['time'].strftime('%H:%M:%S')<'15:40:00':
 
@@ -504,6 +555,10 @@ class PatternDetector(Detector):
                     pass
 
                 elif bar.get('pure_no_trade_gap_after_seconds') and step_gap == bar['pure_no_trade_gap_after_seconds'] + 60 and step_gap <= 900:
+
+                    pass
+
+                elif getattr(self.a, 'focus_persistence_enabled', True) and step_gap <= 900:
 
                     pass
 
@@ -594,7 +649,9 @@ class PatternDetector(Detector):
     @observation_locked
     def preload_from_context(self, symbol, asof):
         """PriceContext에 보관된 당일 확정 1분봉이 있고 history가 비어있을 때 유효 완성봉을 안전하게 사전 적재한다."""
-        if not symbol or len(self.history.get(symbol, ())) > 0:
+        if not symbol:
+            return 0
+        if not getattr(self.a, 'focus_persistence_enabled', True) and len(self.history.get(symbol, ())) > 0:
             return 0
         row = self.price_context.rows.get(symbol)
         if not row or not row.get('bars'):
@@ -602,7 +659,8 @@ class PatternDetector(Detector):
         # REST/reference bars may bound a target, but cannot stand in for
         # receiver-built signal bars or bridge a known subscription gap.
         gap=self.coverage_gaps.get(symbol)
-        if gap:return 0
+        if gap and not getattr(self.a, 'focus_persistence_enabled', True):
+            return 0
         bars = [b for b in row['bars'] if b.get('observation_source')=='ACTUAL_RECEIVED'
                 and isinstance(b.get('time'), datetime) and b['time'].date() == asof.date() and b['time'] + timedelta(minutes=1) <= asof]
         if not bars:
@@ -620,15 +678,19 @@ class PatternDetector(Detector):
                 'gap_reason': b.get('gap_reason')
             })
         if valid_bars:
-            h = self.history.setdefault(symbol, deque(maxlen=30))
+            h = self.history.setdefault(symbol, deque(maxlen=self.max_persistent_bars))
             for b in valid_bars:
                 if b not in h:
                     h.append(b)
+            self.touch_symbol(symbol, asof)
+            if getattr(self.a, 'focus_persistence_enabled', True):
+                self.coverage_gaps.pop(symbol, None)
             return len(valid_bars)
         return 0
 
     @observation_locked
     def forget(self,symbol):
+        self._symbol_access.pop(symbol,None)
         self._no_trade_book_chains.pop(symbol,None)
         for mapping in (self.buffers,self.minutes,self.completed,self.last,self.history,self.current,self.day_high,self.prior_high,self.after_day_high,self.after_prior_high,self.last_eval,self.observation_start,self.observation_session):mapping.pop(symbol,None)
         self._eval_keys.pop(symbol,None)
