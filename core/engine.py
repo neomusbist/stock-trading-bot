@@ -121,6 +121,20 @@ class Engine:
 
     def reject_order(self,o,reason,broker_response=False):
         o['status']='REJECTED'; o['failure_reason']=str(reason)
+        response=getattr(reason,'response',None)
+        message=str(response.get('return_msg','')) if isinstance(response,dict) else ''
+        if (o['side']=='SELL' and broker_response and getattr(reason,'api',None)=='kt10001'
+                and '509193' in message and 'CB 발동중' in message):
+            p=self.s['positions'].get(o['symbol'])
+            if p:
+                # A definitive broker rejection is not an accepted/unknown order.
+                # Retain the exit intent but require a new exchange-open event and
+                # fresh holdings/open-order reconciliation before another attempt.
+                p['exit_attempts']=max(0,p.get('exit_attempts',0)-1)
+                p['circuit_breaker_wait']={'rejected_at':self.clock().isoformat(),
+                    'account_confirmed_at':None,'order_local':o['local']}
+                self.account_ok=False
+                o['failure_class']='CONFIRMED_CIRCUIT_BREAKER'
         if o['side']=='BUY':
             self.diagnostic('broker_reject_count' if broker_response else 'internal_reject_count')
             if broker_response: self.mark_broker_submit(o)
@@ -383,6 +397,7 @@ class Engine:
             if not p['exit_requested'] or self.active_orders(sym) or p.get('qty_blocked'): continue
             if not self.exit_account_ready(sym,p['qty']):
                 continue
+            if not self.circuit_exit_ready(sym,p):continue
             if not self.c.live_mode and sym not in prices:
                 continue
             if p['exit_attempts']>=self.c.max_exit_attempts:
@@ -394,6 +409,20 @@ class Engine:
                 if px is None:
                     o['status']='CANCELED'; self.save(); continue
                 self.cumulative_fill(o,o['qty'],o['qty']*px*(1-self.c.exit_slippage_fraction))
+
+    def circuit_exit_ready(self,symbol,position):
+        cb=position.get('circuit_breaker_wait')
+        if not cb:return True
+        try:
+            rejected=datetime.fromisoformat(cb['rejected_at'])
+            account=datetime.fromisoformat(cb['account_confirmed_at'])
+            opened=datetime.fromisoformat(self.market_open_observed_at)
+            ready=(account>rejected and opened>rejected and getattr(self,'market',None)=='3')
+        except (KeyError,AttributeError,TypeError,ValueError):ready=False
+        if not ready:return False
+        position.pop('circuit_breaker_wait',None);self.save()
+        self.event('CIRCUIT_BREAKER_EXIT_RETRY_READY',symbol=symbol,account_confirmed_at=account.isoformat(),market_open_at=opened.isoformat())
+        return True
 
     def exit_account_ready(self,symbol,qty):
         return not self.c.live_mode or (self.account_ok and 0<=time.monotonic()-self.last_account<=self.c.reconcile_seconds*3)
@@ -543,6 +572,16 @@ class Engine:
                 if sym in self.s['positions']:
                     self.halt('관리 종목 외부 미체결 주문')
                     self.s['positions'][sym]['qty_blocked']=True
+        for sym,p in self.s['positions'].items():
+            cb=p.get('circuit_breaker_wait');b=balances.get(sym)
+            if not cb or not started or not b or p.get('qty_blocked'):continue
+            try:
+                fresh=datetime.fromisoformat(started)>datetime.fromisoformat(cb['rejected_at'])
+                eligible=(int(b['qty'])==int(p['qty']) and int(b['available'])>=int(p['qty'])
+                    and not self.active_orders(sym)
+                    and not any(code(r['stk_cd'])==sym for r in snapshot['orders']))
+            except (ValueError,TypeError,KeyError):fresh=False;eligible=False
+            if fresh and eligible:cb['account_confirmed_at']=started
         self.s['excluded']=sorted(set(self.s['excluded'])|external)
         self.s['cash']=max(0,snapshot['cash']); self.s['equity']=min(self.c.account_equity,snapshot['equity'])
         self.account_ok=True; self.last_account=time.monotonic()

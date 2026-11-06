@@ -39,5 +39,11 @@ def commit_staged_close(*,service,state_path,backup_dir,original,staged,proof,st
     except Exception:
         atomic_json(state_path,original)
         atomic_json(backup_dir/'rollback.json',{**event,'status':'ROLLED_BACK'})
+        try:
+            append_jsonl(state_path.parent/'events.jsonl',{'time':stamp.isoformat(),
+                'event':'EXTERNAL_CLOSE_ROLLED_BACK','symbol':sym,'order_id':oid,'execution_id':eid})
+        except OSError:
+            # rollback.json remains the durable authority if the event log failed.
+            pass
         raise
     return {'status':'APPLIED','state_sha256':digest,'receipt':str(backup_dir/'receipt.json')}

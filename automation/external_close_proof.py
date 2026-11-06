@@ -53,6 +53,19 @@ def validate_external_close(state,snapshot,now,*,symbol,order_id,execution_id):
     if (fields.get('913')!='체결' or fields.get('905')!='-매도' or _integer(fields.get('900'))!=qty
             or _integer(fields.get('902'))!=0 or _integer(fields.get('911'))!=qty):
         raise ValueError('WEBSOCKET_FILL_MISMATCH')
+    # A later, unrelated round trip can leave the account flat again. Flat is
+    # not proof that this earlier execution is the sole ownership change.
+    known={str(o.get('id','')):o for o in local_orders.values() if o.get('id')}
+    for other in fills:
+        if str(other.get('stk_cd','')).lstrip('A')!=symbol:continue
+        other_id=str(other.get('ord_no',''))
+        if other_id==order_id:continue
+        if other.get('ord_stt')!='체결' and _integer(other.get('cntr_qty'))==0:continue
+        prior=known.get(other_id)
+        if not prior:raise ValueError('OTHER_SYMBOL_FILL_UNACCOUNTED')
+        try:prior_at=datetime.fromisoformat(prior['created'])
+        except (KeyError,TypeError,ValueError):raise ValueError('OTHER_SYMBOL_FILL_TIME_UNKNOWN') from None
+        if not prior_at.tzinfo or prior_at>=observed:raise ValueError('LATER_SYMBOL_ORDER_PRESENT')
     matches=[r for r in fills if str(r.get('ord_no',''))==order_id]
     if len(matches)!=1:raise ValueError('UNIQUE_BROKER_FILL_REQUIRED')
     row=matches[0]

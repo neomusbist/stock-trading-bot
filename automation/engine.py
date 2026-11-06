@@ -1347,6 +1347,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
             if p.get('qty_blocked') or p['qty']<=0: continue
             if not self.exit_account_ready(sym,p['qty']):
                 continue
+            if not self.circuit_exit_ready(sym,p):continue
 
             # 일반 정상 청산의 max_exit_attempts=3 제한을 우회하여 19:55~19:59:50 지속 재시도
             p['exit_attempts']=p.get('exit_attempts',0)+1

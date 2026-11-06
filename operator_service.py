@@ -623,6 +623,27 @@ class OperatorService:
             if read_json(self.root/'runtime/automation_policy.json') is None: raise ValueError('운영정책 파일이 없어 중단 요청을 저장하지 못했습니다. 임의 재생성하지 않습니다. HTS를 확인하세요.')
             policy=Policy(self.root/'runtime/automation_policy.json'); policy.command(command)
         return {'verdict':'REQUESTED','command':command,'note':'중단 요청을 저장했습니다. 체결/청산 완료를 의미하지 않습니다. 기존 보유 HARD_LOCK은 유지합니다.'}
+    def request_external_close_maintenance(self,symbol,order_id,execution_id,confirmed=False):
+        """Request only; the worker must independently validate broker evidence."""
+        from core.util import code
+        if confirmed is not True:raise ValueError('EXPLICIT_MAINTENANCE_CONFIRMATION_REQUIRED')
+        symbol=code(symbol)
+        if symbol in HARD_LOCKS or not all(isinstance(v,str) and v.isdigit() for v in (order_id,execution_id)):
+            raise ValueError('MAINTENANCE_IDENTIFIER_INVALID')
+        with ProcessLock(self.root/'runtime/control.lock'):
+            if not self.running():raise ValueError('RUNNER_NOT_ACTIVE')
+            policy=read_json(self.root/'runtime/automation_policy.json',{})
+            if policy.get('mode')!='STOP':raise ValueError('STOP_REQUIRED')
+            cfg,_,_=self.settings();folder=self.root/'runtime'/('automation-'+cfg.broker_environment)
+            state=read_json(folder/'state.json',{})
+            if not state.get('halt') or symbol not in state.get('positions',{}):raise ValueError('INCIDENT_POSITION_REQUIRED')
+            path=self.root/'runtime/maintenance_request.json'
+            old=read_json(path,{})
+            if old.get('status')=='REQUESTED':raise ValueError('MAINTENANCE_ALREADY_REQUESTED')
+            request={'kind':'REVIEW_EXTERNAL_CLOSE','status':'REQUESTED','request_id':uuid.uuid4().hex,
+                'requested_at':self.clock().isoformat(),'symbol':symbol,'order_id':order_id,'execution_id':execution_id}
+            atomic_json(path,request)
+        return {'verdict':'REQUESTED','request_id':request['request_id']}
     def reset_kill(self,confirmation):
         if confirmation!='RESET KILL': raise ValueError('명시적 RESET KILL 확인 필요')
         with ProcessLock(self.root/'runtime/control.lock'):

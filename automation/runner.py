@@ -151,7 +151,7 @@ class AccountWorker:
                         snapshot['book_errors'][sym]=error_record(e)  # 오류 원문 보존; 누락 호가는 HOLD
                 snapshot['performance']={'account_ms':(time.monotonic()-started)*1000,'external_book_ms':(time.perf_counter()-book_started)*1000,'external_book_calls':book_calls}
                 snapshot['performance']['kt00018_profile']={k:v for k,v in getattr(self.rest,'profile',{}).items() if k.startswith('kt00018_')}
-                result={'snapshot':snapshot,'fills':fills,'started':started,'error':None}
+                result={'snapshot':snapshot,'fills':fills,'fills_complete':fills_due,'started':started,'error':None}
             except Exception as e:
                 result={**error_record(e),'started':started}
                 if stage=='snapshot':
@@ -189,9 +189,53 @@ class Reporter:
     def start(self): self.thread.start()
     def close(self): self.stop.set(); self.thread.join(timeout=5)
 
-def update_market(engine,value):
+def update_market(engine,value,received=None):
     if value not in {'0','3','2','4','8','9','a','b','c','d'}: return
     engine.market=value
+    if value=='3' and isinstance(received,datetime):engine.market_open_observed_at=received.isoformat()
+
+def complete_external_close_maintenance(engine,policy,account,result,request_path,stamp):
+    """Stop only after the running account worker proves this exact close."""
+    request_path=Path(request_path)
+    if not request_path.exists() or result.get('error'):return False
+    try:
+        from core.util import read_json_retry
+        request=read_json_retry(request_path)
+        if request.get('status')!='REQUESTED':return False
+        if result.get('fills_complete') is not True:raise ValueError('FILLS_NOT_QUERIED')
+        snapshot=dict(result['snapshot']);snapshot.update(fills=result['fills'],
+            holdings_complete=True,orders_complete=True,fills_complete=True)
+        from automation.maintenance import external_close_stop_proof
+        external_close_stop_proof(engine.s,policy.mode,request,snapshot,account.rest.identity,stamp)
+    except (KeyError,TypeError,ValueError,OSError) as error:
+        reason=type(error).__name__+': '+str(error)
+        if getattr(engine,'_maintenance_last_error',None)!=reason:
+            engine._maintenance_last_error=reason;engine.event('MAINTENANCE_WAIT',reason=reason)
+        if str(error)=='BROKER_QUERY_MUST_FOLLOW_REQUEST':account.request.set()
+        return False
+    try:
+        # The operator uses this same lock to change STOP/LIVE or the request.
+        # Re-read under lock so an earlier STOP observation cannot race LIVE.
+        with ProcessLock(request_path.parent/'control.lock'):
+            if hasattr(policy,'refresh'):policy.refresh()
+            if read_json_retry(request_path)!=request:raise ValueError('MAINTENANCE_REQUEST_CHANGED')
+            current=engine.clock() if callable(getattr(engine,'clock',None)) else stamp
+            external_close_stop_proof(engine.s,policy.mode,request,snapshot,account.rest.identity,current)
+            account.stop.set();account.request.set();account.thread.join(timeout=5)
+            if account.thread.is_alive():
+                engine.halt('유지보수 계좌 조회 종료 실패: 수동 확인 필요')
+                return False
+            engine.s['maintenance_exit']={'request_id':request['request_id'],'at':current.isoformat(),
+                'symbol':request['symbol'],'order_id':request['order_id'],'status':'BROKER_PROVEN_STOP'}
+            engine.save()
+            from core.event_log import append_jsonl
+            append_jsonl(engine.folder/'events.jsonl',{'time':current.isoformat(),'event':'MAINTENANCE_EXIT',
+                'request_id':request['request_id'],'symbol':request['symbol'],'halt_preserved':True})
+            atomic_json(request_path,{**request,'status':'COMPLETED','completed_at':current.isoformat()})
+            return True
+    except (RuntimeError,ValueError,OSError) as error:
+        engine.event('MAINTENANCE_WAIT',reason=type(error).__name__+': '+str(error))
+        return False
 
 def request_capital_refresh(engine,account,in_session):
     ledger=engine.s.get('automation',{})
@@ -1712,7 +1756,7 @@ def process_message(engine,detector,message,received,symbols,lookup,radar,prices
                 if not hasattr(engine,'_depth_log_at'):engine._depth_log_at={}
                 engine._depth_log_at[sym]=received
                 engine.event('BOOK_DEPTH_OBSERVED',symbol=sym,book=book,diagnostic_only=True)
-        elif kind=='0s': update_market(engine,str(item['values']['215']))
+        elif kind=='0s': update_market(engine,str(item['values']['215']),received)
         elif kind=='0B':
             parsed=item.get('_observation_tick')
             t=parsed[1] if isinstance(parsed,tuple) and len(parsed)==2 and parsed[0]==received and isinstance(parsed[1],Tick) else parse_tick(item,received,book_stale_seconds=engine.c.stale_seconds,received_monotonic=message.get('_received_monotonic'))
@@ -2126,6 +2170,7 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                 if policy.mode=='KILL' and policy.state['revision']!=engine.control_revision:
                     kill_requested_at=time.monotonic(); account.request.set()
                 done=engine.controls(prices)
+                maintenance_done=False
                 for result in ready_account_results(account,in_session):
                     if result['error']:
                         account_query_failed(engine,result)
@@ -2154,9 +2199,14 @@ def run(cfg,root,seconds=0,recover_pilot=False,operational_pilot=False,readiness
                         radar.extra_symbols=set(engine.s['positions'])
                         if kill_requested_at is not None and result['started']<kill_requested_at: engine.kill_checked=False
                         if engine.kill_checked: kill_requested_at=None
+                        if complete_external_close_maintenance(engine,policy,account,result,
+                                root/'runtime/maintenance_request.json',now()):
+                            maintenance_done=True
+                            break
                     account.need_fills=bool(engine.active_orders() or engine.s['positions'])
                     account.settlement_pending=pending_broker_settlement(engine.s)
                     account.settlement_interval=auto.scan_seconds
+                if maintenance_done:break
                 focus_promotions=[]
                 while in_session and not radar.q.empty():
                     result=radar.q.get_nowait()
