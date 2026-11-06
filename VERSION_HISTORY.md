@@ -11,7 +11,9 @@
 | [v1.4](https://github.com/neomusbist/stock-trading-bot/releases/tag/v1.4) | 2026-10-12 | Setup O 개장 모멘텀 개발 지선 | [`3bf4d08`](https://github.com/neomusbist/stock-trading-bot/commit/3bf4d086ee659d068e6d2413ef957329de822368) | 동일 커밋 배포 미확인 · Historical Pre-release |
 | [v1.5](https://github.com/neomusbist/stock-trading-bot/releases/tag/v1.5) | 2026-10-14 | WATCH 관측 보전 R5 소스 기준 | [`2da04d3`](https://github.com/neomusbist/stock-trading-bot/commit/2da04d3c794444b1a1332e8a2f0209bad3227049) | 동일 커밋 배포 미확인 · Historical Pre-release |
 | [v1.6](https://github.com/neomusbist/stock-trading-bot/releases/tag/v1.6) | 2026-10-20 | v1.6 이전 운영 기준 (FAST 기초 통합) | [`eac9bc5`](https://github.com/neomusbist/stock-trading-bot/commit/eac9bc5880d25902d0d9f695ffdaabcac9632a16) | 이전 LIVE 기준 · 정식 Release |
-| [v1.7](https://github.com/neomusbist/stock-trading-bot/releases/tag/v1.7) | 2026-11-03 | 11월 3일 첫 실거래(3건 매수·청산) 검증 완료, 이중 진입 경로(돌파 및 눌림목 반등), 구조적 가격기하 순RR, 호가·스프레드 판정 정상화 | [`781de40`](https://github.com/neomusbist/stock-trading-bot/commit/781de402fbe78918fe7ff58306d5349c0fa8cc4b) | 현재 LIVE · 공식 운영 릴리스 / Latest |
+| [v1.7](https://github.com/neomusbist/stock-trading-bot/releases/tag/v1.7) | 2026-11-03 | 11월 3일 첫 실거래(3건 매수·청산) 검증 완료, 이중 진입 경로(돌파 및 눌림목 반등), 구조적 가격기하 순RR, 호가·스프레드 판정 정상화 | [`781de40`](https://github.com/neomusbist/stock-trading-bot/commit/781de402fbe78918fe7ff58306d5349c0fa8cc4b) | 이전 LIVE 운영 릴리스 |
+| [v1.71](https://github.com/neomusbist/stock-trading-bot/releases/tag/v1.71) | 2026-11-04 | 11월 4일 미래산업·지니언스 실거래 결함 수정(저항선 무시 방지, 매수가-고점 일치 오류 교정, 5분 추세 문맥 연계, 순RR 게이트 복원) 안정성 패치 | [`68545c4`](https://github.com/neomusbist/stock-trading-bot/commit/68545c4541fc449fced1890ff703f8198971f024) | 현재 LIVE · 공식 운영 릴리스 / Latest |
+| v1.71-hotfix | 2026-11-05 | 11월 5일 아리바이오홀딩스(290690) 원시 틱 기록 공백 결함 해결(WATCH 승격 시 SHADOW 관측 폴백 연속성 보장, 5단계 무결성 검증 18GB 로그 안전 압축 아카이빙) | DEV 검증 완료 | 운영본 배포 준비 완료 (`HANDOFF_V171_RESTORE_20261105.md`) |
 
 ## 최초 버전부터 확인한 근거
 
@@ -23,6 +25,7 @@
 - v1.5: R5 소스 `2da04d3`가 V1.5 BUILD를 명시합니다. R1~R5마다 정식 출시 번호를 새로 만들지 않았습니다.
 - v1.6: 운영 manifest의 `eac9bc5`와 92개 파일 해시를 대조했습니다. 90개는 Git blob과 바이트 동일, `gui_menu.cmd`와 `requirements.txt`는 줄바꿈만 다릅니다. 설치된 물리 파일 92개의 manifest 검사는 모두 일치했습니다.
 - v1.7: 11월 3일 LIVE 실거래에서 3건(삼기에너지솔루션즈, AP위성, 동진쎄미켐)의 실제 매수·청산 전 과정을 완주한 운영 소스 기준입니다. 이중 진입 경로(초기 압축 돌파 및 눌림목 지지 회복), Lee-Ready 틱 검정, KRX 1틱 스프레드 보정, 구조적 순RR 기하학, 15:10 강제청산 보호를 포함하며 현재 배포된 LIVE 소스(`781de40`)와 물리적으로 일치합니다.
+- v1.71: 11월 4일 LIVE 실거래에서 발생한 미래산업(025560) 및 지니언스(263860)의 고점 부근 추격 진입과 저항선 무시 목표가 왜곡 결함을 수정한 공식 안정성 패치(`68545c4`)입니다. 상방 룸(headroom) 결함 차단(`KNOWN_CEILING_NET_REWARD_RISK_LOW`), 미확인 고점 돌파 지지선 안착 검증, 5분 봉 추세 문맥 연계(`DOWNTREND_COUNTER_BOUNCE`), 거래량 집중 및 틱 반응 결합 Buying Climax 판정, 최종 주문 직전 순RR(최소 1.5) 검증 게이트를 적용하고 74개 회귀시험 전수 통과를 완료했습니다.
 
 ## 이름과 실제 코드의 차이
 

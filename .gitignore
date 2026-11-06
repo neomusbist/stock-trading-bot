@@ -211,3 +211,7 @@ operator_*approval*.json
 !/audit/kt00018_20261028/RESULTS.md
 !/audit/kt00018_20261028/CALL_PATHS.json
 !/audit/kt00018_20261028/DEPLOYMENT_RECEIPT.json
+
+!/TRADING_CLASSICS_INDEX.md
+!/tools/replay_classics_backtest.py
+!/tools/replay_classics_real_account.py

@@ -152,6 +152,7 @@ class WatchFallbackTests(unittest.TestCase):
         self.assertEqual(broker.orders, [])
 
         valid_signal = {'symbol': '200001', 'time': START.isoformat(), 'limit': 2005, 'stop': 1990,
+                        'target': 2100,
                         'pattern': 'A', 'source_count': 1, 'fallback_source1': True,
                         'efficiency': efficiency(2005, 1990, 2100, 0.8, 10, engine.costs)}
         order2 = engine.enter(valid_signal, tick)

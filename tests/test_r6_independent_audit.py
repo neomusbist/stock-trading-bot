@@ -8,6 +8,8 @@ import time
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from core.settings import Config, KST
 from core.strategy import Tick
@@ -104,20 +106,24 @@ class TickLoggerTests(unittest.TestCase):
         self.assertEqual(logger.stats()['rows_dropped'], 15)
         self.assertEqual(len(logger.buffer), 10)
 
-    def test_worker_writes_every_delivered_tick_and_close_flushes(self):
+    def test_worker_reports_sampled_ticks_and_close_flushes(self):
         with tempfile.TemporaryDirectory() as folder:
             worker = ObservationWorker(Config(), AutomationConfig(), Costs(.00015, .00015, .002, .002, .003), Path(folder))
             worker.clock = lambda: BASE
-            worker.start()
-            for n in range(7):
-                worker.deliver(self.tick(cumulative=300 + n), BASE)
-            deadline = time.monotonic() + 5
-            while worker.ticks.qsize() and time.monotonic() < deadline:
-                time.sleep(0.05)
-            worker.close()
-            lines = (Path(folder) / 'runtime/shadow_ticks.jsonl').read_text(encoding='utf-8').splitlines()
-            self.assertEqual(len(lines), 7)
+            worker.tick_logger.research.clock = lambda: BASE
+            with patch('shutil.disk_usage', return_value=SimpleNamespace(free=64*1024**3)):
+                worker.start()
+                for n in range(7):
+                    worker.deliver(self.tick(cumulative=300 + n), BASE)
+                deadline = time.monotonic() + 5
+                while worker.ticks.qsize() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                worker.close()
+            lines = (Path(folder) / ('runtime/research-sampled-' + BASE.strftime('%Y%m%d') + '.jsonl')).read_text(encoding='utf-8').splitlines()
+            self.assertEqual(len(lines), 1)
             self.assertEqual(json.loads(lines[0])['ask_qty'], 11)
+            self.assertEqual(json.loads(lines[0])['coverage'], 'SAMPLED_NOT_CONTINUOUS')
+            self.assertEqual(worker.tick_logger.stats()['rows_sampled_out'], 6)
 
 
 class ShadowIsolationTests(unittest.TestCase):
@@ -128,9 +134,23 @@ class ShadowIsolationTests(unittest.TestCase):
                 if isinstance(node, ast.ImportFrom) and node.module:
                     self.assertNotIn(node.module, {'core.broker', 'automation.engine'}, name)
                 if isinstance(node, ast.Attribute) and node.attr in {'submit', 'enter', 'place_order', 'send_order', 'cancel_order'}:
+                    # ObservationWorker.submit is its own bounded metadata
+                    # queue handoff, not a broker/order submission. All other
+                    # submit calls, including self.rest.submit, stay forbidden.
+                    if (name == 'automation/observation_worker.py' and node.attr == 'submit'
+                            and isinstance(node.value, ast.Name) and node.value.id == 'self'):
+                        continue
                     self.fail(f'{name}: order-like attribute {node.attr}')
         used = set()
         tree = ast.parse((ROOT / 'automation/observation_worker.py').read_text(encoding='utf-8'))
+        worker = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'ObservationWorker')
+        metadata_submit = next(n for n in worker.body if isinstance(n, ast.FunctionDef) and n.name == 'submit')
+        calls = [n.func for n in ast.walk(metadata_submit) if isinstance(n, ast.Call)]
+        for call in calls:
+            self.assertTrue((isinstance(call, ast.Name) and call.id == 'dict') or
+                            (isinstance(call, ast.Attribute) and call.attr == 'latest_put'
+                             and isinstance(call.value, ast.Name) and call.value.id == 'self'),
+                            'metadata submit must only copy rows and hand them to its own queue')
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute) and node.value.attr == 'rest' \
                     and isinstance(node.value.value, ast.Name) and node.value.value.id == 'self':

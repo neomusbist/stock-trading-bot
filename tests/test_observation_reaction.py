@@ -12,7 +12,7 @@ from automation.capital import Costs
 from automation.patterns import PatternDetector
 from automation.policy import AutomationConfig
 from automation.observation_worker import ObservationWorker
-from automation.shadow_observation import ShadowObserver
+from automation.shadow_observation import ShadowObserver,fast_diagnostic_snapshot
 
 START=datetime(2026,10,8,13,0,tzinfo=KST)
 SYM='999990'
@@ -94,6 +94,9 @@ class ObservationReactionTests(unittest.TestCase):
         t=self.tick(126,100000)
         with patch.object(observer.detector,'evaluation_snapshot',side_effect=concurrent_handoff):observer.tick(t,t.time)
         evaluation=next(data for kind,data in records if kind=='SHADOW_EVAL')
+        self.assertIn('fast_evaluation',evaluation)
+        self.assertEqual(evaluation['fast_evaluation']['coverage'],'CURRENT_EVALUATION_SAMPLED')
+        self.assertEqual(evaluation['fast_evaluation']['reason'],observer.fast_strategy.last_evaluation[SYM]['reason'])
         # The installed normalized capsule exposes only ABC here. Unmerged LB
         # research is not a required or authorized part of this handoff test.
         abc=[trial for trial in evaluation['setup_trials'] if trial['setup'] in {'A','B','C'}]
@@ -103,6 +106,20 @@ class ObservationReactionTests(unittest.TestCase):
         self.assertEqual(lb,[])
         self.assertFalse(evaluation['actual_order_permission'])
         self.assertTrue(evaluation['SHADOW_ONLY'])
+
+    def test_fast_diagnostic_does_not_misattribute_a_prior_tick(self):
+        tick=self.tick(2,300)
+        now=tick.time
+        stale={'time':(now-timedelta(seconds=1)).isoformat(),'reason':'OLD_REASON',
+               'quote_evidence':{'decision_at':now.isoformat()}}
+        self.assertEqual(fast_diagnostic_snapshot(stale,tick,now)['coverage'],'UNKNOWN_STALE_OR_MISSING_FAST_EVALUATION')
+        current={'time':now.isoformat(),'status':'REJECT','reason':'FALSE_BREAKOUT_INSUFFICIENT_TURNOVER',
+                 'quote_evidence':{'decision_at':now.isoformat()},'metrics':{'turnover_10':500000,'ticks_10':3},
+                 'geometry':{'net_rr':float('nan')}}
+        evidence=fast_diagnostic_snapshot(current,tick,now)
+        self.assertEqual(evidence['reason'],'FALSE_BREAKOUT_INSUFFICIENT_TURNOVER')
+        self.assertEqual(evidence['turnover_10'],500000)
+        self.assertIsNone(evidence['net_rr'])
     def test_verified_candidate_published_before_blocking_history_fetch(self):
         worker=ObservationWorker(self.cfg,self.auto,self.costs,self.root);worker.clock=lambda:START
         row=self.row();row['market_status']={'pass':True,'checked_at':START.isoformat()};published=[]

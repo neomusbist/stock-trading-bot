@@ -1,5 +1,6 @@
 """주문 객체/브로커를 받지 않는 독립 진단 관찰기. 가상 평가/신호를 실제 주문에 전달하지 않는다."""
 from datetime import datetime
+import math
 from core.util import floor_tick
 from core.util import tick_size
 from core.market_time import tick_freshness
@@ -9,6 +10,27 @@ from automation.decisions import STRATEGY_VERSION,tick_source_identity
 from automation.focus_selection import calculate_tier, TIER_NAMES
 from automation.observation_retention import observation_residence_seconds
 from automation.fast_momentum import FastMomentumStrategy
+
+def fast_diagnostic_snapshot(note, tick, received):
+    """Compact sampled evidence; never reuse a prior tick's rejection reason."""
+    try:
+        quote=note.get('quote_evidence') or {}
+        if note.get('time')!=tick.time.isoformat() or quote.get('decision_at')!=received.isoformat():
+            return {'coverage':'UNKNOWN_STALE_OR_MISSING_FAST_EVALUATION'}
+        def scalar(value):
+            if value is None or isinstance(value,(str,bool)):return value
+            return value if type(value) in (int,float) and math.isfinite(value) else None
+        metrics=note.get('metrics') or {};geometry=note.get('geometry') or {}
+        return {'coverage':'CURRENT_EVALUATION_SAMPLED',
+            'status':scalar(note.get('status')),'reason':scalar(note.get('reason')),
+            'ticks_10':scalar(metrics.get('ticks_10')),'turnover_10':scalar(metrics.get('turnover_10')),
+            'uptick_ratio_30':scalar(metrics.get('uptick_ratio_30')),
+            'geometry_reason':scalar(geometry.get('reason')),
+            'entry':scalar(geometry.get('entry')),'stop':scalar(geometry.get('stop')),
+            'emergency':scalar(geometry.get('emergency')),'target':scalar(geometry.get('target')),
+            'net_rr':scalar(geometry.get('net_rr')),'quantity':scalar(geometry.get('quantity'))}
+    except Exception:
+        return {'coverage':'UNKNOWN_FAST_EVIDENCE_ERROR'}
 
 def make_evaluation_view(row):
     """구조 view + 당시 원본 row의 메타데이터를 명시적으로 병합한 EvaluationView."""
@@ -196,7 +218,8 @@ class ShadowObserver:
    trial.update(invalidation_ticks=(virtual['limit']-virtual['stop'])/tick_size(t.price) if virtual else None,
                 virtual_risk_quantity=sizing,risk_basis='DIAGNOSTIC_SIZING_ONLY_NOT_ORDER_AUTHORIZATION')
   self.last_log[t.symbol]=(received,signature)
-  self.event('SHADOW_EVAL',received,symbol=t.symbol,name=row.get('name'),**self.first[t.symbol],source_count=row.get('source_count'),discovery_status=row.get('status'),current_price=t.price,usable_completed_bars=len(usable),stored_completed_bars=len(history),gates=gates,setup_trials=trials,virtual_signal=sig,fast_signal_ready=fast_ready,actual_order_permission=False,receipt_evidence=tick_source_identity(t),
+  fast_diagnostic=fast_diagnostic_snapshot(self.fast_strategy.last_evaluation.get(t.symbol) or {},t,received)
+  self.event('SHADOW_EVAL',received,symbol=t.symbol,name=row.get('name'),**self.first[t.symbol],source_count=row.get('source_count'),discovery_status=row.get('status'),current_price=t.price,usable_completed_bars=len(usable),stored_completed_bars=len(history),gates=gates,setup_trials=trials,virtual_signal=sig,fast_signal_ready=fast_ready,fast_evaluation=fast_diagnostic,actual_order_permission=False,receipt_evidence=tick_source_identity(t),
     microstructure={'tick_size':tick_size(t.price),'tick_fraction':tick_size(t.price)/t.price,'spread_fraction':(t.ask-t.bid)/t.price,'last_trade_gap_seconds':(t.time-old.time).total_seconds() if old else None,
       'book_depth':None,'book_gap':None,'vi_state':None,'slippage_basis':'CONFIG_ESTIMATE_NOT_MEASURED','entry_slippage_fraction':self.cfg.entry_slippage_fraction,'exit_slippage_fraction':self.cfg.exit_slippage_fraction})
  def virtual_size(self,virtual):

@@ -23,6 +23,12 @@ DEFAULT_TARGET = Path(r"C:\Users\MJS\Desktop\주식자동매매")
 # 배포 대상 파일 목록 (개발본 -> 운영본)
 DEPLOY_FILES = [
     'automation/fast_momentum.py',
+    'automation/radar.py',
+    'automation/runner.py',
+    'automation/storage_governor.py',
+    'automation/trade_review_capture.py',
+    'automation/engine.py',
+    'automation/exit_plan.py',
     'automation/release_integrity.py',
     'automation/policy.py',
     'operator_runner.py',
@@ -127,14 +133,41 @@ def perform_deploy(src_dir, target_dir, backup_root=None):
 
         # RELEASE_IDENTITY.json 기록
         sys.path.insert(0, str(src_dir))
-        from automation.release_integrity import check_runtime_integrity, CURRENT_RELEASE_COMMIT
+        from automation.release_integrity import check_runtime_integrity, CURRENT_RELEASE_COMMIT, CURRENT_RELEASE_BUILD_ID, CRITICAL_RUNTIME_FILES
+        import subprocess
+        deploy_commit = CURRENT_RELEASE_COMMIT
+        try:
+            res = subprocess.run(['git', '-C', str(src_dir), 'rev-parse', '--short', 'HEAD'], capture_output=True, text=True, timeout=2)
+            if res.returncode == 0 and res.stdout.strip():
+                deploy_commit = res.stdout.strip()
+        except Exception:
+            pass
+
         identity_path = target_dir / 'runtime/RELEASE_IDENTITY.json'
         identity_path.parent.mkdir(parents=True, exist_ok=True)
+
+        existing_manifest = {}
+        if identity_path.exists():
+            try:
+                with open(identity_path, 'r', encoding='utf-8') as f:
+                    existing_manifest = json.load(f)
+            except Exception:
+                pass
+
+        manifest_files = dict(existing_manifest.get('files', {}))
+        for rel in set(DEPLOY_FILES) | set(CRITICAL_RUNTIME_FILES) | {'automation/focus_selection.py', 'automation/observation_worker.py', 'automation/patterns.py', 'automation/position_health.py'}:
+            tgt_f = target_dir / rel
+            if tgt_f.exists() and tgt_f.is_file():
+                manifest_files[rel] = sha256_file(tgt_f)
+
         manifest = {
-            'commit': CURRENT_RELEASE_COMMIT,
+            'build_id': existing_manifest.get('build_id', CURRENT_RELEASE_BUILD_ID),
+            'commit': deploy_commit,
             'deployed_at': datetime.now().astimezone().isoformat(),
             'backup_dir': str(backup_dir),
-            'files': {rel: sha256_file(target_dir / rel) for rel in DEPLOY_FILES}
+            'release_id': f'V171-INTEGRATED-FAST-RADAR-RECORDER-{deploy_commit}',
+            'base_release_id': existing_manifest.get('release_id', 'V171-FAST-EXIT-DESCRIPTION-bb2c1edc1f23'),
+            'files': manifest_files
         }
         with open(identity_path, 'w', encoding='utf-8') as f:
             json.dump(manifest, f, indent=2, ensure_ascii=False)

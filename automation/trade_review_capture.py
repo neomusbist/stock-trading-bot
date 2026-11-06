@@ -134,14 +134,24 @@ class BoundedCoreDecisionLog:
 class TradeReviewCapture:
     def __init__(self, folder, *, ring_seconds=45., ring_rows=256,
                  ring_bytes=1024*1024, queue_rows=4096, queue_bytes=4*1024*1024,
-                 file_bytes=32*1024*1024, day_bytes=4*1024**3,
+                 file_bytes=32*1024*1024, day_bytes=32*1024**2,
                  total_bytes=12*1024**3, min_free_bytes=32*1024**3,
                  diagnostic_max_bytes=4*1024*1024, diagnostic_min_free_bytes=5*1024**3,
-                 continuous_watch=True, clock=None, start=True):
+                 continuous_watch=False, clock=None, start=True, diagnostic_async=True):
         self.folder=Path(folder);self.folder.mkdir(parents=True,exist_ok=True)
         self.clock=clock or (lambda:datetime.now().astimezone())
-        self.core_decisions=BoundedCoreDecisionLog(self.folder,clock=self.clock,
+        if diagnostic_async:
+            from automation.lightweight_decisions import AsyncDailyDecisionLog
+            diagnostic_class=AsyncDailyDecisionLog
+        else:
+            diagnostic_class=BoundedCoreDecisionLog
+        self.core_decisions=diagnostic_class(self.folder,clock=self.clock,
             max_file_bytes=diagnostic_max_bytes,min_free_bytes=diagnostic_min_free_bytes)
+        from automation.lightweight_decisions import AsyncDailyDecisionLog
+        self.priority_tape=AsyncDailyDecisionLog(self.folder,clock=self.clock,
+            file_prefix='trade-priority',max_file_bytes=64*1024**2,
+            max_total_bytes=3*1024**3,min_free_bytes=diagnostic_min_free_bytes,
+            max_queue_rows=4096,max_queue_bytes=4*1024*1024)
         self.ring_seconds=ring_seconds;self.ring_rows=ring_rows;self.ring_limit=ring_bytes
         self.queue_rows=queue_rows;self.queue_limit=queue_bytes
         self.file_limit=file_bytes;self.day_limit=day_bytes;self.total_limit=total_bytes
@@ -151,6 +161,7 @@ class TradeReviewCapture:
         self.watch=frozenset();self.held=frozenset();self.promoted={}
         self.rings={};self.ring_size=0;self.pending=deque();self.pending_size=0
         self.losses=0;self.errors=0;self.ring_evictions=0;self.written=0
+        self.loss_intervals=deque(maxlen=32)
         self.storage_blocked=False;self.last_error='';self.last_lines={};self.last_bar={};self.last_evaluation_at={}
         self.rejected_buffer_at={};self.rejected_buffers=0;self.rejected_buffer_bytes=0;self.rejected_buffer_skips=0
         self.last_status_write=0.
@@ -164,20 +175,31 @@ class TradeReviewCapture:
                       'coverage':'STARTS_NOW_NO_RESTORED_TICKS_OR_BARS',
                       'detail_sampling_seconds':{'opening_before_0930':15,'otherwise':60},
                       'samples_establish_exact_first_onset':False,
-                      'continuous_scope':'WATCH_AND_HELD_ONLY_WITHIN_EXISTING_BUDGETS',
+                      'continuous_scope':('WATCH_AND_HELD_ONLY_WITHIN_EXISTING_BUDGETS' if self.continuous_watch
+                                          else 'HELD_AND_PROMOTED_WATCH_IN_MEMORY_RING_ONLY'),
                       'orders_enabled':False}, force=True)
         self.thread=threading.Thread(target=self._run,name='trade-review-writer',daemon=True) if start else None
         if self.thread:self.thread.start()
 
     def _encode(self,row):
         self.sequence+=1
-        return (json.dumps({**row,'capture_session':self.session,'capture_sequence':self.sequence,
+        return (json.dumps({**row,'capture_enqueued_at':iso(self.clock()),'capture_session':self.session,'capture_sequence':self.sequence,
             'capture_losses':self.losses},ensure_ascii=False,default=iso,allow_nan=False,separators=(',',':'))+'\n').encode('utf-8')
+
+    def _loss(self, reason, count=1):
+        """Bounded diagnostic intervals; a capture loss does not prove feed loss."""
+        with self.lock:
+            at=iso(self.clock());self.losses+=count
+            if self.loss_intervals and self.loss_intervals[-1]['reason']==reason and self.loss_intervals[-1]['open']:
+                item=self.loss_intervals[-1];item['last_detected_at']=at;item['rows']+=count
+            else:
+                self.loss_intervals.append({'reason':reason,'first_detected_at':at,'last_detected_at':at,
+                                            'rows':count,'open':True,'feed_loss':'UNKNOWN'})
 
     def _queue(self,data):
         if (len(data)>32768 or len(self.pending)>=self.queue_rows
                 or self.pending_size+len(data)>self.queue_limit):
-            self.losses+=1;return False
+            self._loss('CAPTURE_QUEUE_LIMIT');return False
         self.pending.append(data);self.pending_size+=len(data);return True
 
     def _record(self,row,symbol=None,force=False):
@@ -188,15 +210,24 @@ class TradeReviewCapture:
                 if not force and not active and symbol not in self.watch:return
                 data=self._encode(row)
                 if active or force:
+                    self.priority_tape.enqueue_encoded(data)
                     self._queue(data);return
                 if self.continuous_watch and symbol in self.watch:
+                    # Maintain in-memory ring for WATCH symbols so recent price geometry is always preserved
+                    ring=self.rings.setdefault(symbol,deque())
+                    ring.append((now,data));self.ring_size+=len(data)
+                    while ring and (len(ring)>self.ring_rows or now-ring[0][0]>self.ring_seconds):
+                        self.ring_size-=len(ring.popleft()[1]);self.ring_evictions+=1
+                    while self.ring_size>self.ring_limit:
+                        oldest=min((r[0][0],s) for s,r in self.rings.items() if r)[1]
+                        self.ring_size-=len(self.rings[oldest].popleft()[1]);self.ring_evictions+=1
                     # Research traffic cannot fill the queue space reserved
                     # for held positions and order-related diagnostic records.
                     reserve_rows=min(256,max(1,self.queue_rows//4))
                     reserve_bytes=min(512*1024,max(1,self.queue_limit//4))
                     if (len(self.pending)>=self.queue_rows-reserve_rows
                             or self.pending_size+len(data)>self.queue_limit-reserve_bytes):
-                        self.losses+=1;return
+                        self._loss('CAPTURE_RESERVED_CAPACITY');return
                     self._queue(data);return
                 ring=self.rings.setdefault(symbol,deque())
                 ring.append((now,data));self.ring_size+=len(data)
@@ -233,7 +264,7 @@ class TradeReviewCapture:
                     # exit. Keep a bounded 120-second tail, never call it a fill.
                     if symbol in self.promoted or len(self.promoted)<8:
                         self.promoted[symbol]=time.monotonic()+120.
-                    else:self.losses+=1
+                    else:self._loss('CAPTURE_HELD_TAIL_CAPACITY')
                 self.held=frozenset(positions)
                 current=time.monotonic()
                 self.promoted={s:until for s,until in self.promoted.items() if until>current or s in self.held}
@@ -262,7 +293,7 @@ class TradeReviewCapture:
                 'coverage':'BOUNDED_PARTIAL_RING_NOT_A_COMPLETENESS_PROOF',
                 'ring_evictions_total':self.ring_evictions},symbol,force=True)
             for _,data in ring:
-                self.ring_size-=len(data);self._queue(data)
+                self.ring_size-=len(data);self.priority_tape.enqueue_encoded(data);self._queue(data)
 
     def decision_tape(self,symbol,at,snapshot):
         """Persist bounded FAST evidence even when promotion beat WATCH scope.
@@ -612,12 +643,18 @@ class TradeReviewCapture:
         with self.lock:
             return {'session':self.session,'written_rows':self.written,'queue_rows':len(self.pending),
                 'queue_bytes':self.pending_size,'ring_bytes':self.ring_size,
-                'ring_rows':sum(len(r) for r in self.rings.values()),'capture_losses':self.losses,
+                'ring_rows':sum(len(r) for r in self.rings.values()),'ring_evictions':self.ring_evictions,
+                'watch_capture_mode':'CONTINUOUS' if self.continuous_watch else 'MEMORY_RING_ONLY',
+                'capture_losses':self.losses,
+                'capture_loss_intervals':list(self.loss_intervals),
                 'write_errors':self.errors,'last_error':self.last_error,'storage_blocked':self.storage_blocked,
                 'rejected_buffers':self.rejected_buffers,'rejected_buffer_bytes':self.rejected_buffer_bytes,
                 'rejected_buffer_skips':self.rejected_buffer_skips,
                 'entry_evidence':dict(self.entry_evidence.counts),
                 'core_decision_diagnostics':self.core_decisions.stats(),
+                'priority_trade_evidence':{**self.priority_tape.stats(),
+                    'coverage':'BOUNDED_PREENTRY_RING_AND_HELD_ONLY_UNKNOWN_IF_DROPS',
+                    'critical_ledger':False},
                 'continuous_watch':self.continuous_watch,'storage_block_reason':self.storage_block_reason,
                 'limits':{'file_bytes':self.file_limit,'day_bytes':self.day_limit,'total_bytes':self.total_limit,'min_free_bytes':self.min_free_bytes},
                 'coverage':'UNKNOWN_IF_LOSS_OR_GAP_OR_PARTIAL_BUFFER','orders_enabled':False,
@@ -635,9 +672,9 @@ class TradeReviewCapture:
                     data=self.pending.popleft();batch.append(data);size+=len(data);self.pending_size-=len(data)
             if not batch:return True
             if self.total_written+size>self.total_limit or self.day_written+size>self.day_limit:
-                self.storage_blocked=True;self.storage_block_reason='CAPTURE_BYTE_BUDGET';self.losses+=len(batch);return False
+                self.storage_blocked=True;self.storage_block_reason='CAPTURE_BYTE_BUDGET';self._loss(self.storage_block_reason,len(batch));return False
             if self.min_free_bytes and shutil.disk_usage(self.folder).free-size<self.min_free_bytes:
-                self.storage_blocked=True;self.storage_block_reason='CAPTURE_FREE_SPACE_RESERVE';self.losses+=len(batch);return False
+                self.storage_blocked=True;self.storage_block_reason='CAPTURE_FREE_SPACE_RESERVE';self._loss(self.storage_block_reason,len(batch));return False
             try:
                 if self.path is None or self.path_size+size>self.file_limit:
                     existing=list(self.folder.glob('trade-review-'+day+'-????.jsonl'))
@@ -663,6 +700,9 @@ class TradeReviewCapture:
                         self.path=None;self.losses+=len(batch)
                     raise
                 self.written+=len(batch);self.path_size+=size;self.total_written+=size;self.day_written+=size
+                with self.lock:
+                    self.storage_blocked=False;self.storage_block_reason=None
+                    for interval in self.loss_intervals:interval['open']=False
                 return True
             except Exception as error:
                 self.errors+=1;self.last_error=type(error).__name__
@@ -671,7 +711,8 @@ class TradeReviewCapture:
                     for data in reversed(batch):
                         if len(self.pending)<self.queue_rows and self.pending_size+len(data)<=self.queue_limit:
                             self.pending.appendleft(data);self.pending_size+=len(data)
-                        else:self.losses+=1
+                        else:self._loss('CAPTURE_RETRY_QUEUE_LIMIT')
+                return False
                 return False
 
     def _run(self):
@@ -679,6 +720,9 @@ class TradeReviewCapture:
             try:ok=self.flush()
             except Exception as error:
                 self.errors+=1;self.last_error=type(error).__name__;ok=False
+            if hasattr(self.core_decisions,'flush'):
+                self.core_decisions.flush()
+            self.priority_tape.flush()
             self.write_status()
             if not ok:self.stop.wait(1.)
 
@@ -700,5 +744,9 @@ class TradeReviewCapture:
         if self.thread:self.thread.join(timeout=2.)
         # Shutdown may leave a pending bounded buffer; never delay protection.
         if self.thread and self.thread.is_alive():return False
-        try:return self.flush()
+        try:
+            result=self.flush()
+            if hasattr(self.core_decisions,'flush'):self.core_decisions.flush()
+            self.priority_tape.flush()
+            return result
         finally:self.write_status(force=True)

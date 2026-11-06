@@ -62,12 +62,11 @@ class AfterQuoteRecheckTests(unittest.TestCase):
             'sel_fpr_bid':'+7180','buy_fpr_req':'30','sel_fpr_req':'40'})
         current=BASE.replace(hour=18,minute=30,second=10)
         with patch('core.broker.now',return_value=current):
-            for venue,suffix in [('SOR','_AL'),('NXT','_NX')]:
+            for venue,suffix in [('SOR','_AL'),('NXT','_NX'),('KRX','')]:
                 book=rest.position_book(SYM,'AFTER',venue)
                 self.assertEqual(rest.query.call_args.args[1],{'stk_cd':SYM+suffix})
                 self.assertEqual(book['time'],current.replace(second=0).isoformat())
                 self.assertEqual(book['ask_qty'],40)
-        with self.assertRaises(Rejected):rest.position_book(SYM,'AFTER','KRX')
 
 
 class FinalBuyEvidenceTests(unittest.TestCase):

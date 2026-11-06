@@ -2,6 +2,7 @@
 Unit and Integration Tests for R6 Fast Momentum Strategy (automation/fast_momentum.py)
 """
 import unittest
+import json
 from datetime import datetime, timedelta
 from core.strategy import Tick
 from tests.test_r6_fast_repair import ticks, watch
@@ -230,6 +231,82 @@ class TestFastMomentumStrategy(unittest.TestCase):
         self.assertTrue(pos.get('profit_locked'))
         self.assertGreater(pos['protection_stop'], 70000)
         self.assertEqual(pos['stop'], 69300)
+        transition=pos['fast_protection_history'][-1]
+        self.assertEqual(transition['stop'],pos['protection_stop'])
+        self.assertEqual(transition['confirmed_low'],71200)
+        self.assertEqual(transition['basis'],'CONFIRMED_POST_FILL_HIGHER_LOW')
+        self.assertLess(transition['confirmed_low_at'],transition['at'])
+
+    def test_confirmed_exit_records_exact_accepted_prints_and_book(self):
+        for expected, stop, protection, prices in [
+            ('INVALIDATION_STOP_EXIT', 69300, None, [69290, 69280]),
+            ('PROFIT_LOCK_EXIT', 69000, 70300, [70290, 70280]),
+        ]:
+            with self.subTest(expected=expected):
+                strategy = FastMomentumStrategy()
+                pos = {'symbol':'005930', 'entry':70000, 'qty':1, 'stop':stop,
+                       'emergency':68000, 'opened':self.base_time.isoformat()}
+                if protection is not None: pos['protection_stop'] = protection
+                for sec, price in enumerate(prices, 1):
+                    tick = self._tick(price=price, delta_seconds=sec, bid=price-10, ask=price+10)
+                    self.assertTrue(strategy.ingest_tick(tick, tick.time))
+                    result = strategy.evaluate_exit(pos, tick, tick.time)
+                    if sec == 1: self.assertFalse(result[0])
+                self.assertTrue(result[0]); self.assertEqual(result[1], expected)
+                ev = result[2]
+                self.assertEqual(ev['confirmation_coverage'], 'OBSERVED_ACCEPTED_PRINTS')
+                self.assertEqual([x['price'] for x in ev['confirmation_trades']], prices)
+                self.assertEqual([x['volume'] for x in ev['confirmation_trades']], [100,100])
+                self.assertEqual([x['cumulative'] for x in ev['confirmation_trades']], [200,300])
+                self.assertTrue(all(x['received_at'] for x in ev['confirmation_trades']))
+                self.assertEqual(ev['book_time'], tick.book_time.isoformat())
+                self.assertEqual(ev['bid_qty'], tick.bid_qty)
+                json.dumps(ev,allow_nan=False)
+
+    def test_exit_still_protects_if_confirmation_metadata_is_incomplete(self):
+        pos={'symbol':'005930','entry':70000,'qty':1,'stop':69300,'emergency':68000,
+             'opened':self.base_time.isoformat()}
+        for sec,price in enumerate([69290,69280],1):
+            tick=self._tick(price=price,delta_seconds=sec,bid=price-10,ask=price+10)
+            self.assertTrue(self.strategy.ingest_tick(tick,tick.time))
+        self.strategy.get_tape('005930').metadata.popleft()
+        decision,reason,evidence=self.strategy.evaluate_exit(pos,tick,tick.time)
+        self.assertTrue(decision);self.assertEqual(reason,'INVALIDATION_STOP_EXIT')
+        self.assertEqual(evidence['confirmation_coverage'],'UNKNOWN_METADATA_ALIGNMENT')
+        self.assertEqual(evidence['confirmation_trades'],[])
+
+    def test_exit_still_protects_when_confirmation_evidence_fails(self):
+        pos={'symbol':'005930','entry':70000,'qty':1,'stop':69300,'emergency':68000,
+             'opened':self.base_time.isoformat()}
+        for sec,price in enumerate([69290,69280],1):
+            tick=self._tick(price=price,delta_seconds=sec,bid=price-10,ask=price+10)
+            self.assertTrue(self.strategy.ingest_tick(tick,tick.time))
+        self.strategy.get_tape('005930').metadata[-1]['received_at']=object()
+        decision,reason,evidence=self.strategy.evaluate_exit(pos,tick,tick.time)
+        self.assertTrue(decision);self.assertEqual(reason,'INVALIDATION_STOP_EXIT')
+        self.assertEqual(evidence['confirmation_coverage'],'UNKNOWN_EVIDENCE_ERROR')
+
+    def test_bad_protection_history_does_not_prevent_protection_arm(self):
+        pos={'symbol':'005930','entry':70000,'qty':1,'stop':69300,'emergency':69000,
+             'opened':self.base_time.isoformat(),'fast_protection_history':None}
+        for sec,price in enumerate([71100,71500,71200,71600],30):
+            tick=self._tick(price=price,delta_seconds=sec)
+            self.strategy.ingest_tick(tick,tick.time)
+            result=self.strategy.evaluate_exit(pos,tick,tick.time)
+        self.assertFalse(result[0]);self.assertTrue(pos['profit_locked'])
+        self.assertTrue(pos['fast_protection_evidence_error'])
+
+    def test_protection_history_is_bounded_and_eviction_is_reported(self):
+        pos={'symbol':'005930','entry':70000,'qty':1,'stop':69300,'emergency':69000,
+             'opened':self.base_time.isoformat(),
+             'fast_protection_history':[{'sequence':i} for i in range(32)]}
+        for sec,price in enumerate([71100,71500,71200,71600],30):
+            tick=self._tick(price=price,delta_seconds=sec)
+            self.strategy.ingest_tick(tick,tick.time)
+            self.strategy.evaluate_exit(pos,tick,tick.time)
+        self.assertEqual(len(pos['fast_protection_history']),32)
+        self.assertEqual(pos['fast_protection_history_omitted'],1)
+        self.assertEqual(pos['fast_protection_history'][0]['sequence'],1)
 
     def test_sm_bexel_incident_reproduction_holds_noise(self):
         """2026-10-15 17:43 SM Bexel incident reproduction:

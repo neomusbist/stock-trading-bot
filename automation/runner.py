@@ -667,8 +667,12 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
             if detector.handoff_from(shadow_detector,sym):copied_promotions.add(sym)
         for sym in demotions:
             shadow_detector.handoff_from(detector, sym)
+    effective_observed=set(observed)
+    capture=getattr(engine,'trade_review',None)
+    if capture and getattr(capture,'storage_blocked',False):
+        effective_observed.update(priority-critical)
     if not isinstance(getattr(feed,'observation_q',None),queue.Queue):
-        if hasattr(feed,'configure_observation'):feed.configure_observation(priority,observed,sink)
+        if hasattr(feed,'configure_observation'):feed.configure_observation(priority,effective_observed,sink)
         return drops,priority
     pending=getattr(feed,'_opportunity_pending',None)
     if pending is None:pending={};feed._opportunity_pending=pending
@@ -690,7 +694,7 @@ def prewarm_handoff(engine,detector,feed,observed,real_symbols,prior_priority,dr
             affected=dict(gaps) if isinstance(gaps,dict) else {sym:engine.clock() for sym in observed-priority-critical}
             if isinstance(gaps,dict):gaps.clear()
             gap_event=(drops,affected)
-        feed.configure_observation(priority,observed,sink)
+        feed.configure_observation(priority,effective_observed,sink)
     if gap_event is not None:
         # Snapshot/clear drops and change routing atomically, but never hold the
         # receiver lock while detector locks or diagnostic disk I/O can wait.

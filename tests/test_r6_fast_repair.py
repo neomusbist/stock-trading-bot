@@ -99,10 +99,11 @@ class FastRepairTests(unittest.TestCase):
         outcome=self.strategy.evaluate_exit(pos,nonregular,t.time)
         self.assertFalse(outcome[0]);self.assertEqual(outcome[1],'NONREGULAR_TRADE_NOT_EXECUTABLE')
 
-    def test_near_resistance_rejects_cost_rr_without_lifting_the_ceiling(self):
+    def test_near_resistance_rejects_before_rr_without_lifting_the_ceiling(self):
         t=self.seed();g=self.strategy.calculate_invalidation_and_target(t,self.strategy.get_tape(t.symbol).metrics(t.time),watch(1010))
-        self.assertFalse(g['pass']);self.assertEqual(g['reason'],'NET_REWARD_RISK_LOW')
+        self.assertFalse(g['pass']);self.assertEqual(g['reason'],'INSUFFICIENT_ROOM_TO_RESISTANCE')
         self.assertEqual(g['target'],1010)
+        self.assertLess(g['room_pct'],g['min_headroom'])
 
     def test_costs_and_risk_use_emergency_line_and_apply_slippage_once(self):
         _,sig=self.signal();c=self.strategy.costs

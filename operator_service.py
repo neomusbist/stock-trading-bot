@@ -449,10 +449,9 @@ class OperatorService:
             log=self.root/'runtime/operator_console.txt'; log.parent.mkdir(parents=True,exist_ok=True)
             from core.event_log import rotate_if_large
             rotate_if_large(log)  # No active writer: duplicate-run and idle checks above.
-            try:
-                from automation.storage_governor import run_storage_governance
-                run_storage_governance(self.root)
-            except Exception: pass
+            # Existing raw market data and archives are user evidence. Starting
+            # trading must not implicitly delete or compress them; bounded new
+            # diagnostic capture stops at its own limits instead.
             with log.open('a',encoding='utf-8') as output:
                 self.child=subprocess.Popen([resolve_python(),'-X','utf8',str(self.root/'operator_runner.py'),'--token',token,'--purpose',purpose],
                     cwd=self.root,stdin=subprocess.DEVNULL,stdout=output,stderr=subprocess.STDOUT,creationflags=flags)
@@ -847,8 +846,8 @@ class OperatorService:
                 raise ValueError('현재 사용자 승인한도를 유지해야 합니다. AFTER 승인은 한도를 변경하지 않습니다.')
             if not (cfg.after_enabled and cfg.live_mode and auto.costs_confirmed):
                 raise ValueError('AFTER 설정·실제매매 설정·비용 확인이 필요합니다.')
-            if (cfg.risk_fraction, cfg.max_daily_loss_fraction, cfg.max_positions) != (0.02, 0.04, 1):
-                raise ValueError('기존 risk2/기본 daily4/1종목 안전설정을 확인하세요.')
+            if (cfg.risk_fraction, cfg.max_daily_loss_fraction) != (0.02, 0.04) or cfg.max_positions not in {1, 2}:
+                raise ValueError('기존 risk2/기본 daily4/1~2종목 안전설정을 확인하세요.')
             if data['mode'] not in {'STOP','ARMED','LIVE'} or not data.get('live_authorized'):
                 raise ValueError('기존 일반 LIVE 명시 승인과 정상 운영모드가 필요합니다. KILL은 별도 복구하세요.')
             stamp = self.clock()

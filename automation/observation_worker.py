@@ -165,6 +165,39 @@ class TickLogger:
                 'rows_dropped': self.rows_dropped, 'write_errors': self.write_errors, 'rotations': self.rotations,
                 'rollback_errors': self.rollback_errors, 'last_error': self.last_error}
 
+class SampledTickLogger(TickLogger):
+    """Bounded opt-in loss of research detail, not order/position evidence."""
+    def __init__(self, log_path, *, clock=now, sample_seconds=5.,
+                 day_bytes=200*1024*1024, min_free_bytes=32*1024**3):
+        super().__init__(log_path)
+        from automation.lightweight_decisions import SampledResearchLog
+        self.research=SampledResearchLog(self.path.parent,clock=clock,sample_seconds=sample_seconds,
+                                         max_file_bytes=day_bytes,min_free_bytes=min_free_bytes)
+
+    def _append(self,row):
+        with self.lock:
+            self.next_sequence+=1
+            row.setdefault('record_sequence',self.next_sequence)
+            self.rows_logged+=1
+        return self.research.record(row,row.get('symbol'))
+
+    def flush(self,force=False):
+        # Budget exhaustion is a recorded evidence loss, not a feed or order
+        # failure; do not flood the live event loop with artificial exceptions.
+        self.research.flush()
+        self.last_error=self.research.stats()['last_error']
+        return True
+
+    def stats(self):
+        result=self.research.stats()
+        return {'rows_logged':self.rows_logged,'rows_written':result['written_rows'],
+                'rows_buffered':result['queue_rows'],'rows_dropped':result['omitted_rows'],
+                'rows_sampled_out':result['sampled_out_rows'],'write_errors':result['write_errors'],
+                'rotations':0,'rollback_errors':0,'last_error':result['last_error'],
+                'storage_blocked':result['blocked'],'storage_block_reason':result['block_reason'],
+                'daily_max_bytes':result['max_file_bytes'],'coverage':result['coverage']}
+
+
 class ObservationWorker:
     def __init__(self,cfg,auto,costs,root,rest=None,limit=32,on_fast_signal=None,on_processed_tick=None,on_stream_reset=None):
         self.cfg=cfg; self.auto=auto; self.root=Path(root); self.rest=rest;self.settings=load_observation(root);self.clock=now
@@ -173,7 +206,7 @@ class ObservationWorker:
         self.observer=ShadowObserver(cfg,auto,costs,self.event,limit=limit)
         self.observer.detector.continuous_observation=True
         self.observer.eval_seconds=self.settings.evaluation_seconds
-        self.tick_logger=TickLogger(self.folder/'shadow_ticks.jsonl')
+        self.tick_logger=SampledTickLogger(self.folder/'shadow_ticks.jsonl')
         self.updates=queue.Queue(maxsize=1); self.prepared=queue.Queue(maxsize=1); self.ticks=queue.Queue(maxsize=4096)
         self.focus_notifications=queue.Queue(maxsize=32)
         self.stop=threading.Event(); self.lock=threading.Lock(); self.event_lock=threading.Lock(); self.snapshot={}
@@ -306,8 +339,12 @@ class ObservationWorker:
             row['shadow_view']={**row.get('shadow_view',{'status':'UNKNOWN'}),'market_status':saved['status']}
         def cache_status(sym,saved,status):
             status=dict(status)
-            checked=self._status_checked_at(status,clock)
-            prior=self._status_checked_at((saved or {}).get('status',{}),clock)
+            # Metadata is obtained asynchronously after the discovery snapshot.
+            # Validate against the current processing time, not the older
+            # source timestamp; the original checked_at remains the proof time.
+            status_now=self.clock()
+            checked=self._status_checked_at(status,status_now)
+            prior=self._status_checked_at((saved or {}).get('status',{}),status_now)
             # A repeated older Radar snapshot cannot roll back a newer check.
             if checked is not None and prior is not None and checked<prior:
                 saved={**saved,'checked':prior};self.metadata[sym]=saved
@@ -319,7 +356,7 @@ class ObservationWorker:
             return saved
         def fresh(saved):
             checked=(saved or {}).get('checked')
-            return checked is not None and 0<=(clock-checked).total_seconds()<=self.settings.metadata_ttl_seconds
+            return checked is not None and 0<=(self.clock()-checked).total_seconds()<=self.settings.metadata_ttl_seconds
         # Refresh active observations before spending their TTL-expiry budget
         # on new RAW rows. Fresh incumbents do not consume status calls, so
         # discovery continues in the next pass with the same bounded budget.

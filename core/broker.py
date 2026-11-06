@@ -262,8 +262,6 @@ class Rest:
         if session not in {'REGULAR','AFTER'} or venue not in {'KRX','NXT','SOR'}:
             raise ValueError('Position quote session/exchange required')
         symbol=code(symbol)
-        if session=='AFTER' and venue=='KRX':
-            raise Rejected('AFTER_POSITION_QUOTE_VENUE_UNAVAILABLE')
         request_symbol=symbol+{'KRX':'','NXT':'_NX','SOR':'_AL'}[venue]
         raw=self.query('ka10004',{'stk_cd':request_symbol},path='/api/dostk/mrkcond')
         received=now()

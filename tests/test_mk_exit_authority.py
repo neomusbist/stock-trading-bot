@@ -163,10 +163,16 @@ class MKExitAuthorityTests(unittest.TestCase):
         self.assertFalse(self.p['exit_requested'])
 
     def test_two_independent_trade_breaches_still_take_fast_profit(self):
+        self.p['fast_protection_history']=[{'stop':17070,'basis':'CONFIRMED_POST_FILL_HIGHER_LOW'}]
         self.e.on_tick(self.tick(17060))
         self.assertFalse(self.p['exit_requested'])
         self.at+=timedelta(seconds=1);self.e.on_tick(self.tick(17060))
         self.assertEqual(self.p['exit_reason'],'FAST_PROFIT_LOCK_EXIT')
+        evidence=self.p['fast_exit_evidence']['evidence']
+        self.assertEqual(evidence['confirmation_coverage'],'OBSERVED_ACCEPTED_PRINTS')
+        self.assertEqual([x['price'] for x in evidence['confirmation_trades']],[17060,17060])
+        self.assertLess(evidence['confirmation_trades'][0]['time'],evidence['confirmation_trades'][1]['time'])
+        self.assertEqual(self.p['exit_trigger_evidence']['fast_protection_history'][0]['stop'],17070)
         self.assertEqual(self.p['stop'],16840)
         self.assertEqual(len(self.broker.orders),1)
         captured=copy.deepcopy(self.p['exit_trigger_evidence']['fast_exit'])

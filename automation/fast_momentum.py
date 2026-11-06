@@ -315,7 +315,7 @@ class MicroTape:
             peak_i=peaks[i];peak=turns[peak_i]
             if peak_i == 0:continue
             origin=turns[origins[peak_i]]
-            if low[1]<=origin[1] or suffix[peak_i+1]<low[1]:continue
+            if low[1]<origin[1] or suffix[peak_i+1]<low[1]:continue
             noise = median([abs(b[1] - a[1]) for a, b in zip(turns, turns[1:])])
             res = {**evidence, 'pass': True, 'support': low[1], 'support_at': low[0].isoformat(),
                 'confirmation_at': right[0].isoformat(), 'breakout': peak[1], 'breakout_at': peak[0].isoformat(),
@@ -520,12 +520,32 @@ class FastMomentumStrategy:
         reference = watch.get('reference_price') or watch.get('first_raw_price')
         if number(reference) and reference > 0 and t.price < reference * .985 and m['p_max_60'] < reference * .990:
             return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'reference': reference}
+        # Multi-minute context: check completed trend if available, without assuming missing history
+        trend_5m = watch.get('trend_5m') or (watch.get('fast_context_snapshot') or {}).get('trend_5m')
+        if isinstance(trend_5m, dict) and trend_5m.get('status') == 'DOWN' and not trend_5m.get('higher_lows', False):
+            return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'trend_5m': trend_5m}
         # Drawdown check: sharp falling knife in the last 60 seconds of tape
         ref_high = m.get('p_max_60')
         if ref_high and ref_high > 0 and t.price < ref_high * .970:
             return 'D', 'DOWNTREND_COUNTER_BOUNCE', {'peak_price': ref_high, 'drawdown': 1 - t.price / ref_high}
         extension = t.price / m['p_min_60'] - 1; limit = .035 if is_opening else .028
         if extension > limit:return 'B', 'EXTENDED_IMPULSE_CHASE_OVEREXTENDED', {'extension': extension}
+
+        # Observable volume exhaustion vs breakout:
+        # High volume is not inherently a defect. It is only an exhaustion when accompanied by observable
+        # price failure / rejection at the high (e.g. price dropping off 10s high or failing uptick dominance).
+        turnover_10 = m.get('turnover_10', 0)
+        volume_10 = m.get('volume_10', 0)
+        volume_30 = m.get('volume_30', 0)
+        if turnover_10 >= 20000000. and volume_30 > 0:
+            vol_ratio_10 = volume_10 / volume_30
+            if vol_ratio_10 >= 0.60 and (t.price < m.get('p_max_10', t.price) - step or m.get('uptick_ratio_10', 0.5) < 0.40):
+                return 'B', 'BUYING_CLIMAX_VOLUME_EXHAUSTION', {
+                    'turnover_10': turnover_10,
+                    'volume_10_share': vol_ratio_10,
+                    'p_max_10': m.get('p_max_10', t.price),
+                    'price': t.price
+                }
 
         # --- ROUTE B: FIRST PULLBACK SUPPORT RECOVERY ---
         # Prior impulse rise >= 1.2% in 60s, healthy pullback to higher low, and price recovering
@@ -578,7 +598,24 @@ class FastMomentumStrategy:
             if entry_mode == 'PULLBACK_RECOVERY' and regime_details and regime_details.get('support'):
                 support = regime_details['support']
                 peak = regime_details.get('peak', m.get('p_max_60'))
-                structure = {'pass': True, 'support': support, 'breakout': peak, 'basis': 'PULLBACK_SUPPORT_RECOVERY'}
+                structure = {'pass': True, 'support': support, 'breakout': peak, 'basis': 'PULLBACK_SUPPORT_RECOVERY', 'origin': support}
+            elif entry_mode == 'EARLY_BREAKOUT' and regime_details and regime_details.get('support'):
+                tape = self.get_tape(t.symbol)
+                rows = [r for r, _ in tape._observed_rows(now)]
+                if rows:
+                    rows = rows[:-1]
+                turns = []
+                for row in rows:
+                    if not turns or row[1] != turns[-1][1]:
+                        turns.append(row)
+                is_monotonic = len(turns) >= 2 and all(b[1] > a[1] for a, b in zip(turns, turns[1:]))
+                support = regime_details['support']
+                breakout = regime_details.get('breakout', m.get('p_max_30'))
+                if not is_monotonic and len(turns) >= 3 and support > 0 and breakout > support:
+                    noise = median([abs(b[1] - a[1]) for a, b in zip(turns, turns[1:])]) if len(turns) >= 2 else tick_size(t.price)
+                    structure = {'pass': True, 'support': support, 'breakout': breakout, 'basis': 'EARLY_COMPRESSION_BASE', 'origin': support, 'observed_noise': noise}
+                else:
+                    return reject(structure['reason'], structure=structure)
             else:
                 return reject(structure['reason'], structure=structure)
 
@@ -595,6 +632,13 @@ class FastMomentumStrategy:
             entry = t.ask
             # In pullback recovery below the swing peak, the swing peak (breakout) is the primary overhead ceiling.
             # Do NOT leap over the unconfirmed swing peak to an unconfirmed 20-day daily high!
+            buffer = max(step, t.ask - t.bid, support * getattr(self.cfg, 'structural_buffer', .001))
+            primary_res = watch.get('resistance')
+            if number(primary_res) and primary_res <= entry:
+                if support < primary_res - buffer:
+                    return reject('UNCONFIRMED_RESISTANCE_BREAKOUT_HEADROOM_EXHAUSTED',
+                                  entry=entry, resistance=primary_res, support=support,
+                                  min_required_support=primary_res - buffer, structure=structure)
             overhead = watch.get('resistance') or watch.get('recent_high')
             if number(overhead) and entry < overhead < breakout:
                 target = floor_tick(overhead)
@@ -606,7 +650,6 @@ class FastMomentumStrategy:
             if (target - entry) / entry < min_headroom:
                 return reject('INSUFFICIENT_ROOM_TO_RESISTANCE', entry=entry, target=target,
                               room_pct=(target - entry) / entry, min_headroom=min_headroom)
-            buffer = max(step, t.ask - t.bid, support * getattr(self.cfg, 'structural_buffer', .001))
             stop = floor_tick(support - buffer)
             if entry - stop < min_stop_distance_krw:
                 stop = floor_tick(entry - min_stop_distance_krw)
@@ -641,11 +684,47 @@ class FastMomentumStrategy:
         if entry <= breakout:return reject('EXECUTABLE_ASK_NOT_ABOVE_BREAKOUT', structure=structure)
         max_chase = getattr(self.cfg, 'max_chase', .005)
         if entry / breakout - 1 > max_chase:return reject('MAX_CHASE_EXCEEDED', breakout=breakout, entry=entry, max_chase=max_chase)
-        overhead = watch.get('resistance'); known_at = stamp(watch.get('resistance_asof') or watch.get('observed_at'))
-        if not (number(overhead) and overhead > entry):
-            next_res = watch.get('recent_high') or watch.get('daily_high_20d')
-            if number(next_res) and next_res > entry:
-                overhead = next_res
+        min_headroom = max(0.012, min_stop_distance_fraction * 1.5)
+        pullback_depth = max(0., breakout - support)
+        min_pullback_room = min(max(0., support - structure['origin'] - tick_size(support)), tick_size(support)) if pullback_depth <= tick_size(support) else 0.
+        buffer = max(tick_size(support), t.ask - t.bid, support * getattr(self.cfg, 'structural_buffer', .001)) + min_pullback_room
+
+        primary_res = watch.get('resistance')
+        known_at = stamp(watch.get('resistance_asof') or watch.get('observed_at'))
+        if number(primary_res):
+            if entry < primary_res:
+                room = (primary_res - entry) / entry
+                if room < min_headroom:
+                    return reject('INSUFFICIENT_ROOM_TO_RESISTANCE', entry=entry, target=primary_res,
+                                  room_pct=room, min_headroom=min_headroom, structure=structure)
+                overhead = primary_res
+            else:
+                # entry >= primary_res: require structural confirmation that primary resistance was broken and supported
+                # A simple 1-tick poke or unconfirmed impulse with support below primary_res is NOT a confirmed breakout.
+                confirmed_breakout_support = (support >= primary_res - buffer and breakout > primary_res)
+                if not confirmed_breakout_support:
+                    return reject('UNCONFIRMED_RESISTANCE_BREAKOUT_HEADROOM_EXHAUSTED',
+                                  entry=entry, resistance=primary_res, support=support,
+                                  min_required_support=primary_res - buffer, structure=structure)
+                next_res = watch.get('recent_high') or watch.get('daily_high_20d')
+                if number(next_res) and next_res > entry:
+                    next_room = (next_res - entry) / entry
+                    if next_room < min_headroom:
+                        return reject('INSUFFICIENT_ROOM_TO_NEXT_RESISTANCE', entry=entry, target=next_res,
+                                      room_pct=next_room, min_headroom=min_headroom, structure=structure)
+                    overhead = next_res
+                else:
+                    return reject('NO_VALID_NEXT_RESISTANCE_ABOVE_BREAKOUT',
+                                  entry=entry, broken_resistance=primary_res, structure=structure)
+        else:
+            overhead = watch.get('recent_high') or watch.get('daily_high_20d')
+            if not (number(overhead) and overhead > entry):
+                return reject('KNOWN_OVERHEAD_TARGET_UNAVAILABLE', structure=structure)
+            room = (overhead - entry) / entry
+            if room < min_headroom:
+                return reject('INSUFFICIENT_ROOM_TO_RESISTANCE', entry=entry, target=overhead,
+                              room_pct=room, min_headroom=min_headroom, structure=structure)
+
         if not number(overhead) or overhead <= entry or known_at is None or known_at > now or known_at.date() != now.date():
             return reject('KNOWN_OVERHEAD_TARGET_UNAVAILABLE', structure=structure)
 
@@ -654,21 +733,32 @@ class FastMomentumStrategy:
         intraday_cap = None
 
         peak = active_confirmed_peak(watch, now)
-        if peak and number(peak.get('price')) and peak['price'] > entry:
-            intraday_ceiling = peak['price']
-            ceiling_source = 'CONFIRMED_SWING_PEAK'
+        if peak and number(peak.get('price')):
+            peak_price = peak['price']
+            if entry <= peak_price:
+                room = (peak_price - entry) / entry
+                if room < min_headroom:
+                    return reject('KNOWN_CEILING_NET_REWARD_RISK_LOW',
+                                  entry=entry, target=peak_price, room_pct=room,
+                                  min_headroom=min_headroom, nearest_confirmed_peak=peak,
+                                  intraday_cap=peak_price, ceiling_source='CONFIRMED_SWING_PEAK',
+                                  structure=structure)
+                intraday_ceiling = peak_price
+                ceiling_source = 'CONFIRMED_SWING_PEAK'
+            else:
+                # entry > peak_price: requires structural confirmation that peak was broken and held as support
+                confirmed_peak_support = (support >= peak_price - buffer and breakout > peak_price)
+                if not confirmed_peak_support:
+                    return reject('UNCONFIRMED_PEAK_BREAKOUT_HEADROOM_EXHAUSTED',
+                                  entry=entry, peak=peak_price, support=support,
+                                  min_required_support=peak_price - buffer, structure=structure)
 
         if intraday_ceiling is None:
             dh = watch.get('day_high') or self.day_high.get(t.symbol)
-            prior_dh = watch.get('prior_day_high') or self.prior_high.get(t.symbol)
-            if number(prior_dh) and prior_dh > entry:
-                intraday_ceiling = prior_dh
-                ceiling_source = 'INTRADAY_PRIOR_DAY_HIGH'
-            elif number(dh) and dh > entry:
+            if number(dh) and dh > entry:
                 intraday_ceiling = dh
                 ceiling_source = 'INTRADAY_DAY_HIGH'
 
-        min_headroom = max(0.012, min_stop_distance_fraction * 1.5)
         if intraday_ceiling is not None:
             intraday_cap = intraday_ceiling
             target = floor_tick(min(overhead, intraday_ceiling))
@@ -678,14 +768,13 @@ class FastMomentumStrategy:
             ceiling_source = 'CONFIRMED_HIGHER_TIMEFRAME_RESISTANCE'
             target_basis = 'CONFIRMED_HIGHER_TIMEFRAME_RESISTANCE'
 
-        if target <= entry:
-            reason = 'KNOWN_CEILING_NET_REWARD_RISK_LOW' if (intraday_cap and target <= floor_tick(intraday_cap)) else 'NET_REWARD_RISK_LOW'
-            return reject(reason, entry=entry, target=target, nearest_confirmed_peak=peak if intraday_cap else None, intraday_cap=intraday_cap, ceiling_source=ceiling_source, structure=structure)
+        if target <= entry or (target - entry) / entry < min_headroom:
+            reason = 'KNOWN_CEILING_NET_REWARD_RISK_LOW' if (intraday_cap and target <= floor_tick(intraday_cap)) else 'INSUFFICIENT_ROOM_TO_RESISTANCE'
+            return reject(reason, entry=entry, target=target, room_pct=(target - entry) / entry,
+                          min_headroom=min_headroom, nearest_confirmed_peak=peak if intraday_cap else None,
+                          intraday_cap=intraday_cap, ceiling_source=ceiling_source, structure=structure)
         # Never move a structural line to a fixed percentage or solve a target
         # backwards from desired RR. Size from the separately derived hard line.
-        pullback_depth = max(0., breakout - support)
-        min_pullback_room = min(max(0., support - structure['origin'] - tick_size(support)), tick_size(support)) if pullback_depth <= tick_size(support) else 0.
-        buffer = max(tick_size(support), t.ask - t.bid, support * getattr(self.cfg, 'structural_buffer', .001)) + min_pullback_room
         stop = floor_tick(support - buffer)
         noise = max(structure['observed_noise'], t.ask - t.bid, 2 * tick_size(support))
         emergency = floor_tick(stop - noise)
@@ -818,10 +907,39 @@ class FastMomentumStrategy:
         def below(line):
             return (len(rows) >= 2 and rows[-2][0] < rows[-1][0] == t.time
                     and rows[-1][1] <= line and rows[-2][1] <= line and bid <= line)
+        def breach_evidence_impl():
+            # The two accepted prints, not a reconstructed price path, are the
+            # actual structural-exit authority. Keep receipt provenance when it
+            # exists and explicitly mark incomplete metadata as unknown.
+            tape = self.get_tape(t.symbol)
+            if len(tape.ticks) != len(tape.metadata):
+                return {'confirmation_trades': [], 'confirmation_coverage': 'UNKNOWN_METADATA_ALIGNMENT'}
+            pairs = [(row, meta) for row, meta in zip(tape.ticks, tape.metadata)
+                     if opened <= row[0] <= t.time][-2:]
+            if len(pairs) != 2:
+                return {'confirmation_trades': [], 'confirmation_coverage': 'UNKNOWN_MISSING_TRADE'}
+            trades = []
+            for row, meta in pairs:
+                received = meta.get('received_at')
+                fingerprint = meta.get('fingerprint')
+                trades.append({'time': row[0].isoformat(), 'price': row[1], 'volume': row[2],
+                    'received_at': received.isoformat() if received is not None else None,
+                    'cumulative': fingerprint[-1] if fingerprint else None})
+            book_at = stamp(getattr(t, 'book_time', None))
+            book_received = stamp(getattr(t, 'book_received_at', None))
+            return {'confirmation_trades': trades,
+                    'confirmation_coverage': 'OBSERVED_ACCEPTED_PRINTS' if all(x['received_at'] for x in trades) else 'UNKNOWN_RECEIPT_TIME',
+                    'book_time': book_at.isoformat() if book_at is not None else None,
+                    'book_received_at': book_received.isoformat() if book_received is not None else None,
+                    'bid_qty': getattr(t, 'bid_qty', None)}
+        def breach_evidence():
+            # Diagnostic failure must never suppress an otherwise valid exit.
+            try: return breach_evidence_impl()
+            except Exception: return {'confirmation_trades': [], 'confirmation_coverage': 'UNKNOWN_EVIDENCE_ERROR'}
         protection = position.get('protection_stop')
         if number(protection) and below(protection):
-            return True, 'PROFIT_LOCK_EXIT', {**evidence, 'bid': bid, 'stop': protection, 'basis': 'CONFIRMED_POST_FILL_HIGHER_LOW_FAILED'}
-        if below(initial_stop):return True, 'INVALIDATION_STOP_EXIT', {**evidence, 'bid': bid, 'stop': initial_stop, 'basis': 'TWO_INDEPENDENT_TRADE_BREACHES'}
+            return True, 'PROFIT_LOCK_EXIT', {**evidence, 'bid': bid, 'stop': protection, 'basis': 'CONFIRMED_POST_FILL_HIGHER_LOW_FAILED', **breach_evidence()}
+        if below(initial_stop):return True, 'INVALIDATION_STOP_EXIT', {**evidence, 'bid': bid, 'stop': initial_stop, 'basis': 'TWO_INDEPENDENT_TRADE_BREACHES', **breach_evidence()}
         turns = []
         for row in rows:
             if not turns or row[1] != turns[-1][1]:turns.append(row)
@@ -855,5 +973,17 @@ class FastMomentumStrategy:
             cost_floor = entry * (1 + self.costs['buy']) / ((1 - self.costs['sell'] - self.costs['tax']) * (1 - self.costs['exit_slippage']))
             if cost_floor < line < bid and line > (protection if number(protection) else 0):
                 position['protection_stop'] = line; position['profit_locked'] = True
+                try:
+                    history = position.setdefault('fast_protection_history', [])
+                    if len(history) >= 32:
+                        history.pop(0)
+                        position['fast_protection_history_omitted'] = position.get('fast_protection_history_omitted', 0) + 1
+                    history.append({'at': now.isoformat(), 'trigger_trade_at': t.time.isoformat(),
+                        'trigger_price': t.price, 'bid': bid, 'prior_stop': protection,
+                        'stop': line, 'confirmed_low': floor, 'confirmed_low_at': lows[-1][0].isoformat(),
+                        'buffer': buffer, 'cost_floor': cost_floor, 'initial_r': initial_r,
+                        'basis': 'CONFIRMED_POST_FILL_HIGHER_LOW'})
+                except Exception:
+                    position['fast_protection_evidence_error'] = True
         return False, 'HOLD', {**evidence, **swing, 'holding_seconds': (now - opened).total_seconds(), 'bid': bid,
                                'risk_budget_known': number(allowance) and allowance > 0}

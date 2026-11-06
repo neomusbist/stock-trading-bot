@@ -39,8 +39,20 @@ class ShadowTests(unittest.TestCase):
   self.assertEqual([x['setup'] for x in legacy],['A','B','C']);self.assertFalse(e['actual_order_permission']);self.assertTrue(all(x['failed_reasons'] for x in legacy))
  def test_virtual_risk_no_order_state(self):
   self.s.update([self.row()],self.start)
-  with unittest.mock.patch.object(self.s.detector,'box',return_value={'pattern':'C','breakout':10000,'support':9900,'projection':10200}):self.s.tick(self.tick(),self.start)
+  original=self.s.detector.evaluation_snapshot
+  def snapshot_with_candidate(t,view):
+   signal,gates,trials,history=original(t,view)
+   candidate=next(x for x in trials if x['setup']=='C')
+   candidate.update(candidate_generated=True,virtual_entry=10010,virtual_invalidation=9900)
+   return signal,gates,trials,history
+  # Inject the synthetic C candidate at the snapshot boundary actually used
+  # by the observer; patching the old box() method no longer creates one.
+  with unittest.mock.patch.object(self.s.detector,'evaluation_snapshot',side_effect=snapshot_with_candidate):self.s.tick(self.tick(),self.start)
   self.assertTrue(self.risk.called);self.assertEqual(self.events[-1][1]['setup_trials'][2]['virtual_risk_quantity'],{'quantity':1});self.assertFalse(self.events[-1][1]['actual_order_permission'])
+ def test_virtual_risk_not_called_without_candidate(self):
+  self.s.update([self.row()],self.start);self.s.tick(self.tick(),self.start)
+  self.risk.assert_not_called()
+  self.assertTrue(all(not x['candidate_generated'] for x in self.events[-1][1]['setup_trials']))
  def test_real_source_rule_unchanged(self):
   with tempfile.TemporaryDirectory() as tmp:
    radar=DynamicRadar(self.cfg,self.auto,Policy(Path(tmp)/'policy.json'));radar.available_capital=20000

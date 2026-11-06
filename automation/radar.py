@@ -26,8 +26,17 @@ def early_surge_bonus(sources):
 def observation_structure(bars,price,cfg,day):
     strict=structure(bars,price,replace(cfg,max_recent_range=.99),day)
     strict['resistance_room_pass']=not (strict.get('resistance') and price and strict['resistance']/price-1<cfg.min_resistance_room)
-    if strict.get('reason')=='상단 저항 여유 부족':
-        strict.update(status='ELIGIBLE',reason='A/C 돌파 관찰; B는 상단 저항 여유 검사 유지',compression_deferred='RESISTANCE_ROOM_TO_SETUP',setup_allowlist=['A','C'])
+    reasons = [r.strip() for r in strict.get('reason', '').split(' | ') if r.strip()]
+    fatal = {'최근 5일 저가 이탈', '유효 봉/거래량 부족'}
+    deferrable = {'상단 저항 여유 부족', '거래대금 부족', '최근 20일 변동폭 과대'}
+    remaining = [r for r in reasons if r not in deferrable]
+    if not (set(reasons) & fatal) and not remaining and ('상단 저항 여유 부족' in reasons or '거래대금 부족' in reasons):
+        strict.update(
+            status='ELIGIBLE',
+            reason='A/C 돌파 관찰; B는 상단 저항 여유 검사 유지' if '상단 저항 여유 부족' in reasons else '실시간 랭킹 유입 후보 관찰; 셋업 단계 거래대금 검증',
+            compression_deferred='RESISTANCE_ROOM_TO_SETUP',
+            setup_allowlist=['A','C'] if '상단 저항 여유 부족' in reasons else ['A','B','C']
+        )
     return strict
 
 def ordinary(symbol,name):
@@ -113,13 +122,16 @@ def collect(rest):
     return rows[:settings.max_raw_symbols]
 
 class DynamicRadar:
-    def __init__(self,cfg,auto,policy,fallback_source1=False):
+    def __init__(self,cfg,auto,policy,fallback_source1=None):
         self.cfg=cfg; self.a=auto; self.policy=policy; self.previous={}; self.missing={}; self.weak={}; self.watch={}; self.day=None
         self.available_capital=None
         self.capital_context={}
         self.momentum={}
         self.affordability_ms=0.
-        self.fallback_source1=fallback_source1 or getattr(auto,'watch_fallback_source1',False) or getattr(auto,'fallback_source1',False)
+        if fallback_source1 is not None:
+            self.fallback_source1=bool(fallback_source1)
+        else:
+            self.fallback_source1=bool(getattr(auto,'watch_fallback_source1',False))
 
     def affordable(self,x):
         price=x.get('reference_price')
