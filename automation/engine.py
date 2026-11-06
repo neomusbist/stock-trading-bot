@@ -1008,7 +1008,8 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
             market_state=p['market_state'],ownership=p['ownership'],completed=trade['qty']==p['qty'],
             high=p['high'],holding_seconds=(self.clock()-datetime.fromisoformat(p['opened'])).total_seconds(),
             fee_estimate=self.buy_fee(trade['entry']*trade['qty'])+self.sell_fee(trade['exit']*trade['qty']),
-            stop_history=list(p['stop_history']),signal=p['signal'])
+            stop_history=list(p['stop_history']),signal=p['signal'],
+            micro_stop_history=list(p.get('micro_stop_history') or []))
         price=p['avg']
         band=next((label for upper,label in ((500,'0~500'),(1000,'500~1000'),(3000,'1000~3000'),
                    (10000,'3000~10000'),(30000,'10000~30000')) if price<upper),'30000 이상')
@@ -1113,6 +1114,42 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
         if stop>p['stop']:p.setdefault('stop_history',[]).append({'time':self.clock().isoformat(),'stop':stop,'evidence':dict(p['protection_evidence'])})
         return high,stop
 
+    def record_fast_micro_stop(self,p,t):
+        """Audit-only history of the FAST micro protection line.
+
+        FAST keeps this line out of p['stop'] on purpose, so stop_history and the
+        displayed protection state never showed it (NHN 2026-11-06 sold on a
+        63,300 line while the ledger said final_stop=61,600). Observation only:
+        no value written here is read by any order decision.
+        """
+        stop=p.get('protection_stop')
+        if type(stop) not in (int,float) or not math.isfinite(stop) or stop<=0:return
+        try:
+            hist=p.setdefault('micro_stop_history',[])
+            prior=hist[-1]['stop'] if hist else None
+            if prior==stop:return
+            hist.append({'time':self.clock().isoformat(),'stop':stop,'prior_stop':prior,'price':t.price,
+                'bid':t.bid,'ask':t.ask,'high':p.get('high'),'structural_stop':p.get('stop'),
+                'basis':'FAST_MICRO_TICK_PIVOT','authority':'FAST_TWO_INDEPENDENT_TRADE_BREACHES',
+                'order_effect':False})
+            del hist[:-32]
+        except Exception:
+            # Instrumentation must never interrupt exit handling.
+            return
+
+    def capture_fast_exit_tape(self,p,t):
+        """Keep the bounded accepted prints behind a FAST exit decision (audit only).
+
+        Raw tick capture is a diagnostic ledger that can hit its daily cap; the
+        exit decision itself is critical evidence, so retain at most 256 rows once
+        per position inside the exit trigger evidence.
+        """
+        if p.get('fast_exit_tape') is not None:return
+        try:
+            p['fast_exit_tape']=self.fast_strategy.snapshot_decision_tape(t.symbol,self.clock(),256)
+        except Exception as exc:
+            p['fast_exit_tape']={'unavailable':type(exc).__name__}
+
     def request_exit(self,symbol,reason):
         p=self.s['positions'].get(symbol)
         if p and not p.get('exit_requested'):
@@ -1126,6 +1163,8 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
                 'protection':p.get('protection_evidence'),
                 'invalidation':p.get('invalidation_evidence'),
                 'fast_exit':p.get('fast_exit_evidence'),
+                'fast_decision_tape':p.get('fast_exit_tape'),
+                'fast_micro_stop_history':p.get('micro_stop_history'),
                 'after_momentum':p.get('after_momentum_evidence')})
             p['exit_trigger_evidence']['exit_state']=deepcopy(p.get('exit_state'))
         return super().request_exit(symbol,reason)
@@ -1424,6 +1463,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
             if hasattr(self, 'fast_strategy') and self.fast_strategy is not None:
                 self.fast_strategy.ingest_tick(t, received=self.clock())
                 should_exit, exit_reason, exit_evidence = self.fast_strategy.evaluate_exit(p, t, self.clock())
+                self.record_fast_micro_stop(p, t)
                 # FAST's micro-pivot line requires two independent trade
                 # breaches. It is not a confirmed-bar structural stop: copying
                 # it into p['stop'] also raises the quote-only emergency line
@@ -1435,6 +1475,7 @@ class AutonomousEngine(ProtectionSafety,ExistingExits,Engine):
                     'protection_authority':'FAST_TWO_INDEPENDENT_TRADE_BREACHES',
                     'evidence':dict(exit_evidence)}
                 if should_exit:
+                    self.capture_fast_exit_tape(p, t)
                     self.request_exit(t.symbol, f'FAST_{exit_reason}')
         from automation.exit_plan import invalidation_lines
         if p and invalidation_lines(self.c,self.a,p)['close_based']:

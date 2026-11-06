@@ -202,6 +202,9 @@ def _profit_view(cfg, auto, p, plan, lines, data, asof, bar_fresh):
                 'policy_text': '목표가 도달만으로 매도하지 않음 / 구조적 청산 또는 보호선 이탈 시 매도',
                 'activation_price': activation, 'one_r_price': p['avg']+risk if number(risk) and risk > 0 else None,
                 'armed': armed, 'protecting': protecting, 'protect_price': protect_price if protecting else None,
+                # Additive, display-only: FAST's tick micro line is outside the AE3
+                # confirmed-bar policy but can still sell (NHN 2026-11-06).
+                'micro_protect_price': p.get('protection_stop') if number(p.get('protection_stop')) and p['protection_stop'] > 0 else None,
                 'status': '익절 보호 활성' if protecting else '익절 보호 미발동',
                 'expected_condition': expected, 'rule': rule, 'evidence': evidence,
                 'modeled_net_at_protect_price': modeled_stop_net if protecting else None},
@@ -265,6 +268,10 @@ def state_for_position(cfg, auto, position, asof, pending=0, order_allowed=False
             # Diagnostic state only; never promote the FAST micro line into
             # the confirmed structure or single-quote emergency line.
             'fast_exit': deepcopy(position.get('fast_exit_evidence')),
+            'fast_micro_protection': ({'stop': position.get('protection_stop'), 'structural_stop': position.get('stop'),
+                'emergency_stop': position.get('emergency'), 'authority': 'FAST_TWO_INDEPENDENT_TRADE_BREACHES',
+                'history': deepcopy((position.get('micro_stop_history') or [])[-8:]), 'display_only': True}
+                if number(position.get('protection_stop')) or position.get('micro_stop_history') else None),
             'active_orders': [{'side': o.get('side'), 'status': o.get('status'), 'qty': o.get('qty'), 'filled': o.get('filled'),
                                'limit': o.get('limit'), 'created': o.get('created'), 'reason': (o.get('signal') or {}).get('reason')}
                               for o in (orders or [])],
